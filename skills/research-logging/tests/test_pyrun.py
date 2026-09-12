@@ -101,16 +101,13 @@ def make_entry(root: Path, *, with_data: bool = True) -> Path:
         (entry / "data.json").write_text(
             json.dumps(
                 {
-                    "schema": "research-log-data/v3",
+                    "schema": "research-log-data/v5",
                     "inputs": [
                         {
                             "name": "input_csv",
                             "kind": "file",
                             "location": "data/input.csv",
-                            "fingerprint": {
-                                "algorithm": "sha256",
-                                "digest": digest(source),
-                            },
+                            "identity": {"algorithm": "sha256"},
                             "origin": True,
                         }
                     ],
@@ -500,7 +497,12 @@ class PyrunResolutionTests(unittest.TestCase):
             support = execution_for_output(entry, "data/repository.json")
             self.assertEqual(
                 support["observed"]["inputs"],
-                {"source-repository": resource.fingerprint.as_dict()},
+                {
+                    "source-repository": {
+                        "algorithm": DATA.GIT_COMMIT_ALGORITHM,
+                        "digest": commit,
+                    }
+                },
             )
 
     def test_rejects_embedded_missing_and_unsafe_member_tokens(self) -> None:
@@ -551,8 +553,7 @@ class PyrunResolutionTests(unittest.TestCase):
                 cwd=entry,
             )
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("data.fingerprint.mismatch", result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(path.read_bytes(), before)
 
     def test_rejects_legacy_mixed_parent_and_log_level_surfaces(self) -> None:
@@ -1867,7 +1868,7 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("data.fingerprint.mismatch", result.stderr)
+            self.assertIn("changed during execution", result.stderr)
             self.assertFalse((entry / "pyrun.json").exists())
 
     def test_capture_options_mirror_and_record_stream_outputs(self) -> None:

@@ -88,10 +88,15 @@ wording, and parameters outside a marked statistic's code span.
    For a whole artifact, pass only its one source token; the action recognizes
    the marked link, image, or inline `diff` fence and rejects selection or
    conversion arguments.
-4. Require the command to succeed. It resolves and fingerprints the source,
+4. Require the command to succeed. It resolves and observes the source,
    infers the document and evidence kind from the unique marker, records exact
    selection expectations, checks the presentation, and publishes the complete
-   record. Do not open a registry to inspect or confirm a successful result.
+   record. For a linked image or download, it captures the exact current
+   SHA-256 as the evidence record's artifact baseline only after the source and
+   presentation association remain stable through publication. A later
+   `evidence update` is the only normal action that replaces that baseline;
+   fresh execution, reproduction, promotion, and cache rebuilding do not.
+   Do not open a registry to inspect or confirm a successful result.
 
 Invoke dependent authoring actions separately. Read each bounded result and
 stop at the first failure instead of sending the next action in the same shell

@@ -219,8 +219,9 @@ into the entry or referenced at its current local location, then use
 <target>`. Before a producer runs, declare each generated output with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
 <target> --kind file|directory`. Use `<name>` instead of the raw path in both
-directions; `pyrun` records the generated fingerprint after successful
-production. A later entry reuses the source declaration through `log data use`
+directions. The declaration records the identity rule and must be observable;
+after successful production, `pyrun` records the generated current observation
+in execution state. A later entry reuses the source declaration through `log data use`
 rather than copying it.
 
 Do not register scripts as artifacts merely because they are executed. Register
@@ -299,6 +300,7 @@ occurrences. Preview with `--dry-run`. Use `log data` for registration first.
 Recipe edits return a new execution ID. Use that ID for subsequent edits.
 Input/output actions set or append the parameter and verify its role.
 `set-parameter` preserves an existing role or appends an ordinary parameter.
-New inputs must match their registered fingerprints; new outputs must exist.
+New inputs must resolve through an observable registered declaration; new
+outputs must exist so the corrected execution can record their observations.
 Recipe corrections require reproduction. Run validation only at the applicable
 checkpoint.

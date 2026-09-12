@@ -599,7 +599,7 @@ Markdown or retained files, and marks the corrected command as needing reproduct
 
 Use entry-root `data.json` for every file, directory, or pinned Git repository
 consumed as a material input by a recorded command or evidence record. Each has
-one stable name, local location, strong identity, and Boolean `origin`. An
+one stable name, local location, identity rule, and Boolean `origin`. An
 origin stops the Provenance chain at that artifact or tracked commit snapshot;
 generated material continues to its unique earlier producer regardless of
 where the file is stored.
@@ -613,7 +613,9 @@ CLI:
 ```
 
 Without `--commit`, the CLI infers file versus directory, normalizes the target,
-fingerprints its current content, and records the explicit origin boundary.
+and records the identity rule and explicit origin boundary. It does not record
+a content fingerprint in `data.json`. Fresh execution observes current input
+bytes; successful `pyrun` records those observations in `pyrun.json`.
 For source code identified by a repository commit, use the same action with
 `--commit <full-commit-hash>` and the repository root as the target. The path
 only locates an accessible repository; the full commit identifies the tracked
@@ -627,8 +629,9 @@ invalid. Evidence sources use one complete `<name>` or
 `<directory-name>/member` token and must resolve to one local regular file.
 Declare a generated artifact before its producer runs with
 `<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
-<target> --kind file|directory`; successful production records its fingerprint
-and execution support. A later entry reuses a same-log declaration with
+<target> --kind file|directory`; successful production records its output
+fingerprint and execution support in `pyrun.json`, leaving the declaration
+unchanged. A later entry reuses a same-log declaration with
 `<skill>/scripts/log data use --path <log> --entry <consumer-entry>
 --from-entry <producer-entry> <name>`. The reference does not copy the target
 or turn it into an origin. `log data` is the sole ordinary author of
@@ -639,8 +642,10 @@ One `pyrun` output-directory declaration represents one atomic generated
 artifact when that invocation owns the complete directory. Register the
 directory once. A whole-directory consumer uses `<name>`; an exact member
 consumer or evidence source uses `<name>/member`. The member association stays
-exact while identity, output support, and Provenance use the declared directory
-fingerprint. Large origin or generated directories may select bounded identity
+exact while execution observation and Provenance use the directory's declared
+identity rule and the corresponding recorded execution fingerprint. A linked
+image or download has its own exact-file acceptance baseline in `evidence.json`,
+even when its source is a directory member. Large origin or generated directories may select bounded identity
 files or final-component patterns when the selected files explicitly define
 their relevant identity; excluded descendants are not covered.
 

@@ -39,6 +39,7 @@ from research_log_data import (
     load_data_file,
     observe_directory_tree,
     observe_file_content,
+    observe_fingerprint,
     parse_fingerprint,
     resolve_input_token,
 )
@@ -1268,7 +1269,11 @@ def _exception_attempt(
         {"code": code, "message": message, "recorded_at": _utc_now()},
     )
     _write_checkpoint(path, checkpoint)
-    stdout, stderr = _diagnostic_relative_paths(workspace, entry, execution_id)
+    stdout, stderr = _diagnostic_paths(workspace, entry, execution_id)
+    # Exceptions before child launch still publish the diagnostics promised by
+    # ExecutionAttempt so callers can inspect a stable empty stderr stream.
+    stdout.touch(exist_ok=True)
+    stderr.touch(exist_ok=True)
     return ExecutionAttempt(
         entry,
         execution_id,
@@ -1820,9 +1825,9 @@ def _execution_command(
             _resolve_parameter(
                 value,
                 data=data,
-                source_log=source_entry.parent.parent,
                 workspace=workspace,
                 generated=generated,
+                expected_inputs=dict(execution.observed.inputs),
             )
         )
     return [str(interpreter), str(script), *arguments], captures
@@ -1888,12 +1893,12 @@ def _resolve_parameter(
     value: str,
     *,
     data: DataFile,
-    source_log: Path,
     workspace: ReproductionWorkspace,
     generated: Mapping[Path, tuple[Path, str]],
+    expected_inputs: Mapping[str, Fingerprint],
 ) -> str:
     value = value.replace("<project>", str(workspace.source_project)).replace(
-        "<log>", str(source_log)
+        "<log>", str(data.entry_root.parent.parent)
     )
     parts = input_token_parts(value)
     if parts is None:
@@ -1911,6 +1916,34 @@ def _resolve_parameter(
             raise ActionError(
                 "reproduction.input.unavailable",
                 f"regenerated input is unavailable: {resolved.resource.name}",
+            )
+        expected = expected_inputs.get(resolved.resource.name)
+        staged_root = _regenerated_input_path(
+            Path(resolved.resource.canonical_target).resolve(), generated
+        )
+        if expected is None or staged_root is None:
+            raise ActionError(
+                "reproduction.input.observation_missing",
+                f"recorded input observation is unavailable: {resolved.resource.name}",
+            )
+        try:
+            observed = observe_fingerprint(
+                replace(
+                    resolved.resource,
+                    location=staged_root.as_posix(),
+                    canonical_target=staged_root.as_posix(),
+                )
+            ).fingerprint
+        except (DataContractError, OSError, ValueError) as error:
+            raise ActionError(
+                "reproduction.input.unavailable",
+                f"regenerated input is unavailable: {resolved.resource.name}: {error}",
+            ) from error
+        if observed != expected:
+            raise ActionError(
+                "reproduction.input.observation_mismatch",
+                "regenerated input does not match the consumer's recorded "
+                f"observation: {resolved.resource.name}",
             )
         return str(mapped)
     return resolved.value

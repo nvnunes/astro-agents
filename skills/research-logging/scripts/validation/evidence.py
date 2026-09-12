@@ -10,14 +10,19 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
 
-from research_log_data import input_token_parts
+from research_log_data import (
+    DataContractError,
+    Fingerprint,
+    input_token_parts,
+    parse_fingerprint,
+)
 
 from .entry_materials import EntryMaterialPathError, validate_entry_path_symlinks
 from .errors import MechanicalContractError
 from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import V2JsonError, canonical_json, decode_json
 
-EVIDENCE_SCHEMA = "research-log-evidence/v3"
+EVIDENCE_SCHEMA = "research-log-evidence/v4"
 REPRODUCTION_TOLERANCE_FIELD = "reproduction_tolerance"
 _MISSING = object()
 MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024
@@ -130,6 +135,8 @@ class PresentationRecord:
     sources: tuple[EvidenceSource, ...]
     transformation: Mapping[str, Any] | None
     reproduction_tolerance: ReproductionTolerance | None = None
+    artifact_fingerprint: Fingerprint | None = None
+    artifact_fingerprint_present: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the canonical record object."""
@@ -146,6 +153,15 @@ class PresentationRecord:
         if self.reproduction_tolerance is not None:
             result[REPRODUCTION_TOLERANCE_FIELD] = (
                 self.reproduction_tolerance.as_dict()
+            )
+        if self.kind == "artifact" and (
+            self.artifact_fingerprint is not None
+            or self.artifact_fingerprint_present is True
+        ):
+            result["artifact_fingerprint"] = (
+                self.artifact_fingerprint.as_dict()
+                if self.artifact_fingerprint is not None
+                else None
             )
         return result
 
@@ -298,14 +314,14 @@ def load_evidence_file(
             "evidence.json.schema_invalid",
             str(path),
             {"fields": sorted(value) if isinstance(value, Mapping) else None},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     if value["schema"] != EVIDENCE_SCHEMA or not isinstance(value["records"], list):
         _fail(
             "evidence.json.schema_invalid",
             str(path),
             {"schema": value.get("schema")},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     raw_records = value["records"]
     if not raw_records:
@@ -313,7 +329,7 @@ def load_evidence_file(
             "evidence.file.empty",
             str(path),
             {"records": 0},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     if len(raw_records) > MAX_RECORDS_PER_FILE:
         _fail(
@@ -338,7 +354,7 @@ def load_evidence_file(
             "evidence.record.id_duplicate",
             str(path),
             {"ids": ids},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     return EvidenceFile(path=path, entry_root=entry_root, records=records)
 
@@ -404,7 +420,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.file.encoding_invalid",
             str(path),
             {"error": str(exc)},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     except BoundedFileReadError as exc:
         if exc.reason == "byte_limit":
@@ -418,7 +434,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.json.schema_invalid",
             str(path),
             {"error": exc.detail, "reason": exc.reason},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
     try:
         return decode_json(
@@ -431,7 +447,7 @@ def _read_evidence_json(path: Path) -> object:
             "evidence.json.schema_invalid",
             str(path),
             {"error": str(exc)},
-            "Evidence V3 JSON File Schema",
+            "Evidence V4 JSON File Schema",
         )
 
 
@@ -920,9 +936,8 @@ def _decode_record(
     record_id = _record_id(value.get("id"), subject)
     kind = value.get("kind")
     required = {"document", "id", "kind", "sources", "transformation"}
-    if not required <= set(value) <= required | {
-        REPRODUCTION_TOLERANCE_FIELD
-    } or kind not in {
+    allowed = required | {REPRODUCTION_TOLERANCE_FIELD, "artifact_fingerprint"}
+    if not required <= set(value) <= allowed or kind not in {
         "artifact",
         "statistic",
         "table",
@@ -962,6 +977,18 @@ def _decode_record(
     )
     if kind == "artifact" and tolerance is not None:
         _invalid(subject, {REPRODUCTION_TOLERANCE_FIELD: tolerance.as_dict()})
+    raw_artifact_fingerprint = value.get("artifact_fingerprint", _MISSING)
+    if kind != "artifact" and raw_artifact_fingerprint is not _MISSING:
+        _invalid(subject, {"artifact_fingerprint": raw_artifact_fingerprint})
+    if raw_artifact_fingerprint is _MISSING or raw_artifact_fingerprint is None:
+        artifact_fingerprint = None
+    else:
+        try:
+            artifact_fingerprint = parse_fingerprint(
+                raw_artifact_fingerprint, subject, kind="file"
+            )
+        except DataContractError:
+            _invalid(subject, {"artifact_fingerprint": raw_artifact_fingerprint})
     return PresentationRecord(
         id=record_id,
         document=document,
@@ -969,6 +996,8 @@ def _decode_record(
         sources=decoded_sources,
         transformation=(dict(transformation) if transformation is not None else None),
         reproduction_tolerance=tolerance,
+        artifact_fingerprint=artifact_fingerprint,
+        artifact_fingerprint_present=raw_artifact_fingerprint is not _MISSING,
     )
 
 
@@ -1230,7 +1259,7 @@ def _invalid(subject: str, observed: object) -> NoReturn:
         "evidence.declaration.invalid",
         subject,
         observed,
-        "Evidence V3 JSON File Schema",
+        "Evidence V4 JSON File Schema",
     )
 
 

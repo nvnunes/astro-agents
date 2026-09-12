@@ -17,80 +17,51 @@ FILESYSTEM = importlib.import_module("validation.filesystem")
 
 
 def file_resource(path: Path, *, digest: str | None = None) -> object:
-    observed = digest or hashlib.sha256(path.read_bytes()).hexdigest()
+    del digest
     return DATA.InputResource(
         "source",
         "file",
         path.as_posix(),
-        DATA.Fingerprint("sha256", digest=observed),
+        DATA.ResourceIdentity("sha256"),
         False,
         path.resolve().as_posix(),
     )
 
 
 def directory_resource(path: Path) -> object:
-    provisional = DATA.InputResource(
-        "collection",
-        "directory",
-        path.as_posix(),
-        DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
-        False,
-        path.resolve().as_posix(),
-    )
-    observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
         "collection",
         "directory",
         path.as_posix(),
-        observed.fingerprint,
+        DATA.ResourceIdentity("directory-sha256-v1"),
         False,
         path.resolve().as_posix(),
     )
 
 
 def identity_files_resource(path: Path) -> object:
-    provisional = DATA.InputResource(
-        "build",
-        "directory",
-        path.as_posix(),
-        DATA.Fingerprint(
-            "identity-files-sha256-v1",
-            digest="0" * 64,
-            files=("build.h5", "build.yaml"),
-        ),
-        False,
-        path.resolve().as_posix(),
-    )
-    observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
         "build",
         "directory",
         path.as_posix(),
-        observed.fingerprint,
+        DATA.ResourceIdentity(
+            "identity-files-sha256-v1",
+            files=("build.h5", "build.yaml"),
+        ),
         False,
         path.resolve().as_posix(),
     )
 
 
 def identity_patterns_resource(path: Path) -> object:
-    provisional = DATA.InputResource(
-        "build",
-        "directory",
-        path.as_posix(),
-        DATA.Fingerprint(
-            "identity-patterns-sha256-v1",
-            digest="0" * 64,
-            patterns=("build.h5", "maps-*.h5"),
-        ),
-        False,
-        path.resolve().as_posix(),
-    )
-    observed = DATA.observe_fingerprint(provisional)
     return DATA.InputResource(
         "build",
         "directory",
         path.as_posix(),
-        observed.fingerprint,
+        DATA.ResourceIdentity(
+            "identity-patterns-sha256-v1",
+            patterns=("build.h5", "maps-*.h5"),
+        ),
         False,
         path.resolve().as_posix(),
     )
@@ -105,7 +76,7 @@ class FingerprintCacheTests(unittest.TestCase):
             resource = file_resource(source)
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                first = cache.verify(resource)
+                first = cache.observe_resource(resource)
                 self.assertEqual(cache.metrics.file_hashes, 1)
             with (
                 mock.patch.object(
@@ -115,7 +86,7 @@ class FingerprintCacheTests(unittest.TestCase):
                 ),
                 CACHE.FingerprintCache(root, writable=True) as cache,
             ):
-                second = cache.verify(resource)
+                second = cache.observe_resource(resource)
 
             assert first is not None and second is not None
             self.assertEqual(first.fingerprint, second.fingerprint)
@@ -126,15 +97,15 @@ class FingerprintCacheTests(unittest.TestCase):
                 root.resolve() / ".cache" / "research-log-fingerprints.sqlite3",
             )
 
-    def test_expected_fingerprint_change_does_not_force_a_content_read(self) -> None:
+    def test_declaration_identity_does_not_force_a_content_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.csv"
             write(source, "value\n1\n")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(file_resource(source))
+                cache.observe_resource(file_resource(source))
 
-            changed_expectation = file_resource(source, digest="f" * 64)
+            same_identity = file_resource(source, digest="f" * 64)
             with (
                 mock.patch.object(
                     CACHE,
@@ -143,10 +114,7 @@ class FingerprintCacheTests(unittest.TestCase):
                 ),
                 CACHE.FingerprintCache(root, writable=True) as cache,
             ):
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "data.fingerprint.mismatch"
-                ):
-                    cache.verify(changed_expectation)
+                cache.observe_resource(same_identity)
                 self.assertEqual(cache.metrics.file_reuses, 1)
 
     def test_changed_directory_member_hashes_only_that_member(self) -> None:
@@ -157,14 +125,12 @@ class FingerprintCacheTests(unittest.TestCase):
             write(collection / "b.txt", "b")
             resource = directory_resource(collection)
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(resource)
+                cache.observe_resource(resource)
 
             write(collection / "b.txt", "changed")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "data.fingerprint.mismatch"
-                ):
-                    cache.verify(resource)
+                observed = cache.observe_resource(resource)
+                self.assertFalse(observed.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 1)
                 self.assertEqual(cache.metrics.file_reuses, 1)
 
@@ -187,12 +153,12 @@ class FingerprintCacheTests(unittest.TestCase):
                 ),
                 CACHE.FingerprintCache(root, writable=True) as cache,
             ):
-                cache.verify(resource)
+                cache.observe_resource(resource)
                 self.assertEqual(cache.metrics.file_hashes, 2)
 
             write(build / "products" / "outer.h5", "changed product")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                unchanged = cache.verify(resource)
+                unchanged = cache.observe_resource(resource)
                 assert unchanged is not None
                 self.assertTrue(unchanged.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 0)
@@ -200,10 +166,8 @@ class FingerprintCacheTests(unittest.TestCase):
 
             write(build / "build.h5", "changed state")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "data.fingerprint.mismatch"
-                ):
-                    cache.verify(resource)
+                observed = cache.observe_resource(resource)
+                self.assertFalse(observed.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 1)
                 self.assertEqual(cache.metrics.file_reuses, 1)
 
@@ -217,12 +181,12 @@ class FingerprintCacheTests(unittest.TestCase):
             resource = identity_patterns_resource(build)
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(resource)
+                cache.observe_resource(resource)
                 self.assertEqual(cache.metrics.file_hashes, 2)
 
             write(build / "products" / "outer.h5", "changed product")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                unchanged = cache.verify(resource)
+                unchanged = cache.observe_resource(resource)
                 assert unchanged is not None
                 self.assertTrue(unchanged.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 0)
@@ -230,10 +194,8 @@ class FingerprintCacheTests(unittest.TestCase):
 
             write(build / "maps-hpx9.h5", "map 9")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "data.fingerprint.mismatch"
-                ):
-                    cache.verify(resource)
+                observed = cache.observe_resource(resource)
+                self.assertFalse(observed.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 1)
                 self.assertEqual(cache.metrics.file_reuses, 2)
 
@@ -247,15 +209,13 @@ class FingerprintCacheTests(unittest.TestCase):
             resource = identity_patterns_resource(build)
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(resource)
+                cache.observe_resource(resource)
                 self.assertEqual(cache.metrics.file_hashes, 1)
 
             write(build / "maps-hpx6.h5", "map 6")
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "data.fingerprint.mismatch"
-                ):
-                    cache.verify(resource)
+                observed = cache.observe_resource(resource)
+                self.assertFalse(observed.identity_reused)
                 self.assertEqual(cache.metrics.file_hashes, 1)
                 self.assertEqual(cache.metrics.file_reuses, 1)
 
@@ -283,10 +243,10 @@ class FingerprintCacheTests(unittest.TestCase):
                 CACHE.FingerprintCache(root, writable=True) as cache,
             ):
                 with self.assertRaisesRegex(RuntimeError, "interrupted"):
-                    cache.verify(resource)
+                    cache.observe_resource(resource)
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(resource)
+                cache.observe_resource(resource)
                 self.assertEqual(cache.metrics.file_reuses, 1)
                 self.assertEqual(cache.metrics.file_hashes, 1)
 
@@ -314,7 +274,7 @@ class FingerprintCacheTests(unittest.TestCase):
                 try:
                     start.wait()
                     with CACHE.FingerprintCache(root, writable=True) as cache:
-                        cache.verify(resource)
+                        cache.observe_resource(resource)
                 except BaseException as error:  # pragma: no cover - assertion aid
                     failures.append(error)
 
@@ -339,12 +299,12 @@ class FingerprintCacheTests(unittest.TestCase):
             write(second, "value\n2\n")
 
             with CACHE.FingerprintCache(root, writable=True) as writer:
-                writer.verify(file_resource(first))
+                writer.observe_resource(file_resource(first))
                 assert writer._connection is not None
                 writer._connection.execute("PRAGMA wal_autocheckpoint=0")
                 writer._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 resource = file_resource(second)
-                writer.verify(resource)
+                writer.observe_resource(resource)
 
                 with (
                     mock.patch.object(
@@ -354,7 +314,7 @@ class FingerprintCacheTests(unittest.TestCase):
                     ),
                     CACHE.FingerprintCache(root, writable=False) as reader,
                 ):
-                    observed = reader.verify(resource)
+                    observed = reader.observe_resource(resource)
 
             assert observed is not None
             self.assertTrue(observed.identity_reused)
@@ -374,7 +334,7 @@ class FingerprintCacheTests(unittest.TestCase):
                     mock.patch.object(Path, "is_file", return_value=True),
                     self.assertRaises(DATA.DataContractError) as captured,
                 ):
-                    cache.verify(resource)
+                    cache.observe_resource(resource)
 
             self.assertEqual(
                 captured.exception.code, "provenance.observation.unavailable"
@@ -386,7 +346,7 @@ class FingerprintCacheTests(unittest.TestCase):
             source = root / "source.csv"
             write(source, "value\n1\n")
             with CACHE.FingerprintCache(root, writable=False) as cache:
-                cache.verify(file_resource(source))
+                cache.observe_resource(file_resource(source))
             self.assertFalse((root / ".cache").exists())
 
     def test_read_only_session_ignores_a_corrupt_generated_cache(self) -> None:
@@ -399,7 +359,7 @@ class FingerprintCacheTests(unittest.TestCase):
             cache_path.write_bytes(b"not a sqlite database")
 
             with CACHE.FingerprintCache(root, writable=False) as cache:
-                observed = cache.verify(file_resource(source))
+                observed = cache.observe_resource(file_resource(source))
 
             assert observed is not None
             self.assertFalse(observed.identity_reused)
@@ -418,12 +378,12 @@ class FingerprintCacheTests(unittest.TestCase):
             journal_path.write_bytes(b"stale generated journal")
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(file_resource(source))
+                cache.observe_resource(file_resource(source))
 
             connection = sqlite3.connect(cache_path)
             try:
                 self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0], 1
+                    connection.execute("PRAGMA user_version").fetchone()[0], 2
                 )
             finally:
                 connection.close()
@@ -449,7 +409,7 @@ class FingerprintCacheTests(unittest.TestCase):
                 connection.close()
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(file_resource(source))
+                cache.observe_resource(file_resource(source))
 
             connection = sqlite3.connect(cache_path)
             try:
@@ -466,7 +426,7 @@ class FingerprintCacheTests(unittest.TestCase):
                 {"algorithm", "ctime_ns", "digest", "mtime_ns", "path", "size"},
             )
 
-    def test_unknown_future_schema_is_ignored_and_not_discarded(self) -> None:
+    def test_writable_session_rebuilds_an_incompatible_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.csv"
@@ -476,13 +436,13 @@ class FingerprintCacheTests(unittest.TestCase):
             connection = sqlite3.connect(cache_path)
             try:
                 connection.execute("CREATE TABLE future_state (value TEXT)")
-                connection.execute("PRAGMA user_version=2")
+                connection.execute("PRAGMA user_version=999")
                 connection.commit()
             finally:
                 connection.close()
 
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                observed = cache.verify(file_resource(source))
+                observed = cache.observe_resource(file_resource(source))
 
             assert observed is not None
             self.assertFalse(observed.identity_reused)
@@ -494,7 +454,29 @@ class FingerprintCacheTests(unittest.TestCase):
                 ).fetchall()
             finally:
                 connection.close()
-            self.assertIn(("future_state",), tables)
+            self.assertNotIn(("future_state",), tables)
+
+    def test_read_only_session_ignores_an_incompatible_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.csv"
+            write(source, "value\n1\n")
+            cache_path = root / ".cache/research-log-fingerprints.sqlite3"
+            cache_path.parent.mkdir()
+            connection = sqlite3.connect(cache_path)
+            try:
+                connection.execute("CREATE TABLE future_state (value TEXT)")
+                connection.execute("PRAGMA user_version=999")
+                connection.commit()
+            finally:
+                connection.close()
+            before = cache_path.read_bytes()
+
+            with CACHE.FingerprintCache(root, writable=False) as cache:
+                observed = cache.observe_resource(file_resource(source))
+
+            self.assertFalse(observed.identity_reused)
+            self.assertEqual(cache_path.read_bytes(), before)
 
     def test_project_root_uses_nearest_git_worktree_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -520,7 +502,7 @@ class FingerprintCacheTests(unittest.TestCase):
             write(collection / "empty" / ".keep", "")
             resource = directory_resource(collection)
             with CACHE.FingerprintCache(root, writable=True) as cache:
-                cache.verify(resource)
+                cache.observe_resource(resource)
                 path = cache.path
             connection = sqlite3.connect(path)
             try:

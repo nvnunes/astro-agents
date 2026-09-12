@@ -250,14 +250,15 @@ unchanged and does not open registry schemas that are not involved.
 
 Given a generated target required by a recorded workflow, Record declares its
 name, kind, and path before production. Repair does not need a privileged
-registration mode: a missing digest represents ordinary pre-production state,
-and successful `pyrun` production supplies the observation.
+registration mode: a declaration without an execution observation is ordinary
+pre-production state, and successful `pyrun` production records the observation
+in `pyrun.json`, without rewriting `data.json`.
 
 Given an existing retained generated target that must enter the registry
-before reproduction, Repair may use `log data add-generated
---requires-reproduction` only when one current same-log `pyrun` producer is
-structurally valid and unambiguous. It does not use this migration form for
-ordinary pre-production declaration or to bypass a missing producer.
+before reproduction, Repair uses the same `log data add-generated` action and
+requires one current same-log `pyrun` producer that is structurally valid and
+unambiguous. There is no privileged registration or migration form, and
+registration does not bypass a missing producer or accept current bytes.
 
 Given recognized residue from an interrupted research-owned transaction,
 Repair follows its exact diagnostic and owning implementation contract. It

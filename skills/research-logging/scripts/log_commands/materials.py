@@ -123,6 +123,26 @@ class LogMaterials:
             support=self._output_support(invocation.material_owner, root),
         )
 
+    @staticmethod
+    def _current_input_observations(
+        invocation: Invocation, cache: FingerprintCache
+    ) -> Mapping[str, Fingerprint]:
+        """Observe the invocation inputs once for its output-signature check."""
+
+        observations: dict[str, Fingerprint] = {}
+        for relationship in invocation.inputs:
+            resource = relationship.input_resource
+            if resource is None:
+                continue
+            observed = cache.observe_resource(resource).fingerprint
+            prior = observations.setdefault(resource.name, observed)
+            if prior != observed:
+                raise ActionError(
+                    "provenance.output.signature_unsupported",
+                    f"conflicting current input observation: {resource.name}",
+                )
+        return observations
+
     def require_generated(self, resource: InputResource) -> ProvenanceResult:
         """Require current confirmed same-log production for one declaration."""
 
@@ -136,6 +156,7 @@ class LogMaterials:
                     invocation: Invocation, material: str
                 ) -> Mapping[str, object]:
                     root = self._root(invocation)
+                    current_inputs = self._current_input_observations(invocation, cache)
                     state = self._execution_state(invocation.material_owner, root)
                     if state is not None:
                         execution_output = resolve_execution_output(
@@ -167,7 +188,10 @@ class LogMaterials:
                             current = observation.fingerprint
                             observations[canonical] = current
                         execution = require_current_execution_output(
-                            invocation, execution_output, current_output=current
+                            invocation,
+                            execution_output,
+                            current_output=current,
+                            current_inputs=current_inputs,
                         )
                         return {"output": material, "execution": execution.as_dict()}
                     support = self._output_support(invocation.material_owner, root)
@@ -199,6 +223,7 @@ class LogMaterials:
                         invocation,
                         legacy_output,
                         current_output=current,
+                        current_inputs=current_inputs,
                     )
                     return {"output": material, "record": record.as_dict()}
 
@@ -216,12 +241,7 @@ class LogMaterials:
             raise ActionError(
                 "provenance.observation.unavailable", str(error)
             ) from error
-        observed = observe_fingerprint(resource).fingerprint
-        if observed != resource.fingerprint:
-            raise ActionError(
-                "data.fingerprint.mismatch",
-                "generated target changed during producer verification",
-            )
+        observe_fingerprint(resource)
         return result
 
     def require_pending_generated(self, resource: InputResource) -> Invocation:
@@ -232,62 +252,70 @@ class LogMaterials:
                 resource.canonical_target,
                 self.invocations,
                 producer_index=self._index(),
-                allow_missing=resource.fingerprint.digest is None,
+                allow_missing=True,
             )
         except ProvenanceV2Error as error:
             self._explain_producer_failure(error)
             raise
         root = self._root(producer)
-        state = self._execution_state(producer.material_owner, root)
-        if state is not None:
-            execution_output = resolve_execution_output(
-                producer,
-                resource.canonical_target,
-                project_root=self.project_root,
-                association=associate_execution(
-                    state, producer, project_root=self.project_root
-                ),
-                owners=self._owners[producer.material_owner],
-            )
-            if (
-                execution_output.owner is not None
-                and not execution_output.owner.execution.requires_reproduction
-            ):
-                current = observe_fingerprint(resource).fingerprint
-                require_current_execution_output(
-                    producer, execution_output, current_output=current
+        try:
+            with FingerprintCache(
+                self.project_root, writable=False, reuse=True
+            ) as cache:
+                current_inputs = self._current_input_observations(producer, cache)
+                state = self._execution_state(producer.material_owner, root)
+                if state is not None:
+                    execution_output = resolve_execution_output(
+                        producer,
+                        resource.canonical_target,
+                        project_root=self.project_root,
+                        association=associate_execution(
+                            state, producer, project_root=self.project_root
+                        ),
+                        owners=self._owners[producer.material_owner],
+                    )
+                    if (
+                        execution_output.owner is not None
+                        and not execution_output.owner.execution.requires_reproduction
+                    ):
+                        current = observe_fingerprint(resource).fingerprint
+                        require_current_execution_output(
+                            producer,
+                            execution_output,
+                            current_output=current,
+                            current_inputs=current_inputs,
+                        )
+                    return producer
+                legacy_output = resolve_output_support(
+                    producer,
+                    resource.canonical_target,
+                    entry_root=root,
+                    project_root=self.project_root,
+                    support=self._output_support(producer.material_owner, root),
                 )
-            return producer
-        legacy_output = resolve_output_support(
-            producer,
-            resource.canonical_target,
-            entry_root=root,
-            project_root=self.project_root,
-            support=self._output_support(producer.material_owner, root),
-        )
-        if legacy_output.record is not None and legacy_output.record.confirmed:
-            if legacy_output.path.resolve().as_posix() == resource.canonical_target:
-                current = observe_fingerprint(resource).fingerprint
-            else:
-                try:
-                    with FingerprintCache(
-                        self.project_root, writable=False, reuse=True
-                    ) as cache:
+                if legacy_output.record is not None and legacy_output.record.confirmed:
+                    if (
+                        legacy_output.path.resolve().as_posix()
+                        == resource.canonical_target
+                    ):
+                        current = observe_fingerprint(resource).fingerprint
+                    else:
                         observation = (
                             cache.observe_directory(legacy_output.path)
                             if legacy_output.path.is_dir()
                             else cache.observe_regular_file(legacy_output.path)
                         )
-                except FingerprintCacheError as error:
-                    raise ActionError(
-                        "provenance.observation.unavailable", str(error)
-                    ) from error
-                current = observation.fingerprint
-            require_current_output_support(
-                producer,
-                legacy_output,
-                current_output=current,
-            )
+                        current = observation.fingerprint
+                    require_current_output_support(
+                        producer,
+                        legacy_output,
+                        current_output=current,
+                        current_inputs=current_inputs,
+                    )
+        except FingerprintCacheError as error:
+            raise ActionError(
+                "provenance.observation.unavailable", str(error)
+            ) from error
         return producer
 
     def rerun_commands(

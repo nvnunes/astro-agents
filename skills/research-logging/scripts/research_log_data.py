@@ -29,8 +29,7 @@ from validation.filesystem import (
 )
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
-DATA_SCHEMA = "research-log-data/v4"
-LEGACY_DATA_SCHEMA = "research-log-data/v3"
+DATA_SCHEMA = "research-log-data/v5"
 EVIDENCE_COMPARISON_CONTRACT = "research-log-evidence-scoped-comparison/1"
 _MISSING = object()
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
@@ -110,6 +109,90 @@ class Fingerprint:
 
 
 @dataclass(frozen=True)
+class ResourceIdentity:
+    """The authored rule for observing one resource, never accepted bytes."""
+
+    algorithm: str
+    commit: str | None = None
+    files: tuple[str, ...] = ()
+    patterns: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the closed declaration representation."""
+
+        value: dict[str, object] = {"algorithm": self.algorithm}
+        if self.commit is not None:
+            value["commit"] = self.commit
+        if self.files:
+            value["files"] = list(self.files)
+        if self.patterns:
+            value["patterns"] = list(self.patterns)
+        return value
+
+
+def parse_fingerprint(
+    value: object, subject: str, *, kind: object | None = None
+) -> Fingerprint:
+    """Decode a retained execution observation, which always includes bytes."""
+
+    if not isinstance(value, Mapping):
+        _invalid(subject, {"fingerprint": value})
+    value = cast(Mapping[str, Any], value)
+    algorithm = value.get("algorithm")
+    if kind is None:
+        kind = (
+            "file" if algorithm == "sha256" else
+            "git-repository" if algorithm == GIT_COMMIT_ALGORITHM else "directory"
+        )
+    digest = value.get("digest")
+    if not isinstance(digest, str) or (
+        GIT_COMMIT_RE.fullmatch(digest) is None
+        if algorithm == GIT_COMMIT_ALGORITHM
+        else DIGEST_RE.fullmatch(digest) is None
+    ):
+        _invalid(subject, {"fingerprint": dict(value)})
+    if (
+        algorithm == "sha256"
+        and set(value) == {"algorithm", "digest"}
+        and kind == "file"
+    ):
+        return Fingerprint(algorithm, digest=digest)
+    if (
+        algorithm == "directory-sha256-v1"
+        and set(value) == {"algorithm", "digest"}
+        and kind == "directory"
+    ):
+        return Fingerprint(algorithm, digest=digest)
+    if (
+        algorithm == GIT_COMMIT_ALGORITHM
+        and set(value) == {"algorithm", "digest"}
+        and kind == "git-repository"
+    ):
+        return Fingerprint(algorithm, digest=digest)
+    if (
+        algorithm == "identity-files-sha256-v1"
+        and kind == "directory"
+        and set(value) == {"algorithm", "digest", "files"}
+    ):
+        return Fingerprint(
+            algorithm,
+            digest=digest,
+            files=_identity_files(value.get("files"), subject),
+        )
+    if (
+        algorithm == "identity-patterns-sha256-v1"
+        and kind == "directory"
+        and set(value) == {"algorithm", "digest", "patterns"}
+    ):
+        return Fingerprint(
+            algorithm,
+            digest=digest,
+            patterns=_identity_patterns(value.get("patterns"), subject),
+        )
+    _invalid(subject, {"fingerprint": dict(value), "kind": kind})
+
+
+@dataclass(frozen=True)
 class DirectoryFingerprintEntry:
     """One canonical directory fingerprint member."""
 
@@ -143,7 +226,7 @@ class InputResource:
     name: str
     kind: str
     location: str
-    fingerprint: Fingerprint
+    identity: ResourceIdentity
     origin: bool
     canonical_target: str
     comparison: ReproductionComparison | None = None
@@ -155,7 +238,7 @@ class InputResource:
         if self.reference_entry is not None:
             return {"from_entry": self.reference_entry, "name": self.name}
         value: dict[str, object] = {
-            "fingerprint": self.fingerprint.as_dict(),
+            "identity": self.identity.as_dict(),
             "kind": self.kind,
             "location": self.location,
             "name": self.name,
@@ -176,7 +259,7 @@ class InputResource:
         """Return the location-independent graph identity of this material."""
 
         if self.kind == "git-repository":
-            return f"{GIT_COMMIT_ALGORITHM}:{self.fingerprint.digest}"
+            return f"{GIT_COMMIT_ALGORITHM}:{self.identity.commit}"
         return self.canonical_target
 
     @property
@@ -279,9 +362,7 @@ def _load_data_file(
     value = cast(Mapping[str, Any], value)
     raw_inputs = value.get("inputs")
     schema = value.get("schema")
-    if schema not in {DATA_SCHEMA, LEGACY_DATA_SCHEMA} or not isinstance(
-        raw_inputs, list
-    ):
+    if schema != DATA_SCHEMA or not isinstance(raw_inputs, list):
         _invalid(path, {"schema": value.get("schema")})
     if not raw_inputs or len(raw_inputs) > MAX_INPUTS:
         _invalid(path, {"inputs": len(raw_inputs)})
@@ -294,7 +375,6 @@ def _load_data_file(
             raw,
             f"{path}:inputs[{index}]",
             entry_root,
-            allow_unobserved=schema == DATA_SCHEMA,
             loading=nested,
         )
         for index, raw in enumerate(raw_inputs)
@@ -346,7 +426,7 @@ def build_local_input(
     entry_root: Path,
     origin: bool = False,
 ) -> InputResource:
-    """Build one local declaration with a freshly observed strong fingerprint."""
+    """Build one local declaration with its observation rule."""
 
     algorithm = "sha256" if kind == "file" else "directory-sha256-v1"
     provisional = _decode_input(
@@ -355,13 +435,12 @@ def build_local_input(
             "kind": kind,
             "location": location,
             "origin": origin,
-            "fingerprint": {"algorithm": algorithm, "digest": "0" * 64},
+            "identity": {"algorithm": algorithm},
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    observation = observe_fingerprint(provisional)
-    return replace(provisional, fingerprint=observation.fingerprint)
+    return provisional
 
 
 def build_declared_generated(
@@ -380,7 +459,7 @@ def build_declared_generated(
         _invalid(name, {"identity": list(identity), "kind": kind})
     if identity:
         pattern_selected = any(has_magic(selector) for selector in identity)
-        fingerprint = Fingerprint(
+        declaration_identity = ResourceIdentity(
             (
                 "identity-patterns-sha256-v1"
                 if pattern_selected
@@ -390,7 +469,7 @@ def build_declared_generated(
             patterns=identity if pattern_selected else (),
         )
     else:
-        fingerprint = Fingerprint(
+        declaration_identity = ResourceIdentity(
             "sha256" if kind == "file" else "directory-sha256-v1"
         )
     return _decode_input(
@@ -399,11 +478,10 @@ def build_declared_generated(
             "kind": kind,
             "location": location,
             "origin": False,
-            "fingerprint": fingerprint.as_dict(),
+            "identity": declaration_identity.as_dict(),
         },
         f"input:{name}",
         entry_root.resolve(),
-        allow_unobserved=True,
     )
 
 
@@ -422,16 +500,15 @@ def build_git_repository_input(
             "kind": "git-repository",
             "location": location,
             "origin": True,
-            "fingerprint": {
+            "identity": {
                 "algorithm": GIT_COMMIT_ALGORITHM,
-                "digest": commit,
+                "commit": commit,
             },
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    observation = observe_fingerprint(provisional)
-    return replace(provisional, fingerprint=observation.fingerprint)
+    return provisional
 
 
 def normalize_input_location(value: str, *, entry_root: Path) -> str:
@@ -516,17 +593,15 @@ def build_identity_directory(
             "kind": "directory",
             "location": location,
             "origin": origin,
-            "fingerprint": {
+            "identity": {
                 "algorithm": "identity-files-sha256-v1",
-                "digest": "0" * 64,
                 "files": list(identity_files),
             },
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    observation = observe_fingerprint(provisional)
-    return replace(provisional, fingerprint=observation.fingerprint)
+    return provisional
 
 
 def build_identity_pattern_directory(
@@ -545,17 +620,15 @@ def build_identity_pattern_directory(
             "kind": "directory",
             "location": location,
             "origin": origin,
-            "fingerprint": {
+            "identity": {
                 "algorithm": "identity-patterns-sha256-v1",
-                "digest": "0" * 64,
                 "patterns": list(identity_patterns),
             },
         },
         f"input:{name}",
         entry_root.resolve(),
     )
-    observation = observe_fingerprint(provisional)
-    return replace(provisional, fingerprint=observation.fingerprint)
+    return provisional
 
 
 def data_file_from_inputs(
@@ -603,11 +676,11 @@ def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInput
                 value,
                 {"projection": projection, "resource": resource.name},
             )
-        assert resource.fingerprint.digest is not None
+        assert resource.identity.commit is not None
         return ResolvedInputToken(
             resource,
             resource.material_identity,
-            resource.fingerprint.digest,
+            resource.identity.commit,
             projection="commit",
         )
     if member is None:
@@ -708,7 +781,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
         )
     if not path.is_dir():
         _target_missing(resource, "not_directory")
-    if resource.fingerprint.algorithm == "identity-files-sha256-v1":
+    if resource.identity.algorithm == "identity-files-sha256-v1":
         paths = identity_file_paths(resource)
         identity_entries: list[DirectoryFingerprintEntry] = []
         identities: list[Mapping[str, object]] = []
@@ -723,7 +796,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
             tuple(identity_entries),
             {"files": identities, "kind": "identity-files"},
         )
-    if resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
+    if resource.identity.algorithm == "identity-patterns-sha256-v1":
         paths = identity_pattern_paths(resource)
         identity_entries = []
         identities = []
@@ -733,7 +806,7 @@ def observe_fingerprint(resource: InputResource) -> FingerprintObservation:
             identities.append({"path": relative, **identity})
         fingerprint = compose_identity_patterns_fingerprint(
             tuple(identity_entries),
-            resource.fingerprint.patterns,
+            resource.identity.patterns,
         )
         _require_unchanged_identity_patterns(resource, paths)
         _require_unchanged_identity_files(paths, identities, resource.name)
@@ -838,14 +911,14 @@ def identity_file_paths(resource: InputResource) -> Mapping[str, Path]:
 
     if (
         resource.kind != "directory"
-        or resource.fingerprint.algorithm != "identity-files-sha256-v1"
+        or resource.identity.algorithm != "identity-files-sha256-v1"
     ):
         _invalid(resource.name, {"reason": "identity_files_not_applicable"})
     root = Path(resource.canonical_target)
     if root.is_symlink() or not root.is_dir():
         _target_missing(resource, "not_directory")
     result: dict[str, Path] = {}
-    for relative in resource.fingerprint.files:
+    for relative in resource.identity.files:
         pure = PurePosixPath(relative)
         target = root.joinpath(*pure.parts)
         try:
@@ -872,7 +945,7 @@ def identity_pattern_paths(resource: InputResource) -> Mapping[str, Path]:
 
     if (
         resource.kind != "directory"
-        or resource.fingerprint.algorithm != "identity-patterns-sha256-v1"
+        or resource.identity.algorithm != "identity-patterns-sha256-v1"
     ):
         _invalid(resource.name, {"reason": "identity_patterns_not_applicable"})
     root = Path(resource.canonical_target)
@@ -882,7 +955,7 @@ def identity_pattern_paths(resource: InputResource) -> Mapping[str, Path]:
     result: dict[str, Path] = {}
     owners: dict[str, str] = {}
     wildcard_candidates: dict[Path, tuple[Path, ...]] = {}
-    for pattern in resource.fingerprint.patterns:
+    for pattern in resource.identity.patterns:
         for relative, canonical in _identity_pattern_matches(
             root,
             resolved_root,
@@ -1017,41 +1090,22 @@ def _path_error_reason(error: EntryMaterialPathError | ValueError) -> str:
     return error.reason if isinstance(error, EntryMaterialPathError) else "escape"
 
 
-def verify_fingerprint(
-    resource: InputResource,
-    *,
-    cached: Mapping[str, object] | None = None,
-) -> FingerprintObservation | None:
-    """Verify one local material fingerprint."""
-    observation = _reuse_fingerprint_observation(resource, cached)
-    if observation is None:
-        observation = observe_fingerprint(resource)
-    return validate_fingerprint_observation(resource, observation)
-
-
-def validate_fingerprint_observation(
-    resource: InputResource, observation: FingerprintObservation
+def require_matching_observation(
+    expected: Fingerprint, actual: FingerprintObservation
 ) -> FingerprintObservation:
-    """Require one shared observation to match a specific declaration."""
+    """Require a caller-supplied historical observation to match current bytes."""
 
-    if resource.fingerprint.digest is None:
-        _fail(
-            "data.fingerprint.unobserved",
-            resource.name,
-            {"kind": resource.kind, "location": resource.location},
-            "Fingerprints",
-        )
-    if observation.fingerprint != resource.fingerprint:
+    if actual.fingerprint != expected:
         _fail(
             "data.fingerprint.mismatch",
-            resource.name,
+            "resource observation",
             {
-                "expected": resource.fingerprint.as_dict(),
-                "observed": observation.fingerprint.as_dict(),
+                "expected": expected.as_dict(),
+                "observed": actual.fingerprint.as_dict(),
             },
             "Fingerprints",
         )
-    return observation
+    return actual
 
 
 def fingerprint_observation_key(resource: InputResource) -> str:
@@ -1070,207 +1124,16 @@ def fingerprint_observation_record(
     return {
         "entries": (
             [entry.as_dict() for entry in observation.entries]
-            if resource.fingerprint.algorithm
+            if resource.identity.algorithm
             in {"identity-files-sha256-v1", "identity-patterns-sha256-v1"}
             else []
         ),
         "fingerprint": observation.fingerprint.as_dict(),
+        "selection": resource.identity.as_dict(),
         "identity": dict(observation.cache_identity),
         "kind": resource.kind,
         "target": resource.canonical_target,
     }
-
-
-def _reuse_fingerprint_observation(
-    resource: InputResource, cached: Mapping[str, object] | None
-) -> FingerprintObservation | None:
-    parts = _cached_observation_parts(resource, cached)
-    if parts is None:
-        return None
-    identity, raw_entries, path = parts
-    if resource.kind == "file":
-        return _reuse_file_observation(resource, identity, raw_entries, path)
-    if resource.fingerprint.algorithm == "identity-files-sha256-v1":
-        return _reuse_identity_files_observation(resource, identity, raw_entries, path)
-    if resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
-        return _reuse_identity_patterns_observation(
-            resource, identity, raw_entries, path
-        )
-    return _reuse_directory_observation(resource, identity, raw_entries, path)
-
-
-def _reuse_identity_files_observation(
-    resource: InputResource,
-    identity: Mapping[str, object],
-    raw_entries: list[object],
-    path: Path,
-) -> FingerprintObservation | None:
-    if not path.is_dir() or set(identity) != {"files", "kind"}:
-        return None
-    raw_identities = identity.get("files")
-    if identity.get("kind") != "identity-files" or not isinstance(raw_identities, list):
-        return None
-    entries = _cached_identity_entries(raw_entries, resource.fingerprint.files)
-    if entries is None or len(raw_identities) != len(entries):
-        return None
-    paths = identity_file_paths(resource)
-    for raw_identity, relative in zip(raw_identities, resource.fingerprint.files):
-        if not isinstance(raw_identity, Mapping):
-            return None
-        file_identity = {
-            key: value for key, value in raw_identity.items() if key != "path"
-        }
-        if (
-            raw_identity.get("path") != relative
-            or not _valid_file_cache_identity(file_identity)
-            or _file_cache_identity(paths[relative].stat()) != file_identity
-        ):
-            return None
-    return FingerprintObservation(
-        resource.fingerprint,
-        entries,
-        dict(identity),
-        identity_reused=True,
-    )
-
-
-def _reuse_identity_patterns_observation(
-    resource: InputResource,
-    identity: Mapping[str, object],
-    raw_entries: list[object],
-    path: Path,
-) -> FingerprintObservation | None:
-    if not path.is_dir() or set(identity) != {"files", "kind"}:
-        return None
-    raw_identities = identity.get("files")
-    if identity.get("kind") != "identity-patterns" or not isinstance(
-        raw_identities, list
-    ):
-        return None
-    paths = identity_pattern_paths(resource)
-    expected_files = tuple(paths)
-    entries = _cached_identity_entries(raw_entries, expected_files)
-    if entries is None or len(raw_identities) != len(entries):
-        return None
-    for raw_identity, relative in zip(raw_identities, expected_files):
-        if not isinstance(raw_identity, Mapping):
-            return None
-        file_identity = {
-            key: value for key, value in raw_identity.items() if key != "path"
-        }
-        if (
-            raw_identity.get("path") != relative
-            or not _valid_file_cache_identity(file_identity)
-            or _file_cache_identity(paths[relative].stat()) != file_identity
-        ):
-            return None
-    return FingerprintObservation(
-        resource.fingerprint,
-        entries,
-        dict(identity),
-        identity_reused=True,
-    )
-
-
-def _cached_identity_entries(
-    values: list[object], expected_files: tuple[str, ...]
-) -> tuple[DirectoryFingerprintEntry, ...] | None:
-    entries: list[DirectoryFingerprintEntry] = []
-    for value in values:
-        if not isinstance(value, Mapping) or set(value) != {"path", "sha256", "type"}:
-            return None
-        path = value.get("path")
-        digest = value.get("sha256")
-        if (
-            not isinstance(path, str)
-            or value.get("type") != "file"
-            or not isinstance(digest, str)
-            or DIGEST_RE.fullmatch(digest) is None
-        ):
-            return None
-        entries.append(DirectoryFingerprintEntry(path, "file", digest))
-    result = tuple(entries)
-    return result if tuple(entry.path for entry in result) == expected_files else None
-
-
-def _cached_observation_parts(
-    resource: InputResource, cached: Mapping[str, object] | None
-) -> tuple[Mapping[str, object], list[object], Path] | None:
-    if (
-        not isinstance(cached, Mapping)
-        or set(cached) != {"entries", "fingerprint", "identity", "kind", "target"}
-        or cached.get("fingerprint") != resource.fingerprint.as_dict()
-        or cached.get("kind") != resource.kind
-        or cached.get("target") != resource.canonical_target
-    ):
-        return None
-    identity = cached.get("identity")
-    raw_entries = cached.get("entries")
-    if not isinstance(identity, Mapping) or not isinstance(raw_entries, list):
-        return None
-    path = Path(resource.canonical_target)
-    if path.is_symlink():
-        return None
-    return identity, raw_entries, path
-
-
-def _reuse_file_observation(
-    resource: InputResource,
-    identity: Mapping[str, object],
-    raw_entries: list[object],
-    path: Path,
-) -> FingerprintObservation | None:
-    if (
-        raw_entries
-        or not path.is_file()
-        or not _valid_file_cache_identity(identity)
-        or _file_cache_identity(path.stat()) != identity
-    ):
-        return None
-    return FingerprintObservation(
-        resource.fingerprint,
-        cache_identity=dict(identity),
-        identity_reused=True,
-    )
-
-
-def _reuse_directory_observation(
-    resource: InputResource,
-    identity: Mapping[str, object],
-    raw_entries: list[object],
-    path: Path,
-) -> FingerprintObservation | None:
-    if not path.is_dir() or set(identity) != {"kind", "metadata_sha256"}:
-        return None
-    metadata_digest = identity.get("metadata_sha256")
-    if (
-        identity.get("kind") != "directory"
-        or not isinstance(metadata_digest, str)
-        or DIGEST_RE.fullmatch(metadata_digest) is None
-    ):
-        return None
-    if raw_entries:
-        return None
-    observed_identity, entries = _directory_cache_observation(path)
-    if observed_identity != identity:
-        return None
-    return FingerprintObservation(
-        resource.fingerprint,
-        entries,
-        dict(identity),
-        identity_reused=True,
-    )
-
-
-def _valid_file_cache_identity(value: Mapping[str, object]) -> bool:
-    if set(value) != {"ctime_ns", "kind", "mtime_ns", "size"}:
-        return False
-    return value.get("kind") == "file" and all(
-        isinstance(value.get(field), int)
-        and not isinstance(value.get(field), bool)
-        and cast(int, value[field]) >= 0
-        for field in ("ctime_ns", "mtime_ns", "size")
-    )
 
 
 def _decode_input(
@@ -1278,7 +1141,6 @@ def _decode_input(
     subject: str,
     entry_root: Path,
     *,
-    allow_unobserved: bool = True,
     loading: frozenset[Path] = frozenset(),
 ) -> InputResource:
     if not isinstance(value, Mapping):
@@ -1286,7 +1148,7 @@ def _decode_input(
     value = cast(Mapping[str, Any], value)
     if set(value) == {"from_entry", "name"}:
         return _decode_reference(value, subject, entry_root, loading)
-    required = {"name", "kind", "location", "fingerprint", "origin"}
+    required = {"name", "kind", "location", "identity", "origin"}
     if not required <= set(value) <= required | {"comparison"}:
         _invalid(subject, {"fields": sorted(value)})
     name = _name(value.get("name"), subject)
@@ -1299,11 +1161,10 @@ def _decode_input(
         _invalid(subject, {"origin": origin})
     if kind == "git-repository" and not origin:
         _invalid(subject, {"kind": kind, "origin": origin})
-    fingerprint = parse_fingerprint(
-        value.get("fingerprint"),
+    identity = parse_resource_identity(
+        value.get("identity"),
         subject,
         kind=kind,
-        allow_unobserved=allow_unobserved and not origin,
     )
     comparison = _decode_reproduction_comparison(
         value["comparison"] if "comparison" in value else _MISSING,
@@ -1322,7 +1183,7 @@ def _decode_input(
         name=name,
         kind=kind,
         location=location,
-        fingerprint=fingerprint,
+        identity=identity,
         origin=origin,
         canonical_target=target,
         comparison=comparison,
@@ -1466,18 +1327,17 @@ def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
     return target.resolve().as_posix()
 
 
-def parse_fingerprint(
+def parse_resource_identity(
     value: object,
     subject: str,
     *,
     kind: object | None = None,
-    allow_unobserved: bool = False,
-) -> Fingerprint:
-    """Parse one closed local fingerprint, inferring resource kind if omitted."""
+) -> ResourceIdentity:
+    """Parse one closed declaration-owned resource identity rule."""
 
     if kind is None:
         if not isinstance(value, Mapping):
-            _invalid(subject, {"fingerprint": value})
+            _invalid(subject, {"identity": value})
         algorithm = value.get("algorithm")
         kind = (
             "file"
@@ -1486,98 +1346,71 @@ def parse_fingerprint(
             if algorithm == GIT_COMMIT_ALGORITHM
             else "directory"
         )
-    return _fingerprint(value, subject, kind, allow_unobserved=allow_unobserved)
+    return _resource_identity(value, subject, kind)
 
 
-def _fingerprint(
-    value: object, subject: str, kind: object, *, allow_unobserved: bool
-) -> Fingerprint:
+def _resource_identity(
+    value: object, subject: str, kind: object
+) -> ResourceIdentity:
     if not isinstance(value, Mapping):
-        _invalid(subject, {"fingerprint": value})
+        _invalid(subject, {"identity": value})
     value = cast(Mapping[str, Any], value)
     algorithm = value.get("algorithm")
     if algorithm == "identity-files-sha256-v1":
-        return _identity_files_fingerprint(
-            value, subject, kind, allow_unobserved=allow_unobserved
-        )
+        return _identity_files_identity(value, subject, kind)
     if algorithm == "identity-patterns-sha256-v1":
-        return _identity_pattern_fingerprint(
-            value, subject, kind, allow_unobserved=allow_unobserved
-        )
+        return _identity_pattern_identity(value, subject, kind)
     if algorithm == GIT_COMMIT_ALGORITHM:
-        digest = value.get("digest")
+        commit = value.get("commit")
         if (
-            set(value) != {"algorithm", "digest"}
+            set(value) != {"algorithm", "commit"}
             or kind != "git-repository"
-            or not isinstance(digest, str)
-            or GIT_COMMIT_RE.fullmatch(digest) is None
+            or not isinstance(commit, str)
+            or GIT_COMMIT_RE.fullmatch(commit) is None
         ):
-            _invalid(subject, {"fingerprint": dict(value), "kind": kind})
-        return Fingerprint(GIT_COMMIT_ALGORITHM, digest=digest)
+            _invalid(subject, {"identity": dict(value), "kind": kind})
+        return ResourceIdentity(GIT_COMMIT_ALGORITHM, commit=commit)
     if algorithm in {"sha256", "directory-sha256-v1"}:
-        digest = value.get("digest")
         if (
-            set(value) not in ({"algorithm"}, {"algorithm", "digest"})
-            or digest is None
-            and not allow_unobserved
-            or digest is not None
-            and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
+            set(value) != {"algorithm"}
         ):
-            _invalid(subject, {"fingerprint": dict(value)})
+            _invalid(subject, {"identity": dict(value)})
         if algorithm == "directory-sha256-v1" and kind != "directory":
-            _invalid(subject, {"fingerprint": dict(value), "kind": kind})
+            _invalid(subject, {"identity": dict(value), "kind": kind})
         if algorithm == "sha256" and kind != "file":
-            _invalid(subject, {"fingerprint": dict(value), "kind": kind})
-        return Fingerprint(algorithm, digest=digest)
-    _invalid(subject, {"fingerprint": dict(value)})
+            _invalid(subject, {"identity": dict(value), "kind": kind})
+        return ResourceIdentity(algorithm)
+    _invalid(subject, {"identity": dict(value)})
 
 
-def _identity_files_fingerprint(
+def _identity_files_identity(
     value: Mapping[str, Any],
     subject: str,
     kind: object,
-    *,
-    allow_unobserved: bool,
-) -> Fingerprint:
-    digest = value.get("digest")
+) -> ResourceIdentity:
     files = _identity_files(value.get("files"), subject)
     if (
         set(value)
-        not in ({"algorithm", "files"}, {"algorithm", "digest", "files"})
+        != {"algorithm", "files"}
         or kind != "directory"
-        or digest is None
-        and not allow_unobserved
-        or digest is not None
-        and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
     ):
-        _invalid(subject, {"fingerprint": dict(value), "kind": kind})
-    return Fingerprint("identity-files-sha256-v1", digest=digest, files=files)
+        _invalid(subject, {"identity": dict(value), "kind": kind})
+    return ResourceIdentity("identity-files-sha256-v1", files=files)
 
 
-def _identity_pattern_fingerprint(
+def _identity_pattern_identity(
     value: Mapping[str, Any],
     subject: str,
     kind: object,
-    *,
-    allow_unobserved: bool,
-) -> Fingerprint:
-    digest = value.get("digest")
+) -> ResourceIdentity:
     patterns = _identity_patterns(value.get("patterns"), subject)
     if (
         set(value)
-        not in ({"algorithm", "patterns"}, {"algorithm", "digest", "patterns"})
+        != {"algorithm", "patterns"}
         or kind != "directory"
-        or digest is None
-        and not allow_unobserved
-        or digest is not None
-        and (not isinstance(digest, str) or DIGEST_RE.fullmatch(digest) is None)
     ):
-        _invalid(subject, {"fingerprint": dict(value), "kind": kind})
-    return Fingerprint(
-        "identity-patterns-sha256-v1",
-        digest=digest,
-        patterns=patterns,
-    )
+        _invalid(subject, {"identity": dict(value), "kind": kind})
+    return ResourceIdentity("identity-patterns-sha256-v1", patterns=patterns)
 
 
 def _identity_files(value: object, subject: str) -> tuple[str, ...]:
@@ -1930,7 +1763,7 @@ def _consistency_projection(item: InputResource) -> str:
     return canonical_json(
         {
             "origin": item.origin,
-            "fingerprint": item.fingerprint.as_dict(),
+            "identity": item.identity.as_dict(),
             "kind": item.kind,
             "comparison": (
                 item.comparison.as_dict() if item.comparison is not None else None
@@ -1958,21 +1791,21 @@ def _observe_git_repository(
             _target_missing(resource, "not_git_repository")
     elif Path(root).resolve() != path.resolve():
         _target_missing(resource, "not_repository_root")
-    assert resource.fingerprint.digest is not None
-    object_kind = _git_output(path, "cat-file", "-t", resource.fingerprint.digest)
+    assert resource.identity.commit is not None
+    object_kind = _git_output(path, "cat-file", "-t", resource.identity.commit)
     if object_kind != "commit":
         _fail(
             "data.fingerprint.mismatch",
             resource.name,
             {
-                "commit": resource.fingerprint.digest,
+                "commit": resource.identity.commit,
                 "object_kind": object_kind,
                 "reason": "commit_unavailable" if object_kind is None else "not_commit",
             },
             "Fingerprints",
         )
     return FingerprintObservation(
-        resource.fingerprint,
+        Fingerprint(GIT_COMMIT_ALGORITHM, digest=resource.identity.commit),
         cache_identity={"kind": "git-repository"},
     )
 

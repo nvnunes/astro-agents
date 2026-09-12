@@ -14,10 +14,11 @@ generated records, public commands, and agent-facing projections must conform
 to it.
 
 The [mechanical reproduction concept](../tmp/research-log-pyrun-reproduction-concept.md)
-owns the approved purpose and design rationale. The
-[reproduction plan](../tmp/research-log-reproduction-plan.md) owns sequencing,
-migration, verification, and completion. This specification owns the durable
-runtime contract. It does not teach researchers how to use the workflow;
+and completed [reproduction plan](../tmp/research-log-reproduction-plan.md)
+provide historical rationale and implementation context, not current migration
+instructions. This specification owns the durable runtime contract; active
+implementation plans own only their authorized sequencing, verification, and
+completion gates. It does not teach researchers how to use the workflow;
 `docs/research-logging.md` and `skills/research-logging/` own that guidance.
 
 The Phase 1 contract and the final Phase 2 resource bounds are complete. The
@@ -37,8 +38,9 @@ requirements.
   the relationship among Markdown, JSON state, validation, and reproduction.
 - [`pyrun.json`](#pyrunjson) defines executable state, identity, observation,
   policy, publication, and lifecycle operations.
-- [Migration](#migration) defines the metadata-only cutover and its independent
-  remediation gate.
+- [Cutover And Temporary Targeted Refresh](#cutover-and-temporary-targeted-refresh)
+  distinguishes the one-time data/evidence conversion from retained
+  execution-state compatibility and the bounded promotion adapter.
 - [Discovery And Planning](#discovery-and-planning) defines targets, admission,
   graph traversal, non-automatic boundaries, cycles, and dry runs.
 - [Durable Reproduction Jobs](#durable-reproduction-jobs) defines launch,
@@ -234,7 +236,7 @@ The operational authority is:
 | --- | --- |
 | Research-log Markdown | Human research account, evidence presentation, and explanatory command history |
 | `evidence.json` | Reproduction roots and exact retained evidence-source identity |
-| `data.json` | Named material location, fingerprint, and origin/generated classification |
+| `data.json` | Named material location, declaration identity, and origin/generated classification |
 | `pyrun.json` | Current executable recipes and observed execution state |
 | `.cache/validation/results.json` and `.cache/validation/batches.json` | Reproduction admission result and per-chain projection |
 | `validation.md` | Source-controlled human validation projection only |
@@ -272,6 +274,18 @@ must not edit research prose, Markdown commands, evidence presentation,
 content. Promotion is the separate researcher-directed exception for replacing
 retained artifacts.
 
+An ordinary fresh `pyrun` uses current material selected by `data.json` and,
+after a stable successful publication, records those observations in its own
+execution. It must not refuse merely because another execution observed older
+bytes, and it must not certify an altered upstream producer or rewrite any
+other execution. Reproduction instead confirms one recorded execution against
+its retained inputs, script/code, and outputs; altered retained material
+rejects confirmation. Promotion publishes a selected regenerated output set,
+but neither promotes a new declaration identity nor accepts a new evidence
+artifact baseline. Evidence comparison and provenance are independent: a
+matching presentation does not make an execution current, and current fresh
+execution does not make an older presentation accepted.
+
 ## `pyrun.json`
 
 ### Ownership And Location
@@ -289,8 +303,9 @@ state. A malformed regular `pyrun.json` is preserved at the first unused
 `pyrun.json.bak`, `pyrun.json.2.bak`, or later numbered backup. The runner reports
 `pyrun.state.quarantined` with the backup and `repair_required:true`, then exits
 without executing or creating replacement state. A symlink or non-file is
-rejected without quarantine. A legacy `pyrun-outputs.json` requires migration
-before another run.
+rejected without quarantine. A legacy `pyrun-outputs.json` blocks another run;
+the runner does not convert it. Its separate read-only compatibility contract
+is defined in [Legacy Output Records](research-log-mechanical-validator-spec.md#legacy-output-records).
 
 ### File Shape
 
@@ -365,16 +380,18 @@ unique execution IDs. Every execution value has exactly `auto_reproduce`,
 `execution_contract`, `recipe`, and `observed`.
 
 `auto_reproduce`, `exclusive`, and `requires_reproduction` are required Booleans.
-`requires_reproduction` records whether migrated execution state still needs a
-successful reproduction before ordinary incremental planning may use it
-without reproduction-owned cache state.
+`requires_reproduction` records whether execution state still needs successful
+reproduction before ordinary incremental planning may use it without
+reproduction-owned cache state. It may reflect historically reconstructed state
+or a current explicit execution repair; it is not a data-declaration baseline.
 `exclusive` states that reproduction must run the execution alone among all
 managed reproduction executions in the current Git project. It is scheduling
 policy, not a CPU, GPU, device, affinity, or external-process declaration.
 `last_run_at` is either `null` or
-a UTC RFC 3339 timestamp with whole seconds and `Z`. A metadata-rebuilt
-migration record uses `null` because no ordinary `pyrun` completion time is
-known. Version fields are required nonempty identifiers from the code-owned
+a UTC RFC 3339 timestamp with whole seconds and `Z`. Historically reconstructed
+execution state retains `null` when no ordinary `pyrun` completion time is
+known; current observation must not fabricate one. Version fields are required
+nonempty identifiers from the code-owned
 supported sets.
 
 `recipe` has exactly `script`, `parameters`, `parameter_roles`, `environment`,
@@ -439,9 +456,9 @@ recorded commit; it must not substitute the current checkout or a branch tip.
 
 The recipe and observed input key sets must agree exactly. The recipe and
 observed output key sets must agree exactly. Every fingerprint uses the closed
-fingerprint forms owned by `data.json` and the mechanical validator
-specification. `data.json` remains the sole owner of input paths,
-classifications, and expected input fingerprints.
+fingerprint forms owned by the mechanical validator specification. `data.json`
+remains the sole owner of input paths, classifications, and identity selection;
+`pyrun.json` owns the historical observations that reproduction compares.
 
 The fixed file, execution, parameter, string, input, output, environment, and
 code limits are defined in [Fixed Resource Bounds](#fixed-resource-bounds).
@@ -543,14 +560,14 @@ Failed or incomplete execution, capture, observation, or publication changes
 no `pyrun.json` state.
 
 `last_run_at` records the completion time of the latest successful atomic
-ordinary `pyrun` publication. It is `null` for a metadata-rebuilt migration
-record until a later ordinary publication establishes such a time. Failed
+ordinary `pyrun` publication. Historically reconstructed state retains `null`
+until a later ordinary publication establishes such a time. Failed
 attempts, reproduction execution, and reproduction-requirement or policy-only mutations
 must not change it. Ordinary `pyrun` reads and writes only its entry-local
 state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
 An ordinary successful publication records `requires_reproduction: false`.
-Migrated state that has not completed a successful execution records
+Historically reconstructed state that has not completed a successful execution records
 `requires_reproduction: true` and remains runnable. Outside repair-verification
 mode, reproduction changes the field to false immediately after the command reaches its complete mechanical
 endpoint and its complete comparison is durably recorded. Artifact matching is
@@ -654,9 +671,9 @@ execution; they do not apply a recipe edit to an entire loop expansion.
 
 The transaction replaces the old execution ID with the corrected recipe's ID,
 sets `requires_reproduction: true`, and sets `last_run_at: null`. It preserves
-observations for unchanged materials. Newly declared inputs require a verified
-registry fingerprint; newly declared outputs require retained files that can be
-fingerprinted. Changing the script observes the new script and clears the old
+observations for unchanged materials. Newly declared inputs require a stable
+current observation under their declaration identity; newly declared outputs
+require retained files that can be observed. Changing the script observes the new script and clears the old
 script's code observations. These observations are reconstruction support, not
 proof that the corrected command ran. Retained files and registries are unchanged.
 The strict current state decoder validates the complete replacement before one
@@ -680,102 +697,33 @@ maintained evidence or downstream generated-data dependency requires any
 output without another valid producer. Retirement must be explicit and
 researcher-approved; no migration or cleanup path may infer it.
 
-## Migration
+## Cutover And Temporary Targeted Refresh
 
-### Boundary
+The current data and evidence readers accept only `research-log-data/v5` and
+`research-log-evidence/v4`. Their conversion from data/v3-v4 and evidence/v3 is
+a one-time plan-owned operation using disposable tooling, removed before plan
+completion. No data/evidence migration CLI, legacy decoder, compatibility
+reader, or conversion tooling remains in the final runtime. Reusable docs and
+tests cover only the current data/evidence contracts; historical conversion
+fixtures, if needed, belong only to that disposable conversion work.
 
-Migration is one metadata-only conversion from the final post-authoring
-`pyrun-outputs.json` state to `pyrun.json`. It must not invoke `pyrun`, a
-research script, a wrapper, or any other research executable. Ordinary
-`pyrun`, Reproduce, and Reorganize do not read the legacy file. Mechanical
-validation and Repair may read it only when no current execution state exists;
-that compatibility reader never writes, migrates, or confirms legacy records.
-Automatic targeted refresh retains the one temporary projection adapter until
-that evaluator is removed.
+This cutover does not remove the separate execution-state compatibility
+contract. Current `pyrun.json` requires `research-log-pyrun/v5`; mechanical
+validation retains the read-only
+[Legacy Output Records](research-log-mechanical-validator-spec.md#legacy-output-records)
+path for `pyrun-outputs.json` when no current file exists. That reader grants no
+execution or conversion authority. A current observation may not be copied
+into retained execution state as proof of an old run, and no action
+reconstructs historical locator or classification state.
 
-Markdown may be used once during migration as evidence of the current
-mechanically valid `pyrun` recipe and its fixed output declaration. It is not
-authority after cutover.
-
-### Reconstruction Proof
-
-Each current validated Markdown command may become one execution only when all
-of the following hold:
-
-- the command yields exactly one normalized recipe after bounded static-loop
-  expansion;
-- its complete output declaration is unconditional;
-- the current script, direct inputs, and inherited local Python code-dependency
-  state are complete under the final authoring contract;
-- every declared output exists with the expected kind and can be observed
-  completely;
-- no output ownership conflict exists; and
-- the complete candidate passes the production `pyrun.json` decoder and
-  ownership checks.
-
-Migration reuses an agreeing legacy observation when available and directly
-observes any missing current artifact. Legacy directory-member fingerprints do
-not prove a directory-root observation; migration observes the existing root
-with the normal directory algorithm. This records current retained state, not
-successful execution history.
-
-The migrated record uses `requires_reproduction: false` only when matching
-legacy records exactly cover the current output set in the same representation
-and every one states that it is confirmed. Otherwise the rebuilt execution
-uses `requires_reproduction: true` and `last_run_at: null`. Migration must never
-erase a reproduction requirement or invent an
-ordinary run timestamp. An unmatched legacy signature is not preserved as an
-orphaned recipe, and conditional or optional output membership is not converted
-into an atomic execution.
-
-### Pre-Migration Remediation
-
-Before migration, an audit must produce one deterministic human-facing
-Markdown remediation log. It is a review record, not executable input or
-migration authority. Every case includes:
-
-- stable case identity and source location;
-- one reason code;
-- concise human detail;
-- researcher-approved disposition;
-- affected evidence and downstream generated-data consumers; and
-- verification evidence for the applied resolution.
-
-The closed initial reason-code taxonomy is:
-
-- `missing_output_observation`;
-- `directory_representation_mismatch`;
-- `missing_current_command`;
-- `conditional_output_set`;
-- `ambiguous_mapping`; and
-- `missing_material`.
-
-A new blocker class requires an explicit contract amendment, not a catch-all
-code. Allowed resolutions are metadata rebuild from a current validated
-Markdown command and existing retained artifacts, command correction,
-output-set normalization, separation into fixed-output executions, restoration
-of an unambiguous current mapping, material restoration, or explicit
-retirement.
-
-Migration rebuilds a complete execution from the current validated Markdown
-command, `data.json`, retained local-code dependency state, and the existing
-declared artifacts. It reuses agreeing legacy observations where available and
-observes missing current outputs directly without executing the research
-command. A legacy member-by-member directory representation is never folded
-into a directory-root digest; migration observes the existing directory root
-with the normal directory fingerprint algorithm. A rebuilt execution retains
-`requires_reproduction: true` unless complete agreeing legacy evidence proves
-that reproduction is not required.
-
-A missing declared artifact, wrong artifact kind, conditional output set,
-unresolvable input, missing script or participating code path, or ambiguous
-current command remains a genuine blocker. Metadata reconstruction never
-claims that an artifact was regenerated or that an ordinary `pyrun`
-publication occurred.
-
-Migration must independently rescan actual corpus state and require zero
-genuine blockers. It must not trust the remediation log as authority. Any new
-or unresolved blocker aborts without partial cutover or omission.
+The bounded `legacy_output_projection` adapter remains through Phase 2 until
+its planned Phase 3 removal with automatic targeted refresh. It projects
+current direct execution association for
+the exact promoted artifact scope. It does not decode old declarations, accept
+new evidence bytes, rewrite execution observations, or broaden into general
+validation. Fresh execution, reproduction, and promotion all preserve the
+distinction between current observation, retained execution baseline, and
+evidence presentation baseline.
 
 ## Discovery And Planning
 
@@ -1593,7 +1541,7 @@ declared parameter, using existing directory/member declarations where
 appropriate. Stored paths may remain descriptive metadata. Missing declarations
 and helper imports are script repairs under existing mechanisms; there is no
 embedded-path resolver or code-discovery framework. Scripts relying on relative
-output argument spelling need migration. Direct Python execution gains no
+output argument spelling require repair. Direct Python execution gains no
 runner resolution or recording behavior.
 
 Recipes execute from the workspace's mirrored entry directory using the
@@ -2150,9 +2098,10 @@ manually deleted staging material fails inspection or promotion clearly but
 does not invalidate an already published reproduction result.
 
 Promotion is a researcher-directed research mutation. It atomically updates
-retained outputs and the related `pyrun.json`, `data.json`, evidence-dependent
-state, reproduction state, and only the required targeted validation state. It
-must not rerun validation generally. It leaves the staging bundle intact.
+retained outputs and the related `pyrun.json`, reproduction state, and only the
+required bounded targeted-refresh projection. It must not change `data.json`
+declarations, evidence records or their artifact baselines, or rerun validation
+generally. It leaves the staging bundle intact.
 
 ## Locking And Publication
 
@@ -2610,11 +2559,10 @@ do not gain unsupported-state replacement authority.
 
 Mechanical validation uses direct execution association and an output-owner
 index for current execution state. `legacy_output_projection` remains only as
-the temporary targeted-refresh adapter. The read-only legacy output-record
-reader is defined in the
-[mechanical-validator specification](research-log-mechanical-validator-spec.md#pyrun-output-support-records).
-It does not authorize legacy recording or reproduction. Migration converts
-legacy records to current execution state before another run.
+the bounded temporary targeted-refresh adapter; it has no public caller beyond
+that promotion path and is removed with its evaluator. It does not authorize
+legacy declaration or execution-state decoding, recording, reproduction, or
+baseline transfer.
 
 The following changes require explicit version review:
 

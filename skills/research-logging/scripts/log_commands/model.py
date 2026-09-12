@@ -60,7 +60,6 @@ class DataAddArguments:
     kind: str | None
     identity: tuple[str, ...] | None
     commit: str | None
-    requires_reproduction: bool
     dry_run: bool
 
 

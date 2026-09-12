@@ -347,15 +347,6 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     _mutation_argument(rename)
     rename.add_argument("old_name")
     rename.add_argument("new_name")
-    refresh = actions.add_parser("refresh", help="Record an intentional byte change")
-    _entry_arguments(refresh)
-    _mutation_argument(refresh)
-    refresh.add_argument("name")
-    refresh.add_argument(
-        "--requires-reproduction",
-        action="store_true",
-        help="fingerprint restored generated material that still requires reproduction",
-    )
     remove = actions.add_parser(
         "remove", help="Remove an input after command and evidence use"
     )
@@ -389,7 +380,6 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
                     else None
                 ),
                 commit=getattr(args, "commit", None),
-                requires_reproduction=getattr(args, "requires_reproduction", False),
                 dry_run=args.dry_run,
             ),
         )
@@ -412,13 +402,6 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
         )
     elif args.action == "rename":
         result = data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
-    elif args.action == "refresh":
-        result = data.refresh(
-            entry,
-            args.name,
-            dry_run=args.dry_run,
-            requires_reproduction=args.requires_reproduction,
-        )
     elif args.action == "remove":
         result = data.remove(entry, args.name, dry_run=args.dry_run)
     else:
@@ -465,14 +448,6 @@ def _add_data_input_parsers(
                 action="append",
                 help="authoritative generated-directory file or pattern",
             )
-            action.add_argument(
-                "--requires-reproduction",
-                action="store_true",
-                help=(
-                    "register one uniquely declared existing output before "
-                    "its required reproduction"
-                ),
-            )
 
 
 def _add_data_update_parser(
@@ -492,7 +467,10 @@ def _add_data_update_parser(
     classification.add_argument(
         "--generated",
         action="store_true",
-        help="require current same-log production that needs no reproduction",
+        help=(
+            "classify as generated with a unique same-log producer; "
+            "allow pending production or reproduction"
+        ),
     )
     identity = update.add_mutually_exclusive_group()
     identity.add_argument(

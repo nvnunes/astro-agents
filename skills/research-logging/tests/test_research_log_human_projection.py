@@ -15,7 +15,7 @@ RESULTS = importlib.import_module("validation.mechanical_results")
 
 class HumanProjectionTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(HUMAN.CATALOG), 133)
+        self.assertEqual(len(HUMAN.CATALOG), 135)
         prefixes = {code.split(".", 1)[0] for code in HUMAN.CATALOG}
         candidates = set()
         scripts = Path(__file__).parents[1] / "scripts" / "validation"
@@ -45,7 +45,7 @@ class HumanProjectionTests(unittest.TestCase):
             ):
                 candidates.add(node.args[0].value)
         non_codes = {"locator.expect.identities", "locator.expect.shape"}
-        self.assertLessEqual(candidates - non_codes, set(HUMAN.CATALOG))
+        self.assertEqual(candidates - non_codes - set(HUMAN.CATALOG), set())
 
     def test_unobserved_generated_fingerprint_has_human_presentation(self) -> None:
         check = RESULTS.MechanicalCheck(
@@ -68,9 +68,42 @@ class HumanProjectionTests(unittest.TestCase):
 
         self.assertIn("#### Unobserved Generated Fingerprint — 1 target", report)
         self.assertIn(
-            "The generated material does not yet have an observed fingerprint.",
+            "The generated material lacks the required retained execution observation.",
             report,
         )
+
+    def test_artifact_baselines_have_evidence_owned_human_presentations(self) -> None:
+        cases = (
+            (
+                "association.artifact.fingerprint_unrecorded",
+                "Unrecorded Artifact Fingerprint",
+                "The linked artifact has no accepted byte baseline "
+                "in its evidence record.",
+            ),
+            (
+                "association.artifact.fingerprint_mismatch",
+                "Artifact Fingerprint Mismatch",
+                "The linked artifact bytes differ from the baseline accepted "
+                "in its evidence record.",
+            ),
+        )
+        for code, title, sentence in cases:
+            with self.subTest(code=code):
+                check = RESULTS.MechanicalCheck(
+                    "evidence:e001:figure",
+                    RESULTS.CheckScope.EVIDENCE,
+                    RESULTS.CheckStatus.FAIL,
+                    "figure",
+                    failure=RESULTS.FailurePayload(
+                        code, "figure", {}, "Artifact Evidence Baseline"
+                    ),
+                )
+                record = RESULTS.MechanicalGeneratedRecord.build(
+                    "/project/docs/study.md", "rules", "2026-09-09", (check,)
+                )
+                report = REPORT.compose_validation_report(record)
+                self.assertIn(f"#### {title} — 1 target", report)
+                self.assertIn(sentence, report)
 
     def test_execution_association_failure_has_human_presentation(self) -> None:
         check = RESULTS.MechanicalCheck(

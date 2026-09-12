@@ -1,8 +1,8 @@
-"""Project-level incremental cache for local content observations.
+"""Project-level incremental cache for declaration rules and current observations.
 
-The cache is generated acceleration state. Authored fingerprints remain the
-identity contract, and validation always compares them with a current
-filesystem observation.
+The cache is generated acceleration state. Authored resource identities declare
+what validation observes; cached fingerprints only accelerate those current
+filesystem observations.
 """
 
 from __future__ import annotations
@@ -30,15 +30,13 @@ from research_log_data import (
     observe_directory_tree,
     observe_file_content,
     observe_fingerprint,
-    validate_fingerprint_observation,
-    verify_fingerprint,
 )
 
 from .filesystem import FileIdentity, file_identity
 from .sqlite_support import is_sqlite_corruption
 
 CACHE_FILENAME = "research-log-fingerprints.sqlite3"
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 PROJECT_MARKER = ".git"
 BUSY_TIMEOUT_MILLISECONDS = 60_000
 LOCK_RETRY_SECONDS = 0.01
@@ -82,6 +80,10 @@ DIRECTORY_MEMBER_FOREIGN_KEYS = (
 
 class FingerprintCacheError(RuntimeError):
     """Raised when the generated fingerprint cache cannot be used safely."""
+
+
+class IncompatibleFingerprintCacheError(FingerprintCacheError):
+    """Raised when generated state cannot be interpreted by this runtime."""
 
 
 @dataclass(frozen=True)
@@ -154,13 +156,6 @@ class FingerprintCache:
             directories_hydrated=self._directories_hydrated,
         )
 
-    def verify(self, resource: InputResource) -> FingerprintObservation | None:
-        """Observe one local resource and compare it with its authored identity."""
-
-        return validate_fingerprint_observation(
-            resource, self.observe_resource(resource)
-        )
-
     def observe_resource(self, resource: InputResource) -> FingerprintObservation:
         """Observe one declaration-shaped local resource without comparing it."""
 
@@ -181,9 +176,9 @@ class FingerprintCache:
                 identity_reused=reused,
             )
         else:
-            if resource.fingerprint.algorithm == "identity-files-sha256-v1":
+            if resource.identity.algorithm == "identity-files-sha256-v1":
                 observation = self._observe_identity_files(resource)
-            elif resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
+            elif resource.identity.algorithm == "identity-patterns-sha256-v1":
                 observation = self._observe_identity_patterns(resource)
             else:
                 observation = self._observe_directory(path)
@@ -288,11 +283,6 @@ class FingerprintCache:
                 connection.rollback()
             return False
 
-    def _verify_without_cache(
-        self, resource: InputResource
-    ) -> FingerprintObservation | None:
-        return verify_fingerprint(resource)
-
     def _open(self) -> sqlite3.Connection | None:
         if not self.writable and not self.reuse:
             return None
@@ -300,9 +290,11 @@ class FingerprintCache:
         if not self.writable and not self.path.is_file():
             return None
         try:
-            return self._open_once()
-        except FingerprintCacheError:
-            return None
+            connection = self._open_once()
+        except IncompatibleFingerprintCacheError:
+            if not self.writable:
+                return None
+            connection = self._rebuild_incompatible_cache()
         except sqlite3.DatabaseError as error:
             if not self.writable:
                 return None
@@ -310,14 +302,26 @@ class FingerprintCache:
                 raise FingerprintCacheError(
                     f"invalid fingerprint cache {self.path}: {error}"
                 ) from error
-            self._discard_corrupt_cache()
-            try:
-                return self._open_once()
-            except sqlite3.DatabaseError as retry_error:
-                raise FingerprintCacheError(
-                    f"could not rebuild invalid fingerprint cache {self.path}: "
-                    f"{retry_error}"
-                ) from retry_error
+            connection = self._rebuild_corrupt_cache()
+        return connection
+
+    def _rebuild_incompatible_cache(self) -> sqlite3.Connection:
+        self._discard_corrupt_cache()
+        try:
+            return self._open_once()
+        except (FingerprintCacheError, sqlite3.DatabaseError) as error:
+            raise FingerprintCacheError(
+                f"could not rebuild incompatible fingerprint cache {self.path}: {error}"
+            ) from error
+
+    def _rebuild_corrupt_cache(self) -> sqlite3.Connection:
+        self._discard_corrupt_cache()
+        try:
+            return self._open_once()
+        except sqlite3.DatabaseError as error:
+            raise FingerprintCacheError(
+                f"could not rebuild invalid fingerprint cache {self.path}: {error}"
+            ) from error
 
     def _open_once(self) -> sqlite3.Connection:
         if self.writable:
@@ -395,13 +399,13 @@ class FingerprintCache:
         version = cast(int, row[0])
         if version == 0:
             if not allow_create:
-                raise FingerprintCacheError(
+                raise IncompatibleFingerprintCacheError(
                     f"fingerprint cache has no supported schema: {self.path}"
                 )
             self._create_schema(connection)
             return
         if version != CACHE_SCHEMA_VERSION:
-            raise FingerprintCacheError(
+            raise IncompatibleFingerprintCacheError(
                 "unsupported fingerprint cache schema "
                 f"{version} at {self.path}; expected {CACHE_SCHEMA_VERSION}"
             )
@@ -439,7 +443,7 @@ class FingerprintCache:
             self._invalid_schema()
 
     def _invalid_schema(self) -> None:
-        raise sqlite3.DatabaseError(
+        raise IncompatibleFingerprintCacheError(
             f"fingerprint cache schema is incomplete: {self.path}"
         )
 
@@ -677,7 +681,7 @@ class FingerprintCache:
                 )
         fingerprint = compose_identity_patterns_fingerprint(
             tuple(entries),
-            resource.fingerprint.patterns,
+            resource.identity.patterns,
         )
         return FingerprintObservation(
             fingerprint,

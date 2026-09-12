@@ -8,9 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from research_log_data import Fingerprint
 from research_log_validation_test_support import write
+from validation.evidence import EvidenceSource
 
 EVIDENCE = importlib.import_module("validation.evidence")
+EVIDENCE_COMMAND = importlib.import_module("log_commands.evidence")
+CONTEXT = importlib.import_module("log_commands.context")
+MODEL = importlib.import_module("log_commands.model")
 
 
 def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
@@ -37,7 +42,7 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v3",
+  "schema": "research-log-evidence/v4",
   "records": [
     {
       "id": "success-rate",
@@ -82,6 +87,66 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 
 class EvidenceFileTests(unittest.TestCase):
+    def test_publication_recheck_rejects_replaced_file_with_same_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root = root / "docs" / "study"
+            entry_root = log_root / "entries" / "2026-08-28-e001-study"
+            artifact = entry_root / "data" / "result.png"
+            write(artifact, "same bytes\n")
+            write(
+                entry_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "identity": {"algorithm": "sha256"},
+                                "kind": "file",
+                                "location": "data/result.png",
+                                "name": "result",
+                                "origin": True,
+                            }
+                        ],
+                    }
+                ),
+            )
+            entry = CONTEXT.EntryContext(
+                CONTEXT.LogContext(root / "docs" / "study.md", log_root),
+                "e001",
+                entry_root,
+            )
+            candidate = EVIDENCE.EvidenceRecord(
+                "result",
+                "entries/2026-08-28-e001-study/e001.md",
+                "artifact",
+                (EvidenceSource("<result>", None),),
+                None,
+                artifact_fingerprint=Fingerprint("sha256", "a" * 64),
+                artifact_fingerprint_present=True,
+            )
+            prepared = Fingerprint("sha256", "a" * 64)
+            first_identity = {
+                "kind": "file",
+                "size": 11,
+                "mtime_ns": 1,
+                "ctime_ns": 1,
+            }
+            replacement_identity = {**first_identity, "ctime_ns": 2}
+            with mock.patch.object(
+                EVIDENCE_COMMAND,
+                "observe_file_content",
+                return_value=(prepared.digest, replacement_identity),
+            ), self.assertRaises(MODEL.ActionError) as caught:
+                EVIDENCE_COMMAND._recheck_prepared_artifact(
+                    entry,
+                    candidate,
+                    prepared_artifact_observation=EVIDENCE_COMMAND.PreparedArtifactObservation(
+                        prepared, artifact.resolve(), first_identity
+                    ),
+                )
+            self.assertEqual(caught.exception.code, "evidence.artifact.source_changed")
+
     def test_reproduction_tolerance_is_optional_and_numeric(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = evidence_fixture(Path(directory))
@@ -144,6 +209,7 @@ class EvidenceFileTests(unittest.TestCase):
                 "kind": "artifact",
                 "sources": [{"source": "<result-map>", "locator": None}],
                 "transformation": None,
+                "artifact_fingerprint": None,
             }
 
             record = EVIDENCE.evidence_record_from_fields(
@@ -152,7 +218,9 @@ class EvidenceFileTests(unittest.TestCase):
                 entry_root=entry_root,
                 fields=fields,
             )
-            self.assertEqual(record.as_dict(), fields)
+            self.assertEqual(
+                record.as_dict(), fields
+            )
             invalid = (
                 {**fields, "sources": fields["sources"] * 2},
                 {
@@ -162,6 +230,10 @@ class EvidenceFileTests(unittest.TestCase):
                     ],
                 },
                 {**fields, "transformation": {"form": "scalar"}},
+                {
+                    **fields,
+                    "artifact_fingerprint": {"algorithm": "sha256"},
+                },
             )
             for candidate in invalid:
                 with self.subTest(candidate=candidate):

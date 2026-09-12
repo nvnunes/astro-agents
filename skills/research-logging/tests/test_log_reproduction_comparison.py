@@ -590,7 +590,7 @@ def _configure_evidence_comparison(fixture: _Fixture) -> None:
                 "contract": "research-log-evidence-scoped-comparison/1",
                 "profile": "evidence",
             },
-            "fingerprint": _fingerprint(fixture.output).as_dict(),
+            "identity": {"algorithm": "sha256"},
             "kind": "file",
             "location": "data/result.txt",
             "name": "result",
@@ -626,7 +626,7 @@ def _configure_evidence_comparison(fixture: _Fixture) -> None:
                         "transformation": None,
                     }
                 ],
-                "schema": "research-log-evidence/v3",
+                "schema": "research-log-evidence/v4",
             },
             indent=2,
             sort_keys=True,

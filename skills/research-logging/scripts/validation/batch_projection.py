@@ -296,8 +296,7 @@ def _registry_record(owner: str, resource: InputResource) -> dict[str, object]:
         "origin": resource.origin,
         "path": resource.canonical_target,
     }
-    if resource.fingerprint.digest is not None:
-        value["fingerprint"] = resource.fingerprint.as_dict()
+    value["identity"] = resource.identity.as_dict()
     if resource.reference_entry is not None:
         value["from_entry"] = resource.reference_entry
         value["read_only"] = True

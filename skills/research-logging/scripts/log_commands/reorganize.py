@@ -14,8 +14,8 @@ from research_log_data import (
     InputResource,
     data_file_from_inputs,
     load_data_file,
+    observe_fingerprint,
     validate_log_consistency,
-    verify_fingerprint,
 )
 from validation.evidence import (
     EvidenceFile,
@@ -287,7 +287,7 @@ def _load_identity_registries(
         if data_path.exists() or data_path.is_symlink():
             data[entry.root] = load_data_file(data_path, entry_root=entry.root)
             for item in data[entry.root].inputs:
-                verify_fingerprint(item)
+                observe_fingerprint(item)
         if evidence_path.exists() or evidence_path.is_symlink():
             evidence[entry.root] = load_evidence_file(
                 evidence_path, log_root=log.root, entry_root=entry.root

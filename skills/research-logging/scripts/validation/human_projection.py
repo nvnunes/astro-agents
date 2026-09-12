@@ -105,6 +105,17 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The inline artifact presentation differs from its declared source.",
         "record",
     ),
+    "association.artifact.fingerprint_mismatch": FindingPresentation(
+        "Artifact Fingerprint Mismatch",
+        "The linked artifact bytes differ from the baseline accepted "
+        "in its evidence record.",
+        "record",
+    ),
+    "association.artifact.fingerprint_unrecorded": FindingPresentation(
+        "Unrecorded Artifact Fingerprint",
+        "The linked artifact has no accepted byte baseline in its evidence record.",
+        "record",
+    ),
     "association.artifact.inline_source_invalid": FindingPresentation(
         "Invalid Inline Artifact Source",
         "The declared inline artifact source is not a regular UTF-8 file.",
@@ -192,12 +203,13 @@ CATALOG: Mapping[str, FindingPresentation] = {
     ),
     "data.fingerprint.mismatch": FindingPresentation(
         "Input Fingerprint Mismatch",
-        "The material no longer matches its declared fingerprint.",
+        "The material differs from its recorded observation, "
+        "or its selected Git commit cannot be verified.",
         "record",
     ),
     "data.fingerprint.unobserved": FindingPresentation(
         "Unobserved Generated Fingerprint",
-        "The generated material does not yet have an observed fingerprint.",
+        "The generated material lacks the required retained execution observation.",
         "record",
     ),
     "data.git.projection_missing": FindingPresentation(

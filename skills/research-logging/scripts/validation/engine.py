@@ -21,8 +21,6 @@ from research_log_data import (
     load_data_file,
     observe_fingerprint,
     resolve_input_token,
-    validate_fingerprint_observation,
-    verify_fingerprint,
 )
 
 from .command_diagnostics import RejectedProducerIndex
@@ -115,6 +113,8 @@ from .output_support import (
 )
 from .presentation import (
     artifact_evidence_dependencies,
+    require_artifact_baseline_form,
+    require_artifact_fingerprint,
     require_artifact_source_association,
 )
 from .provenance import (
@@ -154,7 +154,7 @@ from .transformation import (
 )
 from .validation_cache import ValidationCache
 
-RULES_VERSION = "research-log-mechanical/parameter-roles-6"
+RULES_VERSION = "research-log-mechanical/evidence-baseline-7"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -744,11 +744,11 @@ def _verify_input(
     key = resource.observation_identity
     observation = state.input_observations.get(key)
     if observation is not None:
-        return validate_fingerprint_observation(resource, observation)
+        return observation
     observation = (
-        state.fingerprint_cache.verify(resource)
+        state.fingerprint_cache.observe_resource(resource)
         if state.fingerprint_cache is not None
-        else verify_fingerprint(resource)
+        else observe_fingerprint(resource)
     )
     if observation is None:
         return None
@@ -1000,6 +1000,29 @@ def _invocation_input_prerequisites(
         )
     ]
     return _unique_checks(checks)
+
+
+def _current_invocation_inputs(
+    invocation: Invocation, state: _ScanState
+) -> Mapping[str, Fingerprint]:
+    """Project already-observed current recipe inputs for output validation."""
+
+    observed: dict[str, Fingerprint] = {}
+    for relationship in invocation.inputs:
+        resource = relationship.input_resource
+        if resource is None:
+            continue
+        observation = _verify_input(resource, state)
+        if observation is None:
+            continue
+        prior = observed.setdefault(resource.name, observation.fingerprint)
+        if prior != observation.fingerprint:
+            _fail(
+                "provenance.output.signature_unsupported",
+                invocation.document,
+                {"input": resource.name, "reason": "conflicting_observation"},
+            )
+    return observed
 
 
 def _command_failure_prerequisites(
@@ -1407,6 +1430,7 @@ def _evaluate_output_support(
             invocation,
             execution_output,
             current_output=current_output,
+            current_inputs=_current_invocation_inputs(invocation, state),
             current_code=current_code,
         )
         return {
@@ -1447,6 +1471,7 @@ def _evaluate_output_support(
         invocation,
         resolved,
         current_output=current_output,
+        current_inputs=_current_invocation_inputs(invocation, state),
         current_code=current_code,
     )
     support_file = support
@@ -1719,6 +1744,23 @@ def _require_complete_markers(
         )
 
 
+def _observe_artifact_evidence(
+    record: PresentationRecord,
+    item: PresentedItem,
+    source_path: Path,
+    log_root: Path,
+) -> Fingerprint | None:
+    """Check artifact association and compare only path-based byte baselines."""
+
+    require_artifact_source_association(
+        item, source_path=source_path, log_root=log_root
+    )
+    require_artifact_baseline_form(record, item)
+    if item.presentation_form in {"image", "link"}:
+        return require_artifact_fingerprint(record, source_path=source_path)
+    return None
+
+
 def _evaluate_record(
     entry: _Entry,
     record: PresentationRecord,
@@ -1742,12 +1784,6 @@ def _evaluate_record(
         materials = tuple(
             _resolve_source(source, entry, state) for source in record.sources
         )
-        if record.kind == "artifact":
-            require_artifact_source_association(
-                item,
-                source_path=materials[0].path,
-                log_root=state.log_root,
-            )
     except MechanicalContractError as error:
         evidence = _error_check(
             identity, _error_scope(error, CheckScope.EVIDENCE), error
@@ -1760,6 +1796,26 @@ def _evaluate_record(
         return _RecordOutcome(
             entry.id, record, item, (), evidence, provenance, None, ()
         )
+    artifact_observation: Fingerprint | None = None
+    if record.kind == "artifact":
+        try:
+            artifact_observation = _observe_artifact_evidence(
+                record, item, materials[0].path, state.log_root
+            )
+        except MechanicalContractError as error:
+            evidence = _error_check(
+                identity, _error_scope(error, CheckScope.EVIDENCE), error
+            )
+            return _RecordOutcome(
+                entry.id,
+                record,
+                item,
+                materials,
+                evidence,
+                _record_provenance(entry, record, materials, state),
+                None,
+                (),
+            )
     verification_checks = _unique_checks(
         check
         for material in materials
@@ -1794,6 +1850,7 @@ def _evaluate_record(
                         "path": materials[0].path.as_posix(),
                     },
                 ),
+                artifact_observation=artifact_observation,
             ),
         )
         return _RecordOutcome(
@@ -2420,7 +2477,10 @@ def _legacy_code_inputs(
         )
         record = support.outputs.get(key)
         if record is None or not output_support_matches_invocation(
-            invocation, record, material=material
+            invocation,
+            record,
+            current_inputs=_current_invocation_inputs(invocation, state),
+            material=material,
         ):
             continue
         try:
@@ -2797,7 +2857,10 @@ def _supported_output_directories(state: _ScanState) -> frozenset[str]:
                 record is None
                 or record.fingerprint.algorithm != "directory-sha256-v1"
                 or output_producer_mismatches(
-                    invocation, record, material=collection.root
+                    invocation,
+                    record,
+                    current_inputs=_current_invocation_inputs(invocation, state),
+                    material=collection.root,
                 )
             ):
                 continue
@@ -3380,7 +3443,7 @@ def _verify_provenance_stability_with_cache(
     for path, expected_input in sorted(state.input_observations.items()):
         resource = state.input_resources[path]
         try:
-            observed_input = cache.verify(resource)
+            observed_input = cache.observe_resource(resource)
         except (FingerprintCacheError, MechanicalContractError) as error:
             _record_provenance_stability_error(path, {"error": str(error)}, state)
             continue

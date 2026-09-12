@@ -103,14 +103,14 @@ class _Fixture:
     def write_data(self, entry: EntryContext, items: list[dict[str, object]]) -> None:
         _write_json(
             entry.root / "data.json",
-            {"inputs": items, "schema": "research-log-data/v3"},
+            {"inputs": items, "schema": "research-log-data/v5"},
         )
 
     def item(
         self, entry: EntryContext, name: str, path: Path, *, origin: bool
     ) -> dict[str, object]:
         return {
-            "fingerprint": _fingerprint(path).as_dict(),
+            "identity": {"algorithm": "sha256"},
             "kind": "file",
             "location": os.path.relpath(path, entry.root),
             "name": name,
@@ -129,10 +129,11 @@ class _Fixture:
                         "kind": "artifact",
                         "sources": [{"locator": None, "source": f"<{name}>"}],
                         "transformation": None,
+                        "artifact_fingerprint": None,
                     }
                     for number, name in enumerate(names, 1)
                 ],
-                "schema": "research-log-evidence/v3",
+                "schema": "research-log-evidence/v4",
             },
         )
 

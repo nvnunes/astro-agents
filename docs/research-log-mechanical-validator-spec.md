@@ -15,7 +15,7 @@ This specification does not define agent behavior or teach researchers how to
 use the research-logging workflow. `skills/research-logging/` is the
 self-documenting agent surface. Repair is its sole explicit repository-level
 consumer of this specification and reads only a relevant section when
-malformed or legacy state prevents the owning CLI action from operating.
+malformed or unsupported state prevents the owning CLI action from operating.
 `docs/research-logging.md` is human-facing researcher documentation concerned
 only with how that skill is used and what researchers should expect from it.
 
@@ -55,10 +55,10 @@ or evolution requires it.
 
 | Surface | Current version |
 | --- | --- |
-| Evidence records | `research-log-evidence/v3` |
+| Evidence records | `research-log-evidence/v4` |
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
-| Input registry | `research-log-data/v4`; `research-log-data/v3` is readable legacy state |
+| Input registry | `research-log-data/v5` |
 | `pyrun` execution state | `research-log-pyrun/v5`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
@@ -318,7 +318,7 @@ invalid at the evidence-source surface. To consume another entry's artifact,
 the consuming entry declares that exact target and uses its own token.
 
 The resolved strong content identity and source profile, not the authored token
-or expected fingerprint, participate in selection-cache identity. A remote
+or declaration identity rule, participate in selection-cache identity. A remote
 registry target cannot directly serve as mechanical evidence; retain a stable
 local observation and select that registered file instead.
 
@@ -1774,7 +1774,8 @@ provide:
 - an explanation of why changing the presentation or retaining a
   purpose-built value is materially worse;
 - one closed result grammar with every accepted spelling enumerated;
-- complete conformance, failure, resource-bound, and migration fixtures; and
+- complete current-schema conformance, failure, and resource-bound fixtures;
+  any one-time conversion fixtures remain disposable; and
 - no LLM, semantic similarity, authored regex, or presentation-derived
   inference.
 
@@ -2002,7 +2003,7 @@ current grammars.
 
 ```json
 {
-  "schema": "research-log-evidence/v3",
+  "schema": "research-log-evidence/v4",
   "records": []
 }
 ```
@@ -2061,17 +2062,30 @@ An artifact record is the closed whole-artifact form:
   "document": "entries/2026-08-27-e001-study/e001.md",
   "kind": "artifact",
   "sources": [{"source": "<residual-map>", "locator": null}],
-  "transformation": null
+  "transformation": null,
+  "artifact_fingerprint": {
+    "algorithm": "sha256",
+    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
 }
 ```
 
 It has exactly one source, a null locator, and a null transformation. Null
 locators are prohibited for every other record kind. The source resolves to
 one registered file or one exact member of a registered directory; a bare
-directory is invalid. The source registry fingerprint supplies complete
-artifact identity, so the evidence record does not duplicate a path or digest.
+directory is invalid. For an image or link presentation, `artifact_fingerprint`
+is required and is either the exact SHA-256 object shown above or `null`.
+It is the evidence-owned accepted byte baseline for that one path-based
+presentation; `null` is explicit incomplete baseline state and is unverified,
+not a match. Inline `diff` artifacts must not carry the field and compare their
+normalized text payload instead. The declaration identity selects how current
+material is observed; it never supplies a historical presentation baseline.
 Path-based artifact presentations do not open the artifact through a
-format-specific reader. An inline `diff` artifact uses only the bounded UTF-8
+format-specific reader. The authoring action obtains a stable current file
+observation before publication and stores it as this baseline; update replaces
+it only after the same association and stability checks. A fresh execution,
+reproduction, promotion, cache rebuild, relocation, or repeated add must not
+silently refresh it. An inline `diff` artifact uses only the bounded UTF-8
 reader and exact comparison defined below.
 
 `id` uses this grammar and is at most 96 ASCII characters:
@@ -2498,9 +2512,12 @@ observations by canonical absolute path with kind, size,
 nanosecond modification time, nanosecond change time, fingerprint algorithm,
 and observed content digest. It stores directory metadata identities,
 aggregate directory fingerprints, and deterministic membership separately.
-The expected fingerprint in `data.json` is not part of the observation-cache
-key. A changed expectation compares against the current observed identity
-without forcing a content reread.
+The declaration identity in `data.json` selects the observation algorithm; it
+is not a cache acceptance baseline. Cache keys include the canonical target and
+complete identity selection (including selectors or Git commit), so an
+incompatible identity-rule change cannot reuse an old observation. A cache may
+accelerate current observation but can never refresh a retained execution
+observation or an evidence artifact baseline.
 
 Every validation performs one bounded current directory metadata observation.
 An unchanged hydrated directory reuses its aggregate content fingerprint. A
@@ -2519,9 +2536,13 @@ conclusion.
 
 ### Ownership And Completeness
 
-`data.json` is primarily an input registry. It contains all and only resources
-used as material inputs by recorded commands or evidence records owned by one
-entry root.
+`data.json` declares the current named resources used as material inputs by
+recorded commands or evidence records owned by one entry root. It owns locator,
+kind, origin/generated classification, directory selection, Git commit
+selection, and optional reproduction comparison policy. It contains no accepted
+current bytes or historical execution baseline. The observation service computes
+current content under a declaration when a consumer needs it; `pyrun.json`
+retains the observations made by a successful execution.
 
 The public `log data` actions are the sole ordinary authoring interface for
 this file. They infer representation fields, validate the asserted Provenance
@@ -2555,7 +2576,7 @@ One entry-root file has exactly:
 
 ```json
 {
-  "schema": "research-log-data/v4",
+  "schema": "research-log-data/v5",
   "inputs": []
 }
 ```
@@ -2565,7 +2586,7 @@ JSON uses the UTF-8, duplicate-key, finite-number, and trailing-content rules
 of `evidence.json`. Array order has no meaning; canonicalization sorts by
 `name`. One file is at most 8 MiB and contains at most 10,000 inputs.
 
-Every direct item requires `name`, `kind`, `location`, `fingerprint`, and the
+Every direct item requires `name`, `kind`, `location`, `identity`, and the
 Boolean `origin`:
 
 ```json
@@ -2573,15 +2594,12 @@ Boolean `origin`:
   "name": "development_catalog",
   "kind": "file",
   "location": "../../../../../inputs/development-catalog.csv",
-  "fingerprint": {
-    "algorithm": "sha256",
-    "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  },
+  "identity": {"algorithm": "sha256"},
   "origin": true
 }
 ```
 
-Version 4 also accepts an entry-local reference with exactly `from_entry` and
+An entry-local reference has exactly `from_entry` and
 `name`. It resolves recursively to one direct generated declaration in the
 named stable entry of the same log. It does not copy, shadow, rename, or change
 the source declaration, cannot target an origin or another reference, and may
@@ -2591,11 +2609,19 @@ not form a cycle:
 {"from_entry": "e001", "name": "simulation-results"}
 ```
 
-For a generated file or directory declared before production, `fingerprint`
-contains its applicable algorithm and any selected `files` or `patterns`, but
-may omit `digest`. Origins and legacy version-3 declarations require the
-complete observed digest. Successful `pyrun` production observes and publishes
-the generated declaration's current fingerprint.
+Generated resources may be declared before production; no absent-digest
+sentinel exists. Direct declarations allow only `name`, `kind`, `location`,
+`identity`, `origin`, and optional `comparison`. Unknown fields fail. The
+closed identity forms are `{"algorithm":"sha256"}` for a file,
+`{"algorithm":"directory-sha256-v1"}` for a full directory,
+`{"algorithm":"identity-files-sha256-v1","files":[...]}` for explicit
+selected files, `{"algorithm":"identity-patterns-sha256-v1","patterns":[...]}`
+for pattern selection, and
+`{"algorithm":"git-commit-sha1-v1","commit":"<40 lowercase hex>"}` for
+a Git repository. `digest` is forbidden in every declaration. A Git commit is
+an authored immutable-object selection, not a refreshable byte baseline.
+Successful `pyrun` records observed current inputs and outputs only in
+`pyrun.json`; it does not mutate declarations.
 
 A generated file may additionally select the named evidence-scoped
 reproduction comparison:
@@ -2634,13 +2660,13 @@ A canonical target is the safely resolved filesystem locator after the
 existing first-class entry `data` or `images` symlink rule. No other declared
 or nested symlink is allowed. Names are unique within one file. File and
 directory canonical targets are also unique. Git repository declarations use
-their commit fingerprint as material identity, so one repository locator may
+their selected commit as material identity, so one repository locator may
 identify different commits under different names; the same pinned commit may
 not be declared twice in one file.
 
 Separate entries may declare the same material when each consumes it. Within
 one maintained log, all file and directory declarations of one target must
-agree on `kind`, `fingerprint`, `origin`, and comparison declaration. Git
+agree on `kind`, complete `identity`, `origin`, and comparison declaration. Git
 repository declarations agree
 when their commit material identity agrees; locator paths may differ. Conflict
 fails; validation does not choose one declaration. The conflicting
@@ -2648,27 +2674,29 @@ declarations are unavailable to dependent command and graph evaluation; other
 declarations in the same registry and entries that do not declare the target
 continue evaluation.
 
-### Fingerprints
+### Declaration Identity And Current Observations
 
-Every item has exactly one closed fingerprint:
+Every direct declaration has exactly one closed identity:
 
-- A local file uses `{"algorithm":"sha256","digest":"<64 lowercase hex>"}`.
+- A local file uses `{"algorithm":"sha256"}`.
 - A local directory uses
-  `{"algorithm":"directory-sha256-v1","digest":"<64 lowercase hex>"}`.
+  `{"algorithm":"directory-sha256-v1"}`.
 - A managed local directory uses
-  `{"algorithm":"identity-files-sha256-v1","files":["<relative path>",...],"digest":"<64 lowercase hex>"}`.
+  `{"algorithm":"identity-files-sha256-v1","files":["<relative path>",...]}`.
 - A pattern-managed local directory uses
-  `{"algorithm":"identity-patterns-sha256-v1","patterns":["<relative selector>",...],"digest":"<64 lowercase hex>"}`.
+  `{"algorithm":"identity-patterns-sha256-v1","patterns":["<relative selector>",...]}`.
 - A pinned Git repository uses
-  `{"algorithm":"git-commit-sha1-v1","digest":"<40 lowercase hex>"}`.
+  `{"algorithm":"git-commit-sha1-v1","commit":"<40 lowercase hex>"}`.
 
-Every resource is locally accessible. Files and directories use byte-derived
-content digests. A Git repository fingerprint identifies the exact commit
-object and its tracked snapshot.
+Every resource is locally accessible when a current consumer requires it.
+Files and directories produce byte-derived current observations. A Git
+repository identity selects the exact commit object and its tracked snapshot.
 Size, modification time, and change time may determine whether a cached digest
 must be recomputed, but they are never the identity being validated. If the
 recomputed digest is unchanged, the resource is unchanged for Provenance.
-Fingerprint drift fails and validation never rewrites an authored digest.
+Current observations are compared with retained execution observations for
+provenance and reproduction, and with evidence-owned artifact baselines for
+path-based presentation. Validation never rewrites either.
 
 For `git-commit-sha1-v1`, `location` is only a local repository locator. It
 must be an exact worktree or bare-repository root, and the full lowercase
@@ -2782,7 +2810,7 @@ times. Unmatched descendants remain outside the bytewise identity.
 ### Origin Boundaries
 
 `origin` is a required Boolean that says whether Provenance traversal stops at
-the declared, fingerprinted artifact. It is independent of storage location.
+the declared artifact or selected Git commit. It is independent of storage location.
 An origin may be inside or outside the entry, and an artifact inside the entry
 may be either an origin or generated material.
 
@@ -2946,8 +2974,8 @@ The live runner, this validation rule, and reproduction use the same binding
 projection implementation. Before launching a child, `pyrun` rejects a missing
 or ambiguous projection that is knowable from the parsed invocation. A fresh
 successful publication therefore derives its recipe, output set, and binding
-from the same parse. Validation primarily detects malformed migration state and
-later authored-state problems. Markdown-to-JSON recipe disagreement remains a
+from the same parse. Validation detects malformed retained execution state and
+authored-state problems. Markdown-to-JSON recipe disagreement remains a
 separate Provenance conclusion, and undeclared generated artifacts remain under
 the orphan rules. A script may still accept but ignore a valid output argument;
 static binding validation makes no claim about that runtime behavior.
@@ -2975,7 +3003,7 @@ removed after execution and is separate from retained outputs, caches,
 diagnostics, and checkpoints. Its assigned path and runner-added environment
 are outside recipe identity. Reproduction supervision, confinement, cleanup,
 and recovery follow the reproduction specification's Execution Safety
-contract. Scripts relying on relative output argument spelling need migration.
+contract. Scripts relying on relative output argument spelling require repair.
 Script filenames receive no command-argument provenance classification.
 
 The exact entry-local `data` and `images` directories are shared artifact-tree
@@ -3004,13 +3032,21 @@ Validation accepts only strict `research-log-pyrun/v5` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
+Data and evidence readers likewise accept only `research-log-data/v5` and
+`research-log-evidence/v4`. Their older schemas have no retained decoder or
+migration command. The one-time disposable conversion and the separate
+execution-state compatibility boundaries are defined by
+[Cutover And Temporary Targeted Refresh](research-log-reproduction-spec.md#cutover-and-temporary-targeted-refresh).
+
 #### Legacy Output Records
 
 Mechanical validation may read `pyrun-outputs.json` when no current
 `pyrun.json` exists. If both exist, it reports `pyrun.state.conflict` rather
 than choosing or merging them. This compatibility path reads existing records;
 it never writes, migrates, or confirms them. Ordinary `pyrun` and Reproduce do
-not use it to execute research commands.
+not use it to execute research commands. It is separate from both the removed
+data/evidence conversion support and `legacy_output_projection`, which adapts
+current execution state only for temporary targeted refresh.
 
 The legacy file is a mapping keyed by exact output path. Each output has a
 copy of its invocation support:
@@ -3069,8 +3105,8 @@ validator's normalized `pyrun` invocation signature. Runner role declarations
 are excluded from this vector. Their separator is also excluded when neither a
 capture nor environment option is present. `inputs` maps
 every directly consumed `data.json` name to
-the fingerprint used by the run. Fingerprints use the same closed local
-fingerprint forms as `data.json`. `code` maps at most 256 unique canonical
+the fingerprint used by the run. These retained observations use the closed
+local fingerprint forms selected by `data.json` identity. `code` maps at most 256 unique canonical
 Python source identities to exact `sha256` file fingerprints. A path beneath
 the command's entry is entry-relative. Every other eligible path is relative
 to the maintained log and begins `<log>/`. A logical path through a symlink
@@ -3181,8 +3217,9 @@ terminal stream. Raw shell redirection and `tee` are outside the
 recorded-command grammar.
 
 An existing record may contain `requires_reproduction: true`. Such a record
-preserves the distinction between migrated retained fingerprints and a
-successfully completed execution, but does not validate Provenance. The next
+marks execution support that still requires successful reproduction, including
+historically reconstructed or explicitly repaired state. It does not validate
+Provenance. The next
 successful `pyrun` execution replaces it with current observations and
 `requires_reproduction: false`. Historical workflows with no record participate
 in structural graph and Hygiene evaluation, but a reached generated output
@@ -3212,13 +3249,13 @@ the already constructed command/material graph; it does not build a second
 lineage model from output records. For each reached generated artifact:
 
 - exactly one earlier command producer is required;
-- its exact output-keyed `pyrun` record must exist without requiring reproduction;
+- its exact associated execution must own the output without requiring reproduction;
 - the current output fingerprint must equal the record;
 - the current script path and fingerprint must equal the record;
 - the exact ordered parameters found by static command expansion must equal the
   record;
-- the exact direct input names and their current declared fingerprints must
-  equal the record; and
+- the exact direct input names and their current observations under the
+  declaration identity rules must equal the recorded execution observations; and
 - every direct input with `origin: false` recursively satisfies these rules,
   while `origin: true` stops that branch.
 
@@ -3437,7 +3474,7 @@ directory]`. Grouping creates no graph edge, retention, or collection.
 | Any directory | competing directory or member producers | either | Fail `directory.producer.conflict`; a sole enclosing owner is not competition. |
 | Generated directory | no covering earlier directory producer or missing owned member | absent | Fail `directory.producer.conflict` for a consumed directory; do not infer ownership from filesystem containment alone. |
 | Origin directory | current root/member producer not requiring reproduction | present | Fail `directory.origin.conflict`. |
-| Any directory | membership/content differs from digest | either | Fail `data.fingerprint.mismatch`. |
+| Any directory | selected membership/content differs from a retained execution observation | either | Fail the affected execution Provenance check; a declaration alone has no accepted digest. |
 | Workflow outside evidence closure | atomic output directory | absent | Report one root-level orphan unless the complete bundle is retained. |
 | Workflow outside evidence closure | other directory | any | Members remain orphan-eligible unless retained. |
 
@@ -3462,10 +3499,10 @@ failure preserves the original error without dumping the complete payload;
 | Code | Scope | Condition |
 | --- | --- | --- |
 | `data.file.location_invalid` | conformance | `data.json` is outside one entry root or a parent/log-level surface exists. |
-| `data.declaration.invalid` | conformance | A data file, item, field, fingerprint, boundary, or bound violates the closed contract. |
+| `data.declaration.invalid` | conformance | A data file, item, field, identity, boundary, or bound violates the closed contract. |
 | `data.name.duplicate` | conformance | One entry repeats a name. |
 | `data.target.duplicate` | conformance | One entry repeats a canonical target through any alias. |
-| `data.declaration.conflict` | conformance | Entries disagree on one target's kind, fingerprint, or boundary. |
+| `data.declaration.conflict` | conformance | Entries disagree on one target's kind, identity, or boundary. |
 | `data.input.undeclared` | provenance | A proven input has no item, including an unknown token. |
 | `data.input.token_missing` | conformance | A proven input uses a raw location instead of its item token. |
 | `data.git.projection_missing` | conformance | A repository-consuming command omits its locator or commit projection. |
@@ -3473,8 +3510,8 @@ failure preserves the original error without dumping the complete payload;
 | `material.root.invalid` | conformance | A command role targets the exact shared entry `data` or `images` artifact root. |
 | `data.origin.invalid` | provenance | An origin boundary hides a current `pyrun` producer that does not require reproduction. |
 | `data.target.missing` | provenance | A local input or selected member is absent. |
-| `data.fingerprint.unobserved` | provenance | Generated material has not yet received a fingerprint observation from successful production. |
-| `data.fingerprint.mismatch` | provenance | Observed local content differs from its fingerprint. |
+| `data.fingerprint.unobserved` | provenance | Generated material has no retained successful execution observation where one is required. |
+| `data.fingerprint.mismatch` | provenance | Current material differs from the retained observation of an affected execution. |
 | `directory.membership.invalid` | provenance | Membership is unsafe, aliased, unsupported, or over-bound. |
 | `directory.producer.conflict` | provenance | A generated directory lacks one exclusive earlier producer covering its root and consumed members. |
 | `directory.origin.conflict` | provenance | An origin directory root or member has a current `pyrun` producer that does not require reproduction. |
@@ -3743,7 +3780,7 @@ The input-registry operations are:
   [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
   [--kind file|directory] [--identity SELECTOR]...
-  [--requires-reproduction] [--dry-run]
+  [--dry-run]
 <skill>/scripts/log data use --path LOG --entry ENTRY --from-entry ENTRY NAME
   [--dry-run]
 <skill>/scripts/log data update --path LOG --entry ENTRY NAME
@@ -3751,13 +3788,11 @@ The input-registry operations are:
   [--identity SELECTOR]... [--byte-complete] [--commit COMMIT] [--dry-run]
 <skill>/scripts/log data rename --path LOG --entry ENTRY OLD-NAME NEW-NAME
   [--dry-run]
-<skill>/scripts/log data refresh --path LOG --entry ENTRY NAME
-  [--requires-reproduction] [--dry-run]
 <skill>/scripts/log data remove --path LOG --entry ENTRY NAME [--dry-run]
 <skill>/scripts/log data list --path LOG --entry ENTRY
 ```
 
-These actions normalize canonical location and use the production fingerprint
+These actions normalize canonical location and use the declaration-identity
 and data-file contracts. `add-origin` rejects a current producer that does not
 require reproduction
 in the same log. Its mutually exclusive `--commit` form requires a full
@@ -3765,25 +3800,23 @@ lowercase commit hash and makes `TARGET` a Git repository locator.
 `add-generated` declares a named file or directory before production. It
 infers kind from an existing target or requires `--kind` when the target is
 absent. Selected identity files or final-component patterns are available only
-for directories; the declaration omits its digest until successful production
-observes it. For an existing retained output, `--requires-reproduction` is an
-explicit Repair and migration form requiring one structurally valid,
-unambiguous current producer; it permits absent or reproduction-required output support
-but does not relax missing or ambiguous producer checks. `data use` creates one same-log reference to a direct generated
+for directories. The declaration contains no byte baseline; successful `pyrun`
+records its current input and output observations in `pyrun.json` without
+rewriting `data.json`. For an existing retained output,
+the same declaration rules apply: one structurally valid, unambiguous authored
+producer is required, but prior successful execution support is not.
+Registration does not mutate `pyrun.json` or grant migration authority.
+Execution reproduction requirements belong to the execution lifecycle.
+`data use` creates one same-log reference to a direct generated
 declaration in the named source entry. It rejects missing, origin, chained,
 cyclic, or locally conflicting references and does not copy the target. `update` applies
 only explicit changes and rechecks the resulting boundary; changing a Git
 repository target preserves and verifies its commit unless `--commit` replaces
 it. Git repository inputs cannot become generated or use directory identity
-options. Managed identity is available for origin and generated directories. `refresh`
-preserves the target,
-classification, and identity mode. Its `--requires-reproduction` form records
-restored generated bytes under the same producer checks as pending registration,
-including rejection of stale support that does not require reproduction. It rejects origin declarations
-and references, supports dry-run and unchanged results, and never modifies
-execution records. `remove` requires prior removal of command
-and evidence use and every cross-entry reference, and removes an empty registry.
-References are read-only through update, refresh, and rename. `rename` requires prior command
+options. Managed identity is available for origin and generated directories.
+`remove` requires prior removal of command and evidence use and every cross-entry
+reference, and removes an empty registry. References are read-only through
+update and rename. `rename` requires prior command
 token edits, atomically updates same-entry evidence source tokens, and reports
 producer commands whose support must be replaced by successful reruns. Each
 mutation holds the shared log lock and the selected entry lock and leaves
@@ -3819,8 +3852,11 @@ When the unique marker belongs to an artifact link, image embed, or inline
 `diff` fence, common mode accepts one `--source` and no selection or conversion
 arguments. It infers the closed artifact record, requires the path-based target
 or inline contents to match the source token under the applicable association
-rule, verifies the registered fingerprint, and publishes through the ordinary
-evidence lifecycle without loading a format-specific artifact reader.
+rule, and publishes through the ordinary evidence lifecycle. Image/link add or
+update captures an exact-file baseline in `evidence.json`; inline `diff` records
+have no fingerprint field and use bounded UTF-8 comparison. Neither form verifies
+or changes a data-registry content baseline, and image/link authoring does not
+load a format-specific artifact reader.
 
 The explicit single-log Reorganize operations are:
 
@@ -4693,7 +4729,7 @@ Its entry-local `evidence.json` contains:
 
 ```json
 {
-  "schema": "research-log-evidence/v3",
+  "schema": "research-log-evidence/v4",
   "records": [{
     "id": "candidate-success-rate",
     "document": "entries/2026-08-27-e001-study/e001.md",
@@ -4762,7 +4798,8 @@ executable interface unchanged is not a valid repair.
   match the selected retained text exactly.
 - A whole-artifact evidence presentation resolves its one source token and
   compares that canonical path with the normalized Markdown target before
-  applying ordinary fingerprint and Provenance checks. A generated artifact
+  comparing the current file's SHA-256 with its evidence-owned artifact
+  baseline. A generated artifact
   still requires one mechanically proven command output and exact current
   output support; an explicit origin stops the chain.
 - A cross-log source is observed as a locally declared origin of the consuming log.

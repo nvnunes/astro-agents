@@ -38,7 +38,12 @@ from log_commands.reproduction_execution import (
     prepare_output_workspace,
 )
 from research_log_cli_test_support import fixture_parameter_roles
-from research_log_data import Fingerprint, build_local_input, load_data_file
+from research_log_data import (
+    Fingerprint,
+    build_local_input,
+    load_data_file,
+    observe_fingerprint,
+)
 from validation.pyrun_state import (
     ExecutionRecipe,
     ObservedExecution,
@@ -99,14 +104,14 @@ class _Fixture:
         self.data = {
             "inputs": [
                 {
-                    "fingerprint": _fingerprint(self.source).as_dict(),
+                    "identity": {"algorithm": "sha256"},
                     "kind": "file",
                     "location": "data/source.txt",
                     "name": "source",
                     "origin": True,
                 }
             ],
-            "schema": "research-log-data/v3",
+            "schema": "research-log-data/v5",
         }
         (self.entry_root / "data.json").write_text(
             json.dumps(self.data, indent=2, sort_keys=True) + "\n",
@@ -158,7 +163,7 @@ class _Fixture:
                 executions=(),
                 materials=(
                     {
-                        "fingerprint": _fingerprint(self.source).as_dict(),
+                    "fingerprint": _fingerprint(self.source).as_dict(),
                         "identity": str(self.source.resolve()),
                         "kind": "file",
                         "role": "boundary",
@@ -504,7 +509,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             fixture = _Fixture(Path(directory), "print('unused')\n")
             collection = fixture.entry_root / "data/collection"
             collection.mkdir()
-            (collection / "member.txt").write_text("retained")
+            (collection / "member.txt").write_text("regenerated")
             resource = build_local_input(
                 "collection",
                 "directory",
@@ -523,9 +528,13 @@ class ReproductionExecutionTests(unittest.TestCase):
                 return _resolve_parameter(
                     token,
                     data=data,
-                    source_log=fixture.log_root,
                     workspace=workspace,
                     generated=generated,
+                    expected_inputs={
+                        "collection": observe_fingerprint(
+                            data.by_name["collection"]
+                        ).fingerprint
+                    },
                 )
 
             self.assertEqual(resolve("<source>", {}), str(fixture.source.resolve()))
@@ -542,8 +551,74 @@ class ReproductionExecutionTests(unittest.TestCase):
                 resolve("<collection>/member.txt", mapping),
                 str(regenerated / "member.txt"),
             )
+            (regenerated / "member.txt").write_text("different")
+            with self.assertRaisesRegex(ActionError, "recorded observation"):
+                resolve("<collection>/member.txt", mapping)
             with self.assertRaises(ActionError):
                 resolve("<undeclared>", {})
+
+    def test_regenerated_selected_directory_uses_consumer_selection_rule(self) -> None:
+        for algorithm, selectors in (
+            ("identity-files-sha256-v1", {"files": ["selected.txt"]}),
+            ("identity-patterns-sha256-v1", {"patterns": ["selected-*.txt"]}),
+        ):
+            with (
+                self.subTest(algorithm=algorithm),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                fixture = _Fixture(Path(directory), "print('unused')\n")
+                collection = fixture.entry_root / "data/collection"
+                collection.mkdir()
+                selected = (
+                    "selected.txt"
+                    if algorithm == "identity-files-sha256-v1"
+                    else "selected-one.txt"
+                )
+                (collection / selected).write_text("recorded")
+                (collection / "unselected.txt").write_text("retained")
+                fixture.data["inputs"].append(
+                    {
+                        "identity": {"algorithm": algorithm, **selectors},
+                        "kind": "directory",
+                        "location": "data/collection",
+                        "name": "collection",
+                        "origin": True,
+                    }
+                )
+                path = fixture.entry_root / "data.json"
+                path.write_text(json.dumps(fixture.data))
+                data = load_data_file(path, entry_root=fixture.entry_root)
+                workspace = fixture.workspace()
+                regenerated = workspace.work_project / "regenerated"
+                regenerated.mkdir()
+                (regenerated / selected).write_text("recorded")
+                (regenerated / "unselected.txt").write_text("changed")
+                expected_inputs = {
+                    "collection": observe_fingerprint(
+                        data.by_name["collection"]
+                    ).fingerprint
+                }
+                mapping = {collection.resolve(): (regenerated, "directory")}
+
+                self.assertEqual(
+                    _resolve_parameter(
+                        "<collection>",
+                        data=data,
+                        workspace=workspace,
+                        generated=mapping,
+                        expected_inputs=expected_inputs,
+                    ),
+                    str(regenerated),
+                )
+                (regenerated / selected).write_text("changed selected")
+                with self.assertRaisesRegex(ActionError, "recorded observation"):
+                    _resolve_parameter(
+                        "<collection>",
+                        data=data,
+                        workspace=workspace,
+                        generated=mapping,
+                        expected_inputs=expected_inputs,
+                    )
 
     def test_continuation_populates_workspace_beside_archived_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1324,7 +1399,7 @@ class ReproductionExecutionTests(unittest.TestCase):
             consume.write_text(consumer, encoding="utf-8")
             cast(list[object], fixture.data["inputs"]).append(
                 {
-                    "fingerprint": _fingerprint(fixture.output).as_dict(),
+                    "identity": {"algorithm": "sha256"},
                     "kind": "file",
                     "location": "data/result.txt",
                     "name": "generated",
@@ -1419,12 +1494,13 @@ class ReproductionExecutionTests(unittest.TestCase):
                     (attempt.checkpoint.state, attempt.failure_code)
                     for attempt in result.attempts
                 ],
-                [("succeeded", None), ("succeeded", None)],
+                [
+                    ("succeeded", None),
+                    ("failed", "reproduction.input.observation_mismatch"),
+                ],
                 failures,
             )
-            self.assertEqual(
-                workspace.map_source(final).read_text(), "SOURCE\ndownstream\n"
-            )
+            self.assertFalse(workspace.map_source(final).exists())
             self.assertEqual(fixture.output.read_text(), "retained\n")
 
     @unittest.skipUnless(

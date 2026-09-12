@@ -128,6 +128,7 @@ def require_current_output_support(
     resolved: ResolvedOutputSupport,
     *,
     current_output: Fingerprint,
+    current_inputs: Mapping[str, Fingerprint],
     current_code: Mapping[str, Fingerprint] | None = None,
 ) -> OutputSupport:
     """Require one confirmed output record matching the current invocation."""
@@ -147,13 +148,16 @@ def require_current_output_support(
             material,
             {"output": key, "producer": invocation.identity},
         )
-    mismatches = output_signature_mismatches(
+    mismatches = output_producer_mismatches(
         invocation,
         record,
-        current_output,
-        current_code=current_code,
+        current_inputs=current_inputs,
         material=material,
     )
+    if record.fingerprint != current_output:
+        mismatches.insert(0, "output_fingerprint")
+    if current_code is not None and dict(record.code) != current_code:
+        mismatches.append("code")
     if mismatches:
         _fail(
             "provenance.output.signature_mismatch",
@@ -167,35 +171,19 @@ def require_current_output_support(
     return record
 
 
-def output_signature_mismatches(
-    invocation: Invocation,
-    record: OutputSupport,
-    current_output: Fingerprint,
-    *,
-    current_code: Mapping[str, Fingerprint] | None = None,
-    material: str,
-) -> list[str]:
-    """Return exact signature fields that disagree with one invocation."""
-
-    mismatches: list[str] = []
-    if record.fingerprint != current_output:
-        mismatches.append("output_fingerprint")
-    mismatches.extend(output_producer_mismatches(invocation, record, material=material))
-    if current_code is not None and dict(record.code) != current_code:
-        mismatches.append("code")
-    return mismatches
-
-
 def output_support_matches_invocation(
     invocation: Invocation,
     record: OutputSupport,
     *,
+    current_inputs: Mapping[str, Fingerprint],
     material: str,
 ) -> bool:
     """Return whether stable authored fields associate support with a command."""
 
     try:
-        expected_inputs = _output_signature_inputs(invocation, material)
+        expected_inputs = _output_signature_inputs(
+            invocation, current_inputs=current_inputs, material=material
+        )
     except OutputSupportValidationError:
         return False
     return (
@@ -273,6 +261,7 @@ def require_current_execution_output(
     resolved: ResolvedExecutionOutput,
     *,
     current_output: Fingerprint,
+    current_inputs: Mapping[str, Fingerprint],
     current_code: Mapping[str, Fingerprint] | None = None,
 ) -> PyrunExecution:
     """Require current state associated with one exact command-owned output."""
@@ -312,7 +301,9 @@ def require_current_execution_output(
     )
     if current_script is None or execution.observed.script != current_script:
         mismatches.append("script_fingerprint")
-    expected_inputs = _output_signature_inputs(invocation, resolved.subject)
+    expected_inputs = _output_signature_inputs(
+        invocation, current_inputs=current_inputs, material=resolved.subject
+    )
     if dict(execution.observed.inputs) != expected_inputs:
         mismatches.append("inputs")
     if current_code is not None and dict(execution.observed.code) != current_code:
@@ -359,11 +350,14 @@ def output_producer_mismatches(
     invocation: Invocation,
     record: OutputSupport,
     *,
+    current_inputs: Mapping[str, Fingerprint],
     material: str,
 ) -> list[str]:
     """Return producer-signature fields that disagree with one invocation."""
 
-    expected_inputs = _output_signature_inputs(invocation, material)
+    expected_inputs = _output_signature_inputs(
+        invocation, current_inputs=current_inputs, material=material
+    )
     current_script = (
         Fingerprint("sha256", digest=invocation.script_identity)
         if invocation.script_identity is not None
@@ -407,7 +401,10 @@ def _parameters_match(invocation: Invocation, recorded: tuple[str, ...]) -> bool
 
 
 def _output_signature_inputs(
-    invocation: Invocation, material: str
+    invocation: Invocation,
+    *,
+    current_inputs: Mapping[str, Fingerprint],
+    material: str,
 ) -> Mapping[str, Fingerprint]:
     expected: dict[str, Fingerprint] = {}
     for relationship in invocation.inputs:
@@ -418,12 +415,23 @@ def _output_signature_inputs(
                 material,
                 {"input": relationship.path, "producer": invocation.identity},
             )
-        prior = expected.setdefault(resource.name, resource.fingerprint)
-        if prior != resource.fingerprint:
+        observed = current_inputs.get(resource.name)
+        if observed is None:
             _fail(
                 "provenance.output.signature_unsupported",
                 material,
-                {"input": resource.name, "reason": "conflicting_identity"},
+                {
+                    "input": resource.name,
+                    "producer": invocation.identity,
+                    "reason": "current_observation_missing",
+                },
+            )
+        prior = expected.setdefault(resource.name, observed)
+        if prior != observed:
+            _fail(
+                "provenance.output.signature_unsupported",
+                material,
+                {"input": resource.name, "reason": "conflicting_observation"},
             )
     return expected
 

@@ -184,8 +184,8 @@ class RecordSurfaceTests(unittest.TestCase):
             )
         )
         for registry_grammar in (
-            "research-log-data/v3",
-            "research-log-evidence/v3",
+            "research-log-data/v5",
+            "research-log-evidence/v4",
             "research-log-retention/v1",
             '"fingerprint"',
             '"records"',
@@ -314,14 +314,15 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn("references/operation-repair.md", text)
             self.assertNotIn("references/operation-reorganize.md", text)
 
-    def test_generated_registration_separates_preproduction_and_repair(self) -> None:
+    def test_generated_registration_shares_preproduction_and_repair_rules(self) -> None:
         data = reference("file-data-index.md")
         repair = reference("operation-repair.md")
         cases = CASES.read_text(encoding="utf-8")
         self.assertIn("Declare the artifact before", data)
-        self.assertIn("ordinary pre-production state", cases)
+        self.assertIn("pre-production state", cases)
         self.assertNotIn("--requires-reproduction", data)
-        self.assertIn("--requires-reproduction", repair)
+        self.assertNotIn("--requires-reproduction", repair)
+        self.assertIn("Both require one structurally valid", repair)
 
     def test_repair_routing_cases_cover_intent_and_operation_boundaries(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")

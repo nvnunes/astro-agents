@@ -243,7 +243,7 @@ def resolve_arg(
     resource = resolved.resource
     if resource.name not in verified:
         try:
-            observation = fingerprint_cache.verify(resource)
+            observation = fingerprint_cache.observe_resource(resource)
         except (DataContractError, FingerprintCacheError) as error:
             raise SystemExit(f"pyrun: {error}") from error
         if observation is None:
@@ -895,7 +895,7 @@ def main(argv: list[str]) -> int:
             if data is not None:
                 for name, expected in sorted(observed_inputs.items()):
                     try:
-                        current_input = fingerprint_cache.verify(data.by_name[name])
+                        current_input = fingerprint_cache.observe_resource(data.by_name[name])
                     except (DataContractError, FingerprintCacheError) as error:
                         raise SystemExit(
                             f"pyrun: could not re-observe input {name!r}: {error}"
@@ -965,30 +965,6 @@ def main(argv: list[str]) -> int:
                     .isoformat()
                     .replace("+00:00", "Z")
                 )
-                companion_updates = (
-                    {
-                        data.path: data_file_from_inputs(
-                            data.path,
-                            entry_root=data.entry_root,
-                            inputs=tuple(
-                                replace(
-                                    item,
-                                    fingerprint=produced_resources[item.name],
-                                )
-                                if item.name in produced_resources
-                                else item
-                                for item in data.inputs
-                            ),
-                        ).canonical_json()
-                    }
-                    if data is not None and produced_resources
-                    else {}
-                )
-                residue = (
-                    begin_registry_transaction(log, entry_identity.id)
-                    if companion_updates
-                    else None
-                )
                 try:
                     publish_execution_locked(
                         entry,
@@ -1000,16 +976,11 @@ def main(argv: list[str]) -> int:
                             last_run_at=completed_at,
                         ),
                         project_root=root,
-                        companion_updates=companion_updates,
+                        companion_updates={},
                         publish_updates=atomic_write_texts,
                     )
                 except PublicationError as error:
-                    if residue is not None and error.rollback_complete:
-                        finish_guarded_publication(residue)
                     raise
-                else:
-                    if residue is not None:
-                        finish_guarded_publication(residue)
             return returncode
     except PyrunContractError as error:
         raise SystemExit(f"pyrun: {error}") from error

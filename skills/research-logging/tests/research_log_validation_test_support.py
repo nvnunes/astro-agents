@@ -53,26 +53,20 @@ def mechanical_log(
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v3",
+                "schema": "research-log-data/v5",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
                         "location": "data/catalog.csv",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": catalog_digest,
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": True,
                     },
                     {
                         "name": "results",
                         "kind": "file",
                         "location": "data/results.csv",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": results_digest,
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": False,
                     },
                 ],
@@ -85,7 +79,7 @@ def mechanical_log(
         entry_root / "evidence.json",
         json.dumps(
             {
-                "schema": "research-log-evidence/v3",
+                "schema": "research-log-evidence/v4",
                 "records": [
                     {
                         "id": "success-rate",

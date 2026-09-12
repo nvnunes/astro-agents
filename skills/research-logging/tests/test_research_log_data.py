@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -19,15 +18,10 @@ from validation import filesystem as FILESYSTEM  # noqa: E402
 from validation import retention as RETENTION  # noqa: E402
 
 
-def file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def data_fixture(root: Path) -> tuple[Path, Path]:
     entry = root / "docs" / "study" / "entries" / "2026-09-01-e001-study"
     source = entry / "data" / "source.csv"
     write(source, "value\n1\n")
-    digest = file_digest(source)
     write(
         entry / "data.json",
         json.dumps(
@@ -38,7 +32,7 @@ def data_fixture(root: Path) -> tuple[Path, Path]:
                         "name": "source",
                         "kind": "file",
                         "location": "data/source.csv",
-                        "fingerprint": {"algorithm": "sha256", "digest": digest},
+                        "identity": {"algorithm": "sha256"},
                         "origin": True,
                     }
                 ],
@@ -121,10 +115,7 @@ class DataFileTests(unittest.TestCase):
                     "comparison": comparison,
                     "kind": "directory",
                     "location": "data",
-                    "fingerprint": {
-                        "algorithm": "directory-sha256-v1",
-                        "digest": "0" * 64,
-                    },
+                    "identity": {"algorithm": "directory-sha256-v1"},
                     "origin": False,
                 },
                 {
@@ -183,7 +174,7 @@ class DataFileTests(unittest.TestCase):
             )
             self.assertEqual(resource.kind, "git-repository")
             self.assertTrue(resource.origin)
-            self.assertEqual(resource.fingerprint.digest, commit)
+            self.assertEqual(resource.identity.commit, commit)
             self.assertEqual(
                 resource.material_identity,
                 f"{DATA.GIT_COMMIT_ALGORITHM}:{commit}",
@@ -224,7 +215,7 @@ class DataFileTests(unittest.TestCase):
 
             (repository / "source.txt").write_text("dirty\n", encoding="utf-8")
             (repository / "untracked.txt").write_text("untracked\n", encoding="utf-8")
-            DATA.verify_fingerprint(resource)
+            DATA.observe_fingerprint(resource)
 
             moved = root / "moved-repository"
             repository.rename(moved)
@@ -245,11 +236,15 @@ class DataFileTests(unittest.TestCase):
                         DATA.DataContractError, "data.fingerprint.mismatch"
                     ),
                 ):
-                    DATA.build_git_repository_input(
+                    invalid_resource = DATA.build_git_repository_input(
                         "invalid-repository",
                         moved.as_posix(),
                         invalid,
                         entry_root=entry,
+                    )
+                    DATA.require_matching_observation(
+                        DATA.Fingerprint(DATA.GIT_COMMIT_ALGORITHM, digest=invalid),
+                        DATA.observe_fingerprint(invalid_resource),
                     )
 
     def test_git_repository_rejects_invalid_forms_and_non_repository(self) -> None:
@@ -263,18 +258,18 @@ class DataFileTests(unittest.TestCase):
                 "name": "source-repository",
                 "kind": "git-repository",
                 "location": repository.as_posix(),
-                "fingerprint": {
+                "identity": {
                     "algorithm": DATA.GIT_COMMIT_ALGORITHM,
-                    "digest": commit,
+                    "commit": commit,
                 },
                 "origin": True,
             }
             for replacement in (
                 {"origin": False},
                 {
-                    "fingerprint": {
+                    "identity": {
                         "algorithm": DATA.GIT_COMMIT_ALGORITHM,
-                        "digest": commit[:12],
+                        "commit": commit[:12],
                     }
                 },
             ):
@@ -290,13 +285,14 @@ class DataFileTests(unittest.TestCase):
 
             not_repository = root / "not-repository"
             not_repository.mkdir()
-            with self.assertRaisesRegex(DATA.DataContractError, "data.target.missing"):
-                DATA.build_git_repository_input(
+            resource = DATA.build_git_repository_input(
                     "missing-repository",
                     not_repository.as_posix(),
                     commit,
                     entry_root=entry,
                 )
+            with self.assertRaisesRegex(DATA.DataContractError, "data.target.missing"):
+                DATA.observe_fingerprint(resource)
 
     def test_retired_v1_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -339,7 +335,10 @@ class DataFileTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(data_file.canonical_json())["schema"], DATA.DATA_SCHEMA
             )
-            DATA.verify_fingerprint(data_file.inputs[0])
+            self.assertEqual(
+                DATA.observe_fingerprint(data_file.inputs[0]).fingerprint.algorithm,
+                "sha256",
+            )
 
     def test_oversized_data_file_is_rejected_before_whole_file_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -399,7 +398,7 @@ class DataFileTests(unittest.TestCase):
                 "name": "archive",
                 "kind": "file",
                 "location": "s3://archive/catalog.csv?versionId=v2",
-                "fingerprint": {"algorithm": "immutable-source", "value": "v2"},
+                "identity": {"algorithm": "immutable-source", "value": "v2"},
                 "origin": True,
             }
             payload["inputs"] = [remote]
@@ -412,10 +411,7 @@ class DataFileTests(unittest.TestCase):
             payload["inputs"][0] = {
                 **remote,
                 "location": "data//source.csv",
-                "fingerprint": {
-                    "algorithm": "sha256",
-                    "digest": "0" * 64,
-                },
+                "identity": {"algorithm": "sha256"},
             }
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(
@@ -436,10 +432,7 @@ class DataFileTests(unittest.TestCase):
                             "name": f"artifact-root-{index}",
                             "kind": "directory",
                             "location": location,
-                            "fingerprint": {
-                                "algorithm": "directory-sha256-v1",
-                                "digest": "0" * 64,
-                            },
+                            "identity": {"algorithm": "directory-sha256-v1"},
                             "origin": True,
                         }
                     ]
@@ -487,7 +480,7 @@ class DataFileTests(unittest.TestCase):
                     "aliased-source", "file", location, entry_root=entry
                 )
 
-    def test_fingerprint_drift_is_never_silently_accepted(self) -> None:
+    def test_data_registry_remains_declarative_when_file_bytes_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry, source = data_fixture(Path(directory))
             resource = DATA.load_data_file(
@@ -495,53 +488,9 @@ class DataFileTests(unittest.TestCase):
             ).inputs[0]
             source.write_text("value\n2\n", encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                DATA.DataContractError, "data.fingerprint.mismatch"
-            ):
-                DATA.verify_fingerprint(resource)
+            observation = DATA.observe_fingerprint(resource)
 
-    def test_file_fingerprint_cache_reuses_only_exact_current_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            entry, _ = data_fixture(Path(directory))
-            resource = DATA.load_data_file(
-                entry / "data.json", entry_root=entry
-            ).inputs[0]
-            observed = DATA.verify_fingerprint(resource)
-            assert observed is not None
-            cached = DATA.fingerprint_observation_record(resource, observed)
-
-            with mock.patch.object(
-                DATA,
-                "observe_fingerprint",
-                side_effect=AssertionError("content must not be rehashed"),
-            ):
-                reused = DATA.verify_fingerprint(resource, cached=cached)
-
-            assert reused is not None
-            self.assertTrue(reused.identity_reused)
-
-    def test_directory_fingerprint_cache_preserves_verified_membership(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            entry = Path(directory) / "entry"
-            collection = entry / "collection"
-            write(collection / "a.txt", "a")
-            resource = DATA.build_local_input(
-                "collection", "directory", "collection", entry_root=entry
-            )
-            observed = DATA.verify_fingerprint(resource)
-            assert observed is not None
-            cached = DATA.fingerprint_observation_record(resource, observed)
-
-            with mock.patch.object(
-                DATA,
-                "observe_fingerprint",
-                side_effect=AssertionError("content must not be rehashed"),
-            ):
-                reused = DATA.verify_fingerprint(resource, cached=cached)
-
-            assert reused is not None
-            self.assertTrue(reused.identity_reused)
-            self.assertEqual([item.path for item in reused.entries], ["a.txt"])
+            self.assertEqual(observation.fingerprint.algorithm, "sha256")
 
     def test_identity_files_define_a_bounded_managed_directory_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -557,12 +506,11 @@ class DataFileTests(unittest.TestCase):
                 ("build.yaml", "build.h5"),
                 entry_root=entry,
             )
-            baseline = DATA.verify_fingerprint(resource)
-            assert baseline is not None
+            baseline = DATA.observe_fingerprint(resource)
 
-            self.assertEqual(resource.fingerprint.files, ("build.h5", "build.yaml"))
+            self.assertEqual(resource.identity.files, ("build.h5", "build.yaml"))
             self.assertEqual(
-                resource.fingerprint.as_dict()["algorithm"],
+                resource.identity.as_dict()["algorithm"],
                 "identity-files-sha256-v1",
             )
             self.assertEqual(
@@ -570,38 +518,12 @@ class DataFileTests(unittest.TestCase):
                 ["build.h5", "build.yaml"],
             )
             write(build / "products" / "outer.h5", "changed product")
-            self.assertEqual(baseline, DATA.verify_fingerprint(resource))
+            self.assertEqual(baseline, DATA.observe_fingerprint(resource))
             write(build / "build.h5", "changed state")
             self.assertNotEqual(
                 baseline.fingerprint,
                 DATA.observe_fingerprint(resource).fingerprint,
             )
-
-    def test_identity_files_cache_reuses_exact_declared_file_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            entry = Path(directory) / "entry"
-            build = entry / "build"
-            write(build / "build.h5", "state")
-            write(build / "build.yaml", "mode: test\n")
-            resource = DATA.build_identity_directory(
-                "build",
-                "build",
-                ("build.h5", "build.yaml"),
-                entry_root=entry,
-            )
-            observed = DATA.verify_fingerprint(resource)
-            assert observed is not None
-            cached = DATA.fingerprint_observation_record(resource, observed)
-
-            with mock.patch.object(
-                DATA,
-                "observe_fingerprint",
-                side_effect=AssertionError("identity files must not be rehashed"),
-            ):
-                reused = DATA.verify_fingerprint(resource, cached=cached)
-
-            assert reused is not None
-            self.assertTrue(reused.identity_reused)
 
     def test_identity_patterns_track_bounded_wildcard_membership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -619,11 +541,10 @@ class DataFileTests(unittest.TestCase):
                 ("maps-*.h5", "build.yaml", "build.log", "build.h5"),
                 entry_root=entry,
             )
-            baseline = DATA.verify_fingerprint(resource)
-            assert baseline is not None
+            baseline = DATA.observe_fingerprint(resource)
 
             self.assertEqual(
-                resource.fingerprint.patterns,
+                resource.identity.patterns,
                 ("build.h5", "build.log", "build.yaml", "maps-*.h5"),
             )
             self.assertEqual(
@@ -631,7 +552,7 @@ class DataFileTests(unittest.TestCase):
                 ["build.h5", "build.log", "build.yaml", "maps-hpx6.h5"],
             )
             write(build / "products" / "outer.h5", "changed product")
-            self.assertEqual(baseline, DATA.verify_fingerprint(resource))
+            self.assertEqual(baseline, DATA.observe_fingerprint(resource))
 
             write(build / "maps-hpx9.h5", "map 9")
             changed = DATA.observe_fingerprint(resource)
@@ -659,8 +580,7 @@ class DataFileTests(unittest.TestCase):
                 ("build.h5", "maps-*.h5"),
                 entry_root=entry,
             )
-            baseline = DATA.verify_fingerprint(resource)
-            assert baseline is not None
+            baseline = DATA.observe_fingerprint(resource)
             self.assertEqual([item.path for item in baseline.entries], ["build.h5"])
 
             write(build / "maps-hpx6.h5", "map 6")
@@ -688,12 +608,13 @@ class DataFileTests(unittest.TestCase):
                     self.subTest(patterns=patterns),
                     self.assertRaises(DATA.DataContractError),
                 ):
-                    DATA.build_identity_pattern_directory(
+                    resource = DATA.build_identity_pattern_directory(
                         "build",
                         "build",
                         patterns,
                         entry_root=entry,
                     )
+                    DATA.observe_fingerprint(resource)
 
     def test_identity_pattern_candidate_scan_stops_at_the_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -704,9 +625,8 @@ class DataFileTests(unittest.TestCase):
                 "build",
                 "directory",
                 build.as_posix(),
-                DATA.Fingerprint(
+                DATA.ResourceIdentity(
                     "identity-patterns-sha256-v1",
-                    digest="0" * 64,
                     patterns=("maps-*.h5",),
                 ),
                 False,
@@ -753,9 +673,8 @@ class DataFileTests(unittest.TestCase):
                 "build",
                 "directory",
                 build.as_posix(),
-                DATA.Fingerprint(
+                DATA.ResourceIdentity(
                     "identity-patterns-sha256-v1",
-                    digest="0" * 64,
                     patterns=("maps-*.h5", "metrics-*.csv"),
                 ),
                 False,
@@ -782,10 +701,9 @@ class DataFileTests(unittest.TestCase):
                         "name": "build",
                         "kind": "directory",
                         "location": "build",
-                        "fingerprint": {
+                        "identity": {
                             "algorithm": "identity-files-sha256-v1",
                             "files": ["../outside", "build.h5"],
-                            "digest": "0" * 64,
                         },
                         "origin": False,
                     }
@@ -797,19 +715,19 @@ class DataFileTests(unittest.TestCase):
             ):
                 DATA.load_data_file(entry / "data.json", entry_root=entry)
 
-            payload["inputs"][0]["fingerprint"]["files"] = ["missing.h5"]
+            payload["inputs"][0]["identity"]["files"] = ["missing.h5"]
             write(entry / "data.json", json.dumps(payload))
             resource = DATA.load_data_file(
                 entry / "data.json", entry_root=entry
             ).inputs[0]
             with self.assertRaisesRegex(DATA.DataContractError, "data.target.missing"):
-                DATA.verify_fingerprint(resource)
+                DATA.observe_fingerprint(resource)
 
             (build / "missing.h5").symlink_to(build / "build.h5")
             with self.assertRaisesRegex(
                 DATA.DataContractError, "data.declaration.invalid"
             ):
-                DATA.verify_fingerprint(resource)
+                DATA.observe_fingerprint(resource)
 
     def test_cross_entry_consistency_uses_kind_fingerprint_and_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -851,7 +769,7 @@ class DataFileTests(unittest.TestCase):
                 "collection",
                 "directory",
                 "data/collection",
-                DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
+                DATA.ResourceIdentity("directory-sha256-v1"),
                 True,
                 str(collection),
             )
@@ -890,7 +808,7 @@ class DataFileTests(unittest.TestCase):
                 "collection",
                 "directory",
                 str(collection),
-                DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
+                DATA.ResourceIdentity("directory-sha256-v1"),
                 False,
                 str(collection),
             )
@@ -917,7 +835,7 @@ class DataFileTests(unittest.TestCase):
                 "collection",
                 "directory",
                 str(collection),
-                DATA.Fingerprint("directory-sha256-v1", digest="0" * 64),
+                DATA.ResourceIdentity("directory-sha256-v1"),
                 False,
                 str(collection),
             )
@@ -935,37 +853,6 @@ class DataFileTests(unittest.TestCase):
                     DATA.DataContractError, "provenance.observation.unavailable"
                 ):
                     DATA.observe_fingerprint(resource)
-
-    def test_directory_cache_rejects_a_change_during_hot_observation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            entry = Path(directory) / "entry"
-            source = entry / "collection" / "a.txt"
-            write(source, "before")
-            resource = DATA.build_local_input(
-                "collection", "directory", "collection", entry_root=entry
-            )
-            observed = DATA.verify_fingerprint(resource)
-            assert observed is not None
-            cached = DATA.fingerprint_observation_record(resource, observed)
-            original = DATA._directory_member_metadata
-            changed = False
-
-            def mutate_after_metadata(root: Path, paths: tuple[Path, ...]) -> object:
-                nonlocal changed
-                result = original(root, paths)
-                if not changed:
-                    write(source, "after")
-                    changed = True
-                return result
-
-            with mock.patch.object(
-                DATA, "_directory_member_metadata", side_effect=mutate_after_metadata
-            ):
-                with self.assertRaisesRegex(
-                    DATA.DataContractError, "provenance.observation.unavailable"
-                ):
-                    DATA.verify_fingerprint(resource, cached=cached)
-
 
 class RetentionFileTests(unittest.TestCase):
     def test_exact_and_directory_records_are_strict_and_canonical(self) -> None:

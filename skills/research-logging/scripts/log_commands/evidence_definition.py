@@ -35,12 +35,13 @@ def add_or_update(
             log_root=entry.log.root,
             record_id=record_id,
             definition=value,
+            capture_artifact_fingerprint=True,
         )
         current = evidence.load_current(entry)
         return evidence.apply_candidate_locked(
             entry,
             action,
-            evaluated.record,
+            evaluated,
             current=current,
             dry_run=dry_run,
         )

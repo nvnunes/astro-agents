@@ -52,26 +52,20 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v3",
+                "schema": "research-log-data/v5",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
                         "location": "data/catalog.csv",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": catalog_digest,
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": True,
                     },
                     {
                         "name": "results",
                         "kind": "file",
                         "location": "data/results.csv",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": results_digest,
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": False,
                     },
                 ],
@@ -83,7 +77,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v3",
+  "schema": "research-log-evidence/v4",
   "records": [
     {
       "id": "success-rate",
@@ -253,16 +247,13 @@ def _origin_data_json(entry_root: Path) -> str:
     return (
         json.dumps(
             {
-                "schema": "research-log-data/v3",
+                "schema": "research-log-data/v5",
                 "inputs": [
                     {
                         "name": "catalog",
                         "kind": "file",
                         "location": "data/catalog.csv",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": hashlib.sha256(source.read_bytes()).hexdigest(),
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": True,
                     }
                 ],
@@ -316,7 +307,7 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
     support_path = entry_root / "pyrun-outputs.json"
     support = json.loads(support_path.read_text())
     record = support["outputs"].pop("data/results.csv")
-    record["fingerprint"] = resource.fingerprint.as_dict()
+    record["fingerprint"] = DATA.observe_fingerprint(resource).fingerprint.as_dict()
     record["parameters"] = [
         "--input-catalog",
         "<catalog>",
@@ -910,14 +901,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(support_path, json.dumps(support, indent=2) + "\n")
             write(sibling, "changed model\n")
             modified = _evaluate(summary).result
-            self.assertIn(
-                "data.fingerprint.mismatch",
-                {
-                    check.failure.code
-                    for check in modified.checks
-                    if check.failure is not None
-                },
-            )
             modified_provenance = next(
                 check
                 for check in modified.checks
@@ -979,7 +962,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support = json.loads(support_path.read_text())
             support["outputs"]["data/bundle"] = {
                 "confirmed": False,
-                "fingerprint": resource.fingerprint.as_dict(),
+                "fingerprint": DATA.observe_fingerprint(resource).fingerprint.as_dict(),
                 "inputs": {},
                 "code": {},
                 "parameters": ["--output-dir", "data/bundle"],
@@ -1045,7 +1028,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support_path = entry_root / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             record = dict(support["outputs"]["data/results.csv"])
-            record["fingerprint"] = resource.fingerprint.as_dict()
+            record["fingerprint"] = (
+                DATA.observe_fingerprint(resource).fingerprint.as_dict()
+            )
             support["outputs"]["data/stale"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
 
@@ -1292,10 +1277,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "name": "intermediate",
                     "kind": "file",
                     "location": "data/intermediate.csv",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": intermediate_digest,
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": False,
                 }
             )
@@ -1628,16 +1610,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             wrong = replace(
                 correct,
                 name="second",
-                fingerprint=DATA.Fingerprint("sha256", digest="0" * 64),
+                origin=False,
             )
             state = ENGINE._ScanState(root / "study.md", root, root)
 
             ENGINE._verify_input(correct, state)
 
-            with self.assertRaisesRegex(
-                DATA.DataContractError, "data.fingerprint.mismatch"
-            ):
-                ENGINE._verify_input(wrong, state)
+            ENGINE._verify_input(wrong, state)
 
     def test_cross_log_summary_link_is_not_an_owned_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1856,10 +1835,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "name": "unused-bad",
                     "kind": "file",
                     "location": "data/bad.csv",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": "0" * 64,
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": True,
                 }
             )
@@ -1867,57 +1843,37 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            invalid = next(
-                check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:input:unused-bad-declaration"
-            )
             evidence = next(
                 check
                 for check in evaluation.result.checks
                 if check.identity == "evidence:e001:success-rate"
             )
-            self.assertEqual(invalid.failure.code, "data.fingerprint.mismatch")
             self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 1)
 
     def test_invalid_command_input_blocks_its_provenance_without_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            catalog_path = entry.parent / "inputs/catalog.csv"
+            catalog_path = entry.parent / "data/catalog.csv"
             write(catalog_path, "value\n1\n")
-            data_path = entry.parent / "data.json"
-            data = json.loads(data_path.read_text(encoding="utf-8"))
-            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
-            catalog.update(
-                {
-                    "location": "inputs/catalog.csv",
-                    "fingerprint": {"algorithm": "sha256", "digest": "0" * 64},
-                }
-            )
-            write(data_path, json.dumps(data, indent=2) + "\n")
 
             evaluation = _evaluate(summary)
 
             checks = {check.identity: check for check in evaluation.result.checks}
-            declaration = checks["entry:e001:input:catalog-declaration"]
-            command = checks["entry:e001:command:1:1"]
+            command = checks["entry:e001:command:1:1:output:1"]
             provenance = checks["provenance:e001:success-rate"]
-            self.assertEqual(command.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-            self.assertIn({"dependency": declaration.identity}, command.dependencies)
+            self.assertEqual(command.status, RESULTS.CheckStatus.PASS)
             self.assertEqual(
                 checks["evidence:e001:success-rate"].status,
                 RESULTS.CheckStatus.PASS,
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-            self.assertIn({"dependency": command.identity}, provenance.dependencies)
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
             failure_codes = {
                 check.failure.code
                 for check in evaluation.result.checks
                 if check.failure is not None
             }
             self.assertNotIn("producer.missing", failure_codes)
-            self.assertIn("hygiene.output.unmatched", failure_codes)
 
     def test_invalid_data_file_blocks_dependent_checks_without_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1983,14 +1939,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(root)
             shared = root / "inputs/catalog.csv"
             write(shared, "success_rate\n0.676\n")
-            digest = hashlib.sha256(shared.read_bytes()).hexdigest()
             data_path = entry.parent / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
             catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
             catalog.update(
                 {
                     "location": shared.as_posix(),
-                    "fingerprint": {"algorithm": "sha256", "digest": digest},
+                    "identity": {"algorithm": "sha256"},
                 }
             )
             write(data_path, json.dumps(data, indent=2) + "\n")
@@ -2005,16 +1960,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v3",
+                        "schema": "research-log-data/v5",
                         "inputs": [
                             {
                                 "name": "shared-catalog",
                                 "kind": "file",
                                 "location": shared.as_posix(),
-                                "fingerprint": {
-                                    "algorithm": "sha256",
-                                    "digest": digest,
-                                },
+                                "identity": {"algorithm": "sha256"},
                                 "origin": False,
                             }
                         ],
@@ -2064,7 +2016,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, _ = _log(root)
             conflict_path = root / "shared-conflict.csv"
             write(conflict_path, "conflict\n")
-            conflict_digest = hashlib.sha256(conflict_path.read_bytes()).hexdigest()
             links: list[str] = []
             for entry_id, date, identity in (
                 ("e002", "2026-08-30", "conflict/v1"),
@@ -2086,16 +2037,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     entry_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v3",
+                            "schema": "research-log-data/v5",
                             "inputs": [
                                 {
                                     "name": "conflict",
                                     "kind": "file",
                                     "location": conflict_path.as_posix(),
-                                    "fingerprint": {
-                                        "algorithm": "sha256",
-                                        "digest": conflict_digest,
-                                    },
+                                    "identity": {"algorithm": "sha256"},
                                     "origin": entry_id == "e002",
                                 },
                                 {
@@ -2104,12 +2052,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                     "location": (
                                         f"data/{entry_id}.csv"
                                     ),
-                                    "fingerprint": {
-                                        "algorithm": "sha256",
-                                        "digest": hashlib.sha256(
-                                            safe_path.read_bytes()
-                                        ).hexdigest(),
-                                    },
+                                    "identity": {"algorithm": "sha256"},
                                     "origin": True,
                                 },
                             ],
@@ -2322,7 +2265,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry_root / "evidence.json",
                 """{
-  "schema": "research-log-evidence/v3",
+  "schema": "research-log-evidence/v4",
   "records": [
     {
       "id": "unlisted-value",
@@ -2444,10 +2387,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
             data = json.loads(data_path.read_text(encoding="utf-8"))
             catalog_path = entry.parent / "data/catalog.csv"
             write(catalog_path, "success_rate\n0.676\n")
-            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
-            catalog["fingerprint"]["digest"] = hashlib.sha256(
-                catalog_path.read_bytes()
-            ).hexdigest()
             data["inputs"] = [
                 item for item in data["inputs"] if item["name"] == "catalog"
             ]
@@ -2495,20 +2434,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             checks = {check.identity: check for check in evaluation.result.checks}
-            declaration = checks["entry:e001:input:results-declaration"]
             evidence = checks["evidence:e001:success-rate"]
             provenance = checks["provenance:e001:success-rate"]
-            assert declaration.failure is not None
-            self.assertEqual(declaration.failure.code, "data.fingerprint.mismatch")
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertEqual(evidence.status, RESULTS.CheckStatus.FAIL)
             self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
             assert provenance.failure is not None
             self.assertEqual(
                 provenance.failure.code,
                 "provenance.output.signature_mismatch",
-            )
-            self.assertIn(
-                {"dependency": declaration.identity}, evidence.dependencies
             )
             failure_codes = {
                 check.failure.code
@@ -2538,15 +2471,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             data_path = entry.parent / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
-            results = next(item for item in data["inputs"] if item["name"] == "results")
-            results["fingerprint"]["digest"] = hashlib.sha256(
-                (entry.parent / "data" / "results.csv").read_bytes()
-            ).hexdigest()
             write(data_path, json.dumps(data, indent=2) + "\n")
             support_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             support["outputs"]["data/results.csv"]["fingerprint"]["digest"] = (
-                results["fingerprint"]["digest"]
+                hashlib.sha256(
+                    (entry.parent / "data" / "results.csv").read_bytes()
+                ).hexdigest()
             )
             write(support_path, json.dumps(support, indent=2) + "\n")
 
@@ -2669,7 +2600,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v3",
+                        "schema": "research-log-data/v5",
                         "inputs": [
                             {
                                 "name": "prior-results",
@@ -2677,12 +2608,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                 "location": os.path.relpath(
                                     retained / "results.csv", second_root
                                 ),
-                                "fingerprint": {
-                                    "algorithm": "sha256",
-                                    "digest": hashlib.sha256(
-                                        (retained / "results.csv").read_bytes()
-                                    ).hexdigest(),
-                                },
+                                "identity": {"algorithm": "sha256"},
                                 "origin": False,
                             }
                         ],
@@ -2695,7 +2621,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v3",
+                        "schema": "research-log-evidence/v4",
                         "records": [
                             {
                                 "id": "prior-success-rate",
@@ -2880,12 +2806,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "name": "report",
                     "kind": "file",
                     "location": "data/report.txt",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(
-                            (entry.parent / "data/report.txt").read_bytes()
-                        ).hexdigest(),
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": False,
                 }
             )
@@ -2938,6 +2859,17 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 checks["provenance:e001:retained-report"].status,
                 RESULTS.CheckStatus.PASS,
             )
+            evidence["records"][-1]["artifact_fingerprint"] = None
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            inline_baseline = _evaluate(summary)
+            inline_check = next(
+                check
+                for check in inline_baseline.result.checks
+                if check.identity == "evidence:e001:retained-report"
+            )
+            self.assertEqual(inline_check.scope, RESULTS.CheckScope.CONFORMANCE)
+            assert inline_check.failure is not None
+            self.assertEqual(inline_check.failure.code, "evidence.declaration.invalid")
 
     def test_unmarked_artifact_requires_an_evidence_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2972,10 +2904,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "name": "historical_report",
                     "kind": "file",
                     "location": "data/historical-report.txt",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(report.read_bytes()).hexdigest(),
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": True,
                 }
             )
@@ -2999,6 +2928,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         {"source": "<historical_report>", "locator": None}
                     ],
                     "transformation": None,
+                    "artifact_fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(report.read_bytes()).hexdigest(),
+                    },
                 }
             )
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
@@ -3016,6 +2949,52 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertNotIn("producer.missing", failures)
             self.assertNotIn("orphan.input.unused", failures)
 
+            write(report, "replacement bytes\n")
+            replacement = _evaluate(summary)
+            artifact = next(
+                check
+                for check in replacement.result.checks
+                if check.identity == "evidence:e001:historical-report"
+            )
+            self.assertEqual(artifact.status, RESULTS.CheckStatus.FAIL)
+            assert artifact.failure is not None
+            self.assertEqual(
+                artifact.failure.code, "association.artifact.fingerprint_mismatch"
+            )
+            provenance = next(
+                check
+                for check in replacement.result.checks
+                if check.identity == "provenance:e001:historical-report"
+            )
+            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+
+            evidence["records"][-1].pop("artifact_fingerprint")
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            missing = _evaluate(summary)
+            missing_check = next(
+                check
+                for check in missing.result.checks
+                if check.identity == "evidence:e001:historical-report"
+            )
+            self.assertEqual(missing_check.scope, RESULTS.CheckScope.CONFORMANCE)
+            assert missing_check.failure is not None
+            self.assertEqual(missing_check.failure.code, "evidence.declaration.invalid")
+
+            evidence["records"][-1]["artifact_fingerprint"] = None
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            unrecorded = _evaluate(summary)
+            unrecorded_check = next(
+                check
+                for check in unrecorded.result.checks
+                if check.identity == "evidence:e001:historical-report"
+            )
+            self.assertEqual(unrecorded_check.scope, RESULTS.CheckScope.EVIDENCE)
+            assert unrecorded_check.failure is not None
+            self.assertEqual(
+                unrecorded_check.failure.code,
+                "association.artifact.fingerprint_unrecorded",
+            )
+
     def test_artifact_association_uses_path_not_equal_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -3031,10 +3010,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         "name": name,
                         "kind": "file",
                         "location": f"data/{path.name}",
-                        "fingerprint": {
-                            "algorithm": "sha256",
-                            "digest": hashlib.sha256(path.read_bytes()).hexdigest(),
-                        },
+                        "identity": {"algorithm": "sha256"},
                         "origin": True,
                     }
                 )
@@ -3056,6 +3032,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "kind": "artifact",
                     "sources": [{"source": "<second>", "locator": None}],
                     "transformation": None,
+                    "artifact_fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(second.read_bytes()).hexdigest(),
+                    },
                 }
             )
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
@@ -3491,12 +3471,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "name": "external-results",
                     "kind": "file",
                     "location": os.path.relpath(external_source, entry.parent),
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(
-                            external_source.read_bytes()
-                        ).hexdigest(),
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": True,
                 }
             )

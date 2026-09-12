@@ -17,12 +17,12 @@ shorthand as an evidence source.
 ## Choose The Boundary
 
 - Choose an origin when the target has no producer in this maintained log and
-  the researcher intends Provenance to stop at its current bytes. Ask whether
+  the researcher intends Provenance to stop at its current material. Ask whether
   an accessible external input should be copied into the entry or referenced
   at its current local location.
 - Choose generated when a current or planned `pyrun` command in the same
   maintained log uniquely owns the target. Declare the artifact before the
-  command runs; successful production records its fingerprint and execution
+  command runs; successful production records its observation and execution
   support. Production in another maintained log crosses an origin boundary.
 
 Storage location does not determine this choice. Do not infer an origin merely
@@ -48,9 +48,10 @@ Write `<target>` as an absolute path or a path relative to the selected entry
 root, regardless of the shell's current directory. For entry-owned material,
 prefer the short entry-relative form such as `data/metrics.json`.
 
-`add-origin` observes the existing target. `add-generated` accepts a missing
-target when `--kind` establishes whether it will be a file or directory, and
-records its fingerprint after successful production. A generated directory
+`add-origin` declares the existing target and verifies it can be observed.
+`add-generated` accepts a missing target when `--kind` establishes whether it
+will be a file or directory, and successful production records its observation
+in execution state rather than changing the declaration. A generated directory
 may use selected identity files or final-component patterns. `data use`
 creates a read-only reference to an existing declaration in another entry of
 the same log; it neither copies the data nor relabels it as an origin. After
@@ -70,8 +71,6 @@ Use the corresponding action for later intent:
   boundary. For one researcher-approved legitimately nondeterministic generated
   file, `--reproduction-comparison evidence` selects evidence-scoped
   reproduction; `--reproduction-comparison exact` removes that exception;
-- `log data refresh` records an intentional byte change after rechecking the
-  same boundary;
 - `log data rename` runs only after every recorded-command token is updated;
   it also changes same-entry evidence source tokens and reports producer
   commands that must be rerun;
@@ -82,7 +81,7 @@ Use action-specific `--dry-run` when a mutation needs preflight. Selected
 directory identity options belong to the selected action's help and explicit
 researcher intent; do not load or reproduce their registry representation
 during ordinary Record. A referenced declaration is maintained by its source
-entry: update, refresh, rename, and remove the source only after removing or
+entry: update, rename, and remove the source only after removing or
 updating every dependent reference.
 
 Whole-artifact exact comparison is always the default. Do not add an evidence
@@ -100,8 +99,8 @@ When one `pyrun` invocation owns an output directory, register that generated
 directory once rather than registering its files separately. Use `<name>` when
 a later command consumes the whole bundle and `<name>/member` when a command or
 evidence record consumes one exact file. The member remains exact, while the
-directory's complete recursive fingerprint and producer establish its identity
-and Provenance. Declare output-only directories too; their directory-level
+directory's declared selection and retained execution observation establish its
+identity and Provenance. Declare output-only directories too; their directory-level
 `pyrun` support establishes the atomic output boundary.
 
 If an action fails because existing research-owned state is malformed or
@@ -111,5 +110,7 @@ authorize Repair or direct registry editing.
 Mechanical validation reports missing declarations, raw-path bypasses, unused
 inputs, duplicate targets, cross-entry disagreement, changed bytes, remote-only
 material, and origin boundaries that hide current same-log producers that do
-not require reproduction. Do not
-refresh bytes or choose an origin boundary without researcher authority.
+not require reproduction. Do not choose an origin boundary without researcher
+authority. Current-byte observation is not acceptance of historical execution
+or presented-artifact bytes; use the explicit evidence action when a
+presentation baseline must change.

@@ -42,6 +42,8 @@ from .output_support import (
 from .presentation import (
     artifact_evidence_dependencies,
     find_entry_presentation,
+    require_artifact_baseline_form,
+    require_artifact_fingerprint,
     require_artifact_source_association,
 )
 from .provenance import (
@@ -226,6 +228,7 @@ def _refresh_evidence_check(
             resolve_input_token(source.source, entry.data) for source in record.sources
         ]
         if record.kind == "artifact":
+            observe_fingerprint(materials[0].resource)
             item = find_entry_presentation(
                 entry.root, entry.root.parent.parent, record.id
             )
@@ -233,6 +236,14 @@ def _refresh_evidence_check(
                 item,
                 source_path=Path(materials[0].value),
                 log_root=entry.root.parent.parent,
+            )
+            require_artifact_baseline_form(record, item)
+            artifact_observation = (
+                require_artifact_fingerprint(
+                    record, source_path=Path(materials[0].value)
+                )
+                if item.presentation_form in {"image", "link"}
+                else None
             )
             return (
                 MechanicalCheck(
@@ -250,6 +261,7 @@ def _refresh_evidence_check(
                                 "path": Path(materials[0].value).resolve().as_posix(),
                             },
                         ),
+                        artifact_observation=artifact_observation,
                     ),
                 ),
                 True,
@@ -306,9 +318,19 @@ def _refresh_evidence_check(
         raise
     except (DataContractError, MechanicalContractError) as error:
         return (
-            _failure_from_error(check.identity, CheckScope.EVIDENCE, error),
+            _failure_from_error(check.identity, _evidence_error_scope(error), error),
             artifact,
         )
+
+
+def _evidence_error_scope(error: MechanicalContractError) -> CheckScope:
+    """Keep malformed artifact-baseline state structural during refresh."""
+
+    return (
+        CheckScope.CONFORMANCE
+        if error.code == "evidence.declaration.invalid"
+        else CheckScope.EVIDENCE
+    )
 
 
 def _prior_presentation(
@@ -714,6 +736,7 @@ def _support(
         invocation,
         resolved,
         current_output=current_output,
+        current_inputs=_current_input_observations(invocation),
         current_code=current_code,
     )
     return {
@@ -731,6 +754,23 @@ def _observe_output(invocation: Invocation, path: Path) -> Fingerprint:
     if resource is not None:
         return observe_fingerprint(resource).fingerprint
     return _observe(path)
+
+
+def _current_input_observations(invocation: Invocation) -> Mapping[str, Fingerprint]:
+    """Observe this refresh's current recipe inputs before signature comparison."""
+
+    observations: dict[str, Fingerprint] = {}
+    for relationship in invocation.inputs:
+        resource = relationship.input_resource
+        if resource is None:
+            continue
+        observed = observe_fingerprint(resource).fingerprint
+        prior = observations.setdefault(resource.name, observed)
+        if prior != observed:
+            raise TargetedRefreshError(
+                f"conflicting current input observation: {resource.name}"
+            )
+    return observations
 
 
 def _owner_invocations(

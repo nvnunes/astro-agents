@@ -17,9 +17,9 @@ from research_log_data import (
     identity_pattern_paths,
     input_token_candidate,
     input_token_parts,
+    observe_fingerprint,
     require_git_repository_token_pairs,
     resolve_input_token,
-    verify_fingerprint,
 )
 
 from .entry_materials import (
@@ -1255,11 +1255,11 @@ def _named_output_directory_collection(
         )
     resource = relationship.input_resource
     assert resource is not None
-    if resource.fingerprint.algorithm == "identity-files-sha256-v1":
+    if resource.identity.algorithm == "identity-files-sha256-v1":
         members = tuple(
             path.resolve().as_posix() for path in identity_file_paths(resource).values()
         )
-    elif resource.fingerprint.algorithm == "identity-patterns-sha256-v1":
+    elif resource.identity.algorithm == "identity-patterns-sha256-v1":
         members = tuple(
             path.resolve().as_posix()
             for path in identity_pattern_paths(resource).values()
@@ -1404,7 +1404,7 @@ def _named_directory_collection(
         observation = (
             context.input_fingerprint_verifier(resolved.resource)
             if context.input_fingerprint_verifier is not None
-            else verify_fingerprint(resolved.resource)
+            else observe_fingerprint(resolved.resource)
         )
     except DataContractError as error:
         _fail(error.code, context.document, error.observed)
@@ -1415,13 +1415,13 @@ def _named_directory_collection(
             {"value": value, "reason": "observation_unavailable"},
         )
     resource = resolved.resource
-    if resource.fingerprint.algorithm in {
+    if resource.identity.algorithm in {
         "identity-files-sha256-v1",
         "identity-patterns-sha256-v1",
     }:
         collection_kind = (
             "identity-patterns"
-            if resource.fingerprint.algorithm == "identity-patterns-sha256-v1"
+            if resource.identity.algorithm == "identity-patterns-sha256-v1"
             else "identity-files"
         )
         relationship = MaterialRelationship(

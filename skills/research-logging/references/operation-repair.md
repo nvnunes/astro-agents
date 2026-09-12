@@ -60,18 +60,16 @@ source records or script. Preserve the original in version control or a backup.
 
 | Defect | Owner |
 |---|---|
-| Input registration, target, or fingerprint | `log data` |
+| Input registration, target, or identity declaration | `log data` |
+| Retained execution-observation mismatch | Report the mismatch and request explicit Reproduce authority for confirmation; promotion or a fresh `./pyrun` requires a separately authorized researcher decision |
 | Evidence record or association | `log evidence` |
 | Disconnected-retention declaration | `log retention` |
 | Recorded execution policy or recipe | `log pyrun`; edit Markdown first, then verify and update state |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
-`log data add-generated --requires-reproduction` admits a retained output with one
-structurally valid, unambiguous same-log producer. It cannot bypass a missing
-producer or replace ordinary pre-production declaration.
-For an existing declaration whose files were restored, use
-`log data refresh --requires-reproduction` to record their current fingerprint
-under the same producer checks. This does not clear the reproduction requirement.
+Use ordinary `log data add-generated` for a retained output or a pre-production
+declaration. Both require one structurally valid, unambiguous same-log producer;
+registration does not accept output bytes or change execution observations.
 
 For command edits, use the explicit actions in
 `references/file-entry-commands.md` under “Correct A Recorded Command”; do not hand-edit

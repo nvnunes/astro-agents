@@ -13,7 +13,7 @@ from research_log_data import (
     build_git_repository_input,
     build_local_input,
     data_file_from_inputs,
-    verify_fingerprint,
+    observe_fingerprint,
 )
 from research_log_validation_test_support import unittest, write
 
@@ -402,9 +402,7 @@ class CommandCollectionTests(unittest.TestCase):
 
             def verify(candidate: InputResource) -> FingerprintObservation:
                 calls.append(candidate.name)
-                observation = verify_fingerprint(candidate)
-                assert observation is not None
-                return observation
+                return observe_fingerprint(candidate)
 
             context = replace(
                 _context(root, (resource,)), input_fingerprint_verifier=verify

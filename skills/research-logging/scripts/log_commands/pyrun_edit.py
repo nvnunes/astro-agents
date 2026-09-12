@@ -274,7 +274,7 @@ def _observations(
             resource = data.by_name.get(name) if data else None
             if resource is None:
                 raise ActionError("pyrun.edit.input", f"input {name} is not registered")
-            observation = cache.verify(resource)
+            observation = cache.observe_resource(resource)
             if observation is None:
                 raise ActionError(
                     "pyrun.edit.input", f"input {name} cannot be observed"

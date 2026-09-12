@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from research_log_cli_test_support import replace_fixture_recipe, run_log
-from research_log_data import InputResource, data_file_from_inputs
+from research_log_data import build_local_input, data_file_from_inputs
 from test_log_pyrun import _execution, _fingerprint, _fixture, _recipe, _write_state
 from validation.pyrun_state import execution_id, load_pyrun_state
 
@@ -75,13 +75,12 @@ class LogPyrunEditTests(unittest.TestCase):
     def registry(self, name: str, *, origin: bool = True) -> None:
         path = self.entry / f"data/{name}.txt"
         path.write_text(name)
-        resource = InputResource(
+        resource = build_local_input(
             name,
             "file",
             f"data/{name}.txt",
-            _fingerprint(name.encode()),
-            origin,
-            str(path),
+            entry_root=self.entry,
+            origin=origin,
         )
         data = data_file_from_inputs(
             self.entry / "data.json", entry_root=self.entry, inputs=(resource,)
@@ -280,7 +279,7 @@ class LogPyrunEditTests(unittest.TestCase):
         result = self.run_edit("set-parameter", "--parameter", "count", "--value=-1")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_input_fingerprint_mismatch_is_not_reconstructed(self) -> None:
+    def test_input_observation_is_reconstructed_for_a_recipe_correction(self) -> None:
         self.registry("config")
         (self.entry / "data/config.txt").write_text("changed")
         self.command(
@@ -290,8 +289,10 @@ class LogPyrunEditTests(unittest.TestCase):
         result = self.run_edit(
             "add-input", "--parameter", "config", "--value", "<config>"
         )
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertEqual(self.state_path.read_bytes(), self.original_state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            dict(self.current().observed.inputs)["config"], _fingerprint(b"changed")
+        )
 
     def test_policy_changes_are_not_applied_with_recipe_changes(self) -> None:
         self.command(

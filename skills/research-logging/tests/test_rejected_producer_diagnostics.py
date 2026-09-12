@@ -157,7 +157,7 @@ class RejectedProducerTests(unittest.TestCase):
                 if target == "data/templates":
                     dry = run_log(
                         entry, "data", "add-generated", *common,
-                        "--kind", "directory", "--requires-reproduction", "--dry-run",
+                        "--kind", "directory", "--dry-run",
                         "templates", "data/templates",
                     )
                     self.assertEqual(dry.returncode, 2, dry.stderr)
@@ -167,7 +167,7 @@ class RejectedProducerTests(unittest.TestCase):
                     )
                 failed = run_log(
                     entry, "data", "add-generated", *common,
-                    "--kind", "directory", "--requires-reproduction",
+                    "--kind", "directory",
                     "templates", "data/templates",
                 )
                 self.assertEqual(failed.returncode, 2, failed.stderr)
@@ -200,7 +200,7 @@ class RejectedProducerTests(unittest.TestCase):
             ))
             accepted = run_log(
                 entry, "data", "add-generated", *common,
-                "--kind", "directory", "--requires-reproduction",
+                "--kind", "directory",
                 "templates", "data/templates",
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)

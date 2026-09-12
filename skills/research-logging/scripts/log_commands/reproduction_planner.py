@@ -15,6 +15,7 @@ from research_log_data import (
     DataFile,
     Fingerprint,
     InputResource,
+    ResourceIdentity,
     load_data_file,
     observe_fingerprint,
     parse_fingerprint,
@@ -962,7 +963,7 @@ def _trace_execution(
                 resource.canonical_target,
                 "input",
                 resource.kind,
-                resource.fingerprint,
+                dict(owner.execution.observed.inputs)[name],
             ),
             owner=key,
         )
@@ -1030,6 +1031,24 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
             )
 
 
+def _observation_resource(
+    name: str, kind: str, location: str, fingerprint: Fingerprint
+) -> InputResource:
+    """Adapt an observed fingerprint for read-only current-byte comparison."""
+
+    identity = ResourceIdentity(
+        fingerprint.algorithm,
+        commit=(
+            fingerprint.digest
+            if fingerprint.algorithm == "git-commit-sha1-v1"
+            else None
+        ),
+        files=fingerprint.files,
+        patterns=fingerprint.patterns,
+    )
+    return InputResource(name, kind, location, identity, True, location)
+
+
 def _record_source_material(
     state: _PlanningState,
     owner: _Owner,
@@ -1041,9 +1060,7 @@ def _record_source_material(
 
     identity = path.resolve().as_posix()
     reason_role = "participating_code" if role == "code" else "script"
-    resource = InputResource(
-        "planning-source", "file", identity, recorded, True, identity
-    )
+    resource = _observation_resource("planning-source", "file", identity, recorded)
     try:
         accepted = observe_fingerprint(resource).fingerprint
     except (OSError, ValueError) as error:
@@ -1105,7 +1122,12 @@ def _verified_boundary(
             (request.resource.canonical_target, str(error)),
         )
         return
-    if observed.as_dict() != request.resource.fingerprint.as_dict():
+    expected = (
+        dict(request.consumer.execution.observed.inputs).get(request.resource.name)
+        if request.consumer is not None
+        else None
+    )
+    if expected is not None and observed.as_dict() != expected.as_dict():
         _record_boundary_failure(
             state,
             request,
@@ -1116,12 +1138,12 @@ def _verified_boundary(
             ),
             (
                 request.resource.canonical_target,
-                f"expected={request.resource.fingerprint.content_identity}",
+                f"expected={expected.content_identity}",
                 f"observed={observed.content_identity}",
             ),
         )
         return
-    _boundary(state, request)
+    _boundary(state, request, observed)
 
 
 def _record_boundary_failure(
@@ -1162,6 +1184,7 @@ def _record_boundary_failure(
 def _boundary(
     state: _PlanningState,
     request: _BoundaryRequest,
+    observed: Fingerprint,
 ) -> None:
     entry = request.entry
     resource = request.resource
@@ -1169,7 +1192,7 @@ def _boundary(
     value: dict[str, object] = {
         "artifact": artifact,
         "entry": entry.context.id,
-        "fingerprint": resource.fingerprint.as_dict(),
+        "fingerprint": observed.as_dict(),
         "kind": request.kind,
         "name": resource.name,
     }
@@ -1183,7 +1206,7 @@ def _boundary(
         state,
         ("boundary", resource.canonical_target),
         _material(
-            resource.canonical_target, "boundary", resource.kind, resource.fingerprint
+            resource.canonical_target, "boundary", resource.kind, observed
         ),
         owner=request.consumer.key if request.consumer is not None else None,
     )
@@ -2332,13 +2355,8 @@ def _recheck_materials(plan: ReproductionPlan) -> None:
         if key in observed:
             continue
         observed.add(key)
-        resource = InputResource(
-            "snapshot-material",
-            kind,
-            identity,
-            fingerprint,
-            True,
-            identity,
+        resource = _observation_resource(
+            "snapshot-material", kind, identity, fingerprint
         )
         try:
             current = observe_fingerprint(resource).fingerprint
@@ -2417,14 +2435,7 @@ def _material_failure(
     role: str,
 ) -> tuple[str, str] | None:
     identity = path.resolve().as_posix()
-    resource = InputResource(
-        "planning-material",
-        kind,
-        identity,
-        expected,
-        True,
-        identity,
-    )
+    resource = _observation_resource("planning-material", kind, identity, expected)
     try:
         observed = observe_fingerprint(resource).fingerprint
     except (OSError, ValueError) as error:

@@ -31,7 +31,7 @@ def add_input(entry: Path, name: str, source: Path) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["inputs"].append(
         {
-            "fingerprint": {"algorithm": "sha256", "digest": digest(source)},
+            "identity": {"algorithm": "sha256"},
             "kind": "file",
             "location": source.relative_to(entry).as_posix(),
             "name": name,
@@ -87,12 +87,11 @@ def fixture(root: Path) -> tuple[Path, Path]:
     (entry / "data.json").write_text(
         json.dumps(
             {
-                "schema": "research-log-data/v3",
+                "schema": "research-log-data/v5",
                 "inputs": [
                     {
-                        "fingerprint": {
+                        "identity": {
                             "algorithm": "sha256",
-                            "digest": digest(results),
                         },
                         "kind": "file",
                         "location": "data/results.csv",
@@ -100,9 +99,8 @@ def fixture(root: Path) -> tuple[Path, Path]:
                         "origin": True,
                     },
                     {
-                        "fingerprint": {
+                        "identity": {
                             "algorithm": "sha256",
-                            "digest": digest(run_log),
                         },
                         "kind": "file",
                         "location": "data/run.log",
@@ -722,6 +720,13 @@ class LogEvidenceTests(unittest.TestCase):
                 [{"locator": None, "source": "<residual-map>"}],
             )
             self.assertIsNone(record["transformation"])
+            self.assertEqual(
+                record["artifact_fingerprint"],
+                {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                },
+            )
 
             before = (entry / "evidence.json").read_bytes()
             mismatched = run(
@@ -765,6 +770,20 @@ class LogEvidenceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            artifact.write_bytes(b"replacement image bytes")
+            refused_rename = run(
+                entry,
+                "evidence",
+                "rename",
+                *common,
+                "residual-map",
+                "renamed-map",
+            )
+            self.assertEqual(refused_rename.returncode, 2)
+            self.assertIn(
+                "association.artifact.fingerprint_mismatch", refused_rename.stderr
+            )
+            artifact.write_bytes(b"retained image bytes")
             renamed = run(
                 entry,
                 "evidence",
@@ -774,6 +793,13 @@ class LogEvidenceTests(unittest.TestCase):
                 "renamed-map",
             )
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
+            renamed_record = json.loads(
+                (entry / "evidence.json").read_text(encoding="utf-8")
+            )["records"][0]
+            self.assertEqual(
+                renamed_record["artifact_fingerprint"],
+                record["artifact_fingerprint"],
+            )
             document.write_text(
                 document.read_text(encoding="utf-8").replace(
                     "<!-- eid:renamed-map -->", ""
@@ -1975,7 +2001,7 @@ class LogEvidenceDefinitionTests(unittest.TestCase):
             path = write_definition(transient, valid)
             stale = run(entry, *common, "--definition", str(path))
             self.assertEqual(stale.returncode, 2)
-            self.assertIn("data.fingerprint.mismatch", stale.stderr)
+            self.assertIn("locator.selection.ambiguous", stale.stderr)
             self.assertFalse((entry / "evidence.json").exists())
 
     def test_definition_rejects_marker_ambiguity_and_oversized_input(self) -> None:

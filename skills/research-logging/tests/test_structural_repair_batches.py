@@ -13,7 +13,6 @@ from unittest import mock
 from log_commands.inspection_queries import Query, inspect_result
 from log_commands.repair_validation import _reconciled
 from research_log_cli_test_support import run_log
-from research_log_data import build_local_input
 from research_log_validation_test_support import mechanical_log
 from validation.batch_projection import build_batch_projection
 from validation.inspection import save_result
@@ -289,7 +288,8 @@ class StructuralRepairBatchTests(unittest.TestCase):
             summary, document = mechanical_log(root)
             logical, entry = summary.with_suffix(""), document.parent
             source = entry / "data/catalog.csv"
-            source.write_text(source.read_text() + "\n")
+            original_source = source.read_bytes()
+            source.unlink()
             first = run_log(root, "validate", "--path", str(logical))
             self.assertEqual(first.returncode, 0, first.stderr)
             result_id = inspect_result(logical, Query(action="list"))["items"][0][
@@ -302,16 +302,7 @@ class StructuralRepairBatchTests(unittest.TestCase):
                 if b["grouping_reason"] == "exact_material"
                 and b["anchors"][0]["kind"] == "registration"
             )
-            data = json.loads((entry / "data.json").read_text())
-            data["inputs"] = [
-                build_local_input(
-                    "catalog", "file", "data/catalog.csv", entry_root=entry, origin=True
-                ).as_dict()
-                if r["name"] == "catalog"
-                else r
-                for r in data["inputs"]
-            ]
-            (entry / "data.json").write_text(json.dumps(data))
+            source.write_bytes(original_source)
             projection = inspect_result(logical, Query(result_id=result_id))[
                 "metadata"
             ]["validation_id"]

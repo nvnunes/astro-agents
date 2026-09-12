@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import sqlite3
@@ -880,10 +879,7 @@ class MechanicalControllerTests(unittest.TestCase):
                     "name": "catalog",
                     "kind": "file",
                     "location": "inputs/catalog.csv",
-                    "fingerprint": {
-                        "algorithm": "sha256",
-                        "digest": hashlib.sha256(catalog.read_bytes()).hexdigest(),
-                    },
+                    "identity": {"algorithm": "sha256"},
                     "origin": True,
                 }
             ]

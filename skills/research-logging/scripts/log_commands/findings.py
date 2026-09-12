@@ -484,7 +484,7 @@ def _valid_edge(value: Mapping[str, object]) -> bool:
 
 def _valid_registry(value: Mapping[str, object]) -> bool:
     required = {"entry", "kind", "location", "name", "origin", "path"}
-    optional = {"fingerprint", "from_entry", "read_only"}
+    optional = {"fingerprint", "identity", "from_entry", "read_only"}
     if not (required <= set(value) <= required | optional):
         return False
     return (
@@ -494,6 +494,7 @@ def _valid_registry(value: Mapping[str, object]) -> bool:
         )
         and isinstance(value.get("origin"), bool)
         and ("fingerprint" not in value or isinstance(value.get("fingerprint"), dict))
+        and ("identity" not in value or isinstance(value.get("identity"), dict))
         and (
             ("from_entry" not in value and "read_only" not in value)
             or (

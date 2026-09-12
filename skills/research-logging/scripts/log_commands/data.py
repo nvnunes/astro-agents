@@ -77,7 +77,7 @@ def list_inputs(entry: EntryContext) -> ActionResult:
         records=tuple(
             {
                 **(
-                    {"commit": item.fingerprint.digest}
+                    {"commit": item.identity.commit}
                     if item.kind == "git-repository"
                     else {}
                 ),
@@ -141,11 +141,6 @@ def add(
 ) -> ActionResult:
     """Add one inferred local input after checking its asserted boundary."""
 
-    if arguments.requires_reproduction and not generated:
-        raise ActionError(
-            "data.pending.invalid",
-            "a reproduction requirement applies only to generated inputs",
-        )
     with entry_lock(entry):
         current = _load(entry)
         candidate = _build_item(
@@ -167,7 +162,6 @@ def add(
                     entry,
                     current,
                     candidate,
-                    requires_reproduction=arguments.requires_reproduction,
                 )
                 return _result(
                     "add-generated" if generated else "add-origin",
@@ -181,7 +175,6 @@ def add(
             entry,
             built,
             candidate,
-            requires_reproduction=arguments.requires_reproduction,
         )
         if not arguments.dry_run:
             remove_or_write(built.path, built.canonical_json())
@@ -245,45 +238,6 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         if not arguments.dry_run:
             remove_or_write(built.path, built.canonical_json())
         return _result("update", "dry-run" if arguments.dry_run else "changed", True)
-
-
-def refresh(
-    entry: EntryContext,
-    name: str,
-    *,
-    dry_run: bool,
-    requires_reproduction: bool = False,
-) -> ActionResult:
-    """Observe current bytes while optionally retaining a reproduction requirement.
-
-    The reproduction requirement needs the same unambiguous producer as
-    pre-production registration. Neither mode changes the declaration's
-    semantics or execution records.
-    """
-
-    with entry_lock(entry):
-        current = _required(entry)
-        existing = _named(current, name)
-        if existing.reference_entry is not None:
-            raise ActionError(
-                "data.reference.read_only", "refresh the producer declaration"
-            )
-        if requires_reproduction and existing.origin:
-            raise ActionError(
-                "data.pending.invalid",
-                "a reproduction requirement applies only to generated inputs",
-            )
-        observed = observe_fingerprint(existing)
-        candidate = replace(existing, fingerprint=observed.fingerprint)
-        built = _build(entry, _replace(current, name, candidate))
-        producer = _require_boundary(
-            entry, built, candidate, requires_reproduction=requires_reproduction
-        )
-        if candidate == existing:
-            return _result("refresh", "unchanged", False, producer)
-        if not dry_run:
-            remove_or_write(built.path, built.canonical_json())
-        return _result("refresh", "dry-run" if dry_run else "changed", True, producer)
 
 
 def remove(entry: EntryContext, name: str, *, dry_run: bool) -> ActionResult:
@@ -494,10 +448,10 @@ def _updated_identity(
         return arguments.identity
     if arguments.byte_complete:
         return None
-    if existing.fingerprint.algorithm == "identity-files-sha256-v1":
-        return existing.fingerprint.files
-    if existing.fingerprint.algorithm == "identity-patterns-sha256-v1":
-        return existing.fingerprint.patterns
+    if existing.identity.algorithm == "identity-files-sha256-v1":
+        return existing.identity.files
+    if existing.identity.algorithm == "identity-patterns-sha256-v1":
+        return existing.identity.patterns
     return None
 
 
@@ -516,7 +470,7 @@ def _updated_commit(
                 "data.git.invalid",
                 "a Git repository input cannot use directory identity options",
             )
-        return existing.fingerprint.digest
+        return existing.identity.commit
     return None
 
 
@@ -524,10 +478,9 @@ def _require_boundary(
     entry: EntryContext,
     data: DataFile,
     candidate: InputResource,
-    *,
-    requires_reproduction: bool = False,
 ) -> dict[str, object] | None:
     if candidate.kind == "git-repository":
+        observe_fingerprint(candidate)
         return None
     materials = inspect_log_materials(
         entry.log, data_overrides={entry.root: data}
@@ -540,24 +493,13 @@ def _require_boundary(
             confirmed_record=materials.confirmed,
         )
         return None
-    if candidate.fingerprint.digest is None:
-        producer = materials.require_pending_generated(candidate)
-        return {
-            "reproduction": "not_yet_produced",
-            "document": producer.document,
-            "fence": producer.fence,
-            "ordinal": producer.ordinal,
-        }
-    if requires_reproduction:
-        producer = materials.require_pending_generated(candidate)
-        return {
-            "reproduction": "required",
-            "document": producer.document,
-            "fence": producer.fence,
-            "ordinal": producer.ordinal,
-        }
-    materials.require_generated(candidate)
-    return None
+    producer = materials.require_pending_generated(candidate)
+    return {
+        "reproduction": "not_yet_produced",
+        "document": producer.document,
+        "fence": producer.fence,
+        "ordinal": producer.ordinal,
+    }
 
 
 def _renamed_evidence(
@@ -575,14 +517,7 @@ def _renamed_evidence(
             for source in record.sources
         )
         records.append(
-            EvidenceRecord(
-                record.id,
-                record.document,
-                record.kind,
-                sources,
-                record.transformation,
-                record.reproduction_tolerance,
-            )
+            replace(record, sources=sources)
         )
     return evidence_file_from_records(
         current.path,

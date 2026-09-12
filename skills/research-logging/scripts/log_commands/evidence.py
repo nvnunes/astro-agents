@@ -7,7 +7,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from research_log_data import load_data_file, resolve_input_token, verify_fingerprint
+from research_log_data import (
+    Fingerprint,
+    load_data_file,
+    observe_file_content,
+    observe_fingerprint,
+    resolve_input_token,
+)
 from validation.evidence import (
     EvidenceFile,
     EvidenceRecord,
@@ -22,9 +28,13 @@ from validation.locator import (
 )
 from validation.mechanical_values import CanonicalValue, SelectionResult
 from validation.presentation import (
+    CandidateEvaluation,
+    PreparedArtifactObservation,
     evaluate_candidate_record,
     find_entry_presentation,
     index_entry_presentations_all,
+    require_artifact_baseline_form,
+    require_artifact_fingerprint,
 )
 from validation.transformation import parse_markdown_table
 
@@ -98,11 +108,12 @@ def add_or_update_common(
                     transformation=None,
                     tolerance=arguments.reproduction_tolerance,
                 ),
+                capture_artifact_fingerprint=True,
             )
             return apply_candidate_locked(
                 entry,
                 action,
-                evaluated.record,
+                evaluated,
                 current=current,
                 dry_run=arguments.dry_run,
             )
@@ -119,11 +130,12 @@ def add_or_update_common(
                 transformation=transformation,
                 tolerance=arguments.reproduction_tolerance,
             ),
+            capture_artifact_fingerprint=True,
         )
         return apply_candidate_locked(
             entry,
             action,
-            evaluated.record,
+            evaluated,
             current=current,
             dry_run=arguments.dry_run,
         )
@@ -132,14 +144,17 @@ def add_or_update_common(
 def apply_candidate_locked(
     entry: EntryContext,
     action: str,
-    candidate: EvidenceRecord,
+    evaluated: CandidateEvaluation,
     *,
     current: EvidenceFile | None,
     dry_run: bool,
 ) -> ActionResult:
     """Apply one fully evaluated candidate while the entry lock is held."""
 
+    candidate = evaluated.record
+    prepared_artifact_observation = evaluated.artifact_observation
     existing = {record.id: record for record in current.records} if current else {}
+    previous = existing.get(candidate.id)
     if action == "add" and candidate.id in existing:
         if existing[candidate.id] == candidate:
             return _result(action, "unchanged", False)
@@ -147,12 +162,29 @@ def apply_candidate_locked(
     if action == "update" and candidate.id not in existing:
         raise ActionError("evidence.record.missing", candidate.id)
     if action == "update" and existing[candidate.id] == candidate:
-        return _result(action, "unchanged", False)
+        return _result(
+            action,
+            "unchanged",
+            False,
+            records=_artifact_update_report(
+                previous, prepared_artifact_observation
+            ),
+        )
+    _recheck_prepared_artifact(
+        entry,
+        candidate,
+        prepared_artifact_observation=prepared_artifact_observation,
+    )
     existing[candidate.id] = candidate
     built = _build(entry, tuple(existing.values()))
     if not dry_run:
         remove_or_write(built.path, built.canonical_json())
-    return _result(action, "dry-run" if dry_run else "changed", True)
+    return _result(
+        action,
+        "dry-run" if dry_run else "changed",
+        True,
+        records=_artifact_update_report(previous, prepared_artifact_observation),
+    )
 
 
 def rename(
@@ -197,12 +229,20 @@ def rename(
                     else old.reproduction_tolerance.absolute
                 ),
             ),
+            capture_artifact_fingerprint=False,
         )
         if (
             evaluated.presentation.document != old.document
             or evaluated.presentation.kind != old.kind
         ):
             raise ActionError("evidence.rename.presentation_changed", new_id)
+        if old.kind == "artifact":
+            require_artifact_baseline_form(old, evaluated.presentation)
+            if evaluated.presentation.presentation_form in {"image", "link"}:
+                require_artifact_fingerprint(
+                    old,
+                    source_path=_artifact_source_path(entry, old),
+                )
         existing[new_id] = EvidenceRecord(
             new_id,
             old.document,
@@ -210,6 +250,8 @@ def rename(
             old.sources,
             old.transformation,
             old.reproduction_tolerance,
+            old.artifact_fingerprint,
+            old.artifact_fingerprint_present,
         )
         built = _build(entry, tuple(existing.values()))
         if not dry_run:
@@ -281,7 +323,7 @@ def _common_locator(
             ]
     data = load_data_file(entry.root / "data.json", entry_root=entry.root)
     resolved = resolve_input_token(_token(arguments.source), data)
-    verify_fingerprint(resolved.resource)
+    observe_fingerprint(resolved.resource)
     observation = observe_source(Path(resolved.path))
     if observation.profile in {"hdf5", "json", "npz"} and "text" not in base:
         base["path"] = []
@@ -631,10 +673,64 @@ def _build(entry: EntryContext, records: tuple[EvidenceRecord, ...]) -> Evidence
     )
 
 
-def _result(action: str, status: str, changed: bool) -> ActionResult:
+def _recheck_prepared_artifact(
+    entry: EntryContext,
+    candidate: EvidenceRecord,
+    *,
+    prepared_artifact_observation: PreparedArtifactObservation | None,
+) -> None:
+    """Reject publication when an accepted artifact changed after preparation."""
+
+    if prepared_artifact_observation is None:
+        return
+    current_path = _artifact_source_path(entry, candidate)
+    if current_path != prepared_artifact_observation.path:
+        raise ActionError("evidence.artifact.source_changed", candidate.id)
+    digest, current_identity = observe_file_content(current_path)
+    if (
+        Fingerprint("sha256", digest) != prepared_artifact_observation.fingerprint
+        or current_identity != prepared_artifact_observation.identity
+    ):
+        raise ActionError("evidence.artifact.source_changed", candidate.id)
+
+
+def _artifact_source_path(entry: EntryContext, record: EvidenceRecord) -> Path:
+    data = load_data_file(entry.root / "data.json", entry_root=entry.root)
+    return Path(resolve_input_token(record.sources[0].source, data).path).resolve()
+
+
+def _artifact_update_report(
+    old: EvidenceRecord | None, prepared: PreparedArtifactObservation | None
+) -> tuple[dict[str, object], ...] | None:
+    if prepared is None:
+        return None
+    old_fingerprint = None if old is None else old.artifact_fingerprint
+    return (
+        {
+            "artifact_fingerprint": {
+                "initial_acceptance": old_fingerprint is None,
+                "new": prepared.fingerprint.as_dict(),
+                "old": (
+                    old_fingerprint.as_dict()
+                    if old_fingerprint is not None
+                    else None
+                ),
+            }
+        },
+    )
+
+
+def _result(
+    action: str,
+    status: str,
+    changed: bool,
+    *,
+    records: tuple[dict[str, object], ...] | None = None,
+) -> ActionResult:
     return ActionResult(
         f"evidence.{action}",
         status,
         f"evidence.{status}",
         changed,
+        records=records,
     )

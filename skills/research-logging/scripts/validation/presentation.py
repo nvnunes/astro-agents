@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from research_log_data import load_data_file, resolve_input_token, verify_fingerprint
+from research_log_data import (
+    Fingerprint,
+    load_data_file,
+    observe_file_content,
+    observe_fingerprint,
+    resolve_input_token,
+)
 
 from .errors import MechanicalContractError
 from .evidence import (
@@ -32,12 +38,22 @@ class PresentationEvaluationError(MechanicalContractError):
 
 
 @dataclass(frozen=True)
+class PreparedArtifactObservation:
+    """Accepted bytes and resolved file identity to recheck before publication."""
+
+    fingerprint: Fingerprint
+    path: Path
+    identity: Mapping[str, object]
+
+
+@dataclass(frozen=True)
 class CandidateEvaluation:
     """One decoded record, presentation, and complete source selections."""
 
     record: EvidenceRecord
     presentation: PresentedItem
     selections: tuple[SelectionResult, ...]
+    artifact_observation: PreparedArtifactObservation | None = None
 
 
 def find_entry_presentation(
@@ -94,8 +110,13 @@ def evaluate_candidate_record(
     log_root: Path,
     record_id: str,
     definition: Mapping[str, object],
+    capture_artifact_fingerprint: bool,
 ) -> CandidateEvaluation:
-    """Decode and completely compare one candidate evidence record."""
+    """Decode and completely compare one candidate evidence record.
+
+    Callers must explicitly select capture when accepting current artifact bytes.
+    Rename only revalidates the presentation and preserves its old baseline.
+    """
 
     presentation = find_entry_presentation(entry_root, log_root, record_id)
     record = evidence_record_from_fields(
@@ -111,6 +132,12 @@ def evaluate_candidate_record(
             **(
                 {"reproduction_tolerance": definition["reproduction_tolerance"]}
                 if "reproduction_tolerance" in definition
+                else {}
+            ),
+            **(
+                {"artifact_fingerprint": None}
+                if presentation.kind == "artifact"
+                and presentation.presentation_form in {"image", "link"}
                 else {}
             ),
         },
@@ -131,12 +158,26 @@ def evaluate_candidate_record(
             require_artifact_source_association(
                 presentation, source_path=source_path, log_root=log_root
             )
-        verify_fingerprint(resolved.resource)
+        observe_fingerprint(resolved.resource)
         if presentation.kind != "artifact":
             assert source.locator is not None
             selections.append(evaluate_locator(source_path, source.locator))
     if presentation.kind == "artifact":
-        return CandidateEvaluation(record, presentation, ())
+        digest, file_identity = observe_file_content(Path(resolved.path))
+        observation = Fingerprint("sha256", digest)
+        if (
+            presentation.presentation_form in {"image", "link"}
+            and capture_artifact_fingerprint
+        ):
+            record = replace(record, artifact_fingerprint=observation)
+        return CandidateEvaluation(
+            record,
+            presentation,
+            (),
+            PreparedArtifactObservation(
+                observation, Path(resolved.path).resolve(), file_identity
+            ),
+        )
     result = evaluate_transformation(
         record.transformation, selections, presentation_kind=record.kind
     )
@@ -174,14 +215,64 @@ def require_artifact_source_association(
         )
 
 
+def require_artifact_fingerprint(
+    record: EvidenceRecord, *, source_path: Path
+) -> Fingerprint:
+    """Require an artifact's current exact file bytes to match evidence state."""
+
+    if record.artifact_fingerprint is None:
+        raise PresentationEvaluationError(
+            "association.artifact.fingerprint_unrecorded",
+            record.id,
+            {"path": source_path.as_posix()},
+            "Artifact Evidence Baseline",
+        )
+    digest, _ = observe_file_content(source_path)
+    observed = Fingerprint("sha256", digest)
+    if observed != record.artifact_fingerprint:
+        raise PresentationEvaluationError(
+            "association.artifact.fingerprint_mismatch",
+            record.id,
+            {
+                "expected": record.artifact_fingerprint.as_dict(),
+                "observed": observed.as_dict(),
+            },
+            "Artifact Evidence Baseline",
+        )
+    return observed
+
+
+def require_artifact_baseline_form(
+    record: EvidenceRecord, presentation: PresentedItem
+) -> None:
+    """Keep byte baselines limited to path-based image and link evidence."""
+
+    path_based = presentation.presentation_form in {"image", "link"}
+    if path_based and not record.artifact_fingerprint_present:
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            record.id,
+            {"presentation_form": presentation.presentation_form},
+            "Artifact Evidence Baseline",
+        )
+    if not path_based and record.artifact_fingerprint_present:
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            record.id,
+            {"presentation_form": presentation.presentation_form},
+            "Artifact Evidence Baseline",
+        )
+
+
 def artifact_evidence_dependencies(
     record: EvidenceRecord,
     presentation: PresentedItem,
     inputs: Sequence[Mapping[str, object]],
+    artifact_observation: Fingerprint | None = None,
 ) -> tuple[Mapping[str, object], ...]:
     """Return the complete dependency projection for one artifact record."""
 
-    return (
+    dependencies: tuple[Mapping[str, object], ...] = (
         {"record": canonical_json(record.as_dict())},
         {
             "presentation": {
@@ -201,6 +292,9 @@ def artifact_evidence_dependencies(
         },
         {"inputs": [dict(item) for item in inputs]},
     )
+    if artifact_observation is not None:
+        dependencies += ({"artifact_observation": artifact_observation.as_dict()},)
+    return dependencies
 
 
 def _require_inline_artifact_content(

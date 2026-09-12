@@ -840,7 +840,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             self.assertEqual(commands[0].inputs[0].input_resource, source)
             self.assertEqual(
-                commands[0].inputs[0].input_resource.fingerprint.algorithm,
+                commands[0].inputs[0].input_resource.identity.algorithm,
                 "identity-patterns-sha256-v1",
             )
             self.assertTrue(commands[0].inputs[0].origin)

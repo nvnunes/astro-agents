@@ -6,10 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research_log_data import Fingerprint, load_data_file
+from research_log_data import Fingerprint, load_data_file, observe_fingerprint
 from test_research_log_validation_engine import _evaluate, _log
 from validation.commands import CommandContext, discover_commands
 from validation.controller import evaluate_current_record
+from validation.errors import MechanicalContractError
+from validation.mechanical_results import CheckScope
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
     PYRUN_EXECUTION_CONTRACT,
@@ -22,6 +24,7 @@ from validation.pyrun_state import (
     validated_pyrun_serialization,
 )
 from validation.targeted_refresh import (
+    _evidence_error_scope,
     _observe,
     refresh_promoted_provenance,
 )
@@ -29,6 +32,23 @@ from validation.targeted_refresh import (
 
 class TargetedProvenanceRefreshTests(unittest.TestCase):
     maxDiff = None
+
+    def test_artifact_baseline_structure_errors_keep_conformance_scope(self) -> None:
+        structural = MechanicalContractError(
+            "evidence.declaration.invalid",
+            "artifact",
+            {},
+            "Artifact Evidence Baseline",
+        )
+        unrecorded = MechanicalContractError(
+            "association.artifact.fingerprint_unrecorded",
+            "artifact",
+            {},
+            "Artifact Evidence Baseline",
+        )
+
+        self.assertEqual(_evidence_error_scope(structural), CheckScope.CONFORMANCE)
+        self.assertEqual(_evidence_error_scope(unrecorded), CheckScope.EVIDENCE)
 
     def test_directory_observation_includes_file_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -45,6 +65,76 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             second = _observe(root)
 
             self.assertNotEqual(first, second)
+
+    def test_artifact_refresh_observes_selected_directory_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            entry_root = entry.parent
+            bundle = entry_root / "data" / "bundle"
+            bundle.mkdir()
+            artifact = bundle / "map.png"
+            artifact.write_bytes(b"map bytes")
+            selected = bundle / "selected.txt"
+            selected.write_text("selected\n", encoding="utf-8")
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            data["inputs"].append(
+                {
+                    "name": "bundle",
+                    "kind": "directory",
+                    "location": "data/bundle",
+                    "identity": {
+                        "algorithm": "identity-files-sha256-v1",
+                        "files": ["map.png", "selected.txt"],
+                    },
+                    "origin": True,
+                }
+            )
+            data_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            entry.write_text(
+                entry.read_text(encoding="utf-8")
+                + "\n## Map\n\n`Background:`\n\nMap context.\n\n"
+                "`Steps:`\n\nOpen the map.\n\n`Results:`\n\n"
+                "![Map](data/bundle/map.png)<!-- eid:map -->\n",
+                encoding="utf-8",
+            )
+            evidence_path = entry_root / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"].append(
+                {
+                    "id": "map",
+                    "document": "entries/2026-08-29-e001-study/e001.md",
+                    "kind": "artifact",
+                    "sources": [{"source": "<bundle>/map.png", "locator": None}],
+                    "transformation": None,
+                    "artifact_fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    },
+                }
+            )
+            evidence_path.write_text(
+                json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
+            )
+            prior = _evaluate(summary).result
+            initial = next(
+                check for check in prior.checks if check.identity == "evidence:e001:map"
+            )
+            self.assertEqual(initial.status.value, "pass")
+
+            selected.unlink()
+            refreshed = refresh_promoted_provenance(
+                summary, prior, [artifact], result_date="2026-08-30"
+            )
+            check = next(
+                item
+                for item in refreshed.checks
+                if item.identity == "evidence:e001:map"
+            )
+            self.assertEqual(check.scope, CheckScope.EVIDENCE)
+            assert check.failure is not None
+            self.assertEqual(check.failure.code, "data.target.missing")
 
     def test_promotion_refresh_matches_complete_current_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -89,46 +179,23 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            entry.write_text(
-                entry.read_text(encoding="utf-8").replace(
-                    "The success rate was",
-                    "<!-- eid:results-diff -->\n"
-                    "```diff\nsuccess_rate\n0.676\n```\n\nThe success rate was",
-                ),
-                encoding="utf-8",
-            )
             evidence_path = entry.parent / "evidence.json"
             evidence_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
             evidence_payload["records"][0]["document"] = (
                 "entries/2026-08-29-e001-study/e001a.md"
             )
-            evidence_payload["records"].append(
-                {
-                    "id": "results-diff",
-                    "document": "entries/2026-08-29-e001-study/e001a.md",
-                    "kind": "artifact",
-                    "sources": [{"source": "<results>", "locator": None}],
-                    "transformation": None,
-                }
-            )
             evidence_path.write_text(
                 json.dumps(evidence_payload, indent=2) + "\n", encoding="utf-8"
             )
             legacy_path = entry.parent / "pyrun-outputs.json"
-            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
-            legacy["outputs"]["data/results.csv"]["confirmed"] = False
-            legacy_path.write_text(
-                json.dumps(legacy, indent=2) + "\n", encoding="utf-8"
-            )
+            legacy_path.unlink()
             prior = _evaluate(summary).result
             direct = next(
                 check
                 for check in prior.checks
                 if check.identity == "provenance:e001a:success-rate"
             )
-            self.assertEqual(
-                direct.failure.code, "provenance.output.reproduction_required"
-            )
+            self.assertEqual(direct.failure.code, "provenance.output.unrecorded")
 
             entry_root = entry.parent
             data = load_data_file(entry_root / "data.json", entry_root=entry_root)
@@ -161,7 +228,8 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 ObservedExecution(
                     Fingerprint("sha256", digest=invocation.script_identity),
                     tuple(
-                        (name, data.by_name[name].fingerprint) for name in recipe.inputs
+                        (name, observe_fingerprint(data.by_name[name]).fingerprint)
+                        for name in recipe.inputs
                     ),
                     (),
                     (
@@ -184,7 +252,6 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
                 validated_pyrun_serialization(state, project_root=root),
                 encoding="utf-8",
             )
-            legacy_path.unlink()
             candidate = PyrunFile(
                 state.path,
                 state.entry_root,
@@ -212,25 +279,9 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             results_path.write_text(
                 "success_rate,note\n0.676,promoted\n", encoding="utf-8"
             )
-            entry.write_text(
-                entry.read_text(encoding="utf-8").replace(
-                    "```diff\nsuccess_rate\n0.676\n```",
-                    "```diff\nsuccess_rate,note\n0.676,promoted\n```",
-                ),
-                encoding="utf-8",
-            )
             promoted_fingerprint = Fingerprint(
                 "sha256",
                 digest=hashlib.sha256(results_path.read_bytes()).hexdigest(),
-            )
-            data_payload = json.loads(
-                (entry_root / "data.json").read_text(encoding="utf-8")
-            )
-            next(item for item in data_payload["inputs"] if item["name"] == "results")[
-                "fingerprint"
-            ] = promoted_fingerprint.as_dict()
-            (entry_root / "data.json").write_text(
-                json.dumps(data_payload, indent=2) + "\n", encoding="utf-8"
             )
             promoted_execution = PyrunExecution(
                 False,
@@ -273,10 +324,6 @@ class TargetedProvenanceRefreshTests(unittest.TestCase):
             changed_fingerprint = Fingerprint(
                 "sha256",
                 digest=hashlib.sha256(results_path.read_bytes()).hexdigest(),
-            )
-            data_payload["inputs"][1]["fingerprint"] = changed_fingerprint.as_dict()
-            (entry_root / "data.json").write_text(
-                json.dumps(data_payload, indent=2) + "\n", encoding="utf-8"
             )
             changed_execution = PyrunExecution(
                 False,

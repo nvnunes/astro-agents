@@ -7,12 +7,12 @@ import os
 import secrets
 import shutil
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
-from research_log_data import DataFile, Fingerprint, load_data_file, parse_fingerprint
+from research_log_data import Fingerprint, parse_fingerprint
 from research_log_paths import (
     REPRODUCTION_REPORT,
     REPRODUCTION_RESULTS,
@@ -37,7 +37,6 @@ from validation.targeted_refresh import (
 
 from .context import (
     LogContext,
-    parse_entry_directory_name,
     resolve_entry,
     resolve_project_root,
 )
@@ -435,37 +434,6 @@ def _metadata_candidates(
     updates = {
         state.path: validated_pyrun_serialization(candidate_state, project_root=project)
     }
-    destinations = {item.destination.resolve(): item.fingerprint for item in outputs}
-    for other in _entry_roots(log):
-        data = load_data_file(other / "data.json", entry_root=other)
-        changed = [
-            item
-            for item in data.inputs
-            if Path(item.canonical_target).resolve() in destinations
-        ]
-        if not changed:
-            continue
-        if other != entry.root:
-            if any(
-                item.fingerprint != destinations[Path(item.canonical_target).resolve()]
-                for item in changed
-            ):
-                raise ActionError(
-                    "reproduction.promotion.cross_entry_dependency",
-                    "promotion would require mutation outside the producing entry",
-                )
-            continue
-        inputs = tuple(
-            replace(
-                item,
-                fingerprint=destinations.get(
-                    Path(item.canonical_target).resolve(), item.fingerprint
-                ),
-            )
-            for item in data.inputs
-        )
-        candidate_data = DataFile(data.path, data.entry_root, inputs)
-        updates[data.path] = candidate_data.canonical_json() + "\n"
     prior = {path: path.read_text(encoding="utf-8") for path in updates}
     return updates, prior
 
@@ -588,22 +556,6 @@ def _remove_path(path: Path) -> None:
         path.unlink(missing_ok=True)
     elif path.is_dir():
         shutil.rmtree(path)
-
-
-def _entry_roots(log: LogContext) -> tuple[Path, ...]:
-    entries = log.root / "entries"
-    return tuple(
-        sorted(
-            (
-                path.resolve()
-                for path in entries.iterdir()
-                if path.is_dir()
-                and not path.is_symlink()
-                and parse_entry_directory_name(path.name) is not None
-            ),
-            key=lambda path: path.name,
-        )
-    )
 
 
 def _safe_run_path(root: Path, value: str) -> Path:

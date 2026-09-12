@@ -6,13 +6,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence, cast
 
-PLAN_SCHEMA = "research-log-reproduction-plan/6"
+PLAN_SCHEMA = "research-log-reproduction-plan/7"
 LEGACY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/1"
 PRELOCAL_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/3"
 PRECOMMAND_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/4"
 PREQUERY_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/6"
-SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/8"
-REPAIR_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/9"
+SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/10"
+REPAIR_SOURCE_SNAPSHOT_SCHEMA = "research-log-reproduction-source-snapshot/11"
 PREEXECUTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
 REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
@@ -289,7 +289,7 @@ def is_repair_verification(plan: ReproductionPlan) -> bool:
         if "repair_verification" in snapshot:
             raise ActionError(
                 "reproduction.source.invalid",
-                "repair marker requires source snapshot/9",
+                "repair marker requires source snapshot/11",
             )
         return False
     if (

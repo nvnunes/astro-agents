@@ -117,7 +117,7 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class LogDataTests(unittest.TestCase):
-    def test_refresh_restored_generated_material_keeps_reproduction_required(
+    def test_generated_declaration_has_no_refresh_operation(
         self,
     ) -> None:
         for kind in ("file", "directory"):
@@ -146,7 +146,7 @@ class LogDataTests(unittest.TestCase):
                 self.assertEqual(declared.returncode, 0, declared.stderr)
                 before = (entry / "data.json").read_bytes()
                 before_item = data_inputs(entry)[0]
-                self.assertNotIn("digest", before_item["fingerprint"])
+                self.assertNotIn("digest", before_item["identity"])
                 target = entry / "data" / "restored"
                 if kind == "directory":
                     target.mkdir()
@@ -155,75 +155,23 @@ class LogDataTests(unittest.TestCase):
                     material = target
                 material.write_bytes(b"restored original\n")
 
-                strict = run(entry, "data", "refresh", *common, "restored")
-                self.assertEqual(result(strict)["code"], "provenance.output.unrecorded")
-                checked = run(
-                    entry,
-                    "data",
-                    "refresh",
-                    *common,
-                    "restored",
-                    "--requires-reproduction",
-                    "--dry-run",
-                )
-                self.assertEqual(checked.returncode, 0, checked.stderr)
-                self.assertEqual((entry / "data.json").read_bytes(), before)
-                refreshed = run(
-                    entry,
-                    "data",
-                    "refresh",
-                    *common,
-                    "restored",
-                    "--requires-reproduction",
-                )
-                self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
-                self.assertEqual(
-                    result(refreshed)["records"][0]["reproduction"], "required"
-                )
-                after_item = data_inputs(entry)[0]
-                self.assertIn("digest", after_item.pop("fingerprint"))
-                before_item.pop("fingerprint")
-                self.assertEqual(after_item, before_item)
+                refreshed = run(entry, "data", "refresh", *common, "restored")
+                self.assertEqual(refreshed.returncode, 2)
+                self.assertIn("invalid choice: 'refresh'", refreshed.stderr)
+                self.assertEqual(data_inputs(entry)[0], before_item)
                 self.assertEqual(material.read_bytes(), b"restored original\n")
                 self.assertFalse((entry / "pyrun.json").exists())
-                repeated = run(
-                    entry,
-                    "data",
-                    "refresh",
-                    *common,
-                    "restored",
-                    "--requires-reproduction",
-                )
-                self.assertEqual(result(repeated)["status"], "unchanged")
-
-                registered = (entry / "data.json").read_bytes()
-                for commands, code in (
-                    ("", "producer.missing"),
-                    (command + "\n" + command, "producer.ambiguous"),
-                ):
-                    document.write_text(
-                        "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
-                        + commands
-                        + "\n```\n\n`Results:`\n\nRetained output.\n"
-                    )
-                    blocked = run(
-                        entry,
-                        "data",
-                        "refresh",
-                        *common,
-                        "restored",
-                        "--requires-reproduction",
-                    )
-                    self.assertEqual(result(blocked)["code"], code)
-                    self.assertEqual((entry / "data.json").read_bytes(), registered)
+                self.assertEqual((entry / "data.json").read_bytes(), before)
 
     def test_help_is_progressive(self) -> None:
         family = run(Path.cwd(), "data", "--help")
         action = run(Path.cwd(), "data", "add-origin", "--help")
         generated = run(Path.cwd(), "data", "add-generated", "--help")
+        update = run(Path.cwd(), "data", "update", "--help")
         self.assertEqual(family.returncode, 0, family.stderr)
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertEqual(generated.returncode, 0, generated.stderr)
+        self.assertEqual(update.returncode, 0, update.stderr)
         self.assertIn("add-origin", family.stdout)
         self.assertNotIn("--identity", family.stdout)
         self.assertIn("--identity", action.stdout)
@@ -231,7 +179,28 @@ class LogDataTests(unittest.TestCase):
         self.assertIn("producerless material input", action.stdout)
         self.assertIn("logical log base", action.stdout)
         self.assertNotIn("--requires-reproduction", action.stdout)
-        self.assertIn("--requires-reproduction", generated.stdout)
+        self.assertNotIn("--requires-reproduction", generated.stdout)
+        update_help = " ".join(update.stdout.split())
+        self.assertIn(
+            "classify as generated with a unique same-log producer", update_help
+        )
+        self.assertIn("allow pending production or reproduction", update_help)
+        self.assertNotIn("needs no reproduction", update_help)
+
+    def test_generated_registration_rejects_retired_refresh_option(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = scaffold(Path(directory))
+            rejected = run(
+                entry, "data", "add-generated", "--path", str(logical),
+                "--entry", "e001", "generated", "data/generated.csv",
+                "--kind", "file", "--requires-reproduction",
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn(
+                "unrecognized arguments: --requires-reproduction", rejected.stderr
+            )
+            self.assertFalse((entry / "data.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
 
     def test_add_origin_infers_kind_normalizes_and_lists_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -337,7 +306,7 @@ class LogDataTests(unittest.TestCase):
             item = data_inputs(entry)[0]
             self.assertEqual(item["kind"], "git-repository")
             self.assertTrue(item["origin"])
-            self.assertEqual(item["fingerprint"]["digest"], commit)
+            self.assertEqual(item["identity"]["commit"], commit)
 
             listed = run(entry, "data", "list", *common)
             self.assertEqual(listed.returncode, 0, listed.stderr)
@@ -428,14 +397,8 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(updated.returncode, 0, updated.stderr)
             self.assertEqual(
-                data_inputs(entry)[0]["fingerprint"]["digest"], updated_commit
+                data_inputs(entry)[0]["identity"]["commit"], updated_commit
             )
-
-            refreshed = run(
-                entry, "data", "refresh", *common, "source-repository"
-            )
-            self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
-            self.assertFalse(result(refreshed)["changed"])
 
             renamed = run(
                 entry,
@@ -547,7 +510,7 @@ class LogDataTests(unittest.TestCase):
             target = entry / "data" / "source.txt"
             target.write_text("source\n", encoding="utf-8")
             registry = entry / "data.json"
-            malformed = b'{"schema":"research-log-data/v3","inputs":['
+            malformed = b'{"schema":"research-log-data/v5","inputs":['
             registry.write_bytes(malformed)
 
             attempted = run(
@@ -564,7 +527,7 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(attempted.returncode, 2)
             self.assertEqual(registry.read_bytes(), malformed)
 
-    def test_identity_update_refresh_and_byte_complete_transition(self) -> None:
+    def test_identity_update_and_byte_complete_transition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
             collection = entry / "data" / "collection"
@@ -585,15 +548,10 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(added.returncode, 0, added.stderr)
             self.assertEqual(
-                data_inputs(entry)[0]["fingerprint"]["algorithm"],
+                data_inputs(entry)[0]["identity"]["algorithm"],
                 "identity-files-sha256-v1",
             )
             (collection / "part-02.bin").write_bytes(b"two")
-            unchanged = run(
-                entry, "data", "refresh", *common, "collection"
-            )
-            self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
-            self.assertFalse(result(unchanged)["changed"])
             patterned = run(
                 entry,
                 "data",
@@ -605,7 +563,7 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(patterned.returncode, 0, patterned.stderr)
             self.assertEqual(
-                data_inputs(entry)[0]["fingerprint"]["algorithm"],
+                data_inputs(entry)[0]["identity"]["algorithm"],
                 "identity-patterns-sha256-v1",
             )
             replacement = entry / "data" / "replacement"
@@ -624,7 +582,7 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(moved.returncode, 0, moved.stderr)
             self.assertEqual(
-                data_inputs(entry)[0]["fingerprint"]["algorithm"],
+                data_inputs(entry)[0]["identity"]["algorithm"],
                 "identity-patterns-sha256-v1",
             )
             complete = run(
@@ -637,7 +595,7 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(complete.returncode, 0, complete.stderr)
             self.assertEqual(
-                data_inputs(entry)[0]["fingerprint"]["algorithm"],
+                data_inputs(entry)[0]["identity"]["algorithm"],
                 "directory-sha256-v1",
             )
 
@@ -668,19 +626,6 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(missing.returncode, 2)
             self.assertEqual(result(missing)["code"], "producer.missing")
-            missing_pending = run(
-                entry,
-                "data",
-                "add-generated",
-                *common,
-                "--requires-reproduction",
-                "generated",
-                "data/generated.csv",
-            )
-            self.assertEqual(missing_pending.returncode, 2)
-            self.assertEqual(
-                result(missing_pending)["code"], "producer.missing"
-            )
 
             script = entry / "scripts" / "build.py"
             script.write_text(
@@ -709,10 +654,7 @@ class LogDataTests(unittest.TestCase):
                 "generated",
                 "data/generated.csv",
             )
-            self.assertEqual(unconfirmed.returncode, 2)
-            self.assertEqual(
-                result(unconfirmed)["code"], "provenance.output.unrecorded"
-            )
+            self.assertEqual(unconfirmed.returncode, 0, unconfirmed.stderr)
             executed = run_pyrun(
                 entry,
                 "scripts/build.py",
@@ -812,7 +754,7 @@ class LogDataTests(unittest.TestCase):
                 "data/generated.csv",
             )
             self.assertEqual(
-                result(strict)["code"], "provenance.output.unrecorded"
+                result(strict)["code"], "data.changed"
             )
             before = (entry / "data.json").read_bytes()
             checked = run(
@@ -820,7 +762,6 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--requires-reproduction",
                 "--dry-run",
                 "generated",
                 "data/generated.csv",
@@ -831,7 +772,7 @@ class LogDataTests(unittest.TestCase):
                 result(checked)["records"],
                 [
                     {
-                        "reproduction": "required",
+                        "reproduction": "not_yet_produced",
                         "document": "entries/2026-09-04-e001-trial/e001.md",
                         "fence": 1,
                         "ordinal": 1,
@@ -844,7 +785,6 @@ class LogDataTests(unittest.TestCase):
                 "data",
                 "add-generated",
                 *common,
-                "--requires-reproduction",
                 "generated",
                 "data/generated.csv",
             )
@@ -876,43 +816,9 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
             self.assertEqual(result(confirmed)["status"], "unchanged")
 
-            registry_before = (entry / "data.json").read_bytes()
-            support_before = (entry / "pyrun.json").read_bytes()
-            script.write_text(
-                script.read_text(encoding="utf-8") + "# changed\n",
-                encoding="utf-8",
-            )
-            stale_script = run(
-                entry,
-                "data",
-                "refresh",
-                *common,
-                "generated",
-                "--requires-reproduction",
-            )
-            self.assertEqual(
-                result(stale_script)["code"],
-                "provenance.output.signature_mismatch",
-            )
-            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
-            self.assertEqual((entry / "pyrun.json").read_bytes(), support_before)
-            generated.write_text("value\nchanged\n", encoding="utf-8")
-            stale_refresh = run(
-                entry, "data", "refresh", *common, "generated",
-                "--requires-reproduction",
-            )
-            self.assertEqual(
-                result(stale_refresh)["code"], "provenance.output.signature_mismatch"
-            )
-            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
-            self.assertEqual((entry / "pyrun.json").read_bytes(), support_before)
-
-            origin_refresh = run(
-                entry, "data", "refresh", *common, "source",
-                "--requires-reproduction",
-            )
-            self.assertEqual(result(origin_refresh)["code"], "data.pending.invalid")
-            self.assertEqual((entry / "data.json").read_bytes(), registry_before)
+            no_refresh = run(entry, "data", "refresh", *common, "generated")
+            self.assertEqual(no_refresh.returncode, 2)
+            self.assertIn("invalid choice: 'refresh'", no_refresh.stderr)
 
     def test_use_references_one_direct_generated_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1113,7 +1019,7 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(declared.returncode, 0, declared.stderr)
             item = data_inputs(entry)[0]
             self.assertEqual(
-                item["fingerprint"],
+                item["identity"],
                 {
                     "algorithm": "identity-files-sha256-v1",
                     "files": ["manifest.json"],
@@ -1123,23 +1029,16 @@ class LogDataTests(unittest.TestCase):
                 entry, "scripts/build.py", "--output", "<bundle>"
             )
             self.assertEqual(executed.returncode, 0, executed.stderr)
-            observed = data_inputs(entry)[0]["fingerprint"]
-            self.assertIn("digest", observed)
+            self.assertEqual(data_inputs(entry)[0]["identity"], item["identity"])
 
             (entry / "data" / "bundle" / "scratch.txt").write_text(
                 "excluded change\n", encoding="utf-8"
             )
-            excluded = run(entry, "data", "refresh", *common, "bundle")
-            self.assertEqual(excluded.returncode, 0, excluded.stderr)
-            self.assertEqual(result(excluded)["status"], "unchanged")
+            self.assertEqual(data_inputs(entry)[0]["identity"], item["identity"])
             (entry / "data" / "bundle" / "manifest.json").write_text(
                 '{"changed":true}\n', encoding="utf-8"
             )
-            selected = run(entry, "data", "refresh", *common, "bundle")
-            self.assertEqual(selected.returncode, 2)
-            self.assertEqual(
-                result(selected)["code"], "provenance.output.signature_mismatch"
-            )
+            self.assertEqual(data_inputs(entry)[0]["identity"], item["identity"])
 
     def test_pending_generated_defers_reproduction_required_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1185,7 +1084,6 @@ class LogDataTests(unittest.TestCase):
                     "data",
                     "add-generated",
                     *common,
-                    "--requires-reproduction",
                     "intermediate",
                     "data/intermediate.csv",
                 ).returncode,
@@ -1209,14 +1107,13 @@ class LogDataTests(unittest.TestCase):
                 "data/final.csv",
             )
             self.assertEqual(
-                result(strict)["code"], "provenance.output.unrecorded"
+                result(strict)["code"], "data.changed"
             )
             pending = run(
                 entry,
                 "data",
                 "add-generated",
                 *common,
-                "--requires-reproduction",
                 "--dry-run",
                 "final",
                 "data/final.csv",
@@ -1460,20 +1357,19 @@ class LogDataTests(unittest.TestCase):
                 "data/generated.csv",
             )
             self.assertEqual(
-                result(unconfirmed)["code"], "provenance.output.reproduction_required"
+                result(unconfirmed)["code"], "data.changed"
             )
             pending = run(
                 entry,
                 "data",
                 "add-generated",
                 *common,
-                "--requires-reproduction",
                 "--dry-run",
                 "generated",
                 "data/generated.csv",
             )
             self.assertEqual(pending.returncode, 0, pending.stderr)
-            self.assertEqual(len(data_inputs(entry)), 1)
+            self.assertEqual(len(data_inputs(entry)), 2)
             support["executions"][execution_id]["requires_reproduction"] = False
             support_path.write_text(
                 json.dumps(
@@ -1496,20 +1392,7 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(
                 result(stale)["code"], "provenance.output.signature_mismatch"
             )
-            stale_pending = run(
-                entry,
-                "data",
-                "add-generated",
-                *common,
-                "--requires-reproduction",
-                "generated",
-                "data/generated.csv",
-            )
-            self.assertEqual(
-                result(stale_pending)["code"],
-                "provenance.output.signature_mismatch",
-            )
-            self.assertEqual(len(data_inputs(entry)), 1)
+            self.assertEqual(len(data_inputs(entry)), 2)
 
             rerun = run_pyrun(
                 entry,
@@ -1535,18 +1418,6 @@ class LogDataTests(unittest.TestCase):
                 "data/generated.csv",
             )
             self.assertEqual(result(ambiguous)["code"], "producer.ambiguous")
-            ambiguous_pending = run(
-                entry,
-                "data",
-                "add-generated",
-                *common,
-                "--requires-reproduction",
-                "generated",
-                "data/generated.csv",
-            )
-            self.assertEqual(
-                result(ambiguous_pending)["code"], "producer.ambiguous"
-            )
 
     def test_update_requires_explicit_change_and_rechecks_classification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1709,7 +1580,7 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(executed.returncode, 0, executed.stderr)
             evidence = {
-                "schema": "research-log-evidence/v3",
+                "schema": "research-log-evidence/v4",
                 "records": [
                     {
                         "document": document.relative_to(logical).as_posix(),
@@ -1756,6 +1627,59 @@ class LogDataTests(unittest.TestCase):
                 "<renamed>",
             )
 
+    def test_rename_preserves_path_artifact_baselines(self) -> None:
+        for markup in (
+            "![Map](data/map.png)<!-- eid:map -->",
+            "[Map](data/map.png)<!-- eid:map -->",
+        ):
+            with (
+                self.subTest(markup=markup),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                logical, entry = scaffold(Path(directory))
+                image = entry / "data" / "map.png"
+                image.write_bytes(b"map bytes")
+                common = ("--path", str(logical), "--entry", "e001")
+                added = run(
+                    entry,
+                    "data",
+                    "add-origin",
+                    *common,
+                    "map",
+                    "data/map.png",
+                )
+                self.assertEqual(added.returncode, 0, added.stderr)
+                document = entry / "e001.md"
+                document.write_text(
+                    "# Entry e001\n\n## Map\n\n`Background:`\n\nMap context.\n\n"
+                    "`Steps:`\n\nOpen the map.\n\n`Results:`\n\n"
+                    + markup
+                    + "\n",
+                    encoding="utf-8",
+                )
+                authored = run(
+                    entry,
+                    "evidence",
+                    "add",
+                    *common,
+                    "--id",
+                    "map",
+                    "--source",
+                    "map",
+                )
+                self.assertEqual(authored.returncode, 0, authored.stderr)
+                before = json.loads((entry / "evidence.json").read_text())[
+                    "records"
+                ][0]
+
+                renamed = run(entry, "data", "rename", *common, "map", "figure")
+                self.assertEqual(renamed.returncode, 0, renamed.stderr)
+                after = json.loads((entry / "evidence.json").read_text())["records"][0]
+                self.assertEqual(after["sources"][0]["source"], "<figure>")
+                self.assertEqual(
+                    after["artifact_fingerprint"], before["artifact_fingerprint"]
+                )
+
     def test_rename_rolls_back_both_registries_on_publication_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
@@ -1774,7 +1698,7 @@ class LogDataTests(unittest.TestCase):
                 0,
             )
             evidence = {
-                "schema": "research-log-evidence/v3",
+                "schema": "research-log-evidence/v4",
                 "records": [
                     {
                         "document": (entry / "e001.md")
@@ -1887,9 +1811,8 @@ class LogDataTests(unittest.TestCase):
                         / f"{REGISTRY_RESIDUE_PREFIX}e001"
                     ).is_file()
                 )
-                blocked = run(entry, "data", "refresh", *common, "source")
-                self.assertEqual(blocked.returncode, 2)
-                self.assertIn("requires Repair", blocked.stderr)
+                listed = run(entry, "data", "list", *common)
+                self.assertEqual(listed.returncode, 0, listed.stderr)
             finally:
                 sys.path.remove(script_root)
 
@@ -2034,7 +1957,7 @@ class LogDataTests(unittest.TestCase):
                 str(logical),
                 "--dry-run",
             )
-            self.assertIn("data.declaration.conflict", validated.stdout)
+            self.assertNotIn("data.declaration.conflict", validated.stdout)
 
 
 if __name__ == "__main__":

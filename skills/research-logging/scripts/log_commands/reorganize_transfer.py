@@ -7,14 +7,17 @@ from pathlib import Path
 from typing import Any, Mapping, cast
 
 from research_log_data import (
+    DataContractError,
     DataFile,
+    Fingerprint,
     InputResource,
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
+    observe_fingerprint,
+    parse_fingerprint,
     resolve_input_token,
     validate_log_consistency,
-    verify_fingerprint,
 )
 from validation.commands import command_input_names
 from validation.evidence import (
@@ -57,6 +60,8 @@ from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult, TransferArguments
 from .scaffold import observe_physical_entries
 from .storage import PublicationError, atomic_write_texts
+
+_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -331,7 +336,7 @@ def _move_input(
         location=location,
         canonical_target=lexical.resolve().as_posix(),
     )
-    verify_fingerprint(candidate)
+    observe_fingerprint(candidate)
     return candidate
 
 
@@ -470,7 +475,7 @@ def _verify_evidence_values(
                     source_path=source_path,
                     log_root=entry.log.root,
                 )
-            verify_fingerprint(resolved.resource)
+            observe_fingerprint(resolved.resource)
             if presentation.kind != "artifact":
                 assert source.locator is not None
                 selections.append(evaluate_locator(source_path, source.locator))
@@ -507,7 +512,7 @@ def _validate_log_data(
             )
         if candidate is not None:
             for item in candidate.inputs:
-                verify_fingerprint(item)
+                observe_fingerprint(item)
             candidates.append(candidate)
     validate_log_consistency(tuple(candidates))
 
@@ -780,9 +785,8 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
         "sources",
         "transformation",
     }
-    if not required <= set(fields) <= required | {
-        "reproduction_tolerance"
-    } or not isinstance(sources, list):
+    allowed = required | {"reproduction_tolerance", "artifact_fingerprint"}
+    if not required <= set(fields) <= allowed or not isinstance(sources, list):
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
     decoded_sources: list[EvidenceSource] = []
     kind = fields.get("kind")
@@ -814,6 +818,9 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
         or not isinstance(raw_tolerance.get("absolute"), str)
     ):
         raise ActionError("reorganize.transfer.schema_invalid", str(path))
+    artifact_fingerprint, fingerprint_present = _artifact_fingerprint(
+        fields, kind, path
+    )
     return EvidenceRecord(
         fields["id"],
         fields["document"],
@@ -825,7 +832,26 @@ def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
             if isinstance(raw_tolerance, Mapping)
             else None
         ),
+        artifact_fingerprint,
+        fingerprint_present,
     )
+
+
+def _artifact_fingerprint(
+    fields: Mapping[str, Any], kind: object, path: Path
+) -> tuple[Fingerprint | None, bool]:
+    """Decode the optional v4 artifact observation without reinterpreting it."""
+
+    raw_fingerprint = fields.get("artifact_fingerprint", _MISSING)
+    present = raw_fingerprint is not _MISSING
+    if kind != "artifact" and present:
+        raise ActionError("reorganize.transfer.schema_invalid", str(path))
+    if raw_fingerprint is _MISSING or raw_fingerprint is None:
+        return None, present
+    try:
+        return parse_fingerprint(raw_fingerprint, str(path), kind="file"), present
+    except DataContractError as error:
+        raise ActionError("reorganize.transfer.schema_invalid", str(path)) from error
 
 
 def _raw_retention(value: object, path: Path) -> RetentionRecord:

@@ -2,15 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from research_log_data import DataContractError, DataFile, load_data_file
-from validation.commands import (
-    CommandContext,
-    Invocation,
-    discover_commands,
-    order_invocations,
-)
+from research_log_data import DataContractError
+from validation.commands import Invocation
 from validation.errors import MechanicalContractError
 from validation.pyrun_state import (
     PYRUN_FILENAME,
@@ -24,8 +17,8 @@ from validation.pyrun_state import (
 )
 
 from .context import EntryContext, resolve_project_root
+from .current_invocations import entry_invocations
 from .model import ActionError, ActionResult
-from .scaffold import observe_entries
 from .storage import entry_lock
 
 
@@ -148,55 +141,6 @@ def _update_policy(
         (f"pyrun.{field}.updated" if changed else f"pyrun.{field}.unchanged"),
         changed,
         (relative,),
-    )
-
-
-def entry_invocations(
-    entry: EntryContext, *, project_root: Path
-) -> tuple[Invocation, ...]:
-    """Discover every eligible current invocation in one selected entry."""
-
-    observed = next(
-        (item for item in observe_entries(entry.log) if item.id == entry.id), None
-    )
-    if observed is None or observed.root.resolve() != entry.root.resolve():
-        raise ActionError("entry.identity.unresolved", entry.id)
-    data = _load_data(entry.root)
-    documents: list[tuple[Invocation, ...]] = []
-    for document in observed.documents:
-        try:
-            text = document.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            raise ActionError("association.document_unavailable", str(error)) from error
-        discovered = discover_commands(
-            text,
-            CommandContext(
-                log_id=entry.log.root.as_posix(),
-                entry=entry.id,
-                document=document.relative_to(entry.log.root).as_posix(),
-                entry_root=entry.root,
-                log_root=entry.log.root,
-                project_root=project_root,
-                data_file=data,
-            ),
-        )
-        if discovered.failures:
-            failure = discovered.failures[0]
-            raise ActionError(
-                "pyrun.policy.command_invalid",
-                f"{document}: fence {failure.fence}, command {failure.ordinal}: "
-                f"{failure.error}",
-            )
-        documents.append(discovered.invocations)
-    return order_invocations(documents)
-
-
-def _load_data(entry_root: Path) -> DataFile | None:
-    path = entry_root / "data.json"
-    return (
-        load_data_file(path, entry_root=entry_root)
-        if path.exists() or path.is_symlink()
-        else None
     )
 
 

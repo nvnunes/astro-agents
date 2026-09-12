@@ -30,7 +30,6 @@ from .reproduction_comparison import (
 from .reproduction_contract import (
     REPRODUCTION_RESULT_SCHEMA,
     ReproductionPlan,
-    is_repair_verification,
 )
 from .reproduction_paths import project_tmp_relative
 from .reproduction_planner import (
@@ -129,10 +128,7 @@ def publish_completed_reproduction(
                 replace_outdated=_replaces_outdated_results(request.plan),
             )
             current = reconcile_run_folders(current, project_root=project_root)
-            state_projection = project_reproduction_state(
-                log,
-                targets=(*[run.target for run in current.runs], request.plan.target),
-            )
+            state_projection = project_reproduction_state(log)
             snapshots = command_snapshot_index(request.plan)
             state_projection = replace(
                 state_projection,
@@ -156,11 +152,7 @@ def publish_completed_reproduction(
                 artifacts,
                 run,
                 commands=commands,
-                state=(
-                    None
-                    if request.plan.target.get("kind") == "execution"
-                    else state_projection
-                ),
+                state=state_projection,
             )
             projected, currentness = project_current_results(merged, state_projection)
             context = load_report_context(log.summary)
@@ -500,8 +492,6 @@ def _command_records(
             terminal = "succeeded" if comparison.complete else "failed"
             bucket = terminal
             reason = details[0] if len(details) == 1 else terminal
-        if is_repair_verification(request.plan):
-            details.append("repair_verification")
         records.append(
             {
                 "auto_reproduce": snapshot["auto_reproduce"],

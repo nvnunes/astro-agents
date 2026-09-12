@@ -94,6 +94,15 @@ evidence-backed correction, never to recover stdout or bypass a precondition.
 
 ## Check The Correction
 
+For one repaired invocation, use `log repair-check --path LOG --entry ENTRY
+--execution-id ID`. It is synchronous. Its isolated repair-check workspace is
+the only retained per-check artifact apart from operation-lock state; it never
+creates a reproduction run, changes metadata, clears a requirement, publishes
+a result, or promotes outputs. It compares current declared-input fingerprints
+with their recorded observations and compares isolated regenerated outputs
+with retained output baselines. Source edits during the call are unavailable,
+not adopted.
+
 | Coverage | Command |
 |---|---|
 | Current repair findings | Validate each affected stable entry with `log validate --path <log> --entry eNNN`, inspect its current groups, then run one final full validation. |

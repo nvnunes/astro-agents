@@ -42,10 +42,10 @@ from validation.pyrun_state import (
 from .context import LogContext, resolve_entry
 from .model import ActionError
 from .reproduction_contract import (
+    AcceptedInvocation,
     ReproductionPlan,
     accepted_invocation,
     accepted_typed_comparison,
-    is_repair_verification,
     successful_checkpoint_state,
 )
 from .reproduction_execution import (
@@ -243,31 +243,18 @@ def compare_execution_outputs(
     source_entry = resolve_entry(log, attempt.entry)
     accepted = accepted_invocation(plan, attempt.entry, attempt.execution_id)
     execution = accepted.execution
-    results: list[ArtifactComparison] = []
+    definitions: dict[str, EvidenceComparisonDefinition | None] = {}
+    unavailable: set[str] = set()
     for artifact, _kind in execution.recipe.outputs:
         expected = output_target_path(
             artifact,
             entry_root=source_entry.root,
             project_root=workspace.source_project,
         )
-        regenerated = workspace.map_source(expected)
-        recorded = dict(execution.observed.outputs).get(artifact)
-        if not _retained_baseline_matches(expected, recorded, _kind):
-            results.append(
-                ArtifactComparison(
-                    artifact,
-                    "comparison_failed",
-                    "baseline_changed",
-                    None,
-                    _observed_fingerprint(expected),
-                    _observed_fingerprint(regenerated),
-                )
-            )
-            continue
         comparison = accepted_typed_comparison(
             plan, attempt.entry, attempt.execution_id, artifact
         )
-        definition = _accepted_definition(comparison, accepted, expected)
+        definitions[artifact] = _accepted_definition(comparison, accepted, expected)
         definition_identity = (
             comparison.definition.get("definition_identity")
             if comparison is not None
@@ -280,6 +267,78 @@ def compare_execution_outputs(
                 plan, attempt.entry, definition_identity
             )
         ):
+            unavailable.add(artifact)
+    compared = compare_execution_artifacts(
+        accepted,
+        attempt,
+        {
+            artifact: workspace.map_source(
+                output_target_path(
+                    artifact,
+                    entry_root=source_entry.root,
+                    project_root=workspace.source_project,
+                )
+            )
+            for artifact, _kind in execution.recipe.outputs
+        },
+        entry_root=source_entry.root,
+        project_root=workspace.source_project,
+        definition_overrides=definitions,
+        evidence_context_changed=frozenset(unavailable),
+    )
+    staged = _record_execution(
+        _StagingRequest(
+            plan,
+            workspace,
+            attempt,
+            source_entry.root,
+            execution.recipe.outputs,
+            compared.artifacts,
+        )
+    )
+    return ExecutionComparison(
+        attempt.entry,
+        attempt.execution_id,
+        compared.artifacts,
+        staged,
+        compared.complete,
+    )
+
+
+def compare_execution_artifacts(  # noqa: PLR0913
+    invocation: AcceptedInvocation,
+    attempt: ExecutionAttempt,
+    output_paths: Mapping[str, Path],
+    *,
+    entry_root: Path,
+    project_root: Path,
+    definitions: Sequence[EvidenceComparisonDefinition] = (),
+    definition_overrides: Mapping[str, EvidenceComparisonDefinition | None]
+    | None = None,
+    evidence_context_changed: frozenset[str] = frozenset(),
+) -> ExecutionComparison:
+    """Compare isolated outputs without staging, requirement mutation, or publish."""
+
+    results: list[ArtifactComparison] = []
+    for artifact, kind in invocation.execution.recipe.outputs:
+        expected = output_target_path(
+            artifact, entry_root=entry_root, project_root=project_root
+        )
+        recorded = dict(invocation.execution.observed.outputs).get(artifact)
+        regenerated = output_paths[artifact]
+        if not _retained_baseline_matches(expected, recorded, kind):
+            results.append(
+                ArtifactComparison(
+                    artifact,
+                    "comparison_failed",
+                    "baseline_changed",
+                    None,
+                    _observed_fingerprint(expected),
+                    _observed_fingerprint(regenerated),
+                )
+            )
+            continue
+        if artifact in evidence_context_changed:
             results.append(
                 ArtifactComparison(
                     artifact,
@@ -297,26 +356,17 @@ def compare_execution_outputs(
                 expected=expected,
                 regenerated=regenerated,
                 attempt=attempt,
-                definition=definition,
+                definition=(definition_overrides or {}).get(
+                    artifact, definition_for_target(definitions, expected)
+                ),
             )
         )
-    complete = successful_checkpoint_state(attempt.checkpoint.state)
-    staged = _record_execution(
-        _StagingRequest(
-            plan,
-            workspace,
-            attempt,
-            source_entry.root,
-            execution.recipe.outputs,
-            tuple(results),
-        )
-    )
     return ExecutionComparison(
         attempt.entry,
         attempt.execution_id,
         tuple(results),
-        staged,
-        complete,
+        None,
+        successful_checkpoint_state(attempt.checkpoint.state),
     )
 
 
@@ -563,7 +613,7 @@ def clear_execution_reproduction_requirement_locked(
 ) -> bool:
     """Record that one execution no longer requires reproduction."""
 
-    if not result.complete or is_repair_verification(plan):
+    if not result.complete:
         return False
     planned = {
         (str(item.get("entry")), str(item.get("execution_id")))

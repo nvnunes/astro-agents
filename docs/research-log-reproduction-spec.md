@@ -76,7 +76,7 @@ The initial implementation must use these versions:
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
 | Durable run state | `research-log-reproduction-run/7` |
 | Run status projection | `research-log-reproduction-status/7` |
-| Accepted plan | `research-log-reproduction-plan/8` |
+| Accepted plan | `research-log-reproduction-plan/9` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
@@ -84,8 +84,9 @@ The initial implementation must use these versions:
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
+| Isolated repair-check result | `research-log-repair-check-result/1` |
 
-Reproduction uses run/7, plan/8, status/7, and result/10. Older job files are
+Reproduction uses run/7, plan/9, status/7, and result/10. Older job files are
 immutable but unsupported: the CLI reports `reproduction.run.unsupported` and
 directs the caller to start a new current-format run.
 
@@ -567,8 +568,8 @@ state; it must not load, scan, mark, or rewrite log-wide reproduction results.
 
 An ordinary successful publication records `requires_reproduction: false`.
 Historically reconstructed state that has not completed a successful execution records
-`requires_reproduction: true` and remains runnable. Outside repair-verification
-mode, reproduction changes the field to false immediately after the command reaches its complete mechanical
+`requires_reproduction: true` and remains runnable. Reproduction changes the
+field to false immediately after the command reaches its complete mechanical
 endpoint and its complete comparison is durably recorded. Artifact matching is
 separate: a completed command clears the requirement even when an artifact is
 changed or its comparison fails. The mutation preserves the recipe,
@@ -726,13 +727,12 @@ observation, retained execution baseline, and evidence presentation baseline.
 The public launch form is:
 
 ```text
-log reproduce --path LOG [--entry ENTRY [--execution-id ID]] [--include-all] [--recheck] [--verify-repair] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
+log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
 ```
 
 Omitting `--entry` selects exactly one complete log. Supplying `--entry`
-selects exactly that stable entry. Adding `--execution-id` selects exactly one
-command in that entry and all its declared outputs. There is no multi-log, all-log, or
-project-wide reproduction operation.
+selects exactly that stable entry. There is no single-command, multi-log,
+all-log, or project-wide reproduction operation.
 
 `--jobs` accepts a positive decimal integer and defaults to 1. It is the maximum
 number of concurrently active executions in this run, not a promise that the
@@ -747,72 +747,10 @@ consume it. Status and resume retain the accepted limit and do not accept an
 override.
 
 Log and entry targets retain their existing evidence and command selection.
-An execution target seeds only the requested command, including a command with
-no evidence references; it does not seed unrelated entry evidence.
-
-### Individual-Execution Scope
-
-`--execution-id` requires `--entry` and the complete lowercase
-`pyrun-exec/v1:<64 hexadecimal digits>` identity present in that entry's
-`pyrun.json`. Malformed, unknown, and wrong-entry identities fail before launch;
-script names, filename aliases, and ID prefixes are not selectors.
-
-The selector fixes `command_scope` to the single entry/ID key and seeds that
-key in `command_queue`. Every other producer is a retained boundary, including
-same-entry prerequisites. Verify retained input fingerprints before admitting
-the target. Missing or changed prerequisites block its complete output group;
-failure dependencies identify known producers by entry-qualified execution ID.
-Never schedule prerequisites, siblings, or downstream commands implicitly.
-
-Selection retains `run`, `not_needed`, `unchanged`, `blocked`, and policy
-exclusion. `--recheck` retries an eligible target without bypassing validation,
-missing or invalid prerequisites, or automatic-execution policy. A
-non-automatic target requires `--include-all`, including with `--recheck`.
-Normal execution, supervision, comparisons, missing-comparison outcomes,
-checkpoints, promotion, and publication remain the same mechanisms. Resume
-retains the exact target and immutable one-command scope. Targeted publication
-replaces only covered command/artifact results and retains unrelated results
-and identities. Published execution targets remain visible in artifact queries
-and promotion even when they have no evidence references.
-
-### Verification After A Source Repair
-
-`--verify-repair` is an explicit single-execution verification mode. It requires
-`--entry`, a full recorded `--execution-id`, and `--recheck` on preview and
-launch. It permits intentional changes to the selected script and its recorded
-participating local Python source files. Ordinary reproduction retains its
-`script_changed` and `participating_code_changed` admission failures.
-
-The repair plan observes current bytes for those source files and retains both
-their recorded and accepted fingerprints in its immutable accepted plan. It retains the recorded recipe,
-execution ID, input/output declarations, original observation digest, and
-one-command scope. Missing source files still block. Inputs, producer
-boundaries, retained comparison baselines, policy, and validation admission use
-their ordinary checks; the option does not accept changed prerequisite or
-baseline material. Changed recipe parameters or declarations still require a
-separate supported recording/adoption route and cannot be smuggled through
-this source-only option. It neither discovers nor records a new participating
-code closure.
-
-Dry run names the verification mode and the accepted versus historical source
-fingerprints. Before launch and execution, current source files must match the
-accepted observations and the recorded execution must retain its original
-digest. Further source edits require a new run. Resume keeps the explicit
-verification mode and original single-command scope but never accepts a fresh
-source observation; publication retry uses retained terminal evidence and never
-accepts source edits.
-
-Execution uses the ordinary confined run-output workspace and comparison
-machinery. Success verifies execution of the accepted repaired source; it does
-not establish that the retained artifacts were produced by that source.
-Publication preserves unrelated results and adds `repair_verification` to the
-run's immutable command-query details without changing its success/failure
-accounting reason. Command success and artifact comparisons remain distinct.
-No verification outcome changes `pyrun.json`: historical observations,
-`last_run_at`, policy, and `requires_reproduction` all remain unchanged.
-Verification runs cannot be promoted. A later ordinary reproduction still
-applies recorded-source admission; this mode does not adopt the repair into
-ordinary execution history.
+Use `log repair-check --path LOG --entry ENTRY --execution-id ID` for one
+current repaired invocation. It is isolated and synchronous, does not create a
+run, does not apply automatic-policy admission, cannot resume or publish, and
+never changes execution metadata, validation, results, or promotion state.
 
 ### Admission Gate
 
@@ -843,10 +781,6 @@ does not create an additional admission blocker. A summary-only unresolved
 reference with no association to evidence, registered data, execution state,
 or runnable material has effect `none`; its reporting does not block unrelated
 execution.
-
-For exact `--verify-repair`, reproduction applies the validator's
-[admission exemptions](research-log-mechanical-validator-spec.md#published-validation-and-repair-batches).
-The validator owns their classification.
 
 Projected chain and entry-scoped unresolved-group `entry` values are exact
 entry-document IDs. Reproduction resolves each through the canonical entry
@@ -904,8 +838,7 @@ only when its current fingerprint and required provenance state are valid.
 This boundary is planning metadata, not an artifact outcome.
 
 `--include-all` includes automatic and non-automatic executions within the same
-selected entry or log boundary and traverses their upstream closure. An
-individual-execution target retains its one-command scope. It does
+selected entry or log boundary and traverses their upstream closure. It does
 not widen the target or bypass validation. Scope is immutable after run
 acceptance. The CLI must not prompt to widen it.
 
@@ -933,7 +866,7 @@ dependencies. It therefore represents the complete current reason that the
 saved terminal disposition remains applicable.
 
 `--recheck` selects every runnable execution in the current evidence-relevant
-closure under the chosen log, entry, or execution target and automatic-reproduction policy, including
+closure under the chosen log or entry target and automatic-reproduction policy, including
 executions for which reproduction is not otherwise needed. Commands that remain
 locally blocked are projected as blocked rather than executed. Recheck preserves execution
 grouping, dependency order, target boundaries, retained boundaries, and
@@ -1023,7 +956,7 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/8` projection with exactly
+deterministic `research-log-reproduction-plan/9` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `admission`, `commands`, `comparison_context`,
 `cases`, `executions`, `boundaries`, and `failures`.
@@ -1035,13 +968,12 @@ concurrency cap, per-command runtime limit, artifact-case count, runnable
 ordinary and exclusive execution counts, localized planning-failure count,
 boundary count, scheduling-path-claim
 completeness, and per-entry runnable and exclusive counts. The entry table is
-limited to the first 20 stable entry IDs and reports the number omitted. The
-execution-target summary uses a short command view instead of those aggregate
-counts. It names the full ID, script, selection
-reason, complete outputs, every verified retained prerequisite and known
-producer, and every blocker. It explains zero-execution plans. Complete JSON
-remains available without `--summary`. The summary is presentation only; it applies the same complete planning and final
-source recheck and does not alter the deterministic plan contract.
+limited to the first 20 stable entry IDs and reports the number omitted.
+Complete JSON remains available without `--summary`. The summary is
+presentation only; it applies the same complete planning and final source
+recheck and does not alter the deterministic plan contract. Historical
+result/10 execution rows are not dry-run summaries and supply neither plan nor
+boundary semantics.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
 entry order and artifact path. Each case has exactly `entry`, `artifact`,
@@ -1063,11 +995,11 @@ remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 `origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
-used by individual-execution planning when an input producer
-is outside the immutable command queue. Execution-target boundaries also have
-`producers`, a sorted list of known entry-qualified producer IDs (empty for
-origins or unknown producers). Fields inapplicable to a boundary kind are
-null rather than omitted. Failures are sorted artifact projections with exactly
+used when an in-scope plan treats a producer as a retained boundary. Fields
+inapplicable to a boundary kind are null rather than omitted. Historical
+result/10 execution targets are passive rows with exactly `kind`, `entry`, and
+`execution_id`; they have no current planning or boundary semantics. Failures
+are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
 `admission` records the fresh evaluation identity, rules version, operation
@@ -1144,7 +1076,7 @@ They must reject `--entry`, `--include-all`, `--jobs`, and
 ### Durable State
 
 Each accepted run directory contains immutable `plan.json` using
-`research-log-reproduction-plan/8` and one canonical mutable `run.json` using
+`research-log-reproduction-plan/9` and one canonical mutable `run.json` using
 `research-log-reproduction-run/7`. The plan is atomically written before the
 run record. Run discovery requires both files; an incomplete acceptance is
 invalid. The plan owns the target, selection, settings, command inventory,
@@ -1775,7 +1707,7 @@ the result identifies the same resource as `data.json`; noncanonical absolute
 forms remain invalid.
 
 Every run item has exactly the fields shown. `command_outcomes` reconciles
-every command execution unit in the selected log, entry, or execution target into seven
+every command execution unit in the selected log or entry into seven
 mutually exclusive categories:
 
 - `reproduction_not_needed` is a command whose current `pyrun.json` state says
@@ -1870,8 +1802,8 @@ Currentness is derived when planning, querying, or rendering. Ordinary
 `pyrun` never reads reproduction results. Neither file is rewritten merely to
 mark a result stale, and v1 has no currentness cache.
 
-Results no longer reachable from current `evidence.json` or a published
-execution target whose recipe still exists are ignored immediately and contribute to no entry or log coverage. A later reproduction
+Results no longer reachable from current `evidence.json` are ignored immediately
+and contribute to no entry or log coverage. A later reproduction
 publication may prune them. Ordinary `pyrun` and read-only reporting do not
 rewrite results merely to remove them.
 
@@ -2090,10 +2022,9 @@ It never reads or writes validation state.
 
 ### Reproduction Requirement And Post-Reproduction Validation
 
-Outside explicit repair-verification mode, when a command reaches its complete
-mechanical endpoint, reproduction atomically changes only that execution's
-`requires_reproduction` field to false
-in its entry-local `pyrun.json`. This is independent of artifact comparison:
+When a command reaches its complete mechanical endpoint, reproduction atomically changes only that execution's
+`requires_reproduction` field to false in its entry-local `pyrun.json`. This is
+independent of artifact comparison:
 matched, changed, and comparison-failed outputs all belong to a completed
 command. The update takes the owning short entry guard; active-run reservations
 and promotion conflicts remain checked independently. Each update is
@@ -2186,22 +2117,12 @@ output unchanged by default and does not parse generated files or reconstruct
 a summary. It requests the complete per-log report only when the researcher
 asks for artifact or run detail.
 
-For a single-execution run, `log reproduce report --path LOG --run-id RUN_ID`
-returns a short result for the current retained attempt: execution outcome,
-run lifecycle state, verification mode when applicable, every declared output's
-comparison outcome and reason, and available failure or block details. Human
-`status` uses this same view for execution targets; `status --json` retains its
-existing schema. Outputs without a recorded comparison are explicitly named as
-not compared. This view reads the retained attempt, never cumulative artifact
-counts; unavailable or invalid retained state raises a diagnostic. `--run-id`
-requires an execution-target run and cannot combine with other report filters.
-Broader runs keep their existing status and log/entry report interfaces.
-
-After a single-execution run completes, the reproduction agent presents this
-short result immediately. It uses the compact log summary for broader runs.
-A successful no-op launch already returns its current reconciliation (a short
-command view for execution targets), which the agent presents immediately
-without substituting the historical `report --summary` projection.
+The removed single-execution presentation route previously accepted a run ID.
+Aggregate report routes operate only on log or entry state; they do not inspect
+run IDs. Ordinary `status --run-id` remains the current lifecycle inspection
+route for an accepted aggregate run. Historical result/10 rows may retain prior
+one-command observations for read-only rendering, but they are not current
+reports or lifecycle state.
 
 The compact per-log projection has two visibly separate trees. The command tree
 starts with every command in the target, separates commands whose reproduction
@@ -2441,3 +2362,70 @@ path. Maintained-corpus initialization and the bounded
 entry-level cutover evaluation are complete. Full maintained-corpus
 reproduction remains gated by the reproduction plan. The frozen result and
 status fixtures remain the compatibility boundary.
+
+## Part 3.C Current Repair Boundary
+
+The current isolated repair operation is `log repair-check --path LOG --entry
+ENTRY --execution-id ID`. It uses current declarations and retained output
+baselines in an isolated synchronous workspace. It never creates a run or
+changes generated results, reports, validation, promotion, or execution
+metadata. Bare reproduction targets are only log or entry. Current accepted
+plans are plan/9; run/7 and status/7 remain mutable lifecycle records. Earlier
+plans are rejected without migration. Result/10 retains passive read-only
+rendering of historical one-command rows.
+
+`repair-check` requires one exact stable entry and one complete lowercase
+`pyrun-exec/v1:<64 hexadecimal digits>` identity. It resolves exactly one
+current Markdown invocation whose recorded recipe remains identical. Unknown,
+malformed, absent, ambiguous, or changed-recipe selections fail before a
+workspace exists. The operation has no dry run, planning, admission, automatic
+policy, scheduling, resume, status, report, publication, validation, or
+promotion lifecycle.
+
+It accepts `--execution-timeout-seconds` from 1 through 604,800; the default is
+300 seconds and applies to the isolated child wall-clock execution. It first
+holds the reproduction reservation and then the ordinary log lock while loading
+authority. It releases the log lock during execution, reacquires it to confirm
+that authority and retained baselines are unchanged, and retains the
+reservation for the complete synchronous call. A reservation conflict fails
+before workspace creation.
+
+The authority snapshot includes the current summary, entry declarations,
+recorded execution, current command and source files, declared direct inputs,
+evidence comparison definitions, and every retained output baseline. Current
+inputs are reported beside their recorded observations; a historical input
+difference is information, not an adoption. The operation consumes an
+available current direct input even when it differs from the recorded
+observation, and reports that difference. It refuses unavailable or unsafe
+inputs, changed retained baselines, and any authority, source, input, baseline,
+or comparison context that changes during the call. It never adopts a new
+recipe, declaration, participating-code observation, input observation, or
+evidence rule.
+
+After preflight, the retained workspace is
+`<project>/tmp/repair-check/YYYY-MM-DD/repair-check-<log>-<entry>-<random>/`.
+Private outputs and stdout/stderr diagnostics remain there for inspection.
+After workspace creation, it is retained for every terminal outcome, including
+unavailable and cancelled calls. Selector, authority, input, baseline, and
+isolation-preflight failures that occur before creation return a null workspace.
+The operation confines child outputs to that workspace and must not modify
+retained research inputs, baselines, `pyrun.json`, reproduction cache,
+generated report, validation cache, requirement flags, or promotion state.
+
+Its only machine result is one `research-log-repair-check-result/1` object.
+It has exactly `schema`, `summary`, `entry`, `execution_id`, `status`,
+`exit_status`, `published:false`, nullable `workspace`, `execution`, `inputs`,
+`outputs`, `diagnostics`, and `limitations`. `execution` reports return code,
+checkpoint state, failure, recorded policy fields, and current source records;
+`inputs` report recorded and current fingerprints plus historical difference;
+`outputs` report isolated paths and comparison outcomes; diagnostics carry
+stdout/stderr text and paths. `limitations` includes `selected_repair_only`.
+No result has a run ID, plan, publication, or promotion field.
+
+`matched` exits 0; `different` exits 1; `worker_cleanup_incomplete` exits 2;
+and `execution_failed`, `comparison_unavailable`, and `unavailable` exit 3.
+An interrupt or termination produces `cancelled` with exit 130 or 143 unless
+worker cleanup is incomplete, which takes precedence. Timeout is an execution
+failure. Cancellation stops the supervised process tree; cleanup retains
+diagnostics and the workspace, and an incomplete cleanup is never masked as a
+successful cancellation. Entry or full validation is the only clearance path.

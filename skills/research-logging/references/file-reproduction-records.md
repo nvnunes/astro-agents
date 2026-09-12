@@ -25,15 +25,16 @@ Reproduce may create or update only these generated paths:
 artifact outcomes, unchanged terminal failure and block dispositions,
 per-run command accounting, and run history.
 `reproduction.md` is its source-controlled human-only projection. Agents do not
-parse either file during ordinary work; use
-`log reproduce report --path <log> --run-id <run-id>` for a single-execution
-result with complete output comparisons,
+parse either file during ordinary work. Historical result/10 execution rows are
+read-only; `log reproduce report --run-id` is unsupported. Status and command
+queries may still accept run IDs. Use the summary/list report routes for
+bounded status overviews:
 `log reproduce report --path <log> --summary` for the compact per-log view,
 `log reproduce report --root <project> --summary` for the cross-log view, and
 the complete report or bounded artifact and command `list` and `show` routes
-for detail. Use command queries to enumerate the execution units behind a
-compact command count; do not derive those lists by parsing this generated
-record.
+for complete comparison detail. Use command queries to enumerate the execution
+units behind a compact command count; do not derive those lists by parsing this
+generated record.
 
 The machine record is disposable and rebuildable by reproduction. Removing it
 discards local result history and unchanged failure and block dispositions.
@@ -51,7 +52,7 @@ historical context; its command counts do not replace the current invocation's
 counts.
 
 The current result schema is `research-log-reproduction-result/10`. Every newly
-published run counts every command in its log, entry, or execution target exactly once as
+published run counts every command in its log or entry exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
 selected command failure. Those command counts are separate from
@@ -64,13 +65,10 @@ attempt selection, source digest, planning detail, accounting reason, and
 terminal disposition. Historical command list and show queries use this
 projection without consulting current `pyrun.json`.
 
-A `repair_verification` command detail marks explicit verification of repaired
-script/recorded-code bytes. Its accepted run snapshot retains both historical
-and accepted source fingerprints. Success and comparisons are reported normally,
-but this mode neither rewrites recorded observations nor clears the historical
-reproduction requirement. Its outputs are not promotable.
+Repair checks do not create command details or accepted runs. They preserve all
+recorded observations and reproduction requirements and cannot be promoted.
 
-Each evidence-relevant or individually targeted command also has one current record keyed by entry and
+Each evidence-relevant command has one current record keyed by entry and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning
@@ -159,3 +157,10 @@ promote run-local artifacts. Promotion is an explicit research mutation that
 copies one complete execution output set under researcher direction.
 The former `reproduction/results.json` location is unsupported after the
 one-time path migration and is never read as a fallback.
+
+## Current Run Records
+
+Current runs use one immutable `plan.json` at plan/9 plus run/7 and individual
+checkpoint files. Attempt histories, embedded plans, and one-command plans
+are unsupported. Result/10 may render historical execution rows passively, but
+no current command creates or reports a single-execution run.

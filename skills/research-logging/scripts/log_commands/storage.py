@@ -79,6 +79,15 @@ def log_lock(log: LogContext) -> Iterator[None]:
 
 
 @contextmanager
+def reproduction_log_reservation(log: LogContext) -> Iterator[None]:
+    """Exclude every durable or isolated reproduction operation for one log."""
+
+    with operation_lock(log.root, "reproduction-log.lock", mode="exclusive"):
+        require_mutation_ready(log.root)
+        yield
+
+
+@contextmanager
 def log_creation_lock(log: LogCreationContext) -> Iterator[None]:
     """Hold the project-scoped lock for one intended canonical log path."""
 

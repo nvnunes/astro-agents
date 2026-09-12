@@ -20,7 +20,7 @@ from .model import ActionError
 from .reproduction_contract import (
     PREEXECUTION_RESULT_SCHEMA,
     REPRODUCTION_RESULT_SCHEMA,
-    valid_reproduction_target,
+    valid_historical_reproduction_target,
 )
 from .reproduction_paths import (
     REPRODUCTION_ROOT_NAME,
@@ -1458,7 +1458,7 @@ def _folder(value: object) -> RunFolder:
 
 def _target(value: object) -> Mapping[str, object]:
     item = _mapping(value, "target")
-    if not valid_reproduction_target(item):
+    if not valid_historical_reproduction_target(item):
         raise ReproductionResultError("run target is invalid")
     return dict(item)
 

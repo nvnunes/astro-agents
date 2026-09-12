@@ -50,7 +50,7 @@ from validation.pyrun_state import (
     script_target_path,
 )
 
-from .context import EntryContext, LogContext, resolve_entry
+from .context import EntryContext, LogContext, resolve_entry, resolve_project_root
 from .model import ActionError
 from .reproduction_contract import (
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
@@ -170,6 +170,14 @@ class ExecutionAttempt:
     workers: tuple[WorkerRecord, ...]
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class IsolatedExecutionResult:
+    """In-memory execution result for a retained, non-job repair check."""
+
+    attempt: ExecutionAttempt
+    output_paths: Mapping[str, Path]
 
 
 @dataclass(frozen=True)
@@ -662,6 +670,192 @@ def execute_planned_recipe(
         prepared.stdout.relative_to(workspace.run_root).as_posix(),
         prepared.stderr.relative_to(workspace.run_root).as_posix(),
     )
+
+
+def execute_isolated_invocation(  # noqa: PLR0913
+    entry: EntryContext,
+    invocation: AcceptedInvocation,
+    workspace_root: Path,
+    *,
+    execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    stop_requested: Callable[[], bool] = lambda: False,
+    confinement: ConfinementBackend | None = None,
+    input_observations: Mapping[str, Fingerprint] | None = None,
+) -> IsolatedExecutionResult:
+    """Run one current invocation in a retained isolated workspace.
+
+    This adapter deliberately has no plan, checkpoint, staging, or publication
+    ownership.  It shares command expansion, output binding, confinement,
+    process monitoring, and bounded cleanup with planned execution.
+    """
+
+    root = workspace_root.resolve()
+    workspace = _isolated_workspace(entry, root)
+    invocation = _isolated_current_invocation(invocation, input_observations)
+    output = workspace.work_project
+    runtime = workspace.runtime_root
+    diagnostics = workspace.diagnostics_root
+    for path in (output, runtime, diagnostics):
+        path.mkdir(parents=True, exist_ok=True)
+    source = _ExecutionSource(entry, {invocation.execution_id: invocation})
+    prepared = _prepare_execution(
+        entry.log,
+        {"entry": entry.id, "execution_id": invocation.execution_id},
+        workspace,
+        {},
+        _PreparationOptions(source),
+    )
+    _preflight_output_paths(prepared.output_paths.values(), prepared.run_root)
+    _clear_outputs(prepared.output_paths.values())
+    backend = confinement or DarwinSeatbelt()
+    backend.preflight()
+    scratch = Path(tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp"))
+    prepared = replace(
+        prepared, environment={**prepared.environment, "TMPDIR": str(scratch)}
+    )
+    try:
+        command = backend.command(
+            prepared.command,
+            writable_roots=(
+                scratch,
+                prepared.run_root,
+                prepared.runtime_root,
+                prepared.diagnostics_root,
+            ),
+            readonly_paths=(),
+        )
+        outcome, started_at, elapsed = _run_prepared(
+            prepared,
+            command,
+            workspace,
+            _RunCallbacks(
+                stop_requested,
+                execution_timeout_seconds,
+                lambda _at: None,
+                lambda _workers: None,
+            ),
+        )
+    finally:
+        try:
+            _clear_isolated_seatbelt_profiles(prepared.diagnostics_root)
+        finally:
+            try:
+                if scratch.exists() or scratch.is_symlink():
+                    shutil.rmtree(scratch)
+            except OSError as error:
+                raise ReproductionControlPlaneError(
+                    ActionError("scratch_cleanup_incomplete", str(error)),
+                    cleanup_incomplete=True,
+                ) from error
+    outputs = _observe_available_outputs(prepared.output_paths, prepared.execution)
+    state, code, message = _attempt_state(
+        outcome, len(outputs), len(prepared.output_paths)
+    )
+    finished = None if outcome.stopped or started_at is None else _utc_now()
+    attempt = ExecutionAttempt(
+        entry.id,
+        invocation.execution_id,
+        outcome.returncode,
+        outcome.stopped,
+        code,
+        message,
+        ExecutionCheckpoint(
+            entry.id,
+            invocation.execution_id,
+            state,
+            "",
+            finished if state == "succeeded" else None,
+            outputs,
+            started_at,
+            finished,
+            elapsed,
+            None,
+        ),
+        outcome.workers,
+        str(prepared.stdout),
+        str(prepared.stderr),
+    )
+    return IsolatedExecutionResult(attempt, prepared.output_paths)
+
+
+def _clear_isolated_seatbelt_profiles(root: Path) -> None:
+    """Remove transient confinement profiles after child cleanup completes."""
+
+    for path in root.glob("seatbelt-*.sb"):
+        if path.is_symlink() or not path.is_file():
+            raise ActionError("repair_check.diagnostics.invalid", str(path))
+        path.unlink()
+
+
+def preflight_isolated_invocation(
+    entry: EntryContext,
+    invocation: AcceptedInvocation,
+    workspace_root: Path,
+    *,
+    confinement: ConfinementBackend | None = None,
+    input_observations: Mapping[str, Fingerprint] | None = None,
+) -> None:
+    """Validate isolated command, bindings, paths, and confinement before writes."""
+
+    workspace = _isolated_workspace(entry, workspace_root.resolve())
+    invocation = _isolated_current_invocation(invocation, input_observations)
+    execution = invocation.execution
+    relative_entry = entry.root.resolve().relative_to(workspace.source_project)
+    attempt_root = _attempt_root(workspace, entry.id, invocation.execution_id)
+    output_paths = _output_paths(
+        execution,
+        entry_root=attempt_root / relative_entry,
+        project_root=attempt_root,
+    )
+    _execution_command(
+        execution,
+        _CommandContext(
+            (
+                None
+                if invocation.data is None
+                else replace(invocation.data, entry_root=entry.root)
+            ),
+            entry.root,
+            workspace,
+            output_paths,
+            {},
+            dict(execution.observed.inputs),
+        ),
+    )
+    _preflight_output_paths(output_paths.values(), workspace.work_project)
+    (confinement or DarwinSeatbelt()).preflight()
+
+
+def _isolated_workspace(entry: EntryContext, root: Path) -> ReproductionWorkspace:
+    """Return the write-free workspace layout reserved for one repair check."""
+
+    return ReproductionWorkspace(
+        "repair-check",
+        root,
+        resolve_project_root(entry.log.root),
+        root / "outputs",
+        root / "runtime",
+        root / "diagnostics",
+        root / "outputs",
+    )
+
+
+def _isolated_current_invocation(
+    invocation: AcceptedInvocation,
+    observations: Mapping[str, Fingerprint] | None,
+) -> AcceptedInvocation:
+    """Bind repair execution to current direct-input observations only."""
+
+    if observations is None:
+        return invocation
+    execution = replace(
+        invocation.execution,
+        observed=replace(
+            invocation.execution.observed,
+            inputs=tuple(sorted(observations.items())),
+        ),
+    )
+    return replace(invocation, execution=execution)
 
 
 def _verify_accepted_source_observations(
@@ -2203,6 +2397,14 @@ def _fingerprint(path: Path, kind: str) -> Fingerprint:
         digest, _ = observe_file_content(path / PurePosixPath(member.path))
         entries.append(type(member)(member.path, "file", digest))
     return compose_directory_fingerprint(tuple(entries))
+
+
+def observe_output_fingerprint(path: Path, kind: str) -> Fingerprint:
+    """Observe one declared output using the shared file/directory contract."""
+
+    if path.is_symlink() or not path.exists():
+        raise OSError(f"declared output is unavailable: {path}")
+    return _fingerprint(path, kind)
 
 
 def _readonly_boundaries(

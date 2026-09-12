@@ -142,12 +142,14 @@ host-confinement smoke test:
 REPRODUCTION_SANDBOX_TEST=1 \
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_log_reproduction_execution.py
+  skills/research-logging/tests/test_log_reproduction_execution.py \
+  skills/research-logging/tests/test_log_repair_check.py
 ```
 
 These tests use only generated projects and synthetic workers. The enabled
-host test must prove both network denial and retained-boundary write denial.
-It never executes a maintained research recipe.
+host tests must prove both network denial and retained-boundary write denial
+for durable reproduction and isolated repair checking. They never execute a
+maintained research recipe.
 
 The complexity check is a ratchet over explicitly recorded complexity debt. It
 allows refactoring to reduce findings, but rejects a new complex function, a
@@ -196,3 +198,10 @@ provenance, material-graph, and publication tests during iteration.
 Wall time is diagnostic rather than an objective gate. Require bounded
 complexity, no avoidable repeated reads or hashes, correct cache reuse, and no
 asymptotic regression.
+
+## Repair-Check Coverage
+
+Current repair-check tests must prove its isolated workspace is the only
+artifact written, selected current inputs and retained baselines are stable,
+and no reproduction run, publication, promotion, or metadata update occurs.
+Do not retain execution-target reproduction or `--verify-repair` fixtures.

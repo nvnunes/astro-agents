@@ -35,7 +35,6 @@ from .reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from .reproduction_contract import (
     ReproductionPlan,
     accepted_invocation,
-    is_repair_verification,
 )
 from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _find_run, _load_run, load_accepted_plan
@@ -116,12 +115,6 @@ def promote_execution(
     run_root = _find_run(log, run_id)
     _load_run(run_root / "run.json")
     plan = load_accepted_plan(run_root)
-    if is_repair_verification(plan):
-        raise ActionError(
-            "reproduction.promotion.repair_verification",
-            "repair verification preserves historical observations "
-            "and cannot be promoted",
-        )
     bundle = _load_bundle(run_root, run_id, execution_id)
     entry_id = _required_string(bundle.record, "entry")
     entry = resolve_entry(log, entry_id)
@@ -504,7 +497,7 @@ def _report_candidates(
     )
     projected, currentness = project_current_results(
         results,
-        project_reproduction_state(log, targets=[run.target for run in results.runs]),
+        project_reproduction_state(log),
     )
     context = load_report_context(log.summary)
     return {

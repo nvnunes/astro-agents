@@ -1,12 +1,12 @@
 # Reproduce Operation Instructions
 
 Use this operation only when the researcher explicitly asks to reproduce a
-maintained research log, one entry, or one recorded execution. Reproduce is a
+maintained research log or one entry. Reproduce is a
 mechanical CLI workflow, separate from Record, Review, and Validate. It plans
 and executes from JSON authority, retains regenerated outputs in a project-local
 run folder, compares them with retained artifacts, and publishes generated
-reproduction state. Outside repair-verification mode, completed executions also
-clear their reproduction requirement. After successful publication, the CLI
+reproduction state. Completed executions clear their reproduction requirement.
+After successful publication, the CLI
 does not invoke validation. Run Validate explicitly when a current validation
 result is required; reproduction does not copy the project into the run folder.
 
@@ -37,14 +37,14 @@ run.
 ## Preview Or Launch
 
 Resolve the extensionless `scripts/log` entrypoint from this skill package.
-Choose exactly one log, entry, or entry-qualified execution; multiple logs require separate commands.
+Choose exactly one log or stable entry; multiple logs require separate commands.
 
 Preview prepares one deterministic plan under the log lock without creating a
 run ID, directory, checkpoint, result, report, cache entry, or other durable
 state. The lock infrastructure is the preview's only filesystem side effect:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry> [--execution-id <full-id>]] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>] --dry-run --summary
 ```
@@ -56,7 +56,7 @@ consumers that need the complete deterministic plan may omit `--summary`.
 Launch the same scope by omitting both `--dry-run` and `--summary`:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry> [--execution-id <full-id>]] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>]
 ```
@@ -66,28 +66,12 @@ target is exactly that entry. Evidence dependencies outside the selected scope
 remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
 
-For a requested individual rerun, add `--execution-id` with the full current
-`pyrun-exec/v1:...` key from that entry's `pyrun.json`. Use completed-run command
-queries for saved diagnostics; they do not inventory newly added recipes.
-Inspect the preview's ID, script, complete output group, selection reason, and
-all retained prerequisites and blockers. The command may have no evidence
-references. Other producers, including same-entry prerequisites, remain verified
-retained boundaries; do not widen scope when one is invalid. Use `--recheck`
-for an authorized deliberate retry. It bypasses neither validation nor retained
-prerequisite failures, and non-automatic execution still needs authorized
-`--include-all`. A zero-execution preview does not verify execution. Resume
-preserves the accepted single-command scope, and publication retains unrelated
-results. Inspect command success and each artifact comparison separately.
-
 For explicitly requested verification after a script or recorded local-code
-repair, add `--verify-repair` alongside `--entry`, `--execution-id`, and
-`--recheck`. Inspect the preview's recorded and accepted source fingerprints.
-The option retains the recorded recipe and all prerequisite, baseline,
-validation, and policy checks. Launch without `--dry-run --summary`, then use the
-same status, resume, and command/artifact queries. Treat the command detail's
-`repair_verification` marker as verification of repaired source, not adoption
-of new ordinary execution history. This mode preserves `pyrun.json` completely,
-including its reproduction requirement, and its outputs cannot be promoted.
+repair, use `log repair-check --path LOG --entry ENTRY --execution-id ID`.
+It is synchronous and isolated, retains private outputs and diagnostics, and
+preserves `pyrun.json` and all generated records. It has no admission,
+automatic-policy, run, resume, report, validation, publication, or promotion
+lifecycle; its outputs cannot be promoted.
 Do not use it to bypass changed recipe parameters/declarations or establish
 new participating-code observations; those need a supported adoption route.
 
@@ -174,19 +158,6 @@ meaningful status changes, completion, failure, or required user action and
 must never stop, resume, promote, or otherwise control the run.
 
 ## Report The Result
-
-For a single-execution run, immediately retrieve and present its short result:
-
-```bash
-<skill>/scripts/log reproduce report --path <log> --run-id <run-id>
-```
-
-This shows that execution's outcome and every output comparison, including
-failure or block details. Human `status` uses the same view for individual runs.
-Use it for both ordinary individual selection and repaired-source verification.
-Do not present cumulative log artifact counts as the individual command result.
-A blocked or otherwise empty selection already returns its short explanation;
-present that response directly because no new run exists.
 
 For a broader launched run, immediately retrieve the centralized human projection:
 
@@ -284,3 +255,11 @@ and then copy it into the log through:
 
 Promotion copies every related output together and retains the run-local source.
 It does not move or discard the run folder.
+
+## Current Reproduction Boundary
+
+`log reproduce` accepts only whole-log or stable-entry targets. It has no
+one-command repair mode, and run-ID single-execution presentation is removed.
+Each current run stores one immutable plan/9 and mutable checkpoint
+state; stopped work resumes only that accepted plan. Use `log repair-check` for
+one current invocation. Historical result/10 execution rows remain read-only.

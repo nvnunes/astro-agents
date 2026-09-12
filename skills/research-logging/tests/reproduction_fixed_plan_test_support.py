@@ -12,7 +12,7 @@ from log_commands.reproduction_jobs import _accepted_record, _canonical
 def accepted_plan(
     *, executions: tuple[dict[str, object], ...] = ()
 ) -> ReproductionPlan:
-    """Return the smallest closed plan/8 fixture without legacy state fields."""
+    """Return the smallest closed plan/9 fixture without legacy state fields."""
 
     return ReproductionPlan(
         "summary.md",
@@ -45,7 +45,7 @@ def accepted_plan(
 def accepted_run(
     root: Path, *, plan: ReproductionPlan | None = None
 ) -> tuple[LogContext, Path]:
-    """Persist the minimal canonical plan/8 and accepted run/7 pair."""
+    """Persist the minimal canonical plan/9 and accepted run/7 pair."""
 
     summary = root / "docs" / "study.md"
     summary.parent.mkdir(parents=True)

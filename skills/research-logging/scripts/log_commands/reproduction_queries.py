@@ -124,12 +124,6 @@ def reproduction_reconciliation_text(
             "reproduction.reconciliation.invalid",
             "a no-work reconciliation cannot contain runnable executions",
         )
-    if plan.target.get("kind") == "execution":
-        from .reproduction_contract import format_execution_selection
-
-        return format_execution_selection(
-            plan, heading="No command executed; no run created."
-        )
     project = resolve_project_root(log.root)
     try:
         summary = log.summary.resolve().relative_to(project).as_posix()
@@ -140,9 +134,7 @@ def reproduction_reconciliation_text(
         summary=summary,
         updated_at=generated_at,
     )
-    state = project_reproduction_state(
-        log, targets=[run.target for run in results.runs]
-    )
+    state = project_reproduction_state(log)
     projected, _currentness = project_current_results(results, state)
     outcomes = _no_work_command_outcomes(
         plan,
@@ -1025,9 +1017,7 @@ def _current(
         expected = resolve_project_root(log.root) / results.summary
         if expected.resolve() != log.summary.resolve():
             raise ReproductionResultError("result summary identity changed")
-        state = project_reproduction_state(
-            log, targets=[run.target for run in results.runs]
-        )
+        state = project_reproduction_state(log)
         return project_current_results(results, state)
     except ReproductionResultSchemaError as error:
         raise ActionError(

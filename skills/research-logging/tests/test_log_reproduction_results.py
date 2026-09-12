@@ -39,6 +39,73 @@ from validation.human_projection import (
 
 
 class ReproductionResultContractTests(unittest.TestCase):
+    def test_current_result_preserves_historical_execution_target_rendering(
+        self,
+    ) -> None:
+        results = _complete_results()
+        run = replace(
+            results.runs[0],
+            target={
+                "entry": "e003",
+                "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                "kind": "execution",
+            },
+        )
+        decoded = ReproductionResults.from_json(
+            replace(results, runs=(run,)).serialized()
+        )
+
+        self.assertEqual(decoded.runs[0].target, run.target)
+        self.assertIn(
+            "execution e003 pyrun-exec/v1:",
+            compose_reproduction_report(decoded, context=_context()),
+        )
+
+    def test_historical_execution_target_cannot_change_currentness(self) -> None:
+        results = _complete_results()
+        historical = replace(
+            results.runs[0],
+            target={
+                "entry": "e003",
+                "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                "kind": "execution",
+            },
+        )
+        state = ReproductionStateProjection(
+            frozenset(), {}, {}, {}, frozenset()
+        )
+
+        current, currentness = project_current_results(results, state)
+        rendered, rendered_currentness = project_current_results(
+            replace(results, runs=(historical,)), state
+        )
+
+        self.assertEqual(rendered.artifacts, current.artifacts)
+        self.assertEqual(rendered.commands, current.commands)
+        self.assertEqual(rendered_currentness, currentness)
+
+    def test_current_result_rejects_malformed_historical_targets(self) -> None:
+        identity = "pyrun-exec/v1:" + "1" * 64
+        malformed = (
+            {"entry": "e003", "kind": "log"},
+            {"entry": None, "kind": "entry"},
+            {"entry": None, "execution_id": identity, "kind": "execution"},
+            {"entry": "bad", "execution_id": identity, "kind": "execution"},
+            {"entry": "e003", "execution_id": identity[:20], "kind": "execution"},
+            {
+                "entry": "e003",
+                "execution_id": identity,
+                "kind": "execution",
+                "unexpected": True,
+            },
+        )
+        for target in malformed:
+            with self.subTest(target=target):
+                value = _complete_results().as_dict()
+                value["runs"][0]["target"] = target
+                with self.assertRaises(ReproductionResultError):
+                    ReproductionResults.from_json(_canonical(value))
+
     def test_noncurrent_result_schema_is_unsupported(self) -> None:
         for version in ("2", "3", "4", "5", "6", "7", "999"):
             value = _complete_results().as_dict()

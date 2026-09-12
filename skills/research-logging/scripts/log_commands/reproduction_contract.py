@@ -17,7 +17,7 @@ from research_log_data import (
 from validation.evidence import EvidenceRecord
 from validation.pyrun_state import PyrunExecution
 
-PLAN_SCHEMA = "research-log-reproduction-plan/8"
+PLAN_SCHEMA = "research-log-reproduction-plan/9"
 PREEXECUTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
 REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
@@ -27,9 +27,7 @@ MAX_EXECUTION_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
 
 
 def valid_reproduction_target(value: object) -> bool:
-    """Validate the exact log, entry, or full execution target shape."""
-
-    from validation.pyrun_state import PYRUN_EXECUTION_RE
+    """Validate the only current durable targets: a complete log or entry."""
 
     from .context import ENTRY_ID_RE
 
@@ -42,10 +40,27 @@ def valid_reproduction_target(value: object) -> bool:
         return False
     if value.get("kind") == "entry":
         return set(value) == {"kind", "entry"}
+    return False
+
+
+def valid_historical_reproduction_target(value: object) -> bool:
+    """Validate a read-only result target, including legacy execution rows."""
+
+    if valid_reproduction_target(value):
+        return True
+    from validation.pyrun_state import PYRUN_EXECUTION_RE
+
+    from .context import ENTRY_ID_RE
+
+    if not isinstance(value, Mapping):
+        return False
+    entry = value.get("entry")
     identity = value.get("execution_id")
     return (
         set(value) == {"kind", "entry", "execution_id"}
         and value.get("kind") == "execution"
+        and isinstance(entry, str)
+        and ENTRY_ID_RE.fullmatch(entry) is not None
         and isinstance(identity, str)
         and PYRUN_EXECUTION_RE.fullmatch(identity) is not None
     )
@@ -95,7 +110,7 @@ class ReproductionPlan:
     execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
     def as_dict(self) -> dict[str, object]:
-        """Return the closed accepted-plan/8 field set."""
+        """Return the closed accepted-plan/9 field set."""
 
         return {
             "boundaries": [dict(value) for value in self.boundaries],
@@ -123,10 +138,9 @@ class ReproductionPlan:
             raise ValueError("reproduction dry-run plan crossed its byte bound")
         return text
 
-
     @classmethod
     def from_json(cls, raw: bytes) -> "ReproductionPlan":
-        """Load one bounded, closed accepted-plan/8 JSON document."""
+        """Load one bounded, closed accepted-plan/9 JSON document."""
 
         if len(raw) > MAX_PLAN_BYTES:
             raise ValueError("accepted reproduction plan crossed its byte bound")
@@ -155,8 +169,20 @@ class ReproductionPlan:
         boundaries = _mappings(value["boundaries"], "boundaries")
         failures = _mappings(value["failures"], "failures")
         _validate_plan_members(commands, executions, context)
-        plan = cls(summary, target, include_all, admission, commands, context, cases,
-                   executions, boundaries, failures, jobs, timeout)
+        plan = cls(
+            summary,
+            target,
+            include_all,
+            admission,
+            commands,
+            context,
+            cases,
+            executions,
+            boundaries,
+            failures,
+            jobs,
+            timeout,
+        )
         _validate_nested_plan(plan)
         if plan.serialized().encode("utf-8") != raw:
             raise ValueError("accepted reproduction plan is not canonical")
@@ -185,11 +211,23 @@ class AcceptedComparison:
     definition: Mapping[str, object]
 
 
-_PLAN_FIELDS = frozenset({
-    "schema", "summary", "target", "include_all", "jobs",
-    "execution_timeout_seconds", "admission", "commands", "comparison_context",
-    "cases", "executions", "boundaries", "failures",
-})
+_PLAN_FIELDS = frozenset(
+    {
+        "schema",
+        "summary",
+        "target",
+        "include_all",
+        "jobs",
+        "execution_timeout_seconds",
+        "admission",
+        "commands",
+        "comparison_context",
+        "cases",
+        "executions",
+        "boundaries",
+        "failures",
+    }
+)
 
 
 def _string(value: object, name: str) -> str:
@@ -232,14 +270,27 @@ def _validate_plan_members(
     keys: set[tuple[str, str]] = set()
     for command in commands:
         if set(command) != {
-            "entry", "execution_id", "execution_state", "entry_root",
-            "project_root", "data_declaration", "selection",
-            "auto_reproduce", "cwd", "details", "exclusive", "queued",
-            "requires_reproduction", "prior_disposition", "source_digest",
+            "entry",
+            "execution_id",
+            "execution_state",
+            "entry_root",
+            "project_root",
+            "data_declaration",
+            "selection",
+            "auto_reproduce",
+            "cwd",
+            "details",
+            "exclusive",
+            "queued",
+            "requires_reproduction",
+            "prior_disposition",
+            "source_digest",
         }:
             raise ValueError("accepted reproduction plan command is incomplete")
-        key = (_string(command["entry"], "command entry"),
-               _string(command["execution_id"], "command execution"))
+        key = (
+            _string(command["entry"], "command entry"),
+            _string(command["execution_id"], "command execution"),
+        )
         if key in keys or not isinstance(command["execution_state"], dict):
             raise ValueError("accepted reproduction plan command is invalid")
         keys.add(key)
@@ -261,13 +312,23 @@ def _validate_execution_members(
     runnable_order: dict[str, int] = {}
     for execution in executions:
         if set(execution) != {
-            "depends_on", "entry", "execution_id", "order", "outputs",
-            "auto_reproduce", "exclusive", "read_paths", "write_paths",
-            "run_path", "writable_paths",
+            "depends_on",
+            "entry",
+            "execution_id",
+            "order",
+            "outputs",
+            "auto_reproduce",
+            "exclusive",
+            "read_paths",
+            "write_paths",
+            "run_path",
+            "writable_paths",
         }:
             raise ValueError("accepted reproduction plan execution fields are invalid")
-        key = (_string(execution.get("entry"), "execution entry"),
-               _string(execution.get("execution_id"), "execution id"))
+        key = (
+            _string(execution.get("entry"), "execution entry"),
+            _string(execution.get("execution_id"), "execution id"),
+        )
         if key not in keys or key in execution_keys:
             raise ValueError("accepted reproduction plan execution is unbound")
         execution_keys.add(key)
@@ -313,7 +374,9 @@ def _validate_plan_collections(plan: ReproductionPlan) -> None:
 
     batch = plan.admission["batch_admission"]
     if not isinstance(batch, Mapping) or set(batch) != {
-        "admitted", "excluded", "schema"
+        "admitted",
+        "excluded",
+        "schema",
     }:
         raise ValueError("accepted reproduction batch admission is invalid")
     if batch.get("schema") != "research-log-reproduction-batch-admission/2":
@@ -332,11 +395,15 @@ def _validate_cases(cases: Sequence[Mapping[str, object]]) -> None:
             for name in ("artifact", "disposition", "entry")
         ):
             raise ValueError("accepted reproduction case is invalid")
+
+
 def _validate_boundaries(boundaries: Sequence[Mapping[str, object]]) -> None:
     for boundary in boundaries:
         if not {"artifact", "entry", "fingerprint", "kind", "name"} <= set(boundary):
             raise ValueError("accepted reproduction boundary is invalid")
         _validate_fingerprint_row(boundary, "boundary", kind=None)
+
+
 def _validate_failures(failures: Sequence[Mapping[str, object]]) -> None:
     for failure in failures:
         if set(failure) != {"artifact", "dependencies", "entry", "outcome", "reason"}:
@@ -364,7 +431,11 @@ def _validate_comparison_context(
     seen: set[tuple[str, str, str]] = set()
     for value in comparisons:
         if not isinstance(value, dict) or set(value) != {
-            "entry", "execution_id", "output", "evidence_records", "definition_identity"
+            "entry",
+            "execution_id",
+            "output",
+            "evidence_records",
+            "definition_identity",
         }:
             raise ValueError("accepted reproduction comparison definition is invalid")
         comparison_entry = value.get("entry")
@@ -383,42 +454,26 @@ def _validate_comparison_context(
             raise ValueError("accepted reproduction comparison is unbound")
         seen.add(key)
         accepted_typed_comparison(plan, key[0], key[1], key[2])
-    _validate_materials(
-        materials, repair=plan.comparison_context.get("repair_verification") is True
-    )
+    _validate_materials(materials)
     _validate_evidence_only(plan, evidence_only, comparisons, command_keys)
 
 
-def _validate_materials(materials: Sequence[object], *, repair: bool) -> None:
+def _validate_materials(materials: Sequence[object]) -> None:
     for material in materials:
         if not isinstance(material, dict):
             raise ValueError("accepted reproduction material is invalid")
         expected = {"fingerprint", "identity", "kind", "role"}
         if material.get("role") == "input":
             expected.add("selection")
-        if repair and material.get("role") in {"script", "code"}:
-            expected.add("recorded_fingerprint")
         if set(material) != expected:
             raise ValueError("accepted reproduction material is invalid")
         _validate_fingerprint_row(material, "material")
-        if "recorded_fingerprint" in material:
-            _validate_recorded_material_fingerprint(material)
         if material.get("role") == "input":
             identity = material.get("identity")
             kind = material.get("kind")
             if not isinstance(identity, str) or not isinstance(kind, str):
                 raise ValueError("accepted reproduction material is invalid")
             parse_resource_identity(material.get("selection"), identity, kind=kind)
-
-
-def _validate_recorded_material_fingerprint(material: Mapping[str, object]) -> None:
-    """Validate the recorded historical source observation retained for repair."""
-
-    identity = material.get("identity")
-    kind = material.get("kind")
-    if not isinstance(identity, str) or not isinstance(kind, str):
-        raise ValueError("accepted reproduction repair material is invalid")
-    parse_fingerprint(material.get("recorded_fingerprint"), identity, kind=kind)
 
 
 def _validate_fingerprint_row(
@@ -431,6 +486,8 @@ def _validate_fingerprint_row(
     ):
         raise ValueError(f"accepted reproduction {label} is invalid")
     parse_fingerprint(value.get("fingerprint"), identity, kind=observed_kind)
+
+
 def _validate_evidence_only(
     plan: ReproductionPlan,
     evidence_only: Sequence[object],
@@ -462,9 +519,7 @@ def _validate_evidence_only(
                 raise ValueError(
                     "accepted reproduction evidence-only association is unbound"
                 )
-            if not _comparison_consumes_resource(
-                plan, comparison, row
-            ):
+            if not _comparison_consumes_resource(plan, comparison, row):
                 raise ValueError(
                     "accepted reproduction evidence-only association is invalid"
                 )
@@ -474,7 +529,12 @@ def _parse_evidence_only_selection(value: object) -> _EvidenceOnlySelection:
     """Parse one closed evidence-only row before resolving its associations."""
 
     expected = {
-        "comparisons", "entry", "fingerprint", "kind", "record_id", "resource",
+        "comparisons",
+        "entry",
+        "fingerprint",
+        "kind",
+        "record_id",
+        "resource",
         "selection",
     }
     if not isinstance(value, dict) or set(value) != expected:
@@ -598,9 +658,7 @@ def accepted_invocation(
         if declaration is not None
         else None
     )
-    return AcceptedInvocation(
-        entry, execution_id, execution, data, command
-    )
+    return AcceptedInvocation(entry, execution_id, execution, data, command)
 
 
 def accepted_comparison(
@@ -640,8 +698,10 @@ def accepted_typed_comparison(
     if not isinstance(raw_records, list):
         raise ValueError("accepted reproduction comparison records are invalid")
     invocation = accepted_invocation(plan, entry, execution_id)
-    root = invocation.data.entry_root if invocation.data is not None else Path(
-        _string(invocation.command.get("entry_root"), "entry root")
+    root = (
+        invocation.data.entry_root
+        if invocation.data is not None
+        else Path(_string(invocation.command.get("entry_root"), "entry root"))
     )
     log_root = root.parent.parent
     records = tuple(
@@ -658,9 +718,6 @@ def accepted_typed_comparison(
 
 def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -> str:
     """Return the bounded human projection of one valid dry-run plan."""
-
-    if plan.target.get("kind") == "execution":
-        return format_execution_selection(plan, heading="Single-execution preview")
 
     entry_counts: dict[str, tuple[int, int]] = {}
     exclusive_count = 0
@@ -724,143 +781,7 @@ def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -
     if omitted:
         noun = "entry" if omitted == 1 else "entries"
         lines.extend(["", f"{omitted} additional {noun} omitted."])
-    if target_kind == "execution":
-        lines.extend(_execution_plan_summary(plan))
-    if is_repair_verification(plan):
-        lines.extend(_repair_plan_summary(plan))
     return "\n".join(lines) + "\n"
-
-
-def format_execution_selection(plan: ReproductionPlan, *, heading: str) -> str:
-    """Describe a single command's selection without cumulative result counts."""
-
-    if plan.target.get("kind") != "execution":
-        raise ValueError("single-command reporting requires an execution target")
-    lines = [heading] + _execution_plan_summary(plan)
-    if is_repair_verification(plan):
-        lines.extend(_repair_plan_summary(plan))
-    return "\n".join(lines) + "\n"
-
-
-def _execution_plan_summary(plan: ReproductionPlan) -> list[str]:
-    """Explain the complete single-command scope, including zero-work plans."""
-
-    commands = plan.commands
-    lines = ["", f"- Execution ID: `{plan.target['execution_id']}`"]
-    for command in commands:
-        recipe = cast(Mapping[str, object], command["recipe"])
-        lines.extend(
-            [
-                f"- Script: `{recipe['script']}`",
-                f"- Selection reason: {command['selection']}",
-                "- Complete outputs:",
-            ]
-        )
-        lines.extend(
-            f"  - `{output}`" for output in cast(Sequence[str], recipe["outputs"])
-        )
-        if command["selection"] == "policy":
-            lines.append("- Policy excludes this command; --include-all is required.")
-    lines.append("- Retained prerequisites:")
-    if not plan.boundaries:
-        lines.append("  - None verified.")
-    for boundary in plan.boundaries:
-        producers = (
-            ", ".join(cast(Sequence[str], boundary.get("producers", ())))
-            or "external/origin"
-        )
-        lines.append(f"  - `{boundary['name']}` ({boundary['kind']}): {producers}")
-    lines.append("- Blockers:")
-    if not plan.failures:
-        lines.append("  - None.")
-    for failure in plan.failures:
-        lines.append(f"  - `{failure['artifact']}`: {failure['reason']}")
-        lines.extend(
-            f"    - {detail}" for detail in cast(Sequence[str], failure["dependencies"])
-        )
-    if not plan.executions:
-        lines.append(
-            "- Zero executions: the selection reason and blockers above "
-            "explain why no command will launch."
-        )
-    return lines
-
-
-def _repair_plan_summary(plan: ReproductionPlan) -> list[str]:
-    lines = [
-        "",
-        "- Mode: repaired-source verification; "
-        "recorded recipe and observations preserved.",
-        "- Accepted source fingerprints:",
-    ]
-    for item in cast(
-        Sequence[Mapping[str, Any]], plan.comparison_context.get("materials", ())
-    ):
-        if "recorded_fingerprint" in item:
-            lines.append(
-                f"  - `{item['identity']}`: "
-                f"recorded={item['recorded_fingerprint']}; "
-                f"accepted={item['fingerprint']}"
-            )
-    lines.append(
-        "- This run does not clear the recorded reproduction requirement "
-        "or authorize promotion."
-    )
-    return lines
-
-
-def is_repair_verification(plan: ReproductionPlan) -> bool:
-    """Decode the explicit repaired-source admission marker without defaults."""
-
-    from .model import ActionError
-
-    snapshot = plan.comparison_context
-    if "repair_verification" not in snapshot:
-        return False
-    if (
-        snapshot.get("schema") != "research-log-reproduction-comparison-context/1"
-        or snapshot.get("repair_verification") is not True
-        or not valid_reproduction_target(plan.target)
-        or plan.target.get("kind") != "execution"
-    ):
-        raise ActionError(
-            "reproduction.source.invalid", "invalid repair verification snapshot"
-        )
-    _validate_repair_material_structure(snapshot.get("materials"))
-    return True
-
-
-def _validate_repair_material_structure(materials: object) -> None:
-    """Validate the additional source-history fields before any source recheck."""
-
-    from .model import ActionError
-
-    if not isinstance(materials, Sequence) or isinstance(materials, (str, bytes)):
-        raise ActionError("reproduction.source.invalid", "invalid repair materials")
-    fields = {"identity", "role", "kind", "fingerprint"}
-    for item in materials:
-        if not isinstance(item, Mapping):
-            raise ActionError("reproduction.source.invalid", "invalid repair material")
-        role = item.get("role")
-        expected = fields | ({"selection"} if role == "input" else set()) | (
-            {"recorded_fingerprint"} if role in {"script", "code"} else set()
-        )
-        if set(item) != expected or not isinstance(item.get("identity"), str):
-            raise ActionError(
-                "reproduction.source.invalid", "invalid repair material fields"
-            )
-        try:
-            _validate_fingerprint_row(item, "repair material")
-            if role == "input":
-                parse_resource_identity(
-                    item.get("selection"), item["identity"], kind=item.get("kind")
-                )
-            if role in {"script", "code"}:
-                _validate_recorded_material_fingerprint(item)
-        except ValueError as error:
-            raise ActionError(
-                "reproduction.source.invalid", "invalid repair material fingerprint"
-            ) from error
 
 
 def canonical_record_digest(value: Mapping[str, Any]) -> str:

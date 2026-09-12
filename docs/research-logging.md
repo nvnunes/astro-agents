@@ -969,7 +969,7 @@ lock, evaluates and prepares once, then releases the lock; lock infrastructure
 is its only filesystem side effect:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry-id> [--execution-id <full-id>]] \
+<skill>/scripts/log reproduce --path <log> [--entry <entry-id>] \
   [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>] --dry-run
 ```
@@ -982,33 +982,31 @@ reproduction cache. Add `--recheck` when you deliberately want
 every currently runnable eligible execution in the selected evidence-relevant
 scope to run again. Recheck does not bypass a planning blocker.
 
-Use `--entry <entry-id> --execution-id <full-pyrun-exec/v1-id>` for one
-command and its complete declared outputs, including commands without evidence
-references. The exact ID must exist in that entry's `pyrun.json`; filenames and
-prefixes are rejected. Add `--dry-run --summary` to inspect the ID, script,
-selection reason, outputs, retained prerequisites, and every blocker. Remove
-both flags to launch. `--recheck` retries an eligible target; non-automatic
-commands still require authorized `--include-all`. Invalid retained
-prerequisites block the target, including same-entry prerequisites. This scope
-never expands to producers, siblings, or downstream commands. Resume preserves
-it, and publication retains unrelated results. Command success and artifact
-comparison outcomes remain separate.
+For one current repaired invocation, use `log repair-check --path LOG --entry
+ENTRY --execution-id ID`. It is isolated and synchronous; automatic policy and
+reproduction admission do not apply, and it neither resumes nor publishes. Its
+workspace and diagnostics are retained for inspection once the workspace has
+been created; an unavailable prerequisite or preflight failure before creation
+reports no workspace. Metadata, results, and promotion state remain unchanged.
 
-After an intentional script or recorded local-code repair, add `--verify-repair`
-to the single-execution `--recheck` command. For example:
+After an intentional script or recorded local-code repair, run an isolated
+repair check. For example:
 
 ```bash
-<skill>/scripts/log reproduce --path <log> --entry <entry-id> \
-  --execution-id <full-id> --recheck --verify-repair --dry-run --summary
+<skill>/scripts/log repair-check --path <log> --entry <entry-id> \
+  --execution-id <full-id>
 ```
 
-Remove `--dry-run --summary` to launch. The preview freezes current source bytes
+The check snapshots current source bytes
 separately from historical observations. Prerequisites, baselines, structural
-validation, and automatic policy remain enforced. The run uses private outputs,
-publishes command and comparison results, and preserves `pyrun.json` completely;
-it does not clear the recorded reproduction requirement and cannot be promoted.
-Resume preserves the mode and accepted scope. This option does not adopt changed
-recipe parameters, declarations, or newly observed dependencies.
+declarations, inputs, evidence rules, and retained baselines remain current
+authority. It consumes an available current direct input even when its
+fingerprint differs from the recorded observation, reports that difference,
+and never adopts it. It uses private outputs and retains its diagnostics after
+workspace creation, but publishes nothing and preserves `pyrun.json`
+completely. It does not clear the recorded reproduction requirement and cannot
+be promoted, resumed, or used to adopt changed recipe parameters, declarations,
+or newly observed dependencies.
 
 `--jobs` defaults to `1`. A larger accepted value bounds concurrent executions
 within the run; graph dependencies, overlapping read/write/run/runtime claims,
@@ -1069,20 +1067,12 @@ invalidate conclusions and requires reassessment. An optional scheduled monitor 
 report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
 
-Each execution is attempted at most once in one run. Outside repair-verification
-mode, its complete comparison is recorded before a completed command clears
-`requires_reproduction` in `pyrun.json`; artifact matching remains a separate
-result. Repair verification leaves that field unchanged. A cleared
+Each execution is attempted at most once in one run. Its complete comparison is
+recorded before a completed command clears `requires_reproduction` in
+`pyrun.json`; artifact matching remains a separate result. A cleared
 requirement remains valid if later work or result publication fails. A guarded
 `resume` may also retry a failed reproduction publication from durable run
 state without rerunning terminal command attempts.
-
-For an individual execution, retrieve its short result with
-`log reproduce report --path <log> --run-id <run-id>`; human `status` shows the
-same view. It lists the command outcome, every output comparison, and available
-failure or block details, including in repair-verification mode. A no-work
-individual launch returns its short explanation directly. These views do not
-include cumulative log artifact counts.
 
 For broader runs, on completion retrieve and present the compact centralized
 projection with `log reproduce report --path <log> --summary`. It keeps commands
@@ -1210,3 +1200,16 @@ Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed
 validation run, while the next run determines which prior checks remain current
 and which must be evaluated again.
+
+## Repair Checks
+
+Use `log repair-check --path LOG --entry ENTRY --execution-id ID` to test one
+current repaired invocation. It is isolated and synchronous: it writes only its
+temporary repair-check workspace and lock state, never a reproduction run,
+result, report, requirement flag, or promoted artifact. Bare `log reproduce`
+plans only log or entry work; former repair reproduction and run-ID
+single-execution presentation are removed. Available current direct inputs are
+consumed and compared with their recorded observations; differences are
+reported without updating those observations. Failures before workspace
+creation return a null workspace, while every later terminal outcome retains
+the created workspace and diagnostics.

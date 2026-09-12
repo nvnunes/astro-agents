@@ -30,6 +30,7 @@ FAMILIES = (
     "findings",
     "init",
     "pyrun",
+    "repair-check",
     "reproduce",
     "reorganize",
     "retention",
@@ -69,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "discover": _dispatch_discover,
             "findings": _dispatch_findings,
             "reproduce": _dispatch_reproduce,
+            "repair-check": _dispatch_repair_check,
             "results": _dispatch_results,
             "validate": _dispatch_validate,
         }
@@ -775,32 +777,82 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     )
 
 
+def _dispatch_repair_check(arguments: Sequence[str]) -> int:
+    """Run one isolated repaired invocation without creating a reproduction run."""
+
+    from .repair_check import RepairCheckRequest, run_repair_check
+    from .reproduction_contract import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+
+    parser = argparse.ArgumentParser(prog="log repair-check")
+    parser.add_argument("--path", required=True, type=Path)
+    parser.add_argument("--entry", required=True)
+    parser.add_argument("--execution-id", required=True)
+    parser.add_argument(
+        "--execution-timeout-seconds",
+        type=int,
+        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+    )
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    args = parser.parse_args(arguments)
+    result = run_repair_check(
+        resolve_log(args.path),
+        RepairCheckRequest(
+            args.entry, args.execution_id, args.execution_timeout_seconds
+        ),
+    )
+    if args.format == "json":
+        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"{result.status}: {result.execution_id}\nworkspace: {result.workspace}")
+        policy_value = result.execution.get("policy", {})
+        policy = policy_value if isinstance(policy_value, Mapping) else {}
+        print(
+            "policy: "
+            f"auto_reproduce={policy.get('auto_reproduce')} "
+            f"requires_reproduction={policy.get('requires_reproduction')}"
+        )
+        sources = result.execution.get("sources", [])
+        for source in sources if isinstance(sources, list) else []:
+            if not isinstance(source, Mapping):
+                continue
+            print(
+                "source: "
+                f"{source.get('name')} current={source.get('current')} "
+                f"recorded={source.get('recorded')} "
+                f"differs={source.get('differs_from_recorded')}"
+            )
+        for item in result.inputs:
+            print(
+                "input: "
+                f"{item.get('name')} current={item.get('current')} "
+                f"recorded={item.get('recorded')} "
+                f"differs={item.get('differs_from_recorded')}"
+            )
+        for output in result.outputs:
+            print(
+                f"output: {output.get('artifact')} {output.get('kind')} "
+                f"{output.get('path')} "
+                f"{output.get('outcome')} {output.get('reason') or ''}".rstrip()
+            )
+        print(f"stdout: {result.diagnostics.get('stdout_path', '')}")
+        print(result.diagnostics.get("stdout", ""), end="")
+        print(f"stderr: {result.diagnostics.get('stderr_path', '')}")
+        print(result.diagnostics.get("stderr", ""), end="")
+    return result.exit_status
+
+
 def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
+    """Render the current aggregate reproduction report or summary."""
+
     parser = argparse.ArgumentParser(prog="log reproduce report")
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--path", type=Path)
     selection.add_argument("--root", type=Path)
     parser.add_argument("--entry")
-    parser.add_argument("--run-id", help="short result for one single-execution run")
     parser.add_argument("--summary", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
-    if args.run_id is not None:
-        if (
-            args.root is not None
-            or args.entry is not None
-            or args.summary
-            or args.format != "text"
-        ):
-            parser.error(
-                "--run-id requires --path and cannot combine with report filters"
-            )
-        from .reproduction_reporting import reproduction_execution_report
-
-        print(
-            reproduction_execution_report(resolve_log(args.path), args.run_id), end=""
-        )
-        return 0
     if args.root is not None and not args.summary:
         parser.error("--root requires --summary")
     if args.entry is not None and (args.root is not None or args.summary):
@@ -868,14 +920,8 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log reproduce")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
-    parser.add_argument("--execution-id")
     parser.add_argument("--include-all", action="store_true")
     parser.add_argument("--recheck", action="store_true")
-    parser.add_argument(
-        "--verify-repair",
-        action="store_true",
-        help="verify intentionally repaired source for one recorded execution",
-    )
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument(
         "--execution-timeout-seconds",
@@ -898,8 +944,6 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
 
     selection = ReproductionSelection(
         "recheck" if args.recheck else "incremental",
-        execution_id=args.execution_id,
-        verify_repair=args.verify_repair,
     )
 
     if args.dry_run:
@@ -934,10 +978,6 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
 def _validate_reproduction_arguments(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
-    if args.execution_id is not None and args.entry is None:
-        parser.error("--execution-id requires --entry")
-    if args.verify_repair and (not args.recheck or args.execution_id is None):
-        parser.error("--verify-repair requires --entry, --execution-id, and --recheck")
     if args.summary and not args.dry_run:
         parser.error("--summary requires --dry-run")
 
@@ -968,13 +1008,6 @@ def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
         status = reproduction_status(log, args.run_id)
         if args.json:
             print(json.dumps(status, ensure_ascii=False, sort_keys=True))
-        elif (
-            isinstance(status["target"], Mapping)
-            and status["target"].get("kind") == "execution"
-        ):
-            from .reproduction_reporting import reproduction_execution_report
-
-            print(reproduction_execution_report(log, args.run_id), end="")
         else:
             print(format_reproduction_status(status), end="")
     elif action == "stop":

@@ -512,6 +512,43 @@ class ReproductionJobTests(unittest.TestCase):
             self.assertIsNotNone(launched.run_id)
             self.assertEqual(observed, [True])
 
+    def test_whole_log_ordinary_launch_creates_a_fresh_run(self) -> None:
+        """Omitting --entry remains an ordinary durable launch, not repair mode."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            root.mkdir()
+            (root / ".git").mkdir()
+            fixture = _Fixture(root)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            fixture.write_pyrun(
+                entry,
+                [fixture.execution(entry, "build", {"raw": raw}, {"output": output})],
+            )
+            with mock.patch(
+                "log_commands.reproduction_jobs._spawn_supervisor"
+            ) as handoff:
+                launched = launch_reproduction(
+                    fixture.log, entry=None, include_all=False
+                )
+            self.assertIsNotNone(launched.run_id)
+            run_root = handoff.call_args.args[1]
+            self.assertIsInstance(run_root, Path)
+            self.assertTrue((run_root / "run.json").is_file())
+            self.assertTrue((run_root / "plan.json").is_file())
+
     def test_status_derives_totals_from_the_accepted_plan_not_run_copies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _log, root = accepted_run(Path(directory))

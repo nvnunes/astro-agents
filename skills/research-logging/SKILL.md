@@ -36,16 +36,17 @@ Choose the core operation:
   `references/operation-validate.md`. The validation run is code-only; neither
   path becomes semantic review or reproduction. Those remain separate
   workflows.
-- Explicit mechanical reproduction of a maintained log, one entry, or one
-  recorded execution: read
-  `references/operation-reproduce.md`. Reproduce is CLI-owned, uses JSON as its
-  graph and execution authority, and never becomes Record, Review, or Validate.
+- Explicit mechanical reproduction of a maintained log or one entry: read
+  `references/operation-reproduce.md`. Ordinary reproduction does not target
+  one command. Reproduce is CLI-owned, uses JSON as its graph and execution
+  authority, and never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, causal group, finding class,
   malformed or legacy state, transaction residue, or other identified log
   defect: read `references/operation-repair.md`. Correction language such as
   repair, fix, resolve, correct, clean up, or remove authorizes Repair when the
   requested target and corrected state are clear. A failed authoring command
-  or reported finding alone does not.
+  or reported finding alone does not. Route an explicit check of one repaired
+  invocation here; ordinary one-command reproduction is unavailable.
 - Researcher-requested reorganization, or a specific Reorganize recommendation
   that the researcher has approved: read
   `references/operation-reorganize.md`. Review may recommend Reorganize but
@@ -121,3 +122,10 @@ state does not start Repair without an explicit correction request.
   fails again.
 - Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.
+
+## Repair Checks
+
+Use `log repair-check` only for a synchronous isolated check of one explicit
+current execution. Do not use reproduction execution selectors or
+the removed repair reproduction mode: reproduction plans log- or entry-scoped
+work only.

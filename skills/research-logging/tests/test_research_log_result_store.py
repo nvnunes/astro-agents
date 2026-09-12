@@ -5,11 +5,13 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from log_commands.reproduction_result_storage import (
     CommandProjectionRequest,
     ReproductionPublicationRequest,
     ReproductionStorageError,
+    _stream_reproduction_export,
     export_reproduction_results,
     initialize_empty_reproduction_results,
     publish_reproduction_results,
@@ -36,10 +38,130 @@ from research_log_result_store import (
     result_transaction,
     results_lock,
 )
+from result_export_encoder import ExportTooLarge
 from validation.operation_state import OperationLockError
 
 
 class ResultStoreTests(unittest.TestCase):
+    def test_reproduction_export_bounds_before_loading_the_aggregate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            path = result_store_path(root)
+            run = _run_with_detail("export-bound", 128)
+            publish_reproduction_results(
+                path,
+                ReproductionPublicationRequest("study.md", run, (), (), (), ()),
+            )
+            with result_snapshot(root) as db:
+                exact_size = _stream_reproduction_export(db, MAX_RESULT_BYTES)
+                self.assertEqual(
+                    _stream_reproduction_export(db, exact_size), exact_size
+                )
+                self.assertEqual(
+                    _stream_reproduction_export(db, exact_size + 1), exact_size
+                )
+                with self.assertRaises(ExportTooLarge):
+                    _stream_reproduction_export(db, exact_size - 1)
+                with mock.patch(
+                    "log_commands.reproduction_result_storage._write_run_export",
+                    side_effect=AssertionError("decoded a later run"),
+                ) as later:
+                    with self.assertRaises(ExportTooLarge):
+                        _stream_reproduction_export(db, 1)
+                later.assert_not_called()
+            with (
+                mock.patch(
+                    "log_commands.reproduction_result_storage."
+                    "_stream_reproduction_export",
+                    side_effect=ExportTooLarge("too large"),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_result_storage."
+                    "_load_reproduction_projection"
+                ) as load,
+            ):
+                with self.assertRaisesRegex(ReproductionStorageError, "exceeds 64 MiB"):
+                    export_reproduction_results(path)
+            load.assert_not_called()
+
+    def test_reproduction_publication_byte_bound_is_exact_and_atomic(self) -> None:
+        for offset, succeeds in ((-1, False), (0, True), (1, True)):
+            with (
+                self.subTest(offset=offset),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                workspace = Path(directory)
+                baseline = _run("baseline")
+                candidate = _run_with_detail("candidate", 128)
+                measure_root = workspace / "measure"
+                measure_root.mkdir()
+                measure_path = result_store_path(measure_root)
+                for run in (baseline, candidate):
+                    publish_reproduction_results(
+                        measure_path,
+                        ReproductionPublicationRequest("study.md", run, (), (), (), ()),
+                    )
+                with result_snapshot(measure_root) as db:
+                    exact_size = _stream_reproduction_export(db, MAX_RESULT_BYTES)
+
+                root = workspace / "target"
+                root.mkdir()
+                path = result_store_path(root)
+                publish_reproduction_results(
+                    path,
+                    ReproductionPublicationRequest(
+                        "study.md", baseline, (), (), (), ()
+                    ),
+                )
+                self.assertTrue(
+                    record_report_materialization(
+                        root, "reproduction", b"baseline", expected_generation=1
+                    )
+                )
+                with mock.patch(
+                    "log_commands.reproduction_results.MAX_RESULT_BYTES",
+                    exact_size + offset,
+                ):
+                    if succeeds:
+                        generation = publish_reproduction_results(
+                            path,
+                            ReproductionPublicationRequest(
+                                "study.md", candidate, (), (), (), ()
+                            ),
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            ReproductionStorageError, "cumulative byte bound"
+                        ):
+                            publish_reproduction_results(
+                                path,
+                                ReproductionPublicationRequest(
+                                    "study.md", candidate, (), (), (), ()
+                                ),
+                            )
+                with result_snapshot(root) as db:
+                    stored_generation = db.execute(
+                        "SELECT generation FROM store_state WHERE domain='reproduction'"
+                    ).fetchone()[0]
+                    marker = db.execute(
+                        "SELECT source_generation FROM report_materializations "
+                        "WHERE kind='reproduction'"
+                    ).fetchone()
+                    run_ids = {
+                        row[0]
+                        for row in db.execute("SELECT run_id FROM reproduction_runs")
+                    }
+                if succeeds:
+                    self.assertEqual(generation, 2)
+                    self.assertEqual(stored_generation, 2)
+                    self.assertIsNone(marker)
+                    self.assertEqual(run_ids, {baseline.run_id, candidate.run_id})
+                else:
+                    self.assertEqual(stored_generation, 1)
+                    self.assertEqual(marker[0], 1)
+                    self.assertEqual(run_ids, {baseline.run_id})
+
     def test_results_lock_excludes_a_concurrent_publisher(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
@@ -209,10 +331,9 @@ class ResultStoreTests(unittest.TestCase):
                 self.assertTrue(
                     {
                         "reproduction_runs_order",
-                        "reproduction_execution_current",
-                        "reproduction_execution_producing_run",
-                        "reproduction_artifact_current",
-                        "reproduction_artifact_producing_run",
+                        "reproduction_run_commands_order",
+                        "reproduction_run_executions_order",
+                        "reproduction_artifact_outcome",
                     }.issubset(indexes)
                 )
                 self.assertEqual(
@@ -220,6 +341,658 @@ class ResultStoreTests(unittest.TestCase):
                         0
                     ],
                     0,
+                )
+
+    def test_v14_schema_uses_compact_keys_and_exact_secondary_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            with result_transaction(root):
+                pass
+            with result_snapshot(root) as db:
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 14)
+                table_sql = {
+                    row[0]: row[1]
+                    for row in db.execute(
+                        "SELECT name, sql FROM sqlite_schema "
+                        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+                expected_tables = {
+                    "store_state",
+                    "report_materializations",
+                    "validation_results",
+                    "validation_result_entries",
+                    "validation_result_limitations",
+                    "validation_codes",
+                    "validation_checks",
+                    "validation_check_dependencies",
+                    "validation_groups",
+                    "validation_findings",
+                    "validation_finding_affected_chains",
+                    "validation_finding_affected_entries",
+                    "validation_commands",
+                    "validation_command_tokens",
+                    "validation_command_relationships",
+                    "validation_command_collections",
+                    "validation_collection_members",
+                    "validation_artifacts",
+                    "validation_group_artifacts",
+                    "validation_group_edges",
+                    "validation_group_signals",
+                    "validation_registry_records",
+                    "validation_registry_identity_members",
+                    "validation_group_registry",
+                    "validation_batches",
+                    "validation_batch_entries",
+                    "validation_batch_anchors",
+                    "validation_batch_findings",
+                    "validation_batch_groups",
+                    "validation_batch_related_batches",
+                    "validation_batch_command_links",
+                    "reproduction_metadata",
+                    "reproduction_runs",
+                    "reproduction_run_commands",
+                    "reproduction_run_executions",
+                    "reproduction_execution_results",
+                    "reproduction_artifact_results",
+                    "reproduction_comparison_evidence",
+                }
+                self.assertEqual(set(table_sql), expected_tables)
+                self.assertNotIn("validation_finding_dependencies", table_sql)
+                for table in expected_tables - {
+                    "store_state",
+                    "report_materializations",
+                    "validation_results",
+                    "reproduction_metadata",
+                    "reproduction_runs",
+                }:
+                    self.assertIn("WITHOUT ROWID", table_sql[table].upper(), table)
+
+                columns = {
+                    table: {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                    for table in expected_tables
+                }
+                self.assertIn("result_pk", columns["validation_results"])
+                self.assertNotIn("result_id", columns["validation_findings"])
+                self.assertEqual(
+                    columns["validation_findings"],
+                    {
+                        "result_pk",
+                        "check_pk",
+                        "group_pk",
+                        "position",
+                        "admission_effect",
+                        "display_entry",
+                        "display_subject",
+                    },
+                )
+                self.assertNotIn("detail_json", columns["reproduction_run_commands"])
+                self.assertIn("details_json", columns["reproduction_run_commands"])
+                self.assertIn("run_pk", columns["reproduction_runs"])
+
+                expected_primary_keys = {
+                    "store_state": ("domain",),
+                    "report_materializations": ("kind",),
+                    "validation_results": ("result_pk",),
+                    "validation_result_entries": ("result_pk", "relation", "position"),
+                    "validation_result_limitations": ("result_pk", "position"),
+                    "validation_codes": ("result_pk", "code_pk"),
+                    "validation_checks": ("result_pk", "check_pk"),
+                    "validation_check_dependencies": (
+                        "result_pk",
+                        "check_pk",
+                        "position",
+                    ),
+                    "validation_groups": ("result_pk", "group_pk"),
+                    "validation_findings": ("result_pk", "check_pk"),
+                    "validation_finding_affected_chains": (
+                        "result_pk",
+                        "check_pk",
+                        "position",
+                    ),
+                    "validation_finding_affected_entries": (
+                        "result_pk",
+                        "check_pk",
+                        "position",
+                    ),
+                    "validation_commands": ("result_pk", "command_pk"),
+                    "validation_command_tokens": (
+                        "result_pk",
+                        "command_pk",
+                        "position",
+                    ),
+                    "validation_artifacts": ("result_pk", "artifact_pk"),
+                    "validation_command_relationships": (
+                        "result_pk",
+                        "command_pk",
+                        "direction",
+                        "position",
+                    ),
+                    "validation_command_collections": (
+                        "result_pk",
+                        "command_pk",
+                        "position",
+                    ),
+                    "validation_collection_members": (
+                        "result_pk",
+                        "command_pk",
+                        "collection_position",
+                        "position",
+                    ),
+                    "validation_group_artifacts": ("result_pk", "group_pk", "position"),
+                    "validation_group_edges": ("result_pk", "group_pk", "position"),
+                    "validation_group_signals": ("result_pk", "group_pk", "position"),
+                    "validation_registry_records": ("result_pk", "registry_pk"),
+                    "validation_registry_identity_members": (
+                        "result_pk",
+                        "registry_pk",
+                        "position",
+                    ),
+                    "validation_group_registry": ("result_pk", "group_pk", "position"),
+                    "validation_batches": ("result_pk", "batch_pk"),
+                    "validation_batch_entries": ("result_pk", "batch_pk", "position"),
+                    "validation_batch_anchors": ("result_pk", "batch_pk", "position"),
+                    "validation_batch_findings": ("result_pk", "batch_pk", "position"),
+                    "validation_batch_groups": ("result_pk", "batch_pk", "position"),
+                    "validation_batch_related_batches": (
+                        "result_pk",
+                        "batch_pk",
+                        "position",
+                    ),
+                    "validation_batch_command_links": (
+                        "result_pk",
+                        "batch_pk",
+                        "command_pk",
+                        "code_pk",
+                    ),
+                    "reproduction_metadata": ("singleton",),
+                    "reproduction_runs": ("run_pk",),
+                    "reproduction_run_commands": ("run_pk", "entry", "execution_id"),
+                    "reproduction_run_executions": ("run_pk", "entry", "execution_id"),
+                    "reproduction_execution_results": ("entry", "execution_id"),
+                    "reproduction_artifact_results": ("entry", "artifact"),
+                    "reproduction_comparison_evidence": (
+                        "entry",
+                        "artifact",
+                        "position",
+                    ),
+                }
+                actual_primary_keys = {
+                    table: tuple(
+                        row[1]
+                        for row in sorted(
+                            db.execute(f"PRAGMA table_info({table})"),
+                            key=lambda item: item[5],
+                        )
+                        if row[5]
+                    )
+                    for table in expected_tables
+                }
+                self.assertEqual(actual_primary_keys, expected_primary_keys)
+
+                def foreign_keys(table: str) -> set[tuple[object, ...]]:
+                    grouped: dict[int, list[sqlite3.Row]] = {}
+                    for foreign_key in db.execute(f"PRAGMA foreign_key_list({table})"):
+                        grouped.setdefault(foreign_key[0], []).append(foreign_key)
+                    return {
+                        (
+                            group[0][2],
+                            tuple(
+                                (item[3], item[4])
+                                for item in sorted(group, key=lambda item: item[1])
+                            ),
+                            group[0][6],
+                        )
+                        for group in grouped.values()
+                    }
+
+                validation_result_fk = {
+                    ("validation_results", (("result_pk", "result_pk"),), "CASCADE")
+                }
+                expected_foreign_keys = {
+                    "validation_result_entries": validation_result_fk,
+                    "validation_result_limitations": validation_result_fk,
+                    "validation_codes": validation_result_fk,
+                    "validation_checks": validation_result_fk
+                    | {
+                        (
+                            "validation_codes",
+                            (("result_pk", "result_pk"), ("code_pk", "code_pk")),
+                            "NO ACTION",
+                        )
+                    },
+                    "validation_check_dependencies": {
+                        (
+                            "validation_checks",
+                            (("result_pk", "result_pk"), ("check_pk", "check_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_groups": validation_result_fk,
+                    "validation_findings": {
+                        (
+                            "validation_checks",
+                            (("result_pk", "result_pk"), ("check_pk", "check_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_finding_affected_chains": {
+                        (
+                            "validation_findings",
+                            (("result_pk", "result_pk"), ("check_pk", "check_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_finding_affected_entries": {
+                        (
+                            "validation_findings",
+                            (("result_pk", "result_pk"), ("check_pk", "check_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_commands": {
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_command_tokens": {
+                        (
+                            "validation_commands",
+                            (("result_pk", "result_pk"), ("command_pk", "command_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_artifacts": validation_result_fk,
+                    "validation_command_relationships": {
+                        (
+                            "validation_commands",
+                            (("result_pk", "result_pk"), ("command_pk", "command_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_artifacts",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("path_artifact_pk", "artifact_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_command_collections": {
+                        (
+                            "validation_commands",
+                            (("result_pk", "result_pk"), ("command_pk", "command_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_collection_members": {
+                        (
+                            "validation_command_collections",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("command_pk", "command_pk"),
+                                ("collection_position", "position"),
+                            ),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_group_artifacts": {
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_artifacts",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("artifact_pk", "artifact_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_group_edges": {
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_commands",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("source_command_pk", "command_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_commands",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("target_command_pk", "command_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_artifacts",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("artifact_pk", "artifact_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_group_signals": {
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_registry_records": validation_result_fk,
+                    "validation_registry_identity_members": {
+                        (
+                            "validation_registry_records",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("registry_pk", "registry_pk"),
+                            ),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_group_registry": {
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_registry_records",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("registry_pk", "registry_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_batches": validation_result_fk
+                    | {
+                        (
+                            "validation_findings",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("starting_check_pk", "check_pk"),
+                            ),
+                            "NO ACTION",
+                        )
+                    },
+                    "validation_batch_entries": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_batch_anchors": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        )
+                    },
+                    "validation_batch_findings": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_findings",
+                            (("result_pk", "result_pk"), ("check_pk", "check_pk")),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_batch_groups": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_groups",
+                            (("result_pk", "result_pk"), ("group_pk", "group_pk")),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_batch_related_batches": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_batches",
+                            (
+                                ("result_pk", "result_pk"),
+                                ("related_batch_pk", "batch_pk"),
+                            ),
+                            "CASCADE",
+                        ),
+                    },
+                    "validation_batch_command_links": {
+                        (
+                            "validation_batches",
+                            (("result_pk", "result_pk"), ("batch_pk", "batch_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_commands",
+                            (("result_pk", "result_pk"), ("command_pk", "command_pk")),
+                            "CASCADE",
+                        ),
+                        (
+                            "validation_codes",
+                            (("result_pk", "result_pk"), ("code_pk", "code_pk")),
+                            "CASCADE",
+                        ),
+                    },
+                    "reproduction_run_commands": {
+                        ("reproduction_runs", (("run_pk", "run_pk"),), "CASCADE")
+                    },
+                    "reproduction_run_executions": {
+                        ("reproduction_runs", (("run_pk", "run_pk"),), "CASCADE")
+                    },
+                    "reproduction_comparison_evidence": {
+                        (
+                            "reproduction_artifact_results",
+                            (("entry", "entry"), ("artifact", "artifact")),
+                            "CASCADE",
+                        )
+                    },
+                }
+                empty_fk_tables = expected_tables - set(expected_foreign_keys)
+                for table in empty_fk_tables:
+                    expected_foreign_keys[table] = set()
+                self.assertEqual(
+                    {table: foreign_keys(table) for table in expected_tables},
+                    expected_foreign_keys,
+                )
+
+                normalized_sql = {
+                    table: "".join(table_sql[table].upper().split())
+                    for table in expected_tables
+                }
+                expected_checks = {
+                    "store_state": ("CHECK(DOMAININ('VALIDATION','REPRODUCTION'))",),
+                    "report_materializations": (
+                        "CHECK(KINDIN('VALIDATION','REPRODUCTION'))",
+                    ),
+                    "validation_results": (
+                        "CHECK(RESULT_PK>=1)",
+                        "CHECK(GENERATION>=1)",
+                    ),
+                    "validation_result_entries": (
+                        "CHECK(RELATIONIN('REQUESTED','EVALUATED','DEPENDENCY'))",
+                        "CHECK(POSITION>=0)",
+                    ),
+                    "validation_result_limitations": ("CHECK(POSITION>=0)",),
+                    "validation_codes": ("CHECK(CODE_PK>=1)",),
+                    "validation_checks": (
+                        "CHECK(CHECK_PK>=1)",
+                        "STATUSIN('FAIL','UNAVAILABLE')",
+                    ),
+                    "validation_check_dependencies": ("CHECK(POSITION>=0)",),
+                    "validation_groups": (
+                        "CHECK(GROUP_PK>=1)",
+                        "CHECK(GROUP_KINDIN('CHAIN','UNRESOLVED'))",
+                        "CHECK(POSITION>=0)",
+                    ),
+                    "validation_findings": ("CHECK(POSITION>=0)",),
+                    "validation_finding_affected_chains": ("CHECK(POSITION>=0)",),
+                    "validation_finding_affected_entries": ("CHECK(POSITION>=0)",),
+                    "validation_commands": (
+                        "CHECK(COMMAND_PK>=1)",
+                        "CHECK(FENCE>=0)",
+                        "CHECK(ORDINAL>=0)",
+                        "CHECK(POSITION>=0)",
+                    ),
+                    "validation_command_tokens": ("CHECK(POSITION>=0)",),
+                    "validation_artifacts": ("CHECK(ARTIFACT_PK>=1)",),
+                    "validation_command_relationships": (
+                        "CHECK(DIRECTIONIN('INPUT','OUTPUT'))",
+                        "CHECK(POSITION>=0)",
+                        "CHECK(ORIGININ(0,1))",
+                        "CHECK((PATH_ARTIFACT_PKISNULL)!=(PATH_TEXTISNULL))",
+                    ),
+                    "validation_command_collections": (
+                        "CHECK(POSITION>=0)",
+                        "CHECK(DIRECTIONIN('INPUT','OUTPUT'))",
+                    ),
+                    "validation_collection_members": (
+                        "CHECK(COLLECTION_POSITION>=0)",
+                        "CHECK(POSITION>=0)",
+                    ),
+                    "validation_group_artifacts": ("CHECK(POSITION>=0)",),
+                    "validation_group_edges": ("CHECK(POSITION>=0)",),
+                    "validation_group_signals": ("CHECK(POSITION>=0)",),
+                    "validation_registry_records": (
+                        "CHECK(REGISTRY_PK>=1)",
+                        "CHECK(ORIGININ(0,1))",
+                        "CHECK(READ_ONLYIN(0,1))",
+                        "FROM_ENTRYISNULLANDREAD_ONLYISNULL",
+                        "FROM_ENTRYISNOTNULLANDREAD_ONLY=1",
+                    ),
+                    "validation_registry_identity_members": ("CHECK(POSITION>=0)",),
+                    "validation_group_registry": ("CHECK(POSITION>=0)",),
+                    "validation_batches": (
+                        "CHECK(BATCH_PK>=1)",
+                        "CHECK(PRIMARY_FINDING_COUNT>=1)",
+                        "CHECK(POSITION>=0)",
+                    ),
+                    "validation_batch_entries": ("CHECK(POSITION>=0)",),
+                    "validation_batch_anchors": ("CHECK(POSITION>=0)",),
+                    "validation_batch_findings": ("CHECK(POSITION>=0)",),
+                    "validation_batch_groups": ("CHECK(POSITION>=0)",),
+                    "validation_batch_related_batches": ("CHECK(POSITION>=0)",),
+                    "reproduction_metadata": ("CHECK(SINGLETON=1)",),
+                    "reproduction_runs": (
+                        "CHECK(RUN_PK>=1)",
+                        "CHECK(INCLUDE_ALLIN(0,1))",
+                    ),
+                    "reproduction_run_commands": (
+                        "CHECK(PLAN_ORDER>=0)",
+                        "CHECK(AUTO_REPRODUCEIN(0,1))",
+                        "CHECK(EXCLUSIVEIN(0,1))",
+                        "CHECK(QUEUEDIN(0,1))",
+                        "CHECK(REQUIRES_REPRODUCTIONIN(0,1))",
+                    ),
+                    "reproduction_run_executions": ("CHECK(POSITION>=0)",),
+                    "reproduction_comparison_evidence": (
+                        "CHECK(POSITION>=0)",
+                        "CHECK(MATCHEDIN(0,1))",
+                    ),
+                }
+                for table, fragments in expected_checks.items():
+                    for fragment in fragments:
+                        self.assertIn(fragment, normalized_sql[table], table)
+                self.assertIn(
+                    "DEFERRABLEINITIALLYDEFERRED",
+                    normalized_sql["validation_finding_affected_chains"],
+                )
+                self.assertIn(
+                    "DEFERRABLEINITIALLYDEFERRED",
+                    normalized_sql["validation_batch_related_batches"],
+                )
+                self.assertEqual(
+                    sum(
+                        "DEFERRABLEINITIALLYDEFERRED" in sql
+                        for sql in normalized_sql.values()
+                    ),
+                    2,
+                )
+
+                indexes = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT name FROM sqlite_schema "
+                        "WHERE type='index' AND sql IS NOT NULL"
+                    )
+                }
+                self.assertEqual(
+                    indexes,
+                    {
+                        "validation_results_kind_generation",
+                        "validation_checks_code",
+                        "validation_checks_subject",
+                        "validation_groups_entry",
+                        "validation_groups_projection_order",
+                        "validation_commands_group_order",
+                        "validation_commands_entry",
+                        "validation_relationship_artifact",
+                        "validation_group_artifacts_artifact",
+                        "validation_batch_entries_entry",
+                        "validation_batch_findings_check",
+                        "validation_batch_groups_group",
+                        "validation_batch_commands_code",
+                        "reproduction_runs_order",
+                        "reproduction_run_commands_order",
+                        "reproduction_run_executions_order",
+                        "reproduction_artifact_outcome",
+                    },
+                )
+                relationship_sql = table_sql[
+                    "validation_command_relationships"
+                ].replace(" ", "")
+                self.assertIn(
+                    "CHECK((path_artifact_pkISNULL)!=(path_textISNULL))",
+                    relationship_sql,
+                )
+                finding_foreign_keys = {
+                    (row[2], row[3], row[4])
+                    for row in db.execute(
+                        "PRAGMA foreign_key_list(validation_findings)"
+                    )
+                }
+                self.assertTrue(
+                    {
+                        ("validation_checks", "result_pk", "result_pk"),
+                        ("validation_checks", "check_pk", "check_pk"),
+                        ("validation_groups", "result_pk", "result_pk"),
+                        ("validation_groups", "group_pk", "group_pk"),
+                    }.issubset(finding_foreign_keys)
                 )
                 self.assertEqual(
                     db.execute("SELECT count(*) FROM reproduction_runs").fetchone()[0],
@@ -391,6 +1164,45 @@ class ResultStoreTests(unittest.TestCase):
             exported = export_reproduction_results(result_store_path(root))
             self.assertEqual(exported.runs[0].folder.availability, "unknown")
             self.assertEqual(exported.runs[0].folder.path, run.folder.path)
+
+    def test_reproduction_command_detail_round_trips_without_duplicate_payload(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            path = result_store_path(root)
+            run = _run_with_detail("detail", 128)
+
+            publish_reproduction_results(
+                path,
+                ReproductionPublicationRequest("study.md", run, (), (), (), ()),
+            )
+
+            exported = export_reproduction_results(path)
+            self.assertEqual(exported.runs[0].command_records, run.command_records)
+            _, projected_run, matched, records = reproduction_command_projection(
+                path, CommandProjectionRequest(run_id=run.run_id)
+            )
+            self.assertEqual(projected_run.run_id, run.run_id)
+            self.assertEqual(matched, 1)
+            self.assertEqual(records, run.command_records)
+            with result_snapshot(root) as db:
+                columns = {
+                    row[1]
+                    for row in db.execute(
+                        "PRAGMA table_info(reproduction_run_commands)"
+                    )
+                }
+                stored = db.execute(
+                    "SELECT details_json,recipe_json,cwd,run_selection "
+                    "FROM reproduction_run_commands"
+                ).fetchone()
+            self.assertNotIn("detail_json", columns)
+            self.assertEqual(stored[0], '["' + "x" * 128 + '"]')
+            self.assertIsNotNone(stored[1])
+            self.assertEqual(stored[2], run.command_records[0]["cwd"])
+            self.assertEqual(stored[3], run.command_records[0]["run_selection"])
 
     def test_partial_publication_prunes_selected_stale_artifacts_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -596,11 +1408,15 @@ class ResultStoreTests(unittest.TestCase):
                 ),
             )
             with result_transaction(root) as db:
+                run_pk = db.execute(
+                    "SELECT run_pk FROM reproduction_runs WHERE run_id=?",
+                    (run.run_id,),
+                ).fetchone()[0]
                 db.execute(
                     "INSERT INTO reproduction_run_commands "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        run.run_id,
+                        run_pk,
                         "e001",
                         execution,
                         0,
@@ -608,15 +1424,22 @@ class ResultStoreTests(unittest.TestCase):
                         "succeeded",
                         "succeeded",
                         None,
+                        1,
+                        ".",
+                        0,
+                        None,
+                        1,
+                        1,
+                        "run",
+                        "[]",
                         "{}",
-                        '{"entry":"e001"}',
                     ),
                 )
                 db.execute(
                     "INSERT INTO reproduction_run_commands "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        run.run_id,
+                        run_pk,
                         "e999",
                         "pyrun-exec/v1:" + "9" * 64,
                         99,
@@ -624,8 +1447,15 @@ class ResultStoreTests(unittest.TestCase):
                         "failed",
                         "failed",
                         None,
-                        "{}",
+                        1,
+                        ".",
+                        0,
+                        None,
+                        1,
+                        1,
+                        "run",
                         "not-json",
+                        "{}",
                     ),
                 )
             with self.assertRaisesRegex(ReproductionStorageError, "incorrect fields"):

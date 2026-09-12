@@ -4337,6 +4337,20 @@ long-string chunking, or content-addressed packing is permitted. Missing or
 corrupt content produces an explicit query error; it does not trigger automatic
 regeneration. No separate archive or index-maintenance CLI is needed.
 
+The current consolidated store schema is v14. Public result, check, group,
+command, batch, artifact, and code identities remain text at the command,
+cursor, report, accepted-plan, and export boundaries. Inside one validation
+result, deterministic positive integer keys own relationships among those
+entities; ordered membership and composite-key junction tables use their
+primary key without a duplicate SQLite rowid B-tree. A finding stores only its
+check, group, order, admission effect, and human display projection. Its
+machine scope, status, subject, code, rule, observation, and dependencies are
+authoritative on the joined check and code rows. Registry payloads are unique
+per result and groups retain ordered memberships; identity-member order is
+stored separately and is part of payload validation. Command-relationship
+paths refer to one result-local artifact identity when the path is selectable,
+with a bounded text fallback only when no artifact entity exists.
+
 Batch storage retains direct batch findings, groups, and explicit
 batch-command/code matches only. The compact command junction uses its composite
 key without a SQLite rowid; a rejected command retains its naming finding's code,
@@ -4344,6 +4358,25 @@ while an anchor-matched command retains each distinct code in its batch. Batch
 code and group selections join batch findings, and artifact selections join a
 qualifying command match to command-relationship paths. Do not materialize
 batch-to-artifact or other transitive fan-out links.
+
+Publication validates the complete inserted candidate before commit. Explicit
+audit and full export may scan and cross-check the complete selected result.
+Ordinary list, summary, admission, report, and entity selectors do not invoke
+that audit: they validate the selected result header, returned page, and the
+local ordered memberships and cardinalities needed to render those rows.
+Corruption in touched state fails as `results.store.malformed`; unrelated
+corruption is found by its own selector or explicit audit. A selector may scan
+matching index keys to compute an exact count, but it decodes detail for no
+more than the bounded page.
+
+The 100,000-row publication ceiling counts actual v14 rows, including each
+deduplicated code, artifact, registry payload, identity member, registry
+membership, and explicit batch-command-code match once. Query-derived batch
+codes and artifacts and deleted duplicate finding state are not counted as
+stored rows. Candidate and explicit-export byte ceilings are enforced by a
+canonical incremental encoder before an aggregate Python object is
+materialized; exceeding the ceiling stops at the first over-limit encoded
+chunk and rolls publication back.
 
 Use the existing SQLite transaction pattern with foreign keys, rollback
 journaling, and full synchronous commits. One transaction inserts the complete

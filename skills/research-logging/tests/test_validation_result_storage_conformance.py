@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable, TypeVar
 from unittest import mock
 
-from log_commands.inspection_queries import Query, inspect_result
-from research_log_result_store import ResultStoreError, result_snapshot
+import research_log_result_store as result_store
+from log_commands.inspection_queries import InspectionError, Query, inspect_result
+from research_log_result_store import (
+    ResultStoreError,
+    record_report_materialization,
+    result_snapshot,
+)
 from validation.batch_projection import build_batch_projection
+from validation.human_projection import ReportContext
 from validation.mechanical_results import (
     CheckScope,
     CheckStatus,
@@ -22,9 +30,12 @@ from validation.mechanical_results import (
 )
 from validation.result_storage import (
     ValidationPublicationRequest,
+    audit_validation_result,
     export_validation_result,
     latest_full_validation,
+    load_finding_group,
     load_validation_admission,
+    load_validation_report_projection,
     publish_diagnostic_commands,
     publish_validation_result,
 )
@@ -57,7 +68,133 @@ def _projection(record: MechanicalGeneratedRecord) -> dict[str, object]:
     )
 
 
+_T = TypeVar("_T")
+
+
+def _traced_read_tables(
+    call: Callable[[], _T],
+) -> tuple[_T, set[str], list[str]]:
+    statements: list[str] = []
+    original_open = result_store._open
+
+    def traced_open(path: Path, *, writable: bool) -> sqlite3.Connection:
+        db = original_open(path, writable=writable)
+        if not writable:
+            db.set_trace_callback(statements.append)
+        return db
+
+    with mock.patch("research_log_result_store._open", side_effect=traced_open):
+        value = call()
+    tables = {
+        match.group(1)
+        for statement in statements
+        for match in re.finditer(
+            r"\b(?:FROM|JOIN)\s+([a-z][a-z0-9_]*)", statement, re.IGNORECASE
+        )
+    }
+    return value, tables, statements
+
+
+def _registry_projection(record: MechanicalGeneratedRecord) -> dict[str, object]:
+    projection = _projection(record)
+    unresolved = projection["unresolved"]
+    batches = projection["repair_batches"]
+    assert isinstance(unresolved, list) and len(unresolved) == 1
+    assert isinstance(batches, list) and len(batches) == 1
+    group = unresolved[0]
+    batch = batches[0]
+    assert isinstance(group, dict) and isinstance(batch, dict)
+    findings = group["findings"]
+    assert isinstance(findings, list) and len(findings) == 1
+    finding = findings[0]
+    assert isinstance(finding, dict)
+    finding["admission_effect"] = "chain"
+    finding["affected_chains"] = ["chain"]
+    finding["affected_entries"] = ["e001"]
+    projection["chains"] = [
+        {
+            "chain_id": "chain",
+            "entry": "e001",
+            "findings": findings,
+            "commands": [],
+            "artifacts": [],
+            "edges": [],
+            "signals": [],
+            "registry": [
+                {
+                    "entry": "e001",
+                    "name": "files",
+                    "kind": "directory",
+                    "location": "data/files",
+                    "path": "entries/e001/data/files",
+                    "origin": False,
+                    "identity": {
+                        "algorithm": "identity-files-sha256-v1",
+                        "files": ["z.csv", "a.csv"],
+                    },
+                }
+            ],
+        }
+    ]
+    projection["unresolved"] = []
+    batch["batch_type"] = "chain"
+    batch["grouping_reason"] = "command_chain"
+    batch["related_chain_ids"] = ["chain"]
+    projection.pop("validation_id")
+    projection["validation_id"] = hashlib.sha256(
+        json.dumps(projection, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return projection
+
+
 class ValidationResultStorageConformanceTests(unittest.TestCase):
+    def test_report_projection_does_not_audit_unconsumed_batch_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            record = _record(root)
+            with mock.patch(
+                "validation.human_projection.project_findings", return_value=()
+            ):
+                stored = publish_validation_result(
+                    ValidationPublicationRequest(
+                        root,
+                        record,
+                        _projection(record),
+                        report_context=ReportContext.empty(root / "study.md"),
+                    )
+                )
+            with sqlite3.connect(root / ".cache" / "results.sqlite") as raw:
+                raw.execute(
+                    "UPDATE validation_batches SET primary_finding_count=2 "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?)",
+                    (stored.result_id,),
+                )
+            with (
+                mock.patch(
+                    "validation.result_storage._audit_validation_result",
+                    side_effect=AssertionError("report performed whole audit"),
+                ),
+                mock.patch(
+                    "validation.human_projection.project_findings", return_value=()
+                ),
+            ):
+                projection, tables, _ = _traced_read_tables(
+                    lambda: load_validation_report_projection(root)
+                )
+            self.assertEqual(projection.stored.result_id, stored.result_id)
+            self.assertLessEqual(
+                tables,
+                {
+                    "validation_results",
+                    "validation_checks",
+                    "validation_codes",
+                    "validation_check_dependencies",
+                    "validation_findings",
+                },
+            )
+
     def test_admission_is_bound_to_accepted_result_and_indexed_groups(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
@@ -67,7 +204,9 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 ValidationPublicationRequest(root, record, _projection(record))
             )
 
-            admission = load_validation_admission(root, stored.result_id)
+            admission, tables, _ = _traced_read_tables(
+                lambda: load_validation_admission(root, stored.result_id)
+            )
 
             self.assertEqual(admission.result_id, stored.result_id)
             self.assertEqual(admission.validation_id, stored.validation_id)
@@ -80,6 +219,52 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             )
             self.assertEqual(admission.findings[0].affected_chains, ())
             self.assertEqual(admission.findings[0].affected_entries, ("e001",))
+            self.assertLessEqual(
+                tables,
+                {
+                    "validation_results",
+                    "validation_groups",
+                    "validation_findings",
+                    "validation_checks",
+                    "validation_finding_affected_chains",
+                    "validation_finding_affected_entries",
+                    "validation_commands",
+                    "validation_command_relationships",
+                    "validation_artifacts",
+                    "validation_command_collections",
+                    "validation_collection_members",
+                },
+            )
+            self.assertTrue(
+                {
+                    "validation_group_registry",
+                    "validation_registry_records",
+                    "validation_group_edges",
+                    "validation_group_signals",
+                    "validation_batches",
+                    "validation_batch_anchors",
+                    "validation_batch_command_links",
+                }.isdisjoint(tables)
+            )
+
+    def test_admission_rejects_invalid_consumed_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            record = _record(root)
+            stored = publish_validation_result(
+                ValidationPublicationRequest(root, record, _projection(record))
+            )
+            with sqlite3.connect(root / ".cache" / "results.sqlite") as raw:
+                raw.execute(
+                    "UPDATE validation_findings SET admission_effect='invalid' "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?)",
+                    (stored.result_id,),
+                )
+
+            with self.assertRaisesRegex(ResultStoreError, "invalid admission effect"):
+                load_validation_admission(root, stored.result_id)
 
     def test_admission_rejects_cold_or_replaced_result_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -203,9 +388,11 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                     "data/a.csv",
                 )
                 registry = db.execute(
-                    "SELECT owner_entry, name, kind, location, path, origin, "
-                    "identity_json "
-                    "FROM validation_group_registry"
+                    "SELECT r.owner_entry,r.name,r.kind,r.location,r.path,r.origin,"
+                    "r.identity_algorithm,r.identity_commit "
+                    "FROM validation_group_registry AS m "
+                    "JOIN validation_registry_records AS r "
+                    "USING (result_pk,registry_pk)"
                 ).fetchone()
                 self.assertEqual(
                     tuple(registry[:6]),
@@ -218,7 +405,29 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                         0,
                     ),
                 )
-                self.assertEqual(json.loads(registry[6]), {"algorithm": "sha256"})
+                self.assertEqual(tuple(registry[6:]), ("sha256", None))
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM validation_registry_records"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM validation_registry_identity_members"
+                    ).fetchone()[0],
+                    0,
+                )
+                check = db.execute(
+                    "SELECT c.check_id,k.code,f.admission_effect "
+                    "FROM validation_findings AS f "
+                    "JOIN validation_checks AS c USING (result_pk,check_pk) "
+                    "JOIN validation_codes AS k USING (result_pk,code_pk)"
+                ).fetchone()
+                self.assertEqual(
+                    tuple(check),
+                    ("entry:e001:check", "fixture.failure", "chain"),
+                )
 
     def test_full_replacement_cascades_every_child_and_supersedes_slots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -254,9 +463,9 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 for table in (
                     "validation_checks",
                     "validation_check_dependencies",
+                    "validation_codes",
                     "validation_groups",
                     "validation_findings",
-                    "validation_finding_dependencies",
                     "validation_finding_affected_chains",
                     "validation_finding_affected_entries",
                     "validation_batches",
@@ -267,7 +476,9 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                         db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 0
                     )
                 orphan_rows = db.execute(
-                    "SELECT count(*) FROM validation_checks WHERE result_id != ?",
+                    "SELECT count(*) FROM validation_checks AS c "
+                    "LEFT JOIN validation_results AS r USING (result_pk) "
+                    "WHERE r.result_id IS NULL OR r.result_id != ?",
                     (stored.result_id,),
                 ).fetchone()[0]
                 self.assertEqual(orphan_rows, 0)
@@ -447,17 +658,46 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             )
             database = root / ".cache" / "results.sqlite"
             batch_id = projection["repair_batches"][0]["batch_id"]
-            cases = (
-                "DELETE FROM validation_batch_command_links WHERE result_id=? "
-                "AND command_id='c1'",
-                "INSERT INTO validation_batch_command_links VALUES "
-                f"(?, '{batch_id}', 'c2', 'fixture.failure')",
-            )
-            for statement in cases:
-                with sqlite3.connect(database) as raw:
-                    raw.execute(statement, (stored.result_id,))
-                with self.assertRaisesRegex(ResultStoreError, "links are not exact"):
-                    export_validation_result(root, stored.result_id)
+            with sqlite3.connect(database) as raw:
+                result_pk = raw.execute(
+                    "SELECT result_pk FROM validation_results WHERE result_id=?",
+                    (stored.result_id,),
+                ).fetchone()[0]
+                batch_pk = raw.execute(
+                    "SELECT batch_pk FROM validation_batches "
+                    "WHERE result_pk=? AND batch_id=?",
+                    (result_pk, batch_id),
+                ).fetchone()[0]
+                code_pk = raw.execute(
+                    "SELECT code_pk FROM validation_codes "
+                    "WHERE result_pk=? AND code='fixture.failure'",
+                    (result_pk,),
+                ).fetchone()[0]
+                command_pks = dict(
+                    raw.execute(
+                        "SELECT command_id,command_pk FROM validation_commands "
+                        "WHERE result_pk=?",
+                        (result_pk,),
+                    )
+                )
+                raw.execute(
+                    "DELETE FROM validation_batch_command_links "
+                    "WHERE result_pk=? AND batch_pk=? AND command_pk=? AND code_pk=?",
+                    (result_pk, batch_pk, command_pks["c1"], code_pk),
+                )
+            with self.assertRaisesRegex(ResultStoreError, "links are not exact"):
+                audit_validation_result(root, stored.result_id)
+            with sqlite3.connect(database) as raw:
+                raw.execute(
+                    "INSERT INTO validation_batch_command_links VALUES (?, ?, ?, ?)",
+                    (result_pk, batch_pk, command_pks["c1"], code_pk),
+                )
+                raw.execute(
+                    "INSERT INTO validation_batch_command_links VALUES (?, ?, ?, ?)",
+                    (result_pk, batch_pk, command_pks["c2"], code_pk),
+                )
+            with self.assertRaisesRegex(ResultStoreError, "links are not exact"):
+                audit_validation_result(root, stored.result_id)
 
     def test_malformed_projection_rejects_before_replacement_and_rolls_back(
         self,
@@ -534,23 +774,33 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             )
             from research_log_result_store import result_transaction
 
+            with result_snapshot(root) as db:
+                result_pk = db.execute(
+                    "SELECT result_pk FROM validation_results WHERE result_id=?",
+                    (stored.result_id,),
+                ).fetchone()[0]
+                batch_pk = db.execute(
+                    "SELECT batch_pk FROM validation_batches WHERE result_pk=?",
+                    (result_pk,),
+                ).fetchone()[0]
+                code_pk = db.execute(
+                    "SELECT code_pk FROM validation_codes WHERE result_pk=?",
+                    (result_pk,),
+                ).fetchone()[0]
+            missing_command_pk = 999_999
             with self.assertRaises(ResultStoreError):
                 with result_transaction(root) as db:
                     db.execute(
                         "INSERT INTO validation_batch_command_links "
                         "VALUES (?, ?, ?, ?)",
-                        (
-                            stored.result_id,
-                            projection["repair_batches"][0]["batch_id"],
-                            "missing-command",
-                            "fixture.failure",
-                        ),
+                        (result_pk, batch_pk, missing_command_pk, code_pk),
                     )
             with result_snapshot(root) as db:
                 self.assertEqual(
                     db.execute(
                         "SELECT count(*) FROM validation_batch_command_links "
-                        "WHERE command_id='missing-command'"
+                        "WHERE result_pk=? AND command_pk=?",
+                        (result_pk, missing_command_pk),
                     ).fetchone()[0],
                     0,
                 )
@@ -627,6 +877,54 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             )
             self.assertEqual(metadata["whole_log_limitations"], ["fixture.limited"])
 
+    def test_exported_code_members_preserve_group_projection_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            checks = tuple(
+                MechanicalCheck(
+                    identity,
+                    CheckScope.CONFORMANCE,
+                    CheckStatus.FAIL,
+                    f"entries/{entry}/data.csv",
+                    failure=FailurePayload(
+                        "fixture.failure",
+                        f"entries/{entry}/data.csv",
+                        {},
+                        "Fixture",
+                    ),
+                )
+                for identity, entry in (
+                    ("entry:e001:z-check", "e001"),
+                    ("entry:e002:a-check", "e002"),
+                )
+            )
+            record = MechanicalGeneratedRecord.build(
+                (root / "study.md").as_posix(),
+                "fixture-rules",
+                "2026-09-12",
+                checks,
+            )
+            projection = _projection(record)
+            projection["unresolved"].reverse()
+            expected = [
+                group["findings"][0]["identity"]
+                for group in projection["unresolved"]
+            ]
+            projection.pop("validation_id")
+            projection["validation_id"] = hashlib.sha256(
+                json.dumps(projection, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            stored = publish_validation_result(
+                ValidationPublicationRequest(root, record, projection)
+            )
+
+            exported = export_validation_result(root, stored.result_id)
+
+            self.assertEqual(
+                exported["codes"]["fixture.failure"], expected
+            )
+
     def test_reader_metadata_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
@@ -643,8 +941,9 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                     "UPDATE validation_results SET finding_count=99 WHERE result_id=?",
                     (stored.result_id,),
                 )
+            self.assertEqual(latest_full_validation(root), stored)
             with self.assertRaisesRegex(ResultStoreError, "metadata counts disagree"):
-                latest_full_validation(root)
+                audit_validation_result(root, stored.result_id)
 
     def test_reader_rejects_malformed_affected_scope_and_batch_cardinality(
         self,
@@ -658,26 +957,161 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             )
             database = root / ".cache" / "results.sqlite"
             with sqlite3.connect(database) as raw:
+                result_pk, check_pk = raw.execute(
+                    "SELECT r.result_pk,c.check_pk FROM validation_results AS r "
+                    "JOIN validation_checks AS c USING (result_pk) "
+                    "WHERE r.result_id=? AND c.check_id=?",
+                    (stored.result_id, "entry:e001:check"),
+                ).fetchone()
                 raw.execute(
                     "INSERT INTO validation_finding_affected_entries "
                     "VALUES (?, ?, 1, 'e002')",
-                    (stored.result_id, "entry:e001:check"),
+                    (result_pk, check_pk),
                 )
+            self.assertEqual(latest_full_validation(root), stored)
             with self.assertRaisesRegex(ResultStoreError, "affected members"):
-                export_validation_result(root, stored.result_id)
+                audit_validation_result(root, stored.result_id)
             with sqlite3.connect(database) as raw:
                 raw.execute(
                     "DELETE FROM validation_finding_affected_entries "
-                    "WHERE result_id=? AND finding_id=? AND position=1",
-                    (stored.result_id, "entry:e001:check"),
+                    "WHERE result_pk=? AND check_pk=? AND position=1",
+                    (result_pk, check_pk),
                 )
                 raw.execute(
                     "UPDATE validation_batches SET primary_finding_count=2 "
-                    "WHERE result_id=?",
-                    (stored.result_id,),
+                    "WHERE result_pk=?",
+                    (result_pk,),
                 )
             with self.assertRaisesRegex(ResultStoreError, "primary findings"):
-                export_validation_result(root, stored.result_id)
+                audit_validation_result(root, stored.result_id)
+
+    def test_selected_batch_validates_only_its_unique_local_members(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            checks = tuple(
+                MechanicalCheck(
+                    f"entry:{entry}:check",
+                    CheckScope.CONFORMANCE,
+                    CheckStatus.FAIL,
+                    f"entries/{entry}/data.csv",
+                    failure=FailurePayload(
+                        "fixture.failure",
+                        f"entries/{entry}/data.csv",
+                        {},
+                        "Fixture",
+                    ),
+                )
+                for entry in ("e001", "e002")
+            )
+            record = MechanicalGeneratedRecord.build(
+                (root / "study.md").as_posix(),
+                "fixture-rules",
+                "2026-09-12",
+                checks,
+            )
+            projection = _projection(record)
+            chains = []
+            for unresolved, batch in zip(
+                projection["unresolved"], projection["repair_batches"], strict=True
+            ):
+                finding = unresolved["findings"][0]
+                finding["admission_effect"] = "chain"
+                finding["affected_chains"] = [unresolved["chain_id"]]
+                chains.append(
+                    {
+                        "chain_id": unresolved["chain_id"],
+                        "entry": unresolved["entry"],
+                        "findings": unresolved["findings"],
+                        "commands": [],
+                        "artifacts": [],
+                        "edges": [],
+                        "signals": [],
+                        "registry": [],
+                    }
+                )
+                batch["batch_type"] = "chain"
+                batch["related_chain_ids"] = [unresolved["chain_id"]]
+            projection["chains"] = chains
+            projection["unresolved"] = []
+            projection.pop("validation_id")
+            projection["validation_id"] = hashlib.sha256(
+                json.dumps(projection, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            stored = publish_validation_result(
+                ValidationPublicationRequest(root, record, projection)
+            )
+            database = root / ".cache" / "results.sqlite"
+            with sqlite3.connect(database) as raw:
+                batches = list(
+                    raw.execute(
+                        "SELECT result_pk,batch_pk,batch_id FROM validation_batches "
+                        "ORDER BY batch_pk"
+                    )
+                )
+            self.assertEqual(len(batches), 2)
+            result_pk, selected_pk, selected_id = batches[0]
+            _, _, unrelated_id = batches[1]
+
+            def read(batch_id: str) -> dict[str, object]:
+                return inspect_result(
+                    root,
+                    Query(
+                        action="batch",
+                        entity=batch_id,
+                        result_id=stored.result_id,
+                    ),
+                )
+
+            for table, column in (
+                ("validation_batch_entries", "entry"),
+                ("validation_batch_findings", "check_pk"),
+                ("validation_batch_groups", "group_pk"),
+            ):
+                with self.subTest(table=table):
+                    with sqlite3.connect(database) as raw:
+                        raw.execute(
+                            f"INSERT INTO {table} "
+                            f"(result_pk,batch_pk,position,{column}) "
+                            f"SELECT result_pk,batch_pk,1,{column} FROM {table} "
+                            "WHERE result_pk=? AND batch_pk=? AND position=0",
+                            (result_pk, selected_pk),
+                        )
+                    self.assertEqual(read(unrelated_id)["returned"], 1)
+                    with self.assertRaisesRegex(InspectionError, "duplicate"):
+                        read(selected_id)
+                    with sqlite3.connect(database) as raw:
+                        raw.execute(
+                            f"DELETE FROM {table} WHERE result_pk=? "
+                            "AND batch_pk=? AND position=1",
+                            (result_pk, selected_pk),
+                        )
+
+            for table, column in (
+                ("validation_batch_findings", "check_pk"),
+                ("validation_batch_groups", "group_pk"),
+            ):
+                with self.subTest(missing_parent=table):
+                    with sqlite3.connect(database) as raw:
+                        original = raw.execute(
+                            f"SELECT {column} FROM {table} WHERE result_pk=? "
+                            "AND batch_pk=? AND position=0",
+                            (result_pk, selected_pk),
+                        ).fetchone()[0]
+                        raw.execute(
+                            f"UPDATE {table} SET {column}=999999 WHERE result_pk=? "
+                            "AND batch_pk=? AND position=0",
+                            (result_pk, selected_pk),
+                        )
+                    self.assertEqual(read(unrelated_id)["returned"], 1)
+                    with self.assertRaisesRegex(InspectionError, "member is absent"):
+                        read(selected_id)
+                    with sqlite3.connect(database) as raw:
+                        raw.execute(
+                            f"UPDATE {table} SET {column}=? WHERE result_pk=? "
+                            "AND batch_pk=? AND position=0",
+                            (original, result_pk, selected_pk),
+                        )
 
     def test_reader_rejects_invalid_stored_entry_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -700,9 +1134,9 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 export_validation_result(root, stored.result_id)
 
     def test_reader_rejects_invalid_stored_check_scope_and_status(self) -> None:
-        for column, value, message in (
-            ("scope", "not-a-scope", "invalid stored check scope"),
-            ("status", "not-a-status", "invalid stored check status"),
+        for column, value in (
+            ("scope", "not-a-scope"),
+            ("status", "not-a-status"),
         ):
             with (
                 self.subTest(column=column),
@@ -716,17 +1150,20 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 )
                 database = root / ".cache" / "results.sqlite"
                 with sqlite3.connect(database) as raw:
+                    raw.execute("PRAGMA ignore_check_constraints=ON")
                     raw.execute(
-                        f"UPDATE validation_checks SET {column}=? WHERE result_id=?",
+                        f"UPDATE validation_checks SET {column}=? WHERE result_pk="
+                        "(SELECT result_pk FROM validation_results WHERE result_id=?)",
                         (value, stored.result_id),
                     )
-                with self.assertRaisesRegex(ResultStoreError, message):
-                    export_validation_result(root, stored.result_id)
+                with self.assertRaisesRegex(ResultStoreError, "scope or status"):
+                    audit_validation_result(root, stored.result_id)
 
     def test_reader_rejects_inconsistent_stored_check_failure_status(self) -> None:
         for status, clear_payload, message in (
             ("pass", False, "stored successful check has failure payload"),
             ("fail", True, "stored failing check has no failure payload"),
+            ("pass", True, "stored finding has no failed check"),
         ):
             with (
                 self.subTest(status=status),
@@ -740,46 +1177,106 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 )
                 database = root / ".cache" / "results.sqlite"
                 with sqlite3.connect(database) as raw:
+                    raw.execute("PRAGMA ignore_check_constraints=ON")
                     if clear_payload:
                         raw.execute(
-                            "UPDATE validation_checks SET status=?, failure_code=NULL, "
+                            "UPDATE validation_checks SET status=?, code_pk=NULL, "
                             "rule=NULL, observed_json=NULL, failure_dependency=NULL "
-                            "WHERE result_id=?",
+                            "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                            "WHERE result_id=?)",
                             (status, stored.result_id),
                         )
                     else:
                         raw.execute(
-                            "UPDATE validation_checks SET status=? WHERE result_id=?",
+                            "UPDATE validation_checks SET status=? WHERE result_pk="
+                            "(SELECT result_pk FROM validation_results "
+                            "WHERE result_id=?)",
                             (status, stored.result_id),
                         )
                 with self.assertRaisesRegex(ResultStoreError, message):
-                    export_validation_result(root, stored.result_id)
+                    audit_validation_result(root, stored.result_id)
 
-    def test_reader_rejects_invalid_stored_finding_scope_and_status(self) -> None:
-        for column, value, message in (
-            ("scope", "not-a-scope", "invalid stored finding scope"),
-            ("status", "pass", "invalid stored finding status"),
-        ):
-            with (
-                self.subTest(column=column),
-                tempfile.TemporaryDirectory() as directory,
-            ):
-                root = Path(directory) / "study"
-                root.mkdir()
-                record = _record(root)
-                stored = publish_validation_result(
-                    ValidationPublicationRequest(root, record, _projection(record))
+    def test_nonfailing_check_attached_to_finding_is_locally_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            checks = tuple(
+                MechanicalCheck(
+                    f"entry:{entry}:check",
+                    CheckScope.CONFORMANCE,
+                    CheckStatus.FAIL,
+                    f"entries/{entry}/data.csv",
+                    failure=FailurePayload(
+                        "fixture.failure",
+                        f"entries/{entry}/data.csv",
+                        {},
+                        "Fixture",
+                    ),
                 )
-                database = root / ".cache" / "results.sqlite"
-                with sqlite3.connect(database) as raw:
-                    raw.execute(
-                        f"UPDATE validation_findings SET {column}=? WHERE result_id=?",
-                        (value, stored.result_id),
-                    )
-                with self.assertRaisesRegex(ResultStoreError, message):
-                    export_validation_result(root, stored.result_id)
+                for entry in ("e001", "e002")
+            )
+            record = MechanicalGeneratedRecord.build(
+                (root / "study.md").as_posix(),
+                "fixture-rules",
+                "2026-09-12",
+                checks,
+            )
+            stored = publish_validation_result(
+                ValidationPublicationRequest(root, record, _projection(record))
+            )
+            with sqlite3.connect(root / ".cache" / "results.sqlite") as raw:
+                raw.execute("PRAGMA ignore_check_constraints=ON")
+                raw.execute(
+                    "UPDATE validation_checks SET status='pass',code_pk=NULL,"
+                    "rule=NULL,observed_json=NULL,failure_dependency=NULL "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?) AND check_id='entry:e002:check'",
+                    (stored.result_id,),
+                )
 
-    def test_reader_rejects_finding_subject_that_differs_from_check(self) -> None:
+            self.assertEqual(
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check",
+                        result_id=stored.result_id,
+                    ),
+                )["returned"],
+                1,
+            )
+            with self.assertRaisesRegex(InspectionError, "no failed check"):
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e002:check",
+                        result_id=stored.result_id,
+                    ),
+                )
+            with self.assertRaises(ResultStoreError):
+                audit_validation_result(root, stored.result_id)
+            with self.assertRaisesRegex(ResultStoreError, "no failed check"):
+                load_validation_admission(root, stored.result_id)
+
+    def test_finding_rows_do_not_duplicate_check_machine_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            record = _record(root)
+            publish_validation_result(
+                ValidationPublicationRequest(root, record, _projection(record))
+            )
+            with result_snapshot(root) as db:
+                columns = {
+                    row[1]
+                    for row in db.execute("PRAGMA table_info(validation_findings)")
+                }
+            self.assertTrue(
+                {"scope", "status", "code", "rule", "observed_json"}.isdisjoint(columns)
+            )
+
+    def test_finding_projection_uses_check_subject_as_sole_authority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
             root.mkdir()
@@ -790,14 +1287,125 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             database = root / ".cache" / "results.sqlite"
             with sqlite3.connect(database) as raw:
                 raw.execute(
-                    "UPDATE validation_findings SET projection_subject='wrong-subject' "
-                    "WHERE result_id=?",
+                    "UPDATE validation_checks SET subject='wrong-subject' "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?)",
                     (stored.result_id,),
                 )
-            with self.assertRaisesRegex(
-                ResultStoreError, "stored finding does not match its failed check"
+            exported = export_validation_result(root, stored.result_id)
+            self.assertEqual(
+                exported["findings"]["entry:e001:check"]["subject"],
+                "wrong-subject",
+            )
+
+    def test_registry_corruption_is_local_to_readers_that_hydrate_it(self) -> None:
+        for corruption, message in (
+            ("hash", "payload hash"),
+            ("member-order", "positions"),
+        ):
+            with (
+                self.subTest(corruption=corruption),
+                tempfile.TemporaryDirectory() as directory,
             ):
-                export_validation_result(root, stored.result_id)
+                root = Path(directory) / "study"
+                root.mkdir()
+                record = _record(root)
+                stored = publish_validation_result(
+                    ValidationPublicationRequest(
+                        root, record, _registry_projection(record)
+                    )
+                )
+                database = root / ".cache" / "results.sqlite"
+                with sqlite3.connect(database) as raw:
+                    if corruption == "hash":
+                        raw.execute(
+                            "UPDATE validation_registry_records "
+                            "SET payload_sha256=? WHERE result_pk=(SELECT result_pk "
+                            "FROM validation_results WHERE result_id=?)",
+                            ("0" * 64, stored.result_id),
+                        )
+                    else:
+                        raw.execute(
+                            "UPDATE validation_registry_identity_members "
+                            "SET position=2 WHERE result_pk=(SELECT result_pk "
+                            "FROM validation_results WHERE result_id=?) "
+                            "AND position=0",
+                            (stored.result_id,),
+                        )
+                self.assertEqual(
+                    inspect_result(
+                        root,
+                        Query(
+                            result_id=stored.result_id,
+                            view="summary",
+                            limit=1,
+                        ),
+                    )["result_id"],
+                    stored.result_id,
+                )
+                with self.assertRaisesRegex(ResultStoreError, message):
+                    audit_validation_result(root, stored.result_id)
+                with self.assertRaisesRegex(ResultStoreError, message):
+                    load_finding_group(root, entry="e001", group_id="chain")
+
+    def test_admission_rejects_cross_result_compact_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "study"
+            root.mkdir()
+            record = _record(root)
+            full = publish_validation_result(
+                ValidationPublicationRequest(root, record, _projection(record))
+            )
+            entry_record = _record(root, "entry:e002:check")
+            entry = publish_validation_result(
+                ValidationPublicationRequest(
+                    root,
+                    entry_record,
+                    _projection(entry_record),
+                    kind="entry",
+                    entry="e002",
+                )
+            )
+            database = root / ".cache" / "results.sqlite"
+            with sqlite3.connect(database) as raw:
+                entry_pk = raw.execute(
+                    "SELECT result_pk FROM validation_results WHERE result_id=?",
+                    (entry.result_id,),
+                ).fetchone()[0]
+                raw.execute(
+                    "INSERT INTO validation_groups VALUES "
+                    "(?,2,'foreign-group','unresolved','e002',"
+                    "'finding_scope_unresolved',1)",
+                    (entry_pk,),
+                )
+                full_pk, check_pk = raw.execute(
+                    "SELECT f.result_pk,f.check_pk FROM validation_findings AS f "
+                    "JOIN validation_results AS r USING (result_pk) "
+                    "WHERE r.result_id=?",
+                    (full.result_id,),
+                ).fetchone()
+                raw.execute(
+                    "UPDATE validation_findings SET admission_effect='chain' "
+                    "WHERE result_pk=? AND check_pk=?",
+                    (full_pk, check_pk),
+                )
+                raw.execute(
+                    "INSERT INTO validation_finding_affected_chains "
+                    "VALUES (?,?,0,2)",
+                    (full_pk, check_pk),
+                )
+
+            self.assertEqual(
+                inspect_result(
+                    root,
+                    Query(result_id=full.result_id, view="summary", limit=1),
+                )["result_id"],
+                full.result_id,
+            )
+            with self.assertRaisesRegex(ResultStoreError, "foreign group"):
+                load_validation_admission(root, full.result_id)
+            with self.assertRaisesRegex(ResultStoreError, "invalid affected members"):
+                audit_validation_result(root, full.result_id)
 
     def test_over_limit_candidate_rolls_back_before_slot_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -840,8 +1448,17 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 )
                 for number in range(finding_count)
             )
+            passing = MechanicalCheck(
+                "entry:e001:pass",
+                CheckScope.CONFORMANCE,
+                CheckStatus.PASS,
+                "entries/e001/pass.csv",
+            )
             record = MechanicalGeneratedRecord.build(
-                (root / "study.md").as_posix(), "fixture-rules", "2026-09-12", checks
+                (root / "study.md").as_posix(),
+                "fixture-rules",
+                "2026-09-12",
+                (passing, *checks),
             )
             findings = [
                 {
@@ -862,6 +1479,32 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                     "affected_entries": ["e001"],
                 }
                 for number, check in enumerate(checks)
+            ]
+            registries = [
+                {
+                    "entry": "e001",
+                    "name": "files",
+                    "kind": "directory",
+                    "location": "data/files",
+                    "path": "entries/e001/data/files",
+                    "origin": False,
+                    "identity": {
+                        "algorithm": "identity-files-sha256-v1",
+                        "files": ["z.csv", "a.csv"],
+                    },
+                },
+                {
+                    "entry": "e001",
+                    "name": "patterns",
+                    "kind": "directory",
+                    "location": "data/patterns",
+                    "path": "entries/e001/data/patterns",
+                    "origin": False,
+                    "identity": {
+                        "algorithm": "identity-patterns-sha256-v1",
+                        "patterns": ["z/*.csv", "a/*.csv"],
+                    },
+                },
             ]
             projection: dict[str, object] = {
                 "schema": "research-log-published-validation/2",
@@ -891,7 +1534,12 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                                         "direction": "input",
                                         "path": "isolated-input.csv",
                                         "proof": "declared",
-                                    }
+                                    },
+                                    {
+                                        "direction": "input",
+                                        "path": "unmatched-external.csv",
+                                        "proof": "declared",
+                                    },
                                 ],
                                 "outputs": [
                                     {
@@ -927,7 +1575,7 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                                     for number in range(200)
                                 ],
                                 "collections": [],
-                            }
+                            },
                         ],
                         "artifacts": [
                             "isolated-input.csv",
@@ -937,8 +1585,18 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                         ],
                         "edges": [],
                         "signals": [],
-                        "registry": [],
-                    }
+                        "registry": registries,
+                    },
+                    {
+                        "chain_id": "registry-only",
+                        "entry": "e001",
+                        "findings": [],
+                        "commands": [],
+                        "artifacts": [],
+                        "edges": [],
+                        "signals": [],
+                        "registry": registries,
+                    },
                 ],
                 "unresolved": [],
                 "repair_batches": [
@@ -969,12 +1627,18 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             stored = publish_validation_result(
                 ValidationPublicationRequest(root, record, projection)
             )
+            audit_validation_result(root, stored.result_id)
             with result_snapshot(root) as db:
                 links = {
                     tuple(row)
                     for row in db.execute(
-                        "SELECT command_id,code FROM validation_batch_command_links "
-                        "WHERE result_id=? ORDER BY command_id,code",
+                        "SELECT c.command_id,k.code "
+                        "FROM validation_batch_command_links AS l "
+                        "JOIN validation_results AS r USING (result_pk) "
+                        "JOIN validation_commands AS c "
+                        "USING (result_pk,command_pk) "
+                        "JOIN validation_codes AS k USING (result_pk,code_pk) "
+                        "WHERE r.result_id=? ORDER BY c.command_id,k.code",
                         (stored.result_id,),
                     )
                 }
@@ -989,6 +1653,42 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                     db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                     for table in tables
                 )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM validation_registry_records"
+                    ).fetchone()[0],
+                    2,
+                )
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM validation_group_registry"
+                    ).fetchone()[0],
+                    4,
+                )
+                identity_members = [
+                    tuple(row)
+                    for row in db.execute(
+                        "SELECT r.name,m.position,m.member "
+                        "FROM validation_registry_records AS r "
+                        "JOIN validation_registry_identity_members AS m "
+                        "USING (result_pk,registry_pk) ORDER BY r.name,m.position"
+                    )
+                ]
+                relationship_storage = {
+                    tuple(row)
+                    for row in db.execute(
+                        "SELECT path_artifact_pk IS NOT NULL,path_text "
+                        "FROM validation_command_relationships"
+                    )
+                }
+                direct_counts = {
+                    table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "validation_findings",
+                        "validation_command_relationships",
+                        "validation_batch_command_links",
+                    )
+                }
             self.assertNotIn("validation_batch_entity_links", tables)
             self.assertEqual(
                 links,
@@ -999,6 +1699,93 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 },
             )
             self.assertLess(actual_rows, 100_000)
+            self.assertEqual(
+                direct_counts,
+                {
+                    "validation_findings": finding_count,
+                    "validation_command_relationships": 403,
+                    "validation_batch_command_links": 3,
+                },
+            )
+            self.assertLess(
+                actual_rows,
+                finding_count * 403,
+                "stored rows must not track the finding/path cross-product",
+            )
+            self.assertEqual(
+                identity_members,
+                [
+                    ("files", 0, "z.csv"),
+                    ("files", 1, "a.csv"),
+                    ("patterns", 0, "z/*.csv"),
+                    ("patterns", 1, "a/*.csv"),
+                ],
+            )
+            self.assertIn((0, "unmatched-external.csv"), relationship_storage)
+            self.assertIn((1, None), relationship_storage)
+            with mock.patch(
+                "validation.result_storage._audit_validation_result",
+                side_effect=AssertionError("ordinary selector performed full audit"),
+            ), mock.patch(
+                "validation.result_storage._expected_batch_command_links",
+                side_effect=AssertionError("ordinary selector reconstructed links"),
+            ), mock.patch(
+                "validation.result_storage._registry_public_value",
+                side_effect=AssertionError("ordinary selector hydrated registry"),
+            ), mock.patch(
+                "validation.result_storage._group",
+                side_effect=AssertionError("ordinary selector hydrated a group"),
+            ):
+                summary, summary_tables, _ = _traced_read_tables(
+                    lambda: inspect_result(
+                        root,
+                        Query(
+                            result_id=stored.result_id,
+                            view="summary",
+                            limit=1,
+                        ),
+                    )
+                )
+                self.assertEqual(summary["result_id"], stored.result_id)
+                self.assertEqual(summary_tables, {"validation_results"})
+                selected, selected_tables, selected_statements = _traced_read_tables(
+                    lambda: inspect_result(
+                        root,
+                        Query(
+                            action="finding",
+                            entity="entry:e001:check:0",
+                            result_id=stored.result_id,
+                            limit=1,
+                        ),
+                    )
+                )
+                self.assertEqual(selected["returned"], 1)
+                self.assertTrue(
+                    any(" LIMIT 2" in statement for statement in selected_statements)
+                )
+                self.assertTrue(
+                    {
+                        "validation_group_registry",
+                        "validation_registry_records",
+                        "validation_batch_command_links",
+                    }.isdisjoint(selected_tables)
+                )
+                for action, entity in (
+                    ("command", "anchor"),
+                    ("artifact", "input-0.csv"),
+                ):
+                    self.assertEqual(
+                        inspect_result(
+                            root,
+                            Query(
+                                action=action,
+                                entity=entity,
+                                result_id=stored.result_id,
+                                limit=1,
+                            ),
+                        )["returned"],
+                        1,
+                    )
             first = inspect_result(
                 root,
                 Query(
@@ -1032,11 +1819,7 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             }
             self.assertEqual(first["total"], len(expected_artifacts))
             self.assertEqual(
-                {
-                    item["artifact_id"]
-                    for page in pages
-                    for item in page["items"]
-                },
+                {item["artifact_id"] for page in pages for item in page["items"]},
                 expected_artifacts,
             )
             two_commands = inspect_result(
@@ -1066,13 +1849,103 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "row bound"):
                     publish_validation_result(
-                        ValidationPublicationRequest(
-                            bounded_root, record, projection
-                        )
+                        ValidationPublicationRequest(bounded_root, record, projection)
                     )
 
-    def test_export_postassembly_bound_has_the_public_too_large_code(self) -> None:
-        """The 64 MiB export limit applies after the stored result is assembled."""
+            database = root / ".cache" / "results.sqlite"
+            with sqlite3.connect(database) as raw:
+                raw.execute(
+                    "UPDATE validation_checks SET observed_json='not-json' "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?) AND check_id='entry:e001:check:39'",
+                    (stored.result_id,),
+                )
+            self.assertEqual(
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:0",
+                        result_id=stored.result_id,
+                    ),
+                )["returned"],
+                1,
+            )
+            with self.assertRaisesRegex(InspectionError, "selected finding JSON"):
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:39",
+                        result_id=stored.result_id,
+                    ),
+                )
+            with sqlite3.connect(database) as raw:
+                raw.execute(
+                    "UPDATE validation_checks SET observed_json='{}' "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?) AND check_id='entry:e001:check:39'",
+                    (stored.result_id,),
+                )
+                raw.execute(
+                    "UPDATE validation_finding_affected_entries SET position=2 "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?) AND check_pk=(SELECT check_pk "
+                    "FROM validation_checks WHERE result_pk=(SELECT result_pk "
+                    "FROM validation_results WHERE result_id=?) "
+                    "AND check_id='entry:e001:check:39')",
+                    (stored.result_id, stored.result_id),
+                )
+            self.assertEqual(
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:0",
+                        result_id=stored.result_id,
+                    ),
+                )["returned"],
+                1,
+            )
+            with self.assertRaisesRegex(InspectionError, "affected-entry positions"):
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:39",
+                        result_id=stored.result_id,
+                    ),
+                )
+            with sqlite3.connect(database) as raw:
+                raw.execute(
+                    "UPDATE validation_checks SET scope='invalid-scope' "
+                    "WHERE result_pk=(SELECT result_pk FROM validation_results "
+                    "WHERE result_id=?) AND check_id='entry:e001:check:38'",
+                    (stored.result_id,),
+                )
+            self.assertEqual(
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:0",
+                        result_id=stored.result_id,
+                    ),
+                )["returned"],
+                1,
+            )
+            with self.assertRaisesRegex(InspectionError, "invalid scope"):
+                inspect_result(
+                    root,
+                    Query(
+                        action="finding",
+                        entity="entry:e001:check:38",
+                        result_id=stored.result_id,
+                    ),
+                )
+
+    def test_export_bound_fails_before_materialization(self) -> None:
+        """The real row exporter accepts its exact cap and stops one byte over."""
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
@@ -1081,10 +1954,123 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
             stored = publish_validation_result(
                 ValidationPublicationRequest(root, record, _projection(record))
             )
-            with mock.patch("validation.result_storage.MAX_VALIDATION_RESULT_BYTES", 1):
+            expected = export_validation_result(root, stored.result_id)
+            encoded_size = len(
+                json.dumps(
+                    expected, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode()
+            )
+            with mock.patch(
+                "validation.result_storage.MAX_VALIDATION_RESULT_BYTES",
+                encoded_size,
+            ):
+                self.assertEqual(
+                    export_validation_result(root, stored.result_id), expected
+                )
+            with mock.patch(
+                "validation.result_storage.MAX_VALIDATION_RESULT_BYTES",
+                encoded_size + 1,
+            ):
+                self.assertEqual(
+                    export_validation_result(root, stored.result_id), expected
+                )
+            with (
+                mock.patch(
+                    "validation.result_storage.MAX_VALIDATION_RESULT_BYTES",
+                    encoded_size - 1,
+                ),
+                mock.patch(
+                    "validation.result_storage.CappedJsonEncoder.materialize"
+                ) as materialize,
+            ):
                 with self.assertRaises(ResultStoreError) as raised:
                     export_validation_result(root, stored.result_id)
+            materialize.assert_not_called()
             self.assertEqual(raised.exception.code, "results.export.too_large")
+            with (
+                mock.patch("validation.result_storage.MAX_VALIDATION_RESULT_BYTES", 1),
+                mock.patch(
+                    "validation.result_storage._write_batch_export",
+                    side_effect=AssertionError("decoded a later batch"),
+                ) as later,
+            ):
+                with self.assertRaises(ResultStoreError):
+                    export_validation_result(root, stored.result_id)
+            later.assert_not_called()
+
+    def test_validation_publication_byte_bound_is_exact_and_atomic(self) -> None:
+        for offset, succeeds in ((-1, False), (0, True), (1, True)):
+            with (
+                self.subTest(offset=offset),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory) / "study"
+                root.mkdir()
+                baseline_record = _record(root)
+                baseline = publish_validation_result(
+                    ValidationPublicationRequest(
+                        root, baseline_record, _projection(baseline_record)
+                    )
+                )
+                self.assertTrue(
+                    record_report_materialization(
+                        root, "validation", b"baseline", expected_generation=1
+                    )
+                )
+                candidate_record = _record(root, "entry:e002:check")
+                candidate_projection = _projection(candidate_record)
+                bounded_candidate = {
+                    "record": candidate_record.as_dict(),
+                    "projection": candidate_projection,
+                    "metadata": {
+                        "requested_entries": [],
+                        "evaluated_entries": [],
+                        "dependency_entries": [],
+                        "whole_log_limitations": [],
+                    },
+                    "report_context": None,
+                }
+                exact_size = len(
+                    json.dumps(
+                        bounded_candidate,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                )
+                with mock.patch(
+                    "validation.result_storage.MAX_VALIDATION_RESULT_BYTES",
+                    exact_size + offset,
+                ):
+                    if succeeds:
+                        candidate = publish_validation_result(
+                            ValidationPublicationRequest(
+                                root, candidate_record, candidate_projection
+                            )
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "byte bound"):
+                            publish_validation_result(
+                                ValidationPublicationRequest(
+                                    root, candidate_record, candidate_projection
+                                )
+                            )
+                with result_snapshot(root) as db:
+                    generation = db.execute(
+                        "SELECT generation FROM store_state WHERE domain='validation'"
+                    ).fetchone()[0]
+                    marker = db.execute(
+                        "SELECT source_generation FROM report_materializations "
+                        "WHERE kind='validation'"
+                    ).fetchone()
+                if succeeds:
+                    self.assertEqual(latest_full_validation(root), candidate)
+                    self.assertEqual(generation, 2)
+                    self.assertIsNone(marker)
+                else:
+                    self.assertEqual(latest_full_validation(root), baseline)
+                    self.assertEqual(generation, 1)
+                    self.assertEqual(marker[0], 1)
 
     def test_entry_projection_is_retained_and_exportable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1221,9 +2207,13 @@ class ValidationResultStorageConformanceTests(unittest.TestCase):
                 links = {
                     (row[0], row[1])
                     for row in db.execute(
-                        "SELECT command_id, code "
-                        "FROM validation_batch_command_links "
-                        "WHERE result_id=? ORDER BY command_id, code",
+                        "SELECT c.command_id,k.code "
+                        "FROM validation_batch_command_links AS l "
+                        "JOIN validation_results AS r USING (result_pk) "
+                        "JOIN validation_commands AS c "
+                        "USING (result_pk,command_pk) "
+                        "JOIN validation_codes AS k USING (result_pk,code_pk) "
+                        "WHERE r.result_id=? ORDER BY c.command_id,k.code",
                         (stored.result_id,),
                     )
                 }

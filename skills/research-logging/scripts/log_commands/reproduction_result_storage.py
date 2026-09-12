@@ -17,6 +17,7 @@ from research_log_result_store import (
     result_snapshot,
     result_transaction,
 )
+from result_export_encoder import CappedJsonEncoder, ExportTooLarge
 
 if TYPE_CHECKING:
     from .reproduction_results import (
@@ -120,10 +121,16 @@ def publish_reproduction_results(
             run = request.run
             target = dict(run.target)
             db.execute("DELETE FROM reproduction_runs WHERE run_id=?", (run.run_id,))
+            run_pk = int(
+                db.execute(
+                    "SELECT COALESCE(MAX(run_pk), 0) + 1 FROM reproduction_runs"
+                ).fetchone()[0]
+            )
             db.execute(
                 "INSERT INTO reproduction_runs VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
+                    run_pk,
                     run.run_id,
                     target["kind"],
                     target.get("entry"),
@@ -162,9 +169,10 @@ def publish_reproduction_results(
             )
             for order, record in enumerate(run.command_records or ()):
                 db.execute(
-                    "INSERT INTO reproduction_run_commands VALUES (?,?,?,?,?,?,?,?,?,?)",  # noqa: E501
+                    "INSERT INTO reproduction_run_commands VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        run.run_id,
+                        run_pk,
                         record["entry"],
                         record["execution_id"],
                         order,
@@ -172,15 +180,22 @@ def publish_reproduction_results(
                         record["reason"],
                         record.get("terminal_disposition"),
                         record.get("source_digest"),
+                        int(bool(record["auto_reproduce"])),
+                        record["cwd"],
+                        int(bool(record["exclusive"])),
+                        record.get("prior_disposition"),
+                        int(bool(record["queued"])),
+                        int(bool(record["requires_reproduction"])),
+                        record["run_selection"],
+                        _json(record["details"]),
                         _json(record.get("recipe")),
-                        _json(record),
                     ),
                 )
             for position, execution in enumerate(run.executions):
                 db.execute(
                     "INSERT INTO reproduction_run_executions VALUES (?,?,?,?,?,?,?)",
                     (
-                        run.run_id,
+                        run_pk,
                         execution["entry"],
                         execution["execution_id"],
                         position,
@@ -338,8 +353,9 @@ def _validate_explicit_export_bound(db: sqlite3.Connection, path: Path) -> None:
         > MAX_RUN_RESULTS
     ):
         raise ReproductionStorageError("reproduction publication exceeds cumulative row bound")
-    result = _load_reproduction_projection(path, connection=db)
-    if _explicit_export_bytes(result) > MAX_RESULT_BYTES:
+    try:
+        _stream_reproduction_export(db, MAX_RESULT_BYTES)
+    except ExportTooLarge:
         raise ReproductionStorageError("reproduction publication exceeds cumulative byte bound")
 
 
@@ -350,31 +366,442 @@ def export_reproduction_results(path: Path) -> ReproductionResults:
     particular, no report, planner, or inspection action should call this
     function: it reads every current artifact and every retained run.
     """
-    result = _load_reproduction_projection(path)
-    # The explicit export is the only whole-result read and retains the
-    # public 64 MiB contract rather than silently returning an oversized map.
-    if _explicit_export_bytes(result) > 64 * 1024 * 1024:
-        raise ReproductionStorageError("reproduction export exceeds 64 MiB")
-    return result
+    try:
+        with result_snapshot(_root(path)) as db:
+            _stream_reproduction_export(db, 64 * 1024 * 1024)
+            return _load_reproduction_projection(path, connection=db)
+    except ExportTooLarge as error:
+        raise ReproductionStorageError("reproduction export exceeds 64 MiB") from error
 
 
-def _export_value(result: ReproductionResults) -> dict[str, object]:
-    """Build the explicit export envelope; ordinary readers never call this."""
+def _artifact_from_row(db: sqlite3.Connection, row: sqlite3.Row) -> ArtifactResult:
+    from .reproduction_results import ArtifactResult, ComparisonRecord
 
-    return {
-        "artifacts": [item.as_dict() for item in result.artifacts],
-        "commands": [item.as_dict() for item in result.commands],
-        "runs": [item.as_dict() for item in result.runs],
-        "schema": "research-log-reproduction-result/10",
-        "summary": result.summary,
-        "updated_at": result.updated_at,
-    }
+    evidence = tuple(
+        {
+            "matched": bool(member["matched"]),
+            "record_id": member["record_id"],
+            "regenerated": json.loads(member["regenerated_json"]),
+            "retained": json.loads(member["retained_json"]),
+            "tolerance": json.loads(member["tolerance_json"]),
+        }
+        for member in db.execute(
+            "SELECT * FROM reproduction_comparison_evidence "
+            "WHERE entry=? AND artifact=? ORDER BY position",
+            (row["entry"], row["artifact"]),
+        )
+    )
+    _validate_comparison_contracts(row)
+    if row["comparison_profile"] is None and evidence:
+        raise ReproductionStorageError("orphan comparison evidence")
+    comparison = (
+        None
+        if row["comparison_profile"] is None
+        else ComparisonRecord(
+            row["comparison_profile"],
+            None
+            if row["expected_json"] is None
+            else parse_fingerprint(json.loads(row["expected_json"]), "expected"),
+            None
+            if row["regenerated_json"] is None
+            else parse_fingerprint(
+                json.loads(row["regenerated_json"]), "regenerated"
+            ),
+            row["evidence_definition"],
+            evidence,
+        )
+    )
+    return ArtifactResult(
+        row["entry"],
+        row["artifact"],
+        row["execution_id"],
+        row["outcome"],
+        row["reason"],
+        row["recorded_at"],
+        row["producing_run_id"],
+        comparison,
+    )
 
 
-def _explicit_export_bytes(result: ReproductionResults) -> int:
-    """Return the exact UTF-8 byte size of the explicit export envelope."""
+def _run_from_row(
+    db: sqlite3.Connection, row: sqlite3.Row, project_root: Path | None
+) -> RunResult:
+    from .reproduction_results import RunFolder, RunResult
 
-    return len(_json(_export_value(result)).encode())
+    target = {"kind": row["target_kind"], "entry": row["target_entry"]}
+    if row["target_execution_id"] is not None:
+        target["execution_id"] = row["target_execution_id"]
+    executions = tuple(
+        {
+            "entry": item["entry"],
+            "execution_id": item["execution_id"],
+            "started_at": item["started_at"],
+            "finished_at": item["finished_at"],
+            "elapsed_seconds": item["elapsed_seconds"],
+        }
+        for item in db.execute(
+            "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
+            "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
+            (row["run_pk"],),
+        )
+    )
+    records = tuple(
+        _validated_command_detail(item)
+        for item in db.execute(
+            "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+            "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
+            "queued,requires_reproduction,run_selection,details_json,recipe_json "
+            "FROM reproduction_run_commands WHERE run_pk=? ORDER BY plan_order",
+            (row["run_pk"],),
+        )
+    )
+    return RunResult(
+        row["run_id"],
+        target,
+        bool(row["include_all"]),
+        row["status"],
+        row["accepted_at"],
+        row["finished_at"],
+        {
+            "matched": row["artifact_matched"],
+            "changed": row["artifact_changed"],
+            "failed": row["artifact_failed"],
+            "comparison_failed": row["artifact_comparison_failed"],
+            "skipped": row["artifact_skipped"],
+        },
+        RunFolder(
+            row["folder_path"],
+            "unknown"
+            if project_root is None
+            else _folder_availability(project_root, row["folder_path"]),
+        ),
+        executions,
+        None
+        if row["command_total"] is None
+        else {
+            "not_automatic": row["command_not_automatic"],
+            "reproduction_not_needed": row["command_reproduction_not_needed"],
+            "unchanged_failed": row["command_unchanged_failed"],
+            "unchanged_blocked": row["command_unchanged_blocked"],
+            "succeeded": row["command_succeeded"],
+            "failed": row["command_failed"],
+            "blocked": row["command_blocked"],
+            "total": row["command_total"],
+        },
+        records or None,
+    )
+
+
+def _write_callbacks(
+    encoder: CappedJsonEncoder, members: tuple[tuple[str, object], ...]
+) -> None:
+    encoder.write_object(members, lambda target, writer: writer(target))
+
+
+def _write_artifact_export(
+    encoder: CappedJsonEncoder, db: sqlite3.Connection, row: sqlite3.Row
+) -> None:
+    _validate_comparison_contracts(row)
+
+    def comparison(target: CappedJsonEncoder) -> None:
+        if row["comparison_profile"] is None:
+            orphan = db.execute(
+                "SELECT 1 FROM reproduction_comparison_evidence "
+                "WHERE entry=? AND artifact=? LIMIT 1",
+                (row["entry"], row["artifact"]),
+            ).fetchone()
+            if orphan is not None:
+                raise ReproductionStorageError("orphan comparison evidence")
+            target.write_value(None)
+            return
+        members: list[tuple[str, object]] = [
+            (
+                "contract",
+                lambda output: output.write_value(
+                    "research-log-reproduction-comparison/1"
+                ),
+            )
+        ]
+        if row["evidence_definition"] is not None:
+            members.extend(
+                (
+                    (
+                        "evidence",
+                        lambda output: output.write_array(
+                            db.execute(
+                                "SELECT * FROM reproduction_comparison_evidence "
+                                "WHERE entry=? AND artifact=? ORDER BY position",
+                                (row["entry"], row["artifact"]),
+                            ),
+                            _write_evidence_export,
+                        ),
+                    ),
+                    (
+                        "evidence_contract",
+                        lambda output: output.write_value(
+                            "research-log-evidence-comparison-result/1"
+                        ),
+                    ),
+                    (
+                        "evidence_definition",
+                        lambda output: output.write_value(
+                            row["evidence_definition"]
+                        ),
+                    ),
+                )
+            )
+        members.extend(
+            (
+                (
+                    "expected",
+                    lambda output: _write_optional_json(
+                        output, row["expected_json"]
+                    ),
+                ),
+                ("profile", lambda output: output.write_value(row["comparison_profile"])),
+                (
+                    "regenerated",
+                    lambda output: _write_optional_json(
+                        output, row["regenerated_json"]
+                    ),
+                ),
+            )
+        )
+        _write_callbacks(target, tuple(members))
+
+    _write_callbacks(
+        encoder,
+        (
+            ("artifact", lambda target: target.write_value(row["artifact"])),
+            ("comparison", comparison),
+            ("entry", lambda target: target.write_value(row["entry"])),
+            (
+                "execution_id",
+                lambda target: target.write_value(row["execution_id"]),
+            ),
+            ("outcome", lambda target: target.write_value(row["outcome"])),
+            ("reason", lambda target: target.write_value(row["reason"])),
+            (
+                "recorded_at",
+                lambda target: target.write_value(row["recorded_at"]),
+            ),
+            (
+                "run_id",
+                lambda target: target.write_value(row["producing_run_id"]),
+            ),
+        ),
+    )
+
+
+def _write_optional_json(encoder: CappedJsonEncoder, value: object) -> None:
+    if value is None:
+        encoder.write_value(None)
+        return
+    if not isinstance(value, str):
+        raise ReproductionStorageError("stored reproduction JSON is invalid")
+    json.loads(value)
+    encoder.append(value)
+
+
+def _write_evidence_export(encoder: CappedJsonEncoder, row: sqlite3.Row) -> None:
+    for column in ("regenerated_json", "retained_json", "tolerance_json"):
+        json.loads(row[column])
+    _write_callbacks(
+        encoder,
+        (
+            ("matched", lambda target: target.write_value(bool(row["matched"]))),
+            ("record_id", lambda target: target.write_value(row["record_id"])),
+            ("regenerated", lambda target: target.append(row["regenerated_json"])),
+            ("retained", lambda target: target.append(row["retained_json"])),
+            ("tolerance", lambda target: target.append(row["tolerance_json"])),
+        ),
+    )
+
+
+def _write_run_export(
+    encoder: CappedJsonEncoder, db: sqlite3.Connection, row: sqlite3.Row
+) -> None:
+    command_outcomes = (
+        None
+        if row["command_total"] is None
+        else {
+            "not_automatic": row["command_not_automatic"],
+            "reproduction_not_needed": row["command_reproduction_not_needed"],
+            "unchanged_failed": row["command_unchanged_failed"],
+            "unchanged_blocked": row["command_unchanged_blocked"],
+            "succeeded": row["command_succeeded"],
+            "failed": row["command_failed"],
+            "blocked": row["command_blocked"],
+            "total": row["command_total"],
+        }
+    )
+    command_count = db.execute(
+        "SELECT count(*) FROM reproduction_run_commands WHERE run_pk=?",
+        (row["run_pk"],),
+    ).fetchone()[0]
+
+    def command_records(target: CappedJsonEncoder) -> None:
+        if not command_count:
+            target.write_value(None)
+            return
+        target.write_array(
+            db.execute(
+                "SELECT * FROM reproduction_run_commands "
+                "WHERE run_pk=? ORDER BY plan_order",
+                (row["run_pk"],),
+            ),
+            _write_run_command_export,
+        )
+
+    target_value = {"kind": row["target_kind"], "entry": row["target_entry"]}
+    if row["target_execution_id"] is not None:
+        target_value["execution_id"] = row["target_execution_id"]
+    _write_callbacks(
+        encoder,
+        (
+            ("accepted_at", lambda target: target.write_value(row["accepted_at"])),
+            (
+                "artifact_outcomes",
+                lambda target: target.write_value(
+                    {
+                        "matched": row["artifact_matched"],
+                        "changed": row["artifact_changed"],
+                        "failed": row["artifact_failed"],
+                        "comparison_failed": row["artifact_comparison_failed"],
+                        "skipped": row["artifact_skipped"],
+                    }
+                ),
+            ),
+            (
+                "command_outcomes",
+                lambda target: target.write_value(command_outcomes),
+            ),
+            ("command_records", command_records),
+            ("executions", lambda target: _write_run_executions(target, db, row)),
+            ("finished_at", lambda target: target.write_value(row["finished_at"])),
+            (
+                "folder",
+                lambda target: target.write_value(
+                    {"availability": "unknown", "path": row["folder_path"]}
+                ),
+            ),
+            ("include_all", lambda target: target.write_value(bool(row["include_all"]))),
+            ("run_id", lambda target: target.write_value(row["run_id"])),
+            ("status", lambda target: target.write_value(row["status"])),
+            ("target", lambda target: target.write_value(target_value)),
+        ),
+    )
+
+
+def _write_run_executions(
+    encoder: CappedJsonEncoder, db: sqlite3.Connection, row: sqlite3.Row
+) -> None:
+    encoder.write_array(
+        db.execute(
+            "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
+            "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
+            (row["run_pk"],),
+        ),
+        lambda target, execution: target.write_value(dict(execution)),
+    )
+
+
+def _write_run_command_export(
+    encoder: CappedJsonEncoder, row: sqlite3.Row
+) -> None:
+    json.loads(row["details_json"])
+    json.loads(row["recipe_json"])
+    _write_callbacks(
+        encoder,
+        (
+            ("auto_reproduce", lambda target: target.write_value(bool(row["auto_reproduce"]))),
+            ("bucket", lambda target: target.write_value(row["bucket"])),
+            ("cwd", lambda target: target.write_value(row["cwd"])),
+            ("details", lambda target: target.append(row["details_json"])),
+            ("entry", lambda target: target.write_value(row["entry"])),
+            ("execution_id", lambda target: target.write_value(row["execution_id"])),
+            ("exclusive", lambda target: target.write_value(bool(row["exclusive"]))),
+            ("prior_disposition", lambda target: target.write_value(row["prior_disposition"])),
+            ("queued", lambda target: target.write_value(bool(row["queued"]))),
+            ("reason", lambda target: target.write_value(row["reason"])),
+            ("recipe", lambda target: target.append(row["recipe_json"])),
+            (
+                "requires_reproduction",
+                lambda target: target.write_value(bool(row["requires_reproduction"])),
+            ),
+            ("run_selection", lambda target: target.write_value(row["run_selection"])),
+            ("source_digest", lambda target: target.write_value(row["source_digest"])),
+            (
+                "terminal_disposition",
+                lambda target: target.write_value(row["terminal_disposition"]),
+            ),
+        ),
+    )
+
+
+def _stream_reproduction_export(db: sqlite3.Connection, limit: int) -> int:
+    """Count canonical export bytes from rows without building the aggregate."""
+
+    from .reproduction_results import CommandResult
+
+    metadata = db.execute(
+        "SELECT summary,updated_at FROM reproduction_metadata WHERE singleton=1"
+    ).fetchone()
+    if metadata is None:
+        raise ReproductionStorageError("reproduction result is absent")
+    encoder = CappedJsonEncoder(limit)
+
+    def write_artifacts(target: CappedJsonEncoder) -> None:
+        target.write_array(
+            db.execute(
+                "SELECT * FROM reproduction_artifact_results ORDER BY entry,artifact"
+            ),
+            lambda output, row: _write_artifact_export(output, db, row),
+        )
+
+    def write_commands(target: CappedJsonEncoder) -> None:
+        target.write_array(
+            db.execute(
+                "SELECT entry,execution_id,disposition,source_digest,recorded_at,"
+                "producing_run_id FROM reproduction_execution_results "
+                "ORDER BY entry,execution_id"
+            ),
+            lambda output, row: output.write_value(CommandResult(*row).as_dict()),
+        )
+
+    def write_runs(target: CappedJsonEncoder) -> None:
+        target.write_array(
+            db.execute(
+                "SELECT * FROM reproduction_runs "
+                "ORDER BY finished_at DESC,accepted_at DESC,run_id"
+            ),
+            lambda output, row: _write_run_export(output, db, row),
+        )
+
+    try:
+        encoder.write_object(
+            (
+                ("artifacts", write_artifacts),
+                ("commands", write_commands),
+                ("runs", write_runs),
+                (
+                    "schema",
+                    lambda target: target.write_value(
+                        "research-log-reproduction-result/10"
+                    ),
+                ),
+                ("summary", lambda target: target.write_value(metadata["summary"])),
+                (
+                    "updated_at",
+                    lambda target: target.write_value(metadata["updated_at"]),
+                ),
+            ),
+            lambda target, writer: writer(target),
+        )
+        size = encoder.size
+    finally:
+        encoder.close()
+    return size
 
 
 def load_reproduction_report_projection(
@@ -485,15 +912,18 @@ def _load_reproduction_projection(
                     }
                     for item in db.execute(
                         "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
-                        "FROM reproduction_run_executions WHERE run_id=? ORDER BY position",
-                        (row["run_id"],),
+                        "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
+                        (row["run_pk"],),
                     )
                 )
                 records = tuple(
                     _validated_command_detail(item)
                     for item in db.execute(
-                        "SELECT entry,execution_id,bucket,reason,terminal_disposition,source_digest,recipe_json,detail_json FROM reproduction_run_commands WHERE run_id=? ORDER BY plan_order",  # noqa: E501
-                        (row["run_id"],),
+                        "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+                        "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
+                        "queued,requires_reproduction,run_selection,details_json,recipe_json "
+                        "FROM reproduction_run_commands WHERE run_pk=? ORDER BY plan_order",
+                        (row["run_pk"],),
                     )
                 )
                 runs.append(
@@ -789,8 +1219,8 @@ def reproduction_command_projection(
                     "total": row["command_total"],
                 },
             )
-            clauses = ["run_id=?"]
-            bindings: list[object] = [row["run_id"]]
+            clauses = ["run_pk=?"]
+            bindings: list[object] = [row["run_pk"]]
             for column, value in (
                 ("bucket", request.bucket),
                 ("entry", request.entry),
@@ -807,7 +1237,10 @@ def reproduction_command_projection(
             records = tuple(
                 _validated_command_detail(item)
                 for item in db.execute(
-                    "SELECT entry,execution_id,bucket,reason,terminal_disposition,source_digest,recipe_json,detail_json FROM reproduction_run_commands"
+                    "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+                    "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
+                    "queued,requires_reproduction,run_selection,details_json,recipe_json "
+                    "FROM reproduction_run_commands"
                     + where
                     + " ORDER BY plan_order LIMIT ?",
                     [*bindings, request.limit],
@@ -821,19 +1254,24 @@ def reproduction_command_projection(
 def _validated_command_detail(row: sqlite3.Row) -> dict[str, object]:
     from .reproduction_results import _decode_command_record
 
-    detail = _decode_command_record(json.loads(row["detail_json"]), 0)
-    recipe = json.loads(row["recipe_json"])
-    if (
-        detail["entry"] != row["entry"]
-        or detail["execution_id"] != row["execution_id"]
-        or detail["bucket"] != row["bucket"]
-        or detail["reason"] != row["reason"]
-        or detail.get("terminal_disposition") != row["terminal_disposition"]
-        or detail.get("source_digest") != row["source_digest"]
-        or detail["recipe"] != recipe
-    ):
-        raise ReproductionStorageError("stored command detail does not match scalars")
-    return dict(detail)
+    detail = {
+        "auto_reproduce": bool(row["auto_reproduce"]),
+        "bucket": row["bucket"],
+        "cwd": row["cwd"],
+        "details": json.loads(row["details_json"]),
+        "entry": row["entry"],
+        "execution_id": row["execution_id"],
+        "exclusive": bool(row["exclusive"]),
+        "prior_disposition": row["prior_disposition"],
+        "queued": bool(row["queued"]),
+        "reason": row["reason"],
+        "recipe": json.loads(row["recipe_json"]),
+        "requires_reproduction": bool(row["requires_reproduction"]),
+        "run_selection": row["run_selection"],
+        "source_digest": row["source_digest"],
+        "terminal_disposition": row["terminal_disposition"],
+    }
+    return dict(_decode_command_record(detail, 0))
 
 
 def load_current_execution_results(

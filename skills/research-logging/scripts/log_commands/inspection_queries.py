@@ -11,7 +11,7 @@ from typing import Any, Sequence
 from research_log_result_store import ResultStoreError, result_snapshot
 from validation.result_storage import (
     export_validation_result,
-    validate_validation_result,
+    resolve_validation_result,
 )
 
 VIEW_SCHEMA = "research-log-result-view/1"
@@ -90,6 +90,7 @@ def _meta(db: Any, q: Query) -> dict[str, object]:
             "results.id.missing",
             "result may have been superseded or cleared; list cached results",
         )
+    resolve_validation_result(db, str(row["result_id"]))
     return dict(row)
 
 
@@ -113,25 +114,6 @@ def _generation(db: Any) -> int:
             "results.store.missing", "validation result state is absent"
         )
     return int(row["generation"])
-
-
-def _batch_row(db: Any, row: dict[str, object]) -> dict[str, object]:
-    """Add the bounded public anchors for one already-selected repair batch."""
-    batch_id = str(row["batch_id"])
-    try:
-        anchors = [
-            json.loads(anchor["anchor_json"])
-            for anchor in db.execute(
-                "SELECT anchor_json FROM validation_batch_anchors "
-                "WHERE result_id=? AND batch_id=? ORDER BY position",
-                (row["result_id"], batch_id),
-            )
-        ]
-    except (TypeError, json.JSONDecodeError) as error:
-        raise InspectionError(
-            "results.store.malformed", f"invalid repair-batch anchor: {error}"
-        ) from error
-    return {**row, "anchors": anchors}
 
 
 def _list_results(root: Path, db: Any, q: Query) -> dict[str, object]:
@@ -206,44 +188,48 @@ def _summary_view(root: Path, metadata: dict[str, object]) -> dict[str, object]:
     )
 
 
-def _code_filters(q: Query, result_id: str) -> tuple[list[str], list[object]]:
-    where = ["result_id=?"]
-    args: list[object] = [result_id]
-    if q.entry:
-        where.append(
-            "group_id IN (SELECT group_id FROM validation_groups "
-            "WHERE result_id=? AND entry=?)"
-        )
-        args.extend((result_id, q.entry))
-    if q.chain:
-        where.append("group_id=?")
-        args.append(q.chain)
-    if q.code:
-        where.append("code=?")
-        args.append(q.code)
-    if q.batch:
-        where.append(
-            "EXISTS (SELECT 1 FROM validation_batch_findings bf "
-            "WHERE bf.result_id=validation_findings.result_id AND bf.batch_id=? "
-            "AND bf.finding_id=validation_findings.finding_id)"
-        )
-        args.append(q.batch)
-    return where, args
-
-
 def _codes_view(
     root: Path, db: Any, q: Query, metadata: dict[str, object]
 ) -> dict[str, object]:
+    result_pk = _stored_integer(metadata["result_pk"], "result key")
     result_id = str(metadata["result_id"])
-    where, args = _code_filters(q, result_id)
-    row = db.execute(
-        "SELECT COUNT(*) AS count FROM (SELECT code FROM validation_findings WHERE "
-        + " AND ".join(where)
-        + " GROUP BY code)",
-        args,
-    ).fetchone()
-    assert row is not None
-    total = int(row["count"])
+    where = ["f.result_pk=?"]
+    args: list[object] = [result_pk]
+    if q.entry:
+        where.append("g.entry=?")
+        args.append(q.entry)
+    if q.chain:
+        where.append("g.group_id=?")
+        args.append(q.chain)
+    if q.code:
+        where.append("k.code=?")
+        args.append(q.code)
+    if q.batch:
+        where.append(
+            "EXISTS (SELECT 1 FROM validation_batches b "
+            "JOIN validation_batch_findings bf USING (result_pk,batch_pk) "
+            "WHERE b.result_pk=f.result_pk AND b.batch_id=? "
+            "AND bf.check_pk=f.check_pk)"
+        )
+        args.append(q.batch)
+    source = (
+        "validation_findings f "
+        "JOIN validation_checks c USING (result_pk,check_pk) "
+        "JOIN validation_codes k USING (result_pk,code_pk) "
+        "JOIN validation_groups g ON g.result_pk=f.result_pk "
+        "AND g.group_pk=f.group_pk"
+    )
+    predicate = " AND ".join(where)
+    total = int(
+        db.execute(
+            "SELECT COUNT(*) FROM (SELECT k.code FROM "
+            + source
+            + " WHERE "
+            + predicate
+            + " GROUP BY k.code)",
+            args,
+        ).fetchone()[0]
+    )
     binding = {
         "result_id": result_id,
         "generation": _generation(db),
@@ -258,14 +244,16 @@ def _codes_view(
     }
     last = _last(q.cursor, binding)
     if last:
-        where.append("code>?")
+        where.append("k.code>?")
         args.append(last)
     rows = [
         dict(item)
         for item in db.execute(
-            "SELECT code,count(*) findings FROM validation_findings WHERE "
+            "SELECT k.code,count(*) findings FROM "
+            + source
+            + " WHERE "
             + " AND ".join(where)
-            + " GROUP BY code ORDER BY code LIMIT ?",
+            + " GROUP BY k.code ORDER BY k.code LIMIT ?",
             [*args, q.limit + 1],
         )
     ]
@@ -283,150 +271,452 @@ def _codes_view(
     )
 
 
-def _entry_filter(
-    q: Query, view: str, result_id: str
-) -> tuple[list[str], list[object]]:
-    if not q.entry:
-        return [], []
-    if view == "commands":
-        return ["entry=?"], [q.entry]
-    if view in {"findings", "chains"}:
-        return [
-            "group_id IN (SELECT group_id FROM validation_groups "
-            "WHERE result_id=? AND entry=?)"
-        ], [result_id, q.entry]
-    if view == "artifacts":
-        return [
-            "EXISTS (SELECT 1 FROM validation_group_artifacts ga "
-            "JOIN validation_groups g ON g.result_id=ga.result_id "
-            "AND g.group_id=ga.group_id WHERE ga.result_id="
-            "validation_artifacts.result_id AND ga.artifact="
-            "validation_artifacts.artifact_id AND g.entry=?)"
-        ], [q.entry]
-    if view == "batches":
-        return [
-            "EXISTS (SELECT 1 FROM validation_batch_entries e "
-            "WHERE e.result_id=validation_batches.result_id "
-            "AND e.batch_id=validation_batches.batch_id AND e.entry=?)"
-        ], [q.entry]
-    return [], []
-
-
-def _chain_filter(q: Query, view: str) -> tuple[list[str], list[object]]:
-    if not q.chain:
-        return [], []
-    if view in {"findings", "chains", "commands"}:
-        return ["group_id=?"], [q.chain]
-    if view == "artifacts":
-        return [
-            "EXISTS (SELECT 1 FROM validation_group_artifacts ga "
-            "WHERE ga.result_id=validation_artifacts.result_id "
-            "AND ga.artifact=validation_artifacts.artifact_id AND ga.group_id=?)"
-        ], [q.chain]
-    if view == "batches":
-        return [
-            "EXISTS (SELECT 1 FROM validation_batch_groups g "
-            "WHERE g.result_id=validation_batches.result_id "
-            "AND g.batch_id=validation_batches.batch_id AND g.group_id=?)"
-        ], [q.chain]
-    return [], []
-
-
-def _entity_code_filter(
-    q: Query, view: str, table: str, key: str
-) -> tuple[list[str], list[object]]:
-    if not q.code:
-        return [], []
-    clause = {
-        "findings": "code=?",
-        "batches": (
-            "EXISTS (SELECT 1 FROM validation_batch_findings bf "
-            "JOIN validation_findings f ON f.result_id=bf.result_id "
-            "AND f.finding_id=bf.finding_id WHERE bf.result_id="
-            "validation_batches.result_id AND bf.batch_id="
-            "validation_batches.batch_id AND f.code=?)"
-        ),
-        "chains": (
-            "EXISTS (SELECT 1 FROM validation_batch_groups bg "
-            "JOIN validation_batch_findings bf ON bf.result_id=bg.result_id "
-            "AND bf.batch_id=bg.batch_id JOIN validation_findings f "
-            "ON f.result_id=bf.result_id AND f.finding_id=bf.finding_id "
-            f"WHERE bg.result_id={table}.result_id AND bg.group_id={table}.{key} "
-            "AND f.code=?)"
-        ),
-        "commands": (
-            "EXISTS (SELECT 1 FROM validation_batch_command_links l "
-            f"WHERE l.result_id={table}.result_id "
-            f"AND l.command_id={table}.{key} AND l.code=?)"
-        ),
-        "artifacts": (
-            "EXISTS (SELECT 1 FROM validation_batch_command_links l "
-            "JOIN validation_command_relationships r ON r.result_id=l.result_id "
-            "AND r.command_id=l.command_id "
-            f"WHERE l.result_id={table}.result_id AND r.path={table}.{key} "
-            "AND l.code=?)"
-        ),
-    }.get(view)
-    return ([clause], [q.code]) if clause else ([], [])
-
-
-def _batch_filter(
-    q: Query, view: str, table: str, key: str
-) -> tuple[list[str], list[object]]:
-    if not q.batch:
-        return [], []
-    clause = {
-        "batches": "batch_id=?",
+def _entity_source(view: str) -> tuple[str, str, str]:
+    return {
         "findings": (
-            "EXISTS (SELECT 1 FROM validation_batch_findings bf "
-            f"WHERE bf.result_id={table}.result_id AND bf.batch_id=? "
-            f"AND bf.finding_id={table}.{key})"
+            "e.result_pk AS _result_pk,e.check_pk AS _check_pk,"
+            "r.result_id,c.check_id AS finding_id,g.group_id,e.position,c.scope,"
+            "c.status,k.code,c.subject AS projection_subject,c.rule,c.observed_json,"
+            "e.admission_effect,e.display_entry,e.display_subject",
+            "validation_findings e "
+            "JOIN validation_results r USING (result_pk) "
+            "JOIN validation_checks c USING (result_pk,check_pk) "
+            "LEFT JOIN validation_codes k USING (result_pk,code_pk) "
+            "JOIN validation_groups g ON g.result_pk=e.result_pk "
+            "AND g.group_pk=e.group_pk",
+            "finding_id",
+        ),
+        "batches": (
+            "e.result_pk AS _result_pk,e.batch_pk AS _batch_pk,r.result_id,"
+            "e.batch_id,e.batch_type,e.grouping_reason,e.scope,"
+            "e.primary_finding_count,c.check_id AS starting_finding_id,e.position",
+            "validation_batches e "
+            "JOIN validation_results r USING (result_pk) "
+            "JOIN validation_checks c ON c.result_pk=e.result_pk "
+            "AND c.check_pk=e.starting_check_pk",
+            "batch_id",
         ),
         "chains": (
-            "EXISTS (SELECT 1 FROM validation_batch_groups bg "
-            f"WHERE bg.result_id={table}.result_id AND bg.batch_id=? "
-            f"AND bg.group_id={table}.{key})"
+            "e.result_pk AS _result_pk,e.group_pk AS _group_pk,r.result_id,"
+            "e.group_id,e.group_kind,e.entry,e.reason,e.position",
+            "validation_groups e JOIN validation_results r USING (result_pk)",
+            "group_id",
         ),
         "commands": (
-            "EXISTS (SELECT 1 FROM validation_batch_command_links l "
-            f"WHERE l.result_id={table}.result_id AND l.batch_id=? "
-            f"AND l.command_id={table}.{key})"
+            "e.result_pk AS _result_pk,e.command_pk AS _command_pk,r.result_id,"
+            "e.command_id,e.entry,e.document,e.fence,e.ordinal,e.script,"
+            "g.group_id,e.position",
+            "validation_commands e "
+            "JOIN validation_results r USING (result_pk) "
+            "JOIN validation_groups g ON g.result_pk=e.result_pk "
+            "AND g.group_pk=e.group_pk",
+            "command_id",
         ),
         "artifacts": (
-            "EXISTS (SELECT 1 FROM validation_batch_command_links l "
-            "JOIN validation_command_relationships r ON r.result_id=l.result_id "
-            "AND r.command_id=l.command_id "
-            f"WHERE l.result_id={table}.result_id AND l.batch_id=? "
-            f"AND r.path={table}.{key})"
+            "e.result_pk AS _result_pk,e.artifact_pk AS _artifact_pk,"
+            "r.result_id,e.artifact_id",
+            "validation_artifacts e JOIN validation_results r USING (result_pk)",
+            "artifact_id",
         ),
-    }.get(view)
-    return ([clause], [q.batch]) if clause else ([], [])
+    }[view]
 
 
 def _entity_filters(
-    q: Query, view: str, table: str, key: str, result_id: str
+    q: Query, view: str, result_pk: int, key_column: str
 ) -> tuple[list[str], list[object]]:
-    where = ["result_id=?"]
-    args: list[object] = [result_id]
+    where = ["e.result_pk=?"]
+    args: list[object] = [result_pk]
     if q.action in {"finding", "batch", "command", "artifact"}:
-        where.append(key + "=?")
+        where.append(key_column + "=?")
         args.append(q.entity or "")
-    for clauses, values in (
-        _entry_filter(q, view, result_id),
-        _chain_filter(q, view),
-        _entity_code_filter(q, view, table, key),
-        _batch_filter(q, view, table, key),
-    ):
-        where.extend(clauses)
-        args.extend(values)
+    if q.entry:
+        clause = {
+            "findings": "g.entry=?",
+            "chains": "e.entry=?",
+            "commands": "e.entry=?",
+            "artifacts": (
+                "EXISTS (SELECT 1 FROM validation_group_artifacts ga "
+                "JOIN validation_groups eg USING (result_pk,group_pk) "
+                "WHERE ga.result_pk=e.result_pk "
+                "AND ga.artifact_pk=e.artifact_pk AND eg.entry=?)"
+            ),
+            "batches": (
+                "EXISTS (SELECT 1 FROM validation_batch_entries be "
+                "WHERE be.result_pk=e.result_pk AND be.batch_pk=e.batch_pk "
+                "AND be.entry=?)"
+            ),
+        }[view]
+        where.append(clause)
+        args.append(q.entry)
+    if q.chain:
+        clause = {
+            "findings": "g.group_id=?",
+            "chains": "e.group_id=?",
+            "commands": "g.group_id=?",
+            "artifacts": (
+                "EXISTS (SELECT 1 FROM validation_group_artifacts ga "
+                "JOIN validation_groups cg USING (result_pk,group_pk) "
+                "WHERE ga.result_pk=e.result_pk "
+                "AND ga.artifact_pk=e.artifact_pk AND cg.group_id=?)"
+            ),
+            "batches": (
+                "EXISTS (SELECT 1 FROM validation_batch_groups bg "
+                "JOIN validation_groups cg USING (result_pk,group_pk) "
+                "WHERE bg.result_pk=e.result_pk AND bg.batch_pk=e.batch_pk "
+                "AND cg.group_id=?)"
+            ),
+        }[view]
+        where.append(clause)
+        args.append(q.chain)
+    if q.code:
+        clause = {
+            "findings": "k.code=?",
+            "batches": (
+                "EXISTS (SELECT 1 FROM validation_batch_findings bf "
+                "JOIN validation_checks bc USING (result_pk,check_pk) "
+                "JOIN validation_codes bk USING (result_pk,code_pk) "
+                "WHERE bf.result_pk=e.result_pk AND bf.batch_pk=e.batch_pk "
+                "AND bk.code=?)"
+            ),
+            "chains": (
+                "EXISTS (SELECT 1 FROM validation_batch_groups bg "
+                "JOIN validation_batch_findings bf USING (result_pk,batch_pk) "
+                "JOIN validation_checks bc USING (result_pk,check_pk) "
+                "JOIN validation_codes bk USING (result_pk,code_pk) "
+                "WHERE bg.result_pk=e.result_pk AND bg.group_pk=e.group_pk "
+                "AND bk.code=?)"
+            ),
+            "commands": (
+                "EXISTS (SELECT 1 FROM validation_batch_command_links l "
+                "JOIN validation_codes lk USING (result_pk,code_pk) "
+                "WHERE l.result_pk=e.result_pk AND l.command_pk=e.command_pk "
+                "AND lk.code=?)"
+            ),
+            "artifacts": (
+                "EXISTS (SELECT 1 FROM validation_batch_command_links l "
+                "JOIN validation_codes lk USING (result_pk,code_pk) "
+                "JOIN validation_command_relationships cr "
+                "ON cr.result_pk=l.result_pk AND cr.command_pk=l.command_pk "
+                "WHERE l.result_pk=e.result_pk "
+                "AND cr.path_artifact_pk=e.artifact_pk AND lk.code=?)"
+            ),
+        }[view]
+        where.append(clause)
+        args.append(q.code)
+    if q.batch:
+        clause = {
+            "batches": "e.batch_id=?",
+            "findings": (
+                "EXISTS (SELECT 1 FROM validation_batches b "
+                "JOIN validation_batch_findings bf USING (result_pk,batch_pk) "
+                "WHERE b.result_pk=e.result_pk AND b.batch_id=? "
+                "AND bf.check_pk=e.check_pk)"
+            ),
+            "chains": (
+                "EXISTS (SELECT 1 FROM validation_batches b "
+                "JOIN validation_batch_groups bg USING (result_pk,batch_pk) "
+                "WHERE b.result_pk=e.result_pk AND b.batch_id=? "
+                "AND bg.group_pk=e.group_pk)"
+            ),
+            "commands": (
+                "EXISTS (SELECT 1 FROM validation_batches b "
+                "JOIN validation_batch_command_links l USING (result_pk,batch_pk) "
+                "WHERE b.result_pk=e.result_pk AND b.batch_id=? "
+                "AND l.command_pk=e.command_pk)"
+            ),
+            "artifacts": (
+                "EXISTS (SELECT 1 FROM validation_batches b "
+                "JOIN validation_batch_command_links l USING (result_pk,batch_pk) "
+                "JOIN validation_command_relationships cr "
+                "ON cr.result_pk=l.result_pk AND cr.command_pk=l.command_pk "
+                "WHERE b.result_pk=e.result_pk AND b.batch_id=? "
+                "AND cr.path_artifact_pk=e.artifact_pk)"
+            ),
+        }[view]
+        where.append(clause)
+        args.append(q.batch)
     return where, args
+
+
+def _stored_integer(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise InspectionError("results.store.malformed", f"invalid stored {name}")
+    return value
+
+
+def _batch_member_rows(
+    db: Any, result_pk: int, batch_pk: int
+) -> dict[str, list[Any]]:
+    rows = {
+        name: list(
+            db.execute(
+                f"SELECT position,{column} AS member FROM {table} "
+                "WHERE result_pk=? AND batch_pk=? ORDER BY position",
+                (result_pk, batch_pk),
+            )
+        )
+        for name, table, column in (
+            ("entries", "validation_batch_entries", "entry"),
+            ("findings", "validation_batch_findings", "check_pk"),
+            ("groups", "validation_batch_groups", "group_pk"),
+            (
+                "related batches",
+                "validation_batch_related_batches",
+                "related_batch_pk",
+            ),
+        )
+    }
+    for name, members in rows.items():
+        _require_dense_positions(members, f"repair-batch {name}")
+    return rows
+
+
+def _validated_batch_members(
+    member_rows: dict[str, list[Any]], anchors: list[object]
+) -> dict[str, list[object]]:
+    semantic = {
+        name: [item["member"] for item in members]
+        for name, members in member_rows.items()
+    }
+    for name, members in semantic.items():
+        if len(members) != len(set(members)):
+            raise InspectionError(
+                "results.store.malformed",
+                f"selected repair batch has duplicate {name}",
+            )
+    for entry in semantic["entries"]:
+        _require_string(entry, "repair-batch entry")
+    for name in ("findings", "groups", "related batches"):
+        for member in semantic[name]:
+            _stored_integer(member, f"repair-batch {name} member")
+    anchor_ids = [
+        json.dumps(anchor, sort_keys=True, separators=(",", ":"))
+        for anchor in anchors
+    ]
+    if len(anchor_ids) != len(set(anchor_ids)):
+        raise InspectionError(
+            "results.store.malformed", "selected repair batch has duplicate anchors"
+        )
+    return semantic
+
+
+def _validate_local_batch_members(
+    db: Any,
+    result_pk: int,
+    batch_pk: int,
+    member_rows: dict[str, list[Any]],
+) -> None:
+    queries = {
+        "findings": (
+            "SELECT count(*) FROM validation_batch_findings AS m "
+            "JOIN validation_findings AS f USING (result_pk,check_pk) "
+            "WHERE m.result_pk=? AND m.batch_pk=?"
+        ),
+        "groups": (
+            "SELECT count(*) FROM validation_batch_groups AS m "
+            "JOIN validation_groups AS g USING (result_pk,group_pk) "
+            "WHERE m.result_pk=? AND m.batch_pk=?"
+        ),
+        "related batches": (
+            "SELECT count(*) FROM validation_batch_related_batches AS m "
+            "JOIN validation_batches AS b ON b.result_pk=m.result_pk "
+            "AND b.batch_pk=m.related_batch_pk "
+            "WHERE m.result_pk=? AND m.batch_pk=?"
+        ),
+    }
+    for name, query in queries.items():
+        count = db.execute(query, (result_pk, batch_pk)).fetchone()[0]
+        if count != len(member_rows[name]):
+            raise InspectionError(
+                "results.store.malformed",
+                f"selected repair batch {name} member is absent",
+            )
+
+
+def _batch_row(db: Any, row: dict[str, object]) -> dict[str, object]:
+    batch_pk = _stored_integer(row.pop("_batch_pk"), "batch key")
+    result_pk = _stored_integer(row.pop("_result_pk"), "result key")
+    try:
+        anchor_rows = list(
+            db.execute(
+                "SELECT position,anchor_json FROM validation_batch_anchors "
+                "WHERE result_pk=? AND batch_pk=? ORDER BY position",
+                (result_pk, batch_pk),
+            )
+        )
+        _require_dense_positions(anchor_rows, "repair-batch anchors")
+        anchors = [json.loads(anchor["anchor_json"]) for anchor in anchor_rows]
+        member_rows = _batch_member_rows(db, result_pk, batch_pk)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise InspectionError(
+            "results.store.malformed", f"invalid repair-batch anchor: {error}"
+        ) from error
+    semantic_members = _validated_batch_members(member_rows, anchors)
+
+    findings = member_rows["findings"]
+    if len(findings) != row["primary_finding_count"]:
+        raise InspectionError(
+            "results.store.malformed", "selected repair batch finding count disagrees"
+        )
+    _validate_local_batch_members(db, result_pk, batch_pk, member_rows)
+    starting = db.execute(
+        "SELECT c.check_pk FROM validation_checks AS c "
+        "JOIN validation_findings AS f USING (result_pk,check_pk) "
+        "WHERE c.result_pk=? AND c.check_id=?",
+        (result_pk, row["starting_finding_id"]),
+    ).fetchone()
+    if starting is None or starting[0] not in {item["member"] for item in findings}:
+        raise InspectionError(
+            "results.store.malformed", "selected repair batch start is not a member"
+        )
+    related = semantic_members["related batches"]
+    if batch_pk in related:
+        raise InspectionError(
+            "results.store.malformed", "selected repair batch relation is invalid"
+        )
+    return {**row, "anchors": anchors}
+
+
+def _require_dense_positions(rows: list[Any], name: str) -> None:
+    if [row["position"] for row in rows] != list(range(len(rows))):
+        raise InspectionError(
+            "results.store.malformed", f"invalid selected {name} positions"
+        )
+
+
+def _require_string(value: object, name: str, *, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or not value:
+        raise InspectionError("results.store.malformed", f"invalid selected {name}")
+
+
+def _validate_selected_finding(db: Any, item: dict[str, object]) -> None:
+    result_pk = _stored_integer(item["_result_pk"], "result key")
+    check_pk = _stored_integer(item["_check_pk"], "check key")
+    for name in (
+        "finding_id",
+        "group_id",
+        "scope",
+        "status",
+        "projection_subject",
+        "admission_effect",
+        "display_entry",
+        "display_subject",
+    ):
+        _require_string(item[name], f"finding {name}")
+    if item["status"] not in {"fail", "unavailable"}:
+        raise InspectionError(
+            "results.store.malformed", "selected finding has no failed check"
+        )
+    for name in ("code", "rule"):
+        _require_string(item[name], f"finding {name}")
+    if item["scope"] not in {"conformance", "evidence", "provenance", "orphan"}:
+        raise InspectionError(
+            "results.store.malformed", "selected finding has invalid scope"
+        )
+    try:
+        json.loads(str(item["observed_json"]))
+    except (TypeError, json.JSONDecodeError) as error:
+        raise InspectionError(
+            "results.store.malformed", f"invalid selected finding JSON: {error}"
+        ) from error
+    chains = list(
+        db.execute(
+            "SELECT a.position,g.entry "
+            "FROM validation_finding_affected_chains AS a "
+            "JOIN validation_groups AS g USING (result_pk,group_pk) "
+            "WHERE a.result_pk=? AND a.check_pk=? ORDER BY a.position",
+            (result_pk, check_pk),
+        )
+    )
+    entries = list(
+        db.execute(
+            "SELECT position,entry FROM validation_finding_affected_entries "
+            "WHERE result_pk=? AND check_pk=? ORDER BY position",
+            (result_pk, check_pk),
+        )
+    )
+    _require_dense_positions(chains, "finding affected-chain")
+    _require_dense_positions(entries, "finding affected-entry")
+    effect = item["admission_effect"]
+    if effect in {"none", "log"} and (chains or entries):
+        raise InspectionError(
+            "results.store.malformed", "selected finding has affected members"
+        )
+    if effect == "entry" and (chains or len(entries) != 1):
+        raise InspectionError(
+            "results.store.malformed", "selected entry finding has invalid members"
+        )
+    if effect == "chain" and (
+        len(chains) != 1
+        or len(entries) != 1
+        or chains[0]["entry"] != entries[0]["entry"]
+    ):
+        raise InspectionError(
+            "results.store.malformed", "selected chain finding has invalid members"
+        )
+    if effect not in {"none", "log", "entry", "chain"}:
+        raise InspectionError(
+            "results.store.malformed", "selected finding has invalid effect"
+        )
+
+
+def _validate_selected_scalars(view: str, item: dict[str, object]) -> None:
+    string_fields = {
+        "batches": ("batch_id", "batch_type", "grouping_reason", "scope"),
+        "chains": ("group_id", "group_kind", "entry"),
+        "commands": ("command_id", "entry", "document", "script", "group_id"),
+        "artifacts": ("artifact_id",),
+    }.get(view, ())
+    for name in string_fields:
+        _require_string(item[name], f"{view} {name}")
+    if view == "chains":
+        kind, reason = item["group_kind"], item["reason"]
+        if kind not in {"chain", "unresolved"}:
+            raise InspectionError(
+                "results.store.malformed", "invalid selected group kind"
+            )
+        if (kind == "chain" and reason is not None) or (
+            kind == "unresolved" and reason != "finding_scope_unresolved"
+        ):
+            raise InspectionError(
+                "results.store.malformed", "invalid selected group reason"
+            )
+    for name in {"batches": ("primary_finding_count",)}.get(view, ()):
+        _stored_integer(item[name], f"{view} {name}")
+    for name in {"commands": ("fence", "ordinal")}.get(view, ()):
+        value = item[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise InspectionError(
+                "results.store.malformed", f"invalid selected {view} {name}"
+            )
+    position = item.get("position")
+    if position is not None and (
+        not isinstance(position, int) or isinstance(position, bool) or position < 0
+    ):
+        raise InspectionError(
+            "results.store.malformed", f"invalid selected {view} position"
+        )
 
 
 def _entity_rows(
     db: Any, view: str, items: list[dict[str, object]]
 ) -> list[dict[str, object]]:
     if view == "batches":
+        for item in items:
+            _validate_selected_scalars(view, item)
         return [_batch_row(db, item) for item in items]
+    if view == "findings":
+        for item in items:
+            _validate_selected_finding(db, item)
+    else:
+        for item in items:
+            _validate_selected_scalars(view, item)
+    for item in items:
+        for key in tuple(item):
+            if key.startswith("_"):
+                item.pop(key)
     if view == "artifacts":
         return [{**item, "path": item["artifact_id"]} for item in items]
     return items
@@ -436,19 +726,33 @@ def _entity_view(
     root: Path, db: Any, q: Query, metadata: dict[str, object]
 ) -> dict[str, object]:
     view = (
-        q.action if q.action in {"finding", "batch", "command", "artifact"} else q.view
+        {
+            "finding": "findings",
+            "batch": "batches",
+            "command": "commands",
+            "artifact": "artifacts",
+        }[q.action]
+        if q.action in {"finding", "batch", "command", "artifact"}
+        else q.view
     )
-    table, key = {
-        "findings": ("validation_findings", "finding_id"),
-        "batches": ("validation_batches", "batch_id"),
-        "chains": ("validation_groups", "group_id"),
-        "commands": ("validation_commands", "command_id"),
-        "artifacts": ("validation_artifacts", "artifact_id"),
+    select, source, key = _entity_source(view)
+    key_column = {
+        "findings": "c.check_id",
+        "batches": "e.batch_id",
+        "chains": "e.group_id",
+        "commands": "e.command_id",
+        "artifacts": "e.artifact_id",
     }[view]
+    result_pk = _stored_integer(metadata["result_pk"], "result key")
     result_id = str(metadata["result_id"])
-    where, args = _entity_filters(q, view, table, key, result_id)
+    where, args = _entity_filters(q, view, result_pk, key_column)
     filters = {"entry": q.entry, "chain": q.chain, "batch": q.batch, "code": q.code}
-    total = _total(db, table, where, args)
+    predicate = " AND ".join(where)
+    total = int(
+        db.execute(
+            "SELECT COUNT(*) FROM " + source + " WHERE " + predicate, args
+        ).fetchone()[0]
+    )
     binding = {
         "result_id": result_id,
         "generation": _generation(db),
@@ -458,16 +762,26 @@ def _entity_view(
     }
     last = _last(q.cursor, binding)
     if last:
-        where.append(key + ">?")
+        where.append(key_column + ">?")
         args.append(last)
     rows = [
         dict(row)
         for row in db.execute(
-            f"SELECT * FROM {table} WHERE {' AND '.join(where)} ORDER BY {key} LIMIT ?",
+            "SELECT "
+            + select
+            + " FROM "
+            + source
+            + " WHERE "
+            + " AND ".join(where)
+            + " ORDER BY "
+            + key
+            + " LIMIT ?",
             [*args, q.limit + 1],
         )
     ]
-    items = _entity_rows(db, view, rows[: q.limit])
+    page = rows[: q.limit]
+    last_value = None if not page else page[-1][key]
+    items = _entity_rows(db, view, page)
     if q.action in {"finding", "batch", "command", "artifact"} and not items:
         raise InspectionError(
             "results.entity.missing", f"unknown {q.action}: {q.entity}"
@@ -478,7 +792,7 @@ def _entity_view(
             "total": total,
             "returned": len(items),
             "items": items,
-            "next_cursor": _enc({"binding": binding, "last": items[-1][key]})
+            "next_cursor": _enc({"binding": binding, "last": last_value})
             if len(rows) > q.limit
             else None,
         }
@@ -510,9 +824,8 @@ def inspect_result(root: Path, q: Query) -> dict[str, object]:
                 return _list_results(root, db, q)
             metadata = _meta(db, q)
             result_id = str(metadata["result_id"])
-            validate_validation_result(root, result_id)
             if q.action == "export":
-                return export_validation_result(root, result_id)
+                return export_validation_result(root, result_id, connection=db)
             if q.action == "show" and q.view == "summary":
                 return _summary_view(root, metadata)
             if q.view == "codes":

@@ -1568,6 +1568,22 @@ queryable reproduction results. The reproduction domain stores normalized
 artifact, execution, command, and terminal-run projection rows keyed by their
 stable identities. It has no maintained aggregate JSON encoding.
 
+In consolidated store schema v14, each retained run has a positive internal
+`run_pk`; the public `run_id` remains the only run identity exposed by reports,
+queries, exports, or producing-run fields. Run-command and run-execution
+junctions use `WITHOUT ROWID` composite primary keys. A historical command row
+stores its queryable scalar fields once, plus one bounded `details_json` list
+and one bounded `recipe_json` object. There is no `detail_json` copy of those
+same values, and the unchanged public command-detail object is reconstructed
+only for a selected row or explicit export.
+
+Cumulative publication and explicit export enforce the 64 MiB domain ceiling
+with a canonical incremental encoder over normalized rows. The encoder stops
+at the first over-limit chunk before constructing the aggregate result object;
+publication rolls back the whole selected-key merge on failure. Ordinary
+summary, artifact, command, and history queries continue to decode only their
+selected bounded projection.
+
 <!-- Historical aggregate example removed: use `log results ... --format json`
 for an explicit, bounded export of a selected stored projection. -->
 <!--

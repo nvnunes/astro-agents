@@ -3,18 +3,14 @@
 Place checks immediately after the work they verify. Each child plan contains
 or directly references its assigned checks and selected commit policy.
 
-For checks of delegated work, assign integration checks to the final
-implementation Task when it naturally assembles or depends on the earlier
-work. When no implementation Task is a natural owner, assign the checks to
-a separate validation Task. The main agent names the owner and coordinates
-the result; it runs project checks only for work it performs directly. Resolve
-check ownership during planning. Ask the user only when the choice materially
-changes scope, cost, or authority, or requires approval for additional
-sharding.
+Keep checks and reviews with the executing Task that owns the work. For
+delegated phases, assign cross-phase integration checks to the phase that assembles the result. The
+coordinating Task dispatches phases and acts on their handoffs; it does not
+repeat their checks or reviews.
 
-In the plan that owns the work, place each agentic review immediately after
-the work it reviews. The executing Task starts independent reviewer subagents
-and coordinates findings and corrections locally.
+In the plan that owns the work, place each independent agentic review immediately
+after the work it reviews. The executing Task coordinates the reviewer and
+handles findings and corrections locally.
 
 Distinguish iteration checks from completion gates. Reference project gates
 instead of repeating them. Keep component checks with their work and reserve
@@ -26,8 +22,21 @@ continuation route and stopping point.
 Do not repeat reviews completed during planning unless later work will
 invalidate them. Avoid generic review-after-every-step requirements.
 
-When expensive work depends on a consequential assumption, put a cheap
-representative check before it.
+Before expensive work, test consequential assumptions with a cheap representative
+check. If an implementation mistake would cause substantial rework, check a small
+working example for design conformance before broadening the implementation.
+
+Choose verification that reaches the claimed behavior and asserts its expected
+outcome. Passing test counts, mocks that bypass that behavior, or agreement
+between consumers of the same helper do not establish correctness on their own.
+
+## Implementation Ownership
+
+Keep design, implementation-plan refinement, implementation, behavioral tests,
+and corrections with one executing Task. Divide its work into cohesive,
+verifiable units with recorded decisions and acceptance evidence so it can
+resume reliably after context turnover. Work-unit boundaries do not create
+agent assignments. Use `references/sharding.md` when considering phase delegation.
 
 ## Agentic Reviews
 

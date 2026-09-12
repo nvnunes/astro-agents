@@ -24,8 +24,8 @@ document does not affect maintenance.
   copy linked detail, or add chronological progress narration.
 
 Record decisions and constraints that affect remaining work beside that work
-in your plan. Do not read or edit other plan documents, including sharded
-phase, part, or plan task files, to propagate them.
+in the plan files you execute. Do not read or edit plans assigned to other
+Tasks to propagate them.
 
 The execution record reports state. It does not change scope, requirements,
 execution order, review or commit policy, or delegated Task assignments.

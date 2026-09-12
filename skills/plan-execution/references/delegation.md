@@ -1,7 +1,9 @@
 # Working With Delegated Tasks
 
-When your plan assigns phase, part, or plan task work to a separate Task, start
-a fresh Task to execute it. The Task owns its reviews and human interaction.
+When your plan delegates a phase, start a fresh Task to execute it. That Task
+owns design through completion and user interaction. It coordinates independent
+reviews by reviewer subagents and addresses their findings. Keep Parts and
+numbered plan tasks within that phase Task.
 
 ## Start A Delegated Task
 
@@ -45,7 +47,7 @@ yourself.
 
 - Trust a successful Task handoff. Do not inspect its full diff, replay its
   investigation, or rerun its checks.
-- Update the corresponding phase, part, or plan task in your execution record
+- Update the corresponding phase in your execution record
   from the final handoff.
 - If the final handoff reports blocked or failed work, follow any specific
   continuation route in your plan. If none exists, stop.

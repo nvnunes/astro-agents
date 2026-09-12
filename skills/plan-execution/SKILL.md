@@ -21,10 +21,15 @@ When work is expensive:
   saved results.
 - Bound checks of its status, logs, and outputs. Stop when that bound is
   exhausted; unresolved uncertainty does not justify continued inspection.
-- Rerun the same operation only when a specific hypothesis gives reason to
-  expect different evidence.
-- Before adopting a different approach, confirm that it remains within the
-  authorized scope. If it does not, stop and ask the human for direction.
+
+Before repeating an operation or correction cycle:
+
+- Require a specific hypothesis that gives reason to expect different evidence.
+  If the same requirement remains unmet after repeated corrections, reassess
+  misunderstanding, coupled decisions, inadequate fixtures, or agent capacity.
+- Address the evidenced cause within authorized scope. Use `$plan-writing` if
+  the remedy changes scope, assignments, or policy, and ask for direction when
+  it requires a human decision.
 - If the approach is within scope, run the cheapest representative test that
   could show whether substantial further work is worthwhile.
 - Before stopping, exhaust the obvious, inexpensive, in-scope checks and
@@ -39,5 +44,6 @@ After reading the assigned plan:
 - If you are a delegated Task, read `references/delegated-task.md`.
 - If it calls for you to start delegated Tasks, read `references/delegation.md`
   before starting one.
-- If it calls for agentic review, read `references/review.md`.
+- If it calls for independent agentic review, read
+  `references/review.md`.
 - Read `references/plan-maintenance.md` for your own plan.

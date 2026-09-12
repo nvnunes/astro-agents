@@ -112,7 +112,11 @@ When revising existing Python code:
 
 ## Testing And Verification
 - Add or adjust tests with every behavior change.
-- Prefer tests of externally visible behavior over tests tightly coupled to internal structure.
+- Prefer tests of externally visible behavior over tests coupled to internal
+  structure. For behavioral defects, establish a reproducing case before the fix
+  where practical: the fixture must reach the intended behavior and fail for the
+  reported reason.
+  Verify that the correction makes the same case pass.
 - Preserve externally visible behavior unless a change is intentional and documented.
 - Keep docs and examples aligned with code.
 - Document canonical verification commands in the target project's local validation docs.

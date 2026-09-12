@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Mapping, cast
 from unittest import mock
 
 from log_commands.context import EntryContext, LogContext
@@ -23,7 +24,16 @@ from log_commands.reproduction_planner import (
     project_reproduction_command_inventory,
     project_reproduction_state,
 )
-from log_commands.reproduction_results import CommandResult, ReproductionResults
+from log_commands.reproduction_result_storage import (
+    ReproductionPublicationRequest,
+    publish_reproduction_results,
+)
+from log_commands.reproduction_results import (
+    ArtifactResult,
+    CommandResult,
+    RunFolder,
+    RunResult,
+)
 from research_log_cli_test_support import (
     fixture_parameter_roles,
 )
@@ -32,6 +42,7 @@ from research_log_data import (
     InputResource,
     observe_fingerprint,
 )
+from research_log_paths import RESULTS_STORE
 from validation.engine import (
     EvaluationRequest,
     FullEvaluationTarget,
@@ -77,6 +88,59 @@ def _projected_command(
     }
 
 
+def _stored_admission(projection: Mapping[str, object]):
+    """Construct a typed admission fixture without loading stored results."""
+
+    from validation.result_storage import (
+        ValidationAdmission,
+        ValidationAdmissionCommand,
+        ValidationAdmissionFinding,
+        ValidationAdmissionGroup,
+    )
+
+    groups = []
+    commands = []
+    findings = []
+    for kind, name in (("chain", "chains"), ("unresolved", "unresolved")):
+        for group in cast(list[dict[str, object]], projection.get(name, [])):
+            group_id = cast(str, group["chain_id"])
+            entry = cast(str, group["entry"])
+            groups.append(ValidationAdmissionGroup(group_id, kind, entry))
+            for command in cast(list[dict[str, object]], group.get("commands", [])):
+                outputs = tuple(
+                    cast(str, item["path"])
+                    for item in cast(
+                        list[dict[str, object]], command.get("outputs", [])
+                    )
+                )
+                commands.append(
+                    ValidationAdmissionCommand(
+                        cast(str, command.get("identity", group_id)),
+                        group_id,
+                        entry,
+                        outputs,
+                    )
+                )
+            for finding in cast(list[dict[str, object]], group.get("findings", [])):
+                findings.append(
+                    ValidationAdmissionFinding(
+                        cast(str, finding["identity"]),
+                        group_id,
+                        cast(str, finding["status"]),
+                        cast(str, finding["admission_effect"]),
+                        tuple(cast(list[str], finding["affected_chains"])),
+                        tuple(cast(list[str], finding["affected_entries"])),
+                    )
+                )
+    return ValidationAdmission(
+        "fixture-validation",
+        "fixture-result",
+        tuple(groups),
+        tuple(commands),
+        tuple(findings),
+    )
+
+
 class _Fixture:
     def __init__(self, root: Path):
         subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
@@ -92,9 +156,7 @@ class _Fixture:
         root = self.log_root / "entries" / f"2026-09-{number:02d}-{entry_id}-study"
         (root / "data").mkdir(parents=True)
         (root / "scripts").mkdir()
-        relative = (
-            Path("study") / "entries" / root.name / f"{entry_id}.md"
-        ).as_posix()
+        relative = (Path("study") / "entries" / root.name / f"{entry_id}.md").as_posix()
         with self.summary.open("a", encoding="utf-8") as handle:
             handle.write(f"\n- [Fixture]({relative})\n")
         return EntryContext(self.log, entry_id, root.resolve())
@@ -129,15 +191,11 @@ class _Fixture:
         artifacts = []
         for number, name in enumerate(names, 1):
             location = locations[name]
-            artifacts.append(
-                f"[artifact]({location})<!-- eid:result-{number} -->"
-            )
+            artifacts.append(f"[artifact]({location})<!-- eid:result-{number} -->")
         document.write_text(
             "# Entry\n\n## Evidence\n\n`Background:`\n\n"
             "Fixture evidence.\n\n`Steps:`\n\nInspect retained output.\n\n"
-            "`Results:`\n\n"
-            + "\n".join(artifacts)
-            + "\n",
+            "`Results:`\n\n" + "\n".join(artifacts) + "\n",
             encoding="utf-8",
         )
         _write_json(
@@ -225,8 +283,7 @@ class _Fixture:
             command += " --auto-reproduce=false --"
         command += " scripts/{name}.py".format(name=name)
         command += "".join(
-            f" --input-data '<{input_name}>'"
-            for input_name in sorted(inputs)
+            f" --input-data '<{input_name}>'" for input_name in sorted(inputs)
         )
         command += "".join(
             f" --output-data '<{output_name}>'"
@@ -235,9 +292,7 @@ class _Fixture:
         document.write_text(
             document.read_text(encoding="utf-8")
             + f"\n## {name}\n\n`Background:`\n\nFixture command.\n\n"
-            "`Steps:`\n\n```bash\n"
-            + command
-            + "\n```\n\n`Results:`\n\nRecorded.\n",
+            "`Steps:`\n\n```bash\n" + command + "\n```\n\n`Results:`\n\nRecorded.\n",
             encoding="utf-8",
         )
         return execution_id(recipe), execution
@@ -262,12 +317,46 @@ def _plan(
     runtime: ReproductionRuntime = ReproductionRuntime(),
 ):
     from log_commands.reproduction_planner import prepare_reproduction_context
-
-    prepared = prepare_reproduction_context(
-        evaluate_mechanical(
-            EvaluationRequest(fixture.summary, "2026-09-01", FullEvaluationTarget())
-        )
+    from validation.batch_projection import build_batch_projection
+    from validation.result_storage import (
+        ValidationPublicationRequest,
+        load_validation_admission,
+        publish_validation_result,
     )
+
+    evaluation = evaluate_mechanical(
+        EvaluationRequest(fixture.summary, "2026-09-01", FullEvaluationTarget())
+    )
+    if evaluation.record.completion.value == "incomplete":
+        return plan_reproduction(
+            fixture.log,
+            prepare_reproduction_context(
+                evaluation, _stored_admission({"chains": [], "unresolved": []})
+            ),
+            entry=entry,
+            include_all=include_all,
+            runtime=runtime,
+            selection=ReproductionSelection(
+                RECHECK_SELECTION if recheck else "incremental"
+            ),
+        )
+    projection = build_batch_projection(
+        evaluation.record,
+        invocations=evaluation.context.invocations,
+        registries=evaluation.context.registries,
+        source_identity="fixture-source",
+    )
+    result_path = fixture.log_root / ".cache" / "results.sqlite"
+    if result_path.exists() or result_path.is_symlink():
+        admission = _stored_admission(projection)
+    else:
+        stored = publish_validation_result(
+            ValidationPublicationRequest(
+                fixture.log_root, evaluation.record, projection
+            )
+        )
+        admission = load_validation_admission(fixture.log_root, stored.result_id)
+    prepared = prepare_reproduction_context(evaluation, admission)
     return plan_reproduction(
         fixture.log,
         prepared,
@@ -281,14 +370,14 @@ def _plan(
 
 
 def _admission(fixture: _Fixture) -> dict[str, object]:
-    path = fixture.log_root / ".cache" / "validation" / "results.json"
+    path = fixture.log_root / ".cache" / "results.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("fixture\n", encoding="utf-8")
     digest, _ = research_source_projection(fixture.summary)
     return {
         "result_date": "2026-09-06",
         "result_digest": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "result_path": ".cache/validation/results.json",
+        "result_path": ".cache/results.sqlite",
         "rules_version": "fixture/1",
         "source_projection_digest": digest,
     }
@@ -311,17 +400,51 @@ def _seed_command_results(
         )
         for value in plan.commands
     )
-    path = fixture.log_root / ".cache" / "reproduction" / "results.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        ReproductionResults(
+    run_id = "reproduce-20260906t000000z-seed"
+    counts = {
+        "not_automatic": 0,
+        "reproduction_not_needed": 0,
+        "unchanged_failed": 0,
+        "unchanged_blocked": 0,
+        "succeeded": sum(item.disposition == "succeeded" for item in commands),
+        "failed": sum(item.disposition == "failed" for item in commands),
+        "blocked": sum(item.disposition == "blocked" for item in commands),
+        "total": len(commands),
+    }
+    run = RunResult(
+        run_id,
+        {"entry": None, "kind": "log"},
+        False,
+        "complete",
+        "2026-09-06T00:00:00Z",
+        "2026-09-06T00:01:00Z",
+        {
+            name: 0
+            for name in (
+                "matched",
+                "changed",
+                "failed",
+                "comparison_failed",
+                "skipped",
+            )
+        },
+        RunFolder(
+            "tmp/reproduction/2026-09-06/reproduce-20260906t000000z-seed",
+            "unknown",
+        ),
+        (),
+        counts,
+    )
+    publish_reproduction_results(
+        fixture.log_root / RESULTS_STORE,
+        ReproductionPublicationRequest(
             "docs/study.md",
-            "2026-09-06T00:01:00Z",
-            (),
+            run,
             (),
             commands,
-        ).serialized(),
-        encoding="utf-8",
+            tuple((item.entry, item.execution_id) for item in commands),
+            (),
+        ),
     )
     if disposition == "succeeded":
         selected = {
@@ -425,8 +548,12 @@ def _write_projection(
 class ReproductionPlanningTests(unittest.TestCase):
     def test_execution_timeout_must_be_within_the_fixed_bound(self) -> None:
         for value in (0, 604_801, True):
-            with self.subTest(value=value), self.assertRaisesRegex(
-                ActionError, "--execution-timeout-seconds must be between 1 and 604800"
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    ActionError,
+                    "--execution-timeout-seconds must be between 1 and 604800",
+                ),
             ):
                 plan_reproduction(
                     mock.sentinel.log,
@@ -470,9 +597,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 plan = _plan(fixture, entry)
 
             self.assertEqual(plan.executions, ())
-            self.assertEqual(
-                plan.commands[0]["selection"], "not_needed"
-            )
+            self.assertEqual(plan.commands[0]["selection"], "not_needed")
 
     def test_batch_admission_keeps_independent_work_and_blocks_dependents(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -580,7 +705,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 _apply_validation_admission,
             )
 
-            _apply_validation_admission(state, projection)
+            _apply_validation_admission(state, _stored_admission(projection))
             _apply_cycle_and_dependency_failures(state)
 
             self.assertEqual(
@@ -660,7 +785,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             from log_commands.reproduction_planner import _apply_validation_admission
 
-            _apply_validation_admission(state, projection)
+            _apply_validation_admission(state, _stored_admission(projection))
 
             self.assertEqual(state.blocked, {("e001", "blocked")})
             self.assertEqual(state.admitted_batches, {("e002", "independent-chain")})
@@ -740,7 +865,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             from log_commands.reproduction_planner import _apply_validation_admission
 
-            _apply_validation_admission(state, projection)
+            _apply_validation_admission(state, _stored_admission(projection))
 
             self.assertEqual(state.blocked, {("e001", "blocked")})
             self.assertEqual(state.admitted_batches, {("e001", "admitted-chain")})
@@ -791,7 +916,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             from log_commands.reproduction_planner import _apply_validation_admission
 
-            _apply_validation_admission(state, projection)
+            _apply_validation_admission(state, _stored_admission(projection))
 
             self.assertEqual(state.admitted_batches, {("e001", "producer-chain")})
 
@@ -865,7 +990,8 @@ class ReproductionPlanningTests(unittest.TestCase):
 
                     with self.assertRaisesRegex(ActionError, expected):
                         _apply_validation_admission(
-                            state, {"chains": chains, "unresolved": []}
+                            state,
+                            _stored_admission({"chains": chains, "unresolved": []}),
                         )
 
     def test_unknown_selection_policy_is_rejected_before_planning(self) -> None:
@@ -1226,21 +1352,15 @@ class ReproductionPlanningTests(unittest.TestCase):
                 ),
                 "current",
             )
-            commands = {
-                value["execution_id"]: value
-                for value in plan.commands
-            }
-            self.assertEqual(
-                commands[current[0]]["selection"], "not_needed"
-            )
+            commands = {value["execution_id"]: value for value in plan.commands}
+            self.assertEqual(commands[current[0]]["selection"], "not_needed")
             self.assertFalse(commands[current[0]]["queued"])
             self.assertEqual(
                 [value["execution_id"] for value in recheck.executions],
                 [upstream[0]],
             )
             rechecked_commands = {
-                value["execution_id"]: value
-                for value in recheck.commands
+                value["execution_id"]: value for value in recheck.commands
             }
             self.assertEqual(rechecked_commands[current[0]]["selection"], "policy")
             self.assertIsNone(rechecked_commands[current[0]]["source_digest"])
@@ -1362,9 +1482,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     ("data/independent.txt", "run", None),
                 },
             )
-            snapshotted = {
-                value["execution_id"] for value in plan.executions
-            }
+            snapshotted = {value["execution_id"] for value in plan.executions}
             self.assertNotIn(upstream[0], snapshotted)
             self.assertIn(independent[0], snapshotted)
 
@@ -1569,7 +1687,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 last_run_at="2026-09-06T00:00:00Z",
             )
             fixture.write_pyrun(entry, [execution])
-            result_path = fixture.log_root / ".cache" / "reproduction" / "results.json"
+            result_path = fixture.log_root / ".cache" / "results.sqlite"
             stored = {
                 "artifacts": [
                     {
@@ -1622,11 +1740,12 @@ class ReproductionPlanningTests(unittest.TestCase):
                         "target": {"entry": entry.id, "kind": "entry"},
                     }
                 ],
-                "schema": "research-log-reproduction-result/8",
                 "summary": "docs/study.md",
                 "updated_at": "2026-09-06T00:01:00Z",
             }
-            _write_json(result_path, stored)
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(result_path) as database:
+                database.execute("PRAGMA user_version=999")
 
             with self.assertRaises(ActionError) as caught:
                 _plan(fixture, entry)
@@ -1644,7 +1763,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 [execution[0]],
             )
             snapshot = first.commands[0]
-            stored["schema"] = "research-log-reproduction-result/9"
+            result_path.unlink()
             stored["runs"][0]["command_records"] = None
             commands = [
                 {
@@ -1676,7 +1795,68 @@ class ReproductionPlanningTests(unittest.TestCase):
                             "regenerated": _fingerprint(final).as_dict(),
                         }
                     commands[0]["disposition"] = disposition
-                    _write_json(result_path, stored)
+                    stored_run = stored["runs"][0]
+                    run = RunResult(
+                        cast(str, stored_run["run_id"]),
+                        cast(Mapping[str, object], stored_run["target"]),
+                        cast(bool, stored_run["include_all"]),
+                        cast(str, stored_run["status"]),
+                        cast(str, stored_run["accepted_at"]),
+                        cast(str | None, stored_run["finished_at"]),
+                        cast(Mapping[str, int], stored_run["artifact_outcomes"]),
+                        RunFolder(
+                            cast(Mapping[str, str], stored_run["folder"])["path"],
+                            cast(Mapping[str, str], stored_run["folder"])[
+                                "availability"
+                            ],
+                        ),
+                        (),
+                        cast(Mapping[str, int], stored_run["command_outcomes"]),
+                    )
+                    artifacts = tuple(
+                        ArtifactResult(
+                            cast(str, item["entry"]),
+                            cast(str, item["artifact"]),
+                            cast(str | None, item["execution_id"]),
+                            cast(str, item["outcome"]),
+                            cast(str | None, item["reason"]),
+                            cast(str, item["recorded_at"]),
+                            cast(str, item["run_id"]),
+                            None,
+                        )
+                        for item in cast(
+                            list[Mapping[str, object]], stored["artifacts"]
+                        )
+                    )
+                    command_rows = tuple(
+                        CommandResult(
+                            cast(str, item["entry"]),
+                            cast(str, item["execution_id"]),
+                            cast(str, item["disposition"]),
+                            cast(str, item["source_digest"]),
+                            cast(str, item["recorded_at"]),
+                            cast(str, item["run_id"]),
+                        )
+                        for item in commands
+                    )
+                    publish_reproduction_results(
+                        result_path,
+                        ReproductionPublicationRequest(
+                            "docs/study.md",
+                            run,
+                            artifacts,
+                            command_rows,
+                            tuple(
+                                (item.entry, item.execution_id)
+                                for item in command_rows
+                            ),
+                            tuple(
+                                (item.entry, item.artifact)
+                                for item in artifacts
+                                if item.execution_id is None
+                            ),
+                        ),
+                    )
 
                     second = _plan(fixture, entry)
 
@@ -1991,8 +2171,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 {upstream[0], downstream[0]},
             )
             selections = {
-                value["execution_id"]: value["selection"]
-                for value in plan.commands
+                value["execution_id"]: value["selection"] for value in plan.commands
             }
             self.assertEqual(selections[independent[0]], "not_needed")
 
@@ -2091,28 +2270,93 @@ class ReproductionPlanningTests(unittest.TestCase):
     def test_validation_admission_allows_only_unconfirmed_provenance(self) -> None:
         """Published-validation admission was removed by fixed preparation.
 
-        The direct batch-projection admission cases above retain the scoped
-        blocker behavior without treating a published result as authority.
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            fixture.entry(1)
-            unconfirmed = MechanicalCheck(
-                "provenance:e001:result",
-                CheckScope.PROVENANCE,
-                CheckStatus.FAIL,
-                "/result.csv",
-                failure=FailurePayload(
-                    "provenance.output.reproduction_required",
+            The direct batch-projection admission cases above retain the scoped
+            blocker behavior without treating a published result as authority.
+            with tempfile.TemporaryDirectory() as directory:
+                fixture = _Fixture(Path(directory))
+                fixture.entry(1)
+                unconfirmed = MechanicalCheck(
+                    "provenance:e001:result",
+                    CheckScope.PROVENANCE,
+                    CheckStatus.FAIL,
                     "/result.csv",
-                    {"output": "data/result.csv", "producer": "fixture"},
-                    "Pyrun Output Support Records",
-                ),
-            )
-            record = MechanicalGeneratedRecord.build(
-                fixture.summary.resolve().as_posix(),
-                RULES_VERSION,
-                "2026-09-06",
-                (
+                    failure=FailurePayload(
+                        "provenance.output.reproduction_required",
+                        "/result.csv",
+                        {"output": "data/result.csv", "producer": "fixture"},
+                        "Pyrun Output Support Records",
+                    ),
+                )
+                record = MechanicalGeneratedRecord.build(
+                    fixture.summary.resolve().as_posix(),
+                    RULES_VERSION,
+                    "2026-09-06",
+                    (
+                        MechanicalCheck(
+                            "conformance:log",
+                            CheckScope.CONFORMANCE,
+                            CheckStatus.PASS,
+                            "conformance:log",
+                        ),
+                        MechanicalCheck(
+                            "evidence:e001:result",
+                            CheckScope.EVIDENCE,
+                            CheckStatus.PASS,
+                            "evidence:e001:result",
+                        ),
+                        unconfirmed,
+                    ),
+                )
+                path = fixture.log_root / ".cache" / "validation" / "results.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(record.canonical_json() + "\n", encoding="utf-8")
+                _write_projection(
+                    fixture,
+                    record,
+                    unresolved=[
+                        {
+                            "chain_id": "unresolved-unconfirmed",
+                            "entry": "e001",
+                            "findings": [
+                                {
+                                    "admission_effect": "none",
+                                    "affected_chains": [],
+                                    "affected_entries": [],
+                                    "code": "provenance.output.reproduction_required",
+                                    "dependencies": [],
+                                    "identity": unconfirmed.identity,
+                                    "observed": dict(unconfirmed.failure.observed),
+                                    "rule": unconfirmed.failure.rule,
+                                    "scope": "provenance",
+                                    "status": "fail",
+                                    "subject": unconfirmed.subject,
+                                }
+                            ],
+                            "reason": "finding_scope_unresolved",
+                        }
+                    ],
+                )
+
+                with mock.patch(
+                    "log_commands.reproduction_planner.evaluate_current_record",
+                    return_value=record,
+                ):
+                    snapshot, admitted, projection = _admit_validation(fixture.log)
+
+                self.assertEqual(admitted, record)
+                self.assertEqual(snapshot["rules_version"], RULES_VERSION)
+                self.assertEqual(
+                    projection["schema"], "research-log-published-validation/2"
+                )
+
+        def test_validation_admission_blocks_graph_failure_beside_unconfirmed(
+            self,
+        ) -> None:
+            with tempfile.TemporaryDirectory() as directory:
+                fixture = _Fixture(Path(directory))
+                fixture.entry(1)
+                artifact = "/result.csv"
+                checks = (
                     MechanicalCheck(
                         "conformance:log",
                         CheckScope.CONFORMANCE,
@@ -2125,152 +2369,90 @@ class ReproductionPlanningTests(unittest.TestCase):
                         CheckStatus.PASS,
                         "evidence:e001:result",
                     ),
-                    unconfirmed,
-                ),
-            )
-            path = fixture.log_root / ".cache" / "validation" / "results.json"
-            path.parent.mkdir(parents=True)
-            path.write_text(record.canonical_json() + "\n", encoding="utf-8")
-            _write_projection(
-                fixture,
-                record,
-                unresolved=[
-                    {
-                        "chain_id": "unresolved-unconfirmed",
-                        "entry": "e001",
-                        "findings": [
-                            {
-                                "admission_effect": "none",
-                                "affected_chains": [],
-                                "affected_entries": [],
-                                "code": "provenance.output.reproduction_required",
-                                "dependencies": [],
-                                "identity": unconfirmed.identity,
-                                "observed": dict(unconfirmed.failure.observed),
-                                "rule": unconfirmed.failure.rule,
-                                "scope": "provenance",
-                                "status": "fail",
-                                "subject": unconfirmed.subject,
-                            }
-                        ],
-                        "reason": "finding_scope_unresolved",
-                    }
-                ],
-            )
-
-            with mock.patch(
-                "log_commands.reproduction_planner.evaluate_current_record",
-                return_value=record,
-            ):
-                snapshot, admitted, projection = _admit_validation(fixture.log)
-
-            self.assertEqual(admitted, record)
-            self.assertEqual(snapshot["rules_version"], RULES_VERSION)
-            self.assertEqual(
-                projection["schema"], "research-log-published-validation/2"
-            )
-
-    def test_validation_admission_blocks_graph_failure_beside_unconfirmed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            fixture.entry(1)
-            artifact = "/result.csv"
-            checks = (
-                MechanicalCheck(
-                    "conformance:log",
-                    CheckScope.CONFORMANCE,
-                    CheckStatus.PASS,
-                    "conformance:log",
-                ),
-                MechanicalCheck(
-                    "evidence:e001:result",
-                    CheckScope.EVIDENCE,
-                    CheckStatus.PASS,
-                    "evidence:e001:result",
-                ),
-                MechanicalCheck(
-                    "provenance:e001:result",
-                    CheckScope.PROVENANCE,
-                    CheckStatus.FAIL,
-                    artifact,
-                    ({"artifacts": [artifact]},),
-                    FailurePayload(
-                        "lineage.missing",
+                    MechanicalCheck(
+                        "provenance:e001:result",
+                        CheckScope.PROVENANCE,
+                        CheckStatus.FAIL,
                         artifact,
-                        {"consumer": "fixture"},
-                        "Recorded-Command Provenance And Material Graph",
+                        ({"artifacts": [artifact]},),
+                        FailurePayload(
+                            "lineage.missing",
+                            artifact,
+                            {"consumer": "fixture"},
+                            "Recorded-Command Provenance And Material Graph",
+                        ),
                     ),
-                ),
-                MechanicalCheck(
-                    "provenance:e001:result:finding:1",
-                    CheckScope.PROVENANCE,
-                    CheckStatus.FAIL,
-                    artifact,
-                    ({"artifacts": [artifact]},),
-                    FailurePayload(
-                        "provenance.output.reproduction_required",
+                    MechanicalCheck(
+                        "provenance:e001:result:finding:1",
+                        CheckScope.PROVENANCE,
+                        CheckStatus.FAIL,
                         artifact,
-                        {"output": "data/result.csv", "producer": "fixture"},
-                        "Pyrun Output Support Records",
+                        ({"artifacts": [artifact]},),
+                        FailurePayload(
+                            "provenance.output.reproduction_required",
+                            artifact,
+                            {"output": "data/result.csv", "producer": "fixture"},
+                            "Pyrun Output Support Records",
+                        ),
                     ),
-                ),
-            )
-            record = MechanicalGeneratedRecord.build(
-                fixture.summary.resolve().as_posix(),
-                RULES_VERSION,
-                "2026-09-06",
-                checks,
-            )
-            path = fixture.log_root / ".cache" / "validation" / "results.json"
-            path.parent.mkdir(parents=True)
-            path.write_text(record.canonical_json() + "\n", encoding="utf-8")
-            blocking = checks[2]
-            assert blocking.failure is not None
-            _write_projection(
-                fixture,
-                record,
-                unresolved=[
-                    {
-                        "chain_id": "unresolved-blocked",
-                        "entry": "log",
-                        "findings": [
-                            {
-                                "admission_effect": "log",
-                                "affected_chains": [],
-                                "affected_entries": [],
-                                "code": blocking.failure.code,
-                                "dependencies": [],
-                                "identity": blocking.identity,
-                                "observed": dict(blocking.failure.observed),
-                                "rule": blocking.failure.rule,
-                                "scope": "provenance",
-                                "status": "fail",
-                                "subject": blocking.subject,
-                            }
-                        ],
-                        "reason": "finding_scope_unresolved",
-                    }
-                ],
-            )
-
-            with mock.patch(
-                "log_commands.reproduction_planner.evaluate_current_record",
-                return_value=record,
-            ):
-                _snapshot, _record, projection = _admit_validation(fixture.log)
-            state = mock.Mock()
-            state.selected = {}
-            state.blocked = set()
-            state.admitted_batches = set()
-            state.excluded_batches = {}
-            with self.assertRaisesRegex(ActionError, "no safe batch scope"):
-                from log_commands.reproduction_planner import (
-                    _apply_validation_admission,
+                )
+                record = MechanicalGeneratedRecord.build(
+                    fixture.summary.resolve().as_posix(),
+                    RULES_VERSION,
+                    "2026-09-06",
+                    checks,
+                )
+                path = fixture.log_root / ".cache" / "validation" / "results.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(record.canonical_json() + "\n", encoding="utf-8")
+                blocking = checks[2]
+                assert blocking.failure is not None
+                _write_projection(
+                    fixture,
+                    record,
+                    unresolved=[
+                        {
+                            "chain_id": "unresolved-blocked",
+                            "entry": "log",
+                            "findings": [
+                                {
+                                    "admission_effect": "log",
+                                    "affected_chains": [],
+                                    "affected_entries": [],
+                                    "code": blocking.failure.code,
+                                    "dependencies": [],
+                                    "identity": blocking.identity,
+                                    "observed": dict(blocking.failure.observed),
+                                    "rule": blocking.failure.rule,
+                                    "scope": "provenance",
+                                    "status": "fail",
+                                    "subject": blocking.subject,
+                                }
+                            ],
+                            "reason": "finding_scope_unresolved",
+                        }
+                    ],
                 )
 
-                _apply_validation_admission(state, projection)
+                with mock.patch(
+                    "log_commands.reproduction_planner.evaluate_current_record",
+                    return_value=record,
+                ):
+                    _snapshot, _record, projection = _admit_validation(fixture.log)
+                state = mock.Mock()
+                state.selected = {}
+                state.blocked = set()
+                state.admitted_batches = set()
+                state.excluded_batches = {}
+                with self.assertRaisesRegex(ActionError, "no safe batch scope"):
+                    from log_commands.reproduction_planner import (
+                        _apply_validation_admission,
+                    )
+
+                    _apply_validation_admission(state, _stored_admission(projection))
 
         """
+
     def test_equal_execution_ids_in_distinct_entries_remain_distinct_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))

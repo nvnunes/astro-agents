@@ -11,7 +11,7 @@ from typing import Mapping, Sequence, cast
 from research_log_data import DataContractError, parse_fingerprint
 from research_log_paths import (
     REPRODUCTION_REPORT,
-    REPRODUCTION_RESULTS,
+    RESULTS_STORE,
 )
 from validation.human_projection import load_report_context
 from validation.operation_state import OperationLockError, operation_lock
@@ -37,6 +37,13 @@ from .reproduction_planner import (
     project_reproduction_command_inventory,
     project_reproduction_state,
 )
+from .reproduction_result_storage import (
+    ReproductionPublicationRequest,
+    ReproductionStorageError,
+    initialize_empty_reproduction_results,
+    load_reproduction_report_projection,
+    publish_reproduction_results,
+)
 from .reproduction_results import (
     OUTCOMES,
     ArtifactResult,
@@ -48,12 +55,7 @@ from .reproduction_results import (
     RunFolder,
     RunResult,
     compose_reproduction_report,
-    empty_reproduction_results,
-    load_reproduction_results,
-    load_results_or_empty,
-    merge_reproduction_results,
     project_current_results,
-    reconcile_run_folders,
 )
 from .storage import PublicationError, atomic_write_texts
 
@@ -84,16 +86,22 @@ def verify_publication_retry_compatibility(
 ) -> None:
     """Reject a partial publication retry against outdated generated results."""
 
-    path = log.root / REPRODUCTION_RESULTS
+    path = log.root / RESULTS_STORE
     if not path.exists() and not path.is_symlink():
         return
     try:
-        load_reproduction_results(path)
+        load_reproduction_report_projection(path)
     except ReproductionResultSchemaError as error:
         if not _replaces_outdated_results(plan):
             raise ActionError(
                 "reproduction.results.schema_unsupported", str(error)
             ) from error
+    except ReproductionStorageError as error:
+        # A failed first publication may already have initialized the shared
+        # database for validation without committing any reproduction rows.
+        if str(error) == "reproduction result is absent":
+            return
+        raise ActionError("reproduction.results.invalid", str(error)) from error
     except ReproductionResultError as error:
         raise ActionError("reproduction.results.invalid", str(error)) from error
 
@@ -119,15 +127,8 @@ def publish_completed_reproduction(
                 project_root,
                 project_reproduction_command_inventory(log, request.plan.target),
             )
-            result_path = log.root / REPRODUCTION_RESULTS
+            result_path = log.root / RESULTS_STORE
             summary = log.summary.resolve().relative_to(project_root).as_posix()
-            current = load_results_or_empty(
-                result_path,
-                summary=summary,
-                updated_at=request.finished_at,
-                replace_outdated=_replaces_outdated_results(request.plan),
-            )
-            current = reconcile_run_folders(current, project_root=project_root)
             state_projection = project_reproduction_state(log)
             snapshots = command_snapshot_index(request.plan)
             state_projection = replace(
@@ -147,28 +148,79 @@ def publish_completed_reproduction(
                         for case in request.plan.cases
                     ),
                 )
-            merged = merge_reproduction_results(
-                current,
-                artifacts,
-                run,
-                commands=commands,
-                state=state_projection,
-            )
-            projected, currentness = project_current_results(merged, state_projection)
             context = load_report_context(log.summary)
-            report = compose_reproduction_report(
-                projected,
-                context=context,
-                currentness=currentness,
-                folder_links_from=log.root,
+            from research_log_result_store import (
+                record_report_materialization,
+                results_lock,
             )
-            updates: dict[Path, str | None] = {
-                result_path: merged.serialized(),
-                log.root / REPRODUCTION_REPORT: report,
-            }
-            atomic_write_texts(updates)
-    except (OperationLockError, OSError, PublicationError) as error:
-        raise ActionError("reproduction.publication.failed", str(error)) from error
+
+            with results_lock(log.root):
+                generation = publish_reproduction_results(
+                    result_path,
+                    ReproductionPublicationRequest(
+                        summary,
+                        run,
+                        artifacts,
+                        commands,
+                        tuple((item.entry, item.execution_id) for item in commands),
+                        tuple(
+                            (item.entry, item.artifact)
+                            for item in artifacts
+                            if item.execution_id is None
+                        ),
+                    ),
+                )
+                merged = load_reproduction_report_projection(
+                    result_path, project_root=project_root
+                )
+                projected, currentness = project_current_results(
+                    merged, state_projection
+                )
+                try:
+                    report = compose_reproduction_report(
+                        projected,
+                        context=context,
+                        currentness=currentness,
+                        folder_links_from=log.root,
+                    )
+                except Exception as error:
+                    raise ActionError(
+                        "results.report.render_failed",
+                        f"committed reproduction generation {generation}: {error}",
+                    ) from error
+                try:
+                    atomic_write_texts({log.root / REPRODUCTION_REPORT: report})
+                except (OSError, PublicationError) as error:
+                    raise ActionError(
+                        "results.report.write_failed",
+                        f"committed reproduction generation {generation}: {error}",
+                    ) from error
+                try:
+                    record_report_materialization(
+                        log.root,
+                        "reproduction",
+                        report.encode(),
+                        expected_generation=generation,
+                    )
+                except Exception as error:
+                    raise ActionError(
+                        "results.report.write_failed",
+                        f"committed reproduction generation {generation}; report marker is stale: {error}",  # noqa: E501
+                    ) from error
+    except ActionError:
+        raise
+    except (
+        OperationLockError,
+        OSError,
+        PublicationError,
+        ReproductionStorageError,
+    ) as error:
+        code = (
+            error.code
+            if isinstance(error, ReproductionStorageError)
+            else "reproduction.publication.failed"
+        )
+        raise ActionError(code, str(error)) from error
     return PublishedReproduction(merged, report)
 
 
@@ -183,11 +235,11 @@ def empty_reproduction_recovery_needed(log: LogContext, plan: ReproductionPlan) 
         or plan.boundaries
     ):
         return False
-    path = log.root / REPRODUCTION_RESULTS
+    path = log.root / RESULTS_STORE
     if not path.exists() and not path.is_symlink():
         return False
     try:
-        load_reproduction_results(path)
+        load_reproduction_report_projection(path)
     except ReproductionResultSchemaError:
         return True
     except ReproductionResultError as error:
@@ -210,22 +262,57 @@ def recover_empty_reproduction_results(
                 return False
             if not empty_reproduction_recovery_needed(log, plan):
                 return False
-            path = log.root / REPRODUCTION_RESULTS
+            path = log.root / RESULTS_STORE
             project = resolve_project_root(log.root)
-            results = empty_reproduction_results(
-                log.summary.resolve().relative_to(project).as_posix(),
-                updated_at=updated_at,
+            summary = log.summary.resolve().relative_to(project).as_posix()
+            context = load_report_context(log.summary)
+            from research_log_result_store import (
+                record_report_materialization,
+                results_lock,
             )
-            report = compose_reproduction_report(
-                results,
-                context=load_report_context(log.summary),
-                folder_links_from=log.root,
-            )
-            atomic_write_texts(
-                {path: results.serialized(), log.root / REPRODUCTION_REPORT: report}
-            )
+
+            with results_lock(log.root):
+                generation = initialize_empty_reproduction_results(
+                    path, summary=summary, updated_at=updated_at
+                )
+                stored = load_reproduction_report_projection(path, project_root=project)
+                try:
+                    report = compose_reproduction_report(
+                        stored,
+                        context=context,
+                        folder_links_from=log.root,
+                    )
+                except Exception as error:
+                    raise ActionError(
+                        "results.report.render_failed",
+                        f"committed reproduction generation {generation}: {error}",
+                    ) from error
+                try:
+                    atomic_write_texts({log.root / REPRODUCTION_REPORT: report})
+                except (OSError, PublicationError) as error:
+                    raise ActionError(
+                        "results.report.write_failed",
+                        f"committed reproduction generation {generation}: {error}",
+                    ) from error
+                try:
+                    record_report_materialization(
+                        log.root,
+                        "reproduction",
+                        report.encode(),
+                        expected_generation=generation,
+                    )
+                except Exception as error:
+                    raise ActionError(
+                        "results.report.write_failed",
+                        f"committed reproduction generation {generation}; report marker is stale: {error}",  # noqa: E501
+                    ) from error
             return True
-    except (OperationLockError, OSError, PublicationError) as error:
+    except (
+        OperationLockError,
+        OSError,
+        PublicationError,
+        ReproductionStorageError,
+    ) as error:
         raise ActionError("reproduction.publication.failed", str(error)) from error
 
 

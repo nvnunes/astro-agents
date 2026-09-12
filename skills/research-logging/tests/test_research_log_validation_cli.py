@@ -264,7 +264,7 @@ class ValidationCliTests(unittest.TestCase):
                 self.assertNotIn("record", result)
                 self.assertEqual(
                     result["generated"]["mechanical"],
-                    (summary.with_suffix("") / ".cache/validation/results.json")
+                    (summary.with_suffix("") / ".cache/results.sqlite")
                     .resolve()
                     .as_posix(),
                 )
@@ -299,8 +299,7 @@ class ValidationCliTests(unittest.TestCase):
             bundle = tuple(
                 path.read_bytes()
                 for path in (
-                    log / ".cache/validation/results.json",
-                    log / ".cache/validation/batches.json",
+                    log / ".cache/results.sqlite",
                     log / "validation.md",
                 )
             )
@@ -318,17 +317,37 @@ class ValidationCliTests(unittest.TestCase):
 
             self.assertEqual(entry.returncode, 0, entry.stderr)
             self.assertFalse(json.loads(entry.stdout)["published"])
-            self.assertEqual(
-                bundle,
-                tuple(
-                    path.read_bytes()
-                    for path in (
-                        log / ".cache/validation/results.json",
-                        log / ".cache/validation/batches.json",
-                        log / "validation.md",
-                    )
-                ),
+            # A completed entry is retained in its own slot without replacing
+            # the full publication or its derived report.
+            self.assertEqual(bundle[1], (log / "validation.md").read_bytes())
+            full_rows = run_log(
+                root,
+                "results",
+                "list",
+                "--path",
+                str(log),
+                "--kind",
+                "full",
+                "--format",
+                "json",
             )
+            self.assertEqual(full_rows.returncode, 0, full_rows.stderr)
+            self.assertEqual(json.loads(full_rows.stdout)["total"], 1)
+            entry_rows = run_log(
+                root,
+                "results",
+                "list",
+                "--path",
+                str(log),
+                "--kind",
+                "entry",
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+            )
+            self.assertEqual(entry_rows.returncode, 0, entry_rows.stderr)
+            self.assertEqual(json.loads(entry_rows.stdout)["total"], 1)
 
     def test_entry_finding_dry_run_and_failure_preserve_full_bundle(self) -> None:
         """Every non-publishing entry outcome leaves the authoritative bundle intact."""
@@ -340,8 +359,7 @@ class ValidationCliTests(unittest.TestCase):
             published = run_log(root, "validate", "--path", str(log))
             self.assertEqual(published.returncode, 0, published.stderr)
             paths = (
-                log / ".cache/validation/results.json",
-                log / ".cache/validation/batches.json",
+                log / ".cache/results.sqlite",
                 log / "validation.md",
             )
             original = {path: (path.stat().st_ino, path.read_bytes()) for path in paths}
@@ -381,8 +399,7 @@ class ValidationCliTests(unittest.TestCase):
             published = run_log(root, "validate", "--path", str(log))
             self.assertEqual(published.returncode, 0, published.stderr)
             paths = (
-                log / ".cache/validation/results.json",
-                log / ".cache/validation/batches.json",
+                log / ".cache/results.sqlite",
                 log / "validation.md",
             )
             before = {path: (path.stat().st_ino, path.read_bytes()) for path in paths}
@@ -435,14 +452,14 @@ class ValidationCliTests(unittest.TestCase):
             root = Path(directory)
             summary, _ = mechanical_log(root)
             log = summary.with_suffix("")
+            published = run_log(root, "validate", "--path", str(log))
+            self.assertEqual(published.returncode, 0, published.stderr)
             bundle = {
-                log / ".cache/validation/results.json": b"full results\n",
-                log / ".cache/validation/batches.json": b"full batches\n",
-                log / "validation.md": b"full report\n",
+                log / ".cache/results.sqlite": (
+                    log / ".cache/results.sqlite"
+                ).read_bytes(),
+                log / "validation.md": (log / "validation.md").read_bytes(),
             }
-            for path, content in bundle.items():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
             with mock.patch(
                 "validation.controller.research_snapshot",
                 side_effect=[(("first", (1,)),), (("changed", (2,)),)],
@@ -528,10 +545,7 @@ class ValidationCliTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         (
-                            good_summary.with_suffix("")
-                            / ".cache"
-                            / "validation"
-                            / "results.json"
+                            good_summary.with_suffix("") / ".cache" / "results.sqlite"
                         ).is_file(),
                         not dry_run,
                     )

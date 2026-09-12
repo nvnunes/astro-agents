@@ -107,8 +107,7 @@ class LogInitTests(unittest.TestCase):
             initialized = initialize(root, logical)
             self.assertEqual(initialized, logical)
             self.assertEqual(
-                sorted(path.name for path in logical.iterdir()),
-                [".cache", "entries", "reproduction.md"],
+                sorted(path.name for path in logical.iterdir()), ["entries"]
             )
             self.assertEqual(list((logical / "entries").iterdir()), [])
             summary = logical.with_suffix(".md").read_text(encoding="utf-8")
@@ -119,18 +118,8 @@ class LogInitTests(unittest.TestCase):
             )
             self.assertIn("\n## Entries\n\n## Summary\n", summary)
             self.assertTrue(summary.endswith(scaffold.AI_DISCLOSURE + "\n"))
-            results = json.loads(
-                (logical / ".cache/reproduction/results.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(results["artifacts"], [])
-            self.assertEqual(results["commands"], [])
-            self.assertEqual(results["runs"], [])
-            self.assertEqual(results["schema"], "research-log-reproduction-result/10")
-            report = (logical / "reproduction.md").read_text(encoding="utf-8")
-            self.assertIn("Latest completed run: none", report)
-            self.assertIn("| — | — | not yet reproduced | — | — |", report)
+            self.assertFalse((logical / ".cache").exists())
+            self.assertFalse((logical / "reproduction.md").exists())
 
     def test_init_conflict_and_partial_residue_fail_without_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

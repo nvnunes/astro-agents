@@ -9,9 +9,6 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from research_log_paths import REPRODUCTION_REPORT, REPRODUCTION_RESULTS
-from validation.human_projection import ReportContext
-
 from .context import (
     EntryContext,
     LogContext,
@@ -21,10 +18,6 @@ from .context import (
     parse_entry_document_name,
 )
 from .model import ActionError, ActionResult, AddArguments, InitArguments
-from .reproduction_results import (
-    compose_reproduction_report,
-    empty_reproduction_results,
-)
 from .storage import (
     atomic_create_text,
     atomic_write_text,
@@ -113,20 +106,12 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
 
     title = _title(arguments.title, "log.title.invalid")
     summary = _initial_summary(log, title)
-    reproduction_results = log.root / REPRODUCTION_RESULTS
-    reproduction = reproduction_results.parent
-    cache = reproduction.parent
-    reproduction_report = log.root / REPRODUCTION_REPORT
     paths = tuple(
         path.as_posix()
         for path in (
             log.summary,
             log.root,
             log.root / "entries",
-            cache,
-            reproduction,
-            reproduction_results,
-            reproduction_report,
         )
     )
     with log_creation_lock(log):
@@ -138,27 +123,8 @@ def initialize(log: LogCreationContext, arguments: InitArguments) -> ActionResul
             _make_directory(log.root, created)
             entries = log.root / "entries"
             _make_directory(entries, created)
-            _make_directory(cache, created)
-            _make_directory(reproduction, created)
             atomic_create_text(log.summary, summary)
             created.append(log.summary)
-            generated_at = _utc_now()
-            summary_path = (
-                log.summary.resolve()
-                .relative_to(log.project_root.resolve())
-                .as_posix()
-            )
-            results = empty_reproduction_results(
-                summary_path, updated_at=generated_at
-            )
-            atomic_create_text(reproduction_results, results.serialized())
-            created.append(reproduction_results)
-            report_context = ReportContext(title, log.summary, log.root, {})
-            atomic_create_text(
-                reproduction_report,
-                compose_reproduction_report(results, context=report_context),
-            )
-            created.append(reproduction_report)
         except OSError as error:
             _raise_publication_failure("init", error, created)
     return _result("init", "changed", True, paths)
@@ -609,13 +575,6 @@ def _initial_summary(log: LogCreationContext, title: str) -> str:
         f"{AI_DISCLOSURE}\n"
     )
 
-
-def _utc_now() -> str:
-    return (
-        dt.datetime.now(dt.timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
 
 
 def _read_summary(path: Path) -> str:

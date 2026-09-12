@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
 from research_log_data import Fingerprint, parse_fingerprint
-from research_log_paths import REPRODUCTION_REPORT, REPRODUCTION_RESULTS
+from research_log_paths import REPRODUCTION_REPORT, RESULTS_STORE
 from validation.human_projection import load_report_context
 from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
@@ -40,9 +40,9 @@ from .reproduction_execution import _fingerprint
 from .reproduction_jobs import _find_run, _load_run, load_accepted_plan
 from .reproduction_paths import iter_canonical_run_roots
 from .reproduction_planner import project_reproduction_state
+from .reproduction_result_storage import load_reproduction_report_projection
 from .reproduction_results import (
     compose_reproduction_report,
-    load_reproduction_results,
     project_current_results,
     reconcile_run_folders,
 )
@@ -403,9 +403,34 @@ def _publish_promotion(
     try:
         installed = _install_outputs(project, outputs)
         atomic_write_texts(text_candidates)
+        from research_log_result_store import result_generation
+
+        expected_generation = result_generation(log.root, "reproduction")
+        updates = _report_candidates(log, outputs)
         with operation_lock(log.root, "reproduction-publication.lock"):
-            updates = _report_candidates(log, outputs)
-            atomic_write_texts(updates)
+            from research_log_result_store import (
+                invalidate_report_materialization,
+                record_report_materialization,
+                result_generation,
+                results_lock,
+            )
+
+            with results_lock(log.root):
+                if result_generation(log.root, "reproduction") != expected_generation:
+                    raise ActionError(
+                        "results.report.write_failed",
+                        "reproduction result changed before promotion report "
+                        "replacement",
+                    )
+                invalidate_report_materialization(log.root, "reproduction")
+                atomic_write_texts(updates)
+                report = updates[log.root / REPRODUCTION_REPORT]
+                record_report_materialization(
+                    log.root,
+                    "reproduction",
+                    report.encode(),
+                    expected_generation=expected_generation,
+                )
     except BaseException:
         rollback_errors = _rollback_outputs(installed)
         try:
@@ -491,9 +516,10 @@ def _report_candidates(
     log: LogContext, outputs: Sequence[_PromotedOutput]
 ) -> Mapping[Path, str]:
     project = resolve_project_root(log.root)
-    result_path = log.root / REPRODUCTION_RESULTS
+    result_path = log.root / RESULTS_STORE
     results = reconcile_run_folders(
-        load_reproduction_results(result_path), project_root=project
+        load_reproduction_report_projection(result_path, project_root=project),
+        project_root=project,
     )
     projected, currentness = project_current_results(
         results,
@@ -501,7 +527,6 @@ def _report_candidates(
     )
     context = load_report_context(log.summary)
     return {
-        result_path: results.serialized(),
         log.root / REPRODUCTION_REPORT: compose_reproduction_report(
             projected,
             context=context,

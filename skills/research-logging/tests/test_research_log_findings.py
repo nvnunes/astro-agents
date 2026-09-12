@@ -8,8 +8,14 @@ import unittest
 from pathlib import Path
 
 from research_log_cli_test_support import run_log
-from research_log_validation_test_support import mechanical_log, write
+from research_log_validation_test_support import mechanical_log
+from validation.batch_projection import build_batch_projection
 from validation.repair_batches import build_repair_batches
+from validation.result_storage import (
+    ValidationPublicationRequest,
+    load_mechanical_record,
+    publish_validation_result,
+)
 
 RESULTS = importlib.import_module("validation.mechanical_results")
 OPERATION_STATE = importlib.import_module("validation.operation_state")
@@ -17,7 +23,6 @@ OPERATION_STATE = importlib.import_module("validation.operation_state")
 
 class FindingsCliTests(unittest.TestCase):
     def test_projection_owns_none_entry_and_log_admission_effects(self) -> None:
-        from validation.batch_projection import build_batch_projection
 
         checks = (
             RESULTS.MechanicalCheck(
@@ -83,7 +88,6 @@ class FindingsCliTests(unittest.TestCase):
         )
 
     def test_projection_groups_only_unique_same_entry_producer_edges(self) -> None:
-        from validation.batch_projection import build_batch_projection
         from validation.commands import Invocation, MaterialRelationship
 
         def invocation(
@@ -178,18 +182,13 @@ class FindingsCliTests(unittest.TestCase):
             any(chain["findings"] for chain in projection["chains"]), projection
         )
         attached = next(chain for chain in projection["chains"] if chain["findings"])
-        self.assertEqual(
-            attached["findings"][0]["admission_effect"], "chain"
-        )
+        self.assertEqual(attached["findings"][0]["admission_effect"], "chain")
         self.assertEqual(
             attached["findings"][0]["affected_chains"], [attached["chain_id"]]
         )
-        self.assertEqual(
-            attached["findings"][0]["affected_entries"], ["e001"]
-        )
+        self.assertEqual(attached["findings"][0]["affected_entries"], ["e001"])
 
     def test_projection_preserves_directory_root_without_false_fan_out(self) -> None:
-        from validation.batch_projection import build_batch_projection
         from validation.commands import (
             Invocation,
             MaterialCollection,
@@ -265,7 +264,6 @@ class FindingsCliTests(unittest.TestCase):
 
     def test_projection_marks_cross_entry_registry_context_read_only(self) -> None:
         from research_log_data import DataFile, Fingerprint, InputResource
-        from validation.batch_projection import build_batch_projection
         from validation.commands import Invocation, MaterialRelationship
 
         resource = InputResource(
@@ -335,7 +333,7 @@ class FindingsCliTests(unittest.TestCase):
                 str(summary.with_suffix("")),
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            result_path = summary.with_suffix("") / ".cache/validation/results.json"
+            result_path = summary.with_suffix("") / ".cache/results.sqlite"
             before = result_path.read_bytes()
 
             listed = run_log(
@@ -432,28 +430,12 @@ class FindingsCliTests(unittest.TestCase):
                         ),
                     )
                 )
-            checks.append(
-                RESULTS.MechanicalCheck(
-                    "orphan:e001:duplicate",
-                    RESULTS.CheckScope.ORPHAN,
-                    RESULTS.CheckStatus.FAIL,
-                    "data/item-000.csv",
-                    failure=RESULTS.FailurePayload(
-                        "orphan.material.unused",
-                        "data/item-000.csv",
-                        {},
-                        "Hygiene",
-                    ),
-                )
-            )
             record = RESULTS.MechanicalGeneratedRecord.build(
                 summary.resolve().as_posix(),
                 "test-rules",
                 "2026-09-05",
                 checks,
             )
-            result_path = summary.with_suffix("") / ".cache/validation/results.json"
-            write(result_path, record.canonical_json() + "\n")
             unresolved = [
                 {
                     "chain_id": f"unresolved-{number:03}",
@@ -477,7 +459,7 @@ class FindingsCliTests(unittest.TestCase):
                 }
                 for number in range(51)
             ]
-            body = {
+            projection = {
                 "chains": [],
                 "record_identity": hashlib.sha256(
                     record.canonical_json().encode("utf-8")
@@ -489,18 +471,22 @@ class FindingsCliTests(unittest.TestCase):
                 "summary": record.summary,
                 "unresolved": unresolved,
             }
-            body["repair_batches"] = build_repair_batches(record, [])
-            body["validation_id"] = hashlib.sha256(
+            projection["repair_batches"] = build_repair_batches(record, [])
+            projection["validation_id"] = hashlib.sha256(
                 json.dumps(
-                    body,
+                    projection,
                     ensure_ascii=False,
                     separators=(",", ":"),
                     sort_keys=True,
                 ).encode("utf-8")
             ).hexdigest()
-            write(
-                summary.with_suffix("") / ".cache/validation/batches.json",
-                json.dumps(body) + "\n",
+            publish_validation_result(
+                ValidationPublicationRequest(
+                    summary.with_suffix(""),
+                    record,
+                    projection,
+                    source_identity="source",
+                )
             )
 
             completed = run_log(
@@ -531,32 +517,13 @@ class FindingsCliTests(unittest.TestCase):
             self.assertEqual(missing.returncode, 2)
             self.assertIn("findings.result.missing", missing.stderr)
 
-            result_path = summary.with_suffix("") / ".cache/validation/results.json"
-            write(result_path, '{"schema":"research-log-mechanical/2"}\n')
-            unsupported = run_log(
+            cold = run_log(
                 root, "findings", "list", "--format", "json", "--path", log_path
             )
-            self.assertEqual(unsupported.returncode, 2)
-            self.assertIn("findings.result.schema_unsupported", unsupported.stderr)
+            self.assertEqual(cold.returncode, 2)
+            self.assertIn("findings.result.missing", cold.stderr)
 
-            write(result_path, "{not json}\n")
-            malformed = run_log(
-                root, "findings", "list", "--format", "json", "--path", log_path
-            )
-            self.assertEqual(malformed.returncode, 2)
-            self.assertIn("findings.result.malformed", malformed.stderr)
-
-            record = RESULTS.MechanicalGeneratedRecord.build(
-                summary.resolve().as_posix(), "test-rules", "2026-09-05", ()
-            )
-            write(result_path, record.canonical_json() + "\n")
-            unavailable = run_log(
-                root, "findings", "list", "--format", "json", "--path", log_path
-            )
-            self.assertEqual(unavailable.returncode, 2)
-            self.assertIn("findings.validation_unavailable", unavailable.stderr)
-
-    def test_query_rejects_malformed_nested_projection(self) -> None:
+    def test_full_result_export_uses_explicit_normalized_entity_maps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = mechanical_log(root)
@@ -565,30 +532,59 @@ class FindingsCliTests(unittest.TestCase):
                 root, "validate", "--format", "json", "--path", log_path
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            projection_path = summary.with_suffix("") / ".cache/validation/batches.json"
-            projection = json.loads(projection_path.read_text(encoding="utf-8"))
-            projection["chains"][0]["commands"] = ["malformed"]
-            body = {
-                key: value
-                for key, value in projection.items()
-                if key != "validation_id"
-            }
-            projection["validation_id"] = hashlib.sha256(
-                json.dumps(
-                    body,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
-            write(projection_path, json.dumps(projection) + "\n")
-
-            queried = run_log(
-                root, "findings", "list", "--format", "json", "--path", log_path
+            # Explicit export is reconstructed from normalized rows; it contains
+            # no retained aggregate projection wrapper.
+            exported = run_log(
+                root,
+                "results",
+                "export",
+                "--format",
+                "json",
+                "--path",
+                log_path,
+                "--id",
+                json.loads(
+                    run_log(
+                        root,
+                        "results",
+                        "list",
+                        "--format",
+                        "json",
+                        "--path",
+                        log_path,
+                        "--kind",
+                        "full",
+                    ).stdout
+                )["items"][0]["result_id"],
             )
-
-            self.assertEqual(queried.returncode, 2)
-            self.assertIn("findings.validation.malformed", queried.stderr)
+            self.assertEqual(exported.returncode, 0, exported.stderr)
+            value = json.loads(exported.stdout)
+            self.assertEqual(value["schema"], "research-log-retained-result/2")
+            self.assertEqual(
+                set(value),
+                {
+                    "schema",
+                    "result_id",
+                    "metadata",
+                    "checks",
+                    "findings",
+                    "chains",
+                    "commands",
+                    "artifacts",
+                    "batches",
+                    "codes",
+                },
+            )
+            self.assertNotIn("projection", value)
+            self.assertNotIn("record", value)
+            self.assertEqual(
+                {
+                    finding_id
+                    for values in value["codes"].values()
+                    for finding_id in values
+                },
+                set(value["findings"]),
+            )
 
     def test_show_distinguishes_duplicate_unknown_and_nonfinding_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -599,8 +595,22 @@ class FindingsCliTests(unittest.TestCase):
                 root, "validate", "--format", "json", "--path", log_path
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            result_path = summary.with_suffix("") / ".cache/validation/results.json"
-            payload = json.loads(result_path.read_text())
+            result_id = json.loads(
+                run_log(
+                    root,
+                    "results",
+                    "list",
+                    "--format",
+                    "json",
+                    "--path",
+                    log_path,
+                    "--kind",
+                    "full",
+                ).stdout
+            )["items"][0]["result_id"]
+            payload = load_mechanical_record(
+                summary.with_suffix(""), result_id
+            ).as_dict()
             passing = next(
                 check["identity"]
                 for check in payload["checks"]
@@ -634,21 +644,10 @@ class FindingsCliTests(unittest.TestCase):
             self.assertEqual(not_finding.returncode, 2)
             self.assertIn("findings.id.not_finding", not_finding.stderr)
 
-            payload["checks"].append(payload["checks"][0])
-            write(result_path, json.dumps(payload) + "\n")
-            duplicate = run_log(
-                root,
-                "findings",
-                "show",
-                "--format",
-                "json",
-                "--path",
-                log_path,
-                "--id",
-                payload["checks"][0]["identity"],
+            self.assertEqual(
+                len({check["identity"] for check in payload["checks"]}),
+                len(payload["checks"]),
             )
-            self.assertEqual(duplicate.returncode, 2)
-            self.assertIn("findings.id.duplicate", duplicate.stderr)
 
 
 if __name__ == "__main__":

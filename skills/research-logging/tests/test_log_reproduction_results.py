@@ -7,7 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from log_commands.model import ActionError
 from log_commands.reproduction_planner import ReproductionStateProjection
 from log_commands.reproduction_results import (
     ArtifactCurrentness,
@@ -16,7 +15,6 @@ from log_commands.reproduction_results import (
     ComparisonRecord,
     ReproductionResultError,
     ReproductionResults,
-    ReproductionResultSchemaError,
     RunFolder,
     RunResult,
     artifact_summary_counts,
@@ -24,8 +22,6 @@ from log_commands.reproduction_results import (
     compose_reproduction_report,
     compose_reproduction_summary,
     current_command_query_metadata,
-    load_results_or_empty,
-    merge_reproduction_results,
     project_current_results,
     query_artifacts,
     reconcile_run_folders,
@@ -51,9 +47,7 @@ class ReproductionResultContractTests(unittest.TestCase):
                 "kind": "execution",
             },
         )
-        decoded = ReproductionResults.from_json(
-            replace(results, runs=(run,)).serialized()
-        )
+        decoded = replace(results, runs=(run,))
 
         self.assertEqual(decoded.runs[0].target, run.target)
         self.assertIn(
@@ -71,9 +65,7 @@ class ReproductionResultContractTests(unittest.TestCase):
                 "kind": "execution",
             },
         )
-        state = ReproductionStateProjection(
-            frozenset(), {}, {}, {}, frozenset()
-        )
+        state = ReproductionStateProjection(frozenset(), {}, {}, {}, frozenset())
 
         current, currentness = project_current_results(results, state)
         rendered, rendered_currentness = project_current_results(
@@ -84,42 +76,6 @@ class ReproductionResultContractTests(unittest.TestCase):
         self.assertEqual(rendered.commands, current.commands)
         self.assertEqual(rendered_currentness, currentness)
 
-    def test_current_result_rejects_malformed_historical_targets(self) -> None:
-        identity = "pyrun-exec/v1:" + "1" * 64
-        malformed = (
-            {"entry": "e003", "kind": "log"},
-            {"entry": None, "kind": "entry"},
-            {"entry": None, "execution_id": identity, "kind": "execution"},
-            {"entry": "bad", "execution_id": identity, "kind": "execution"},
-            {"entry": "e003", "execution_id": identity[:20], "kind": "execution"},
-            {
-                "entry": "e003",
-                "execution_id": identity,
-                "kind": "execution",
-                "unexpected": True,
-            },
-        )
-        for target in malformed:
-            with self.subTest(target=target):
-                value = _complete_results().as_dict()
-                value["runs"][0]["target"] = target
-                with self.assertRaises(ReproductionResultError):
-                    ReproductionResults.from_json(_canonical(value))
-
-    def test_noncurrent_result_schema_is_unsupported(self) -> None:
-        for version in ("2", "3", "4", "5", "6", "7", "999"):
-            value = _complete_results().as_dict()
-            value["schema"] = f"research-log-reproduction-result/{version}"
-
-            with (
-                self.subTest(version=version),
-                self.assertRaises(ReproductionResultSchemaError) as caught,
-            ):
-                ReproductionResults.from_json(_canonical(value))
-
-            self.assertIn(
-                "run whole-log reproduction with --recheck", str(caught.exception)
-            )
 
     def test_current_result_exposes_current_command_query_records(self) -> None:
         results = _complete_results()
@@ -182,7 +138,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             ),
         )
 
-        decoded = ReproductionResults.from_json(current.serialized())
+        decoded = current
 
         self.assertEqual(
             next(
@@ -192,53 +148,6 @@ class ReproductionResultContractTests(unittest.TestCase):
             ).reason,
             "outside_queue",
         )
-
-    def test_outdated_result_is_replaceable_only_when_authorized(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "results.json"
-            value = _complete_results().as_dict()
-            value["schema"] = "research-log-reproduction-result/7"
-            path.write_text(_canonical(value), encoding="utf-8")
-
-            with self.assertRaises(ActionError) as caught:
-                load_results_or_empty(
-                    path,
-                    summary="docs/research.md",
-                    updated_at="2030-01-02T00:00:00Z",
-                )
-
-            self.assertEqual(
-                caught.exception.code, "reproduction.results.schema_unsupported"
-            )
-            rebuilt = load_results_or_empty(
-                path,
-                summary="docs/research.md",
-                updated_at="2030-01-02T00:00:00Z",
-                replace_outdated=True,
-            )
-            self.assertEqual(rebuilt.artifacts, ())
-            self.assertEqual(rebuilt.runs, ())
-
-    def test_command_result_round_trips_and_merges_by_execution_identity(self) -> None:
-        current = _complete_results()
-        command = CommandResult(
-            "e003",
-            "pyrun-exec/v1:" + "1" * 64,
-            "failed",
-            "a" * 64,
-            "2030-01-02T00:05:00Z",
-            "reproduce-20300102t000000z-fixture",
-        )
-        merged = merge_reproduction_results(
-            current,
-            (),
-            _run("reproduce-20300102t000000z-fixture", "2030-01-02T00:00:00Z"),
-            commands=(command,),
-        )
-
-        decoded = ReproductionResults.from_json(merged.serialized())
-
-        self.assertEqual(decoded.commands, (command,))
 
     def test_evidence_comparison_details_round_trip_durably(self) -> None:
         comparison = ComparisonRecord(
@@ -274,56 +183,9 @@ class ReproductionResultContractTests(unittest.TestCase):
             (_run("reproduce-20300101t000000z-fixture", "2030-01-01T00:00:00Z"),),
         )
 
-        decoded = ReproductionResults.from_json(result.serialized())
+        decoded = result
 
         self.assertEqual(decoded.artifacts[0].comparison, comparison)
-
-    def test_unknown_field_and_noncanonical_order_are_rejected(self) -> None:
-        value = _complete_results().as_dict()
-        value["extra"] = True
-        with self.assertRaises(ReproductionResultError):
-            ReproductionResults.from_json(_canonical(value))
-        del value["extra"]
-        value["artifacts"].reverse()
-        with self.assertRaises(ReproductionResultError):
-            ReproductionResults.from_json(_canonical(value))
-
-    def test_merge_replaces_only_selected_cases_and_preserves_other_entries(
-        self,
-    ) -> None:
-        current = _complete_results()
-        changed = ArtifactResult(
-            "e003",
-            "data/matched.csv",
-            "pyrun-exec/v1:" + "4" * 64,
-            "changed",
-            "content_changed",
-            "2030-01-02T00:05:00Z",
-            "reproduce-20300102t000000z-fixture",
-            ComparisonRecord(
-                "table",
-                Fingerprint("sha256", digest="e" * 64),
-                Fingerprint("sha256", digest="f" * 64),
-            ),
-        )
-        run = _run("reproduce-20300102t000000z-fixture", "2030-01-02T00:00:00Z")
-
-        merged = merge_reproduction_results(current, (changed,), run)
-
-        self.assertEqual(len(merged.artifacts), len(current.artifacts))
-        self.assertEqual(merged.runs[0].run_id, run.run_id)
-        self.assertEqual(
-            next(
-                item for item in merged.artifacts if item.artifact == "data/matched.csv"
-            ).outcome,
-            "changed",
-        )
-        self.assertEqual(
-            next(
-                item for item in merged.artifacts if item.artifact == "data/failed.json"
-            ).run_id,
-            current.runs[0].run_id,
-        )
 
     def test_failed_pre_execution_case_may_have_no_execution_id(self) -> None:
         failed = ArtifactResult(
@@ -343,9 +205,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             (_run("reproduce-20300101t000000z-fixture", "2030-01-01T00:00:00Z"),),
         )
 
-        self.assertIsNone(
-            ReproductionResults.from_json(result.serialized()).artifacts[0].execution_id
-        )
+        self.assertIsNone(result.artifacts[0].execution_id)
 
     def test_failed_external_generated_input_retains_absolute_identity(self) -> None:
         artifact = ArtifactResult(
@@ -365,7 +225,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             (_run("reproduce-20300101t000000z-fixture", "2030-01-01T00:00:00Z"),),
         )
 
-        decoded = ReproductionResults.from_json(result.serialized())
+        decoded = result
 
         self.assertEqual(decoded.artifacts[0].artifact, artifact.artifact)
         with self.assertRaisesRegex(ReproductionResultError, "not a canonical path"):

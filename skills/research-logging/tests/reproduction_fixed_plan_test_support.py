@@ -21,6 +21,8 @@ def accepted_plan(
         {
             "evaluated_at": "2030-01-01",
             "rules_version": "research-log-mechanical/evidence-baseline-7",
+            "validation_id": "fixture-validation-id",
+            "validation_result_id": "fixture-validation-result-id",
             "batch_admission": {
                 "admitted": [],
                 "excluded": [],

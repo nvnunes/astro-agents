@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence, cast
 
-from research_log_paths import VALIDATION_REPORT, VALIDATION_RESULTS
+from research_log_paths import RESULTS_STORE, VALIDATION_REPORT
 from validation.controller import (
     EntryValidationRequest,
     ValidationControllerError,
@@ -104,7 +104,7 @@ def _public_result(result: dict[str, object]) -> dict[str, object]:
     return {
         "generated": {
             "human": (log_root / VALIDATION_REPORT).as_posix(),
-            "mechanical": (log_root / VALIDATION_RESULTS).as_posix(),
+            "mechanical": (log_root / RESULTS_STORE).as_posix(),
         },
         "metrics": result.get("metrics", {}),
         "published": True,
@@ -327,7 +327,7 @@ def _batch_row(
         title=title,
         summary=summary.resolve().as_posix(),
         human_report=(log_root / "validation.md").resolve().as_posix(),
-        mechanical_report=(log_root / VALIDATION_RESULTS)
+        mechanical_report=(log_root / RESULTS_STORE)
         .resolve()
         .as_posix(),
         published=bool(outcome.result.get("published")),
@@ -348,7 +348,7 @@ def _blocked_batch_row(
         title=title,
         summary=summary.resolve().as_posix(),
         human_report=(log_root / "validation.md").resolve().as_posix(),
-        mechanical_report=(log_root / VALIDATION_RESULTS)
+        mechanical_report=(log_root / RESULTS_STORE)
         .resolve()
         .as_posix(),
         published=False,

@@ -26,6 +26,7 @@ from research_log_data import (
     observe_fingerprint,
     parse_fingerprint,
 )
+from validation.batch_projection import build_batch_projection
 from validation.engine import (
     EvaluationRequest,
     FullEvaluationTarget,
@@ -37,6 +38,7 @@ from validation.operation_state import (
     operation_lock,
     operation_lock_owner,
     require_mutation_ready,
+    research_snapshot,
 )
 
 from .context import LogContext, resolve_entry, resolve_log, resolve_project_root
@@ -52,6 +54,7 @@ from .reproduction_contract import (
     ReproductionPlan,
     ReproductionRuntime,
     accepted_invocation,
+    canonical_record_digest,
 )
 from .reproduction_execution import (
     ExecutionAttempt,
@@ -165,19 +168,99 @@ RECOVERY_GUARD_PREFIX = "reproduction-recovery-"
 RECOVERY_GUARD_SCHEMA = "research-log-reproduction-recovery-guard/1"
 
 
-def _prepare_plan(
+def _prepare_plan(  # noqa: PLR0913
     log: LogContext,
     entry: str | None,
     include_all: bool,
     runtime: ReproductionRuntime,
     selection: ReproductionSelection,
+    *,
+    publish_validation: bool,
 ) -> ReproductionPlan:
     """Evaluate and plan once while the caller owns the normal log lock."""
 
+    accepted_snapshot = research_snapshot(log.summary)
+    evaluation_started = _utc_now()
     result = evaluate_mechanical(
         EvaluationRequest(log.summary, _utc_now()[:10], FullEvaluationTarget())
     )
-    prepared = prepare_reproduction_context(result)
+    evaluation_finished = _utc_now()
+    if research_snapshot(log.summary) != accepted_snapshot:
+        raise ActionError(
+            "reproduction.validation.source_changed",
+            "research-owned state changed during validation planning",
+        )
+    from research_log_result_store import record_report_materialization, results_lock
+    from validation.human_projection import load_report_context
+    from validation.records import publish_validation_outputs_locked
+    from validation.report import compose_validation_report
+    from validation.result_storage import (
+        ValidationPublicationRequest,
+        load_validation_admission,
+        load_validation_report_projection,
+        provisional_validation_admission,
+        publish_validation_result,
+        result_metadata_from_evaluation,
+    )
+
+    source_identity = canonical_record_digest({"source_snapshot": accepted_snapshot})
+    projection = build_batch_projection(
+        result.record,
+        invocations=result.context.invocations,
+        registries=result.context.registries,
+        source_identity=source_identity,
+    )
+    if not publish_validation:
+        admission = provisional_validation_admission(result.record, projection)
+    else:
+        report_context = load_report_context(log.summary)
+        with results_lock(log.root):
+            stored = publish_validation_result(
+                ValidationPublicationRequest(
+                    log.root,
+                    result.record,
+                    projection,
+                    report_context,
+                    result_metadata_from_evaluation(
+                        result.context, source_identity=source_identity
+                    ),
+                    started_at=evaluation_started,
+                    finished_at=evaluation_finished,
+                    source_identity=source_identity,
+                )
+            )
+            identity = (
+                f"committed validation result {stored.result_id} generation "
+                f"{stored.generation}"
+            )
+            try:
+                stored_projection = load_validation_report_projection(log.root)
+                report_bytes = compose_validation_report(
+                    stored_projection.record,
+                    context=cast(Any, stored_projection.context),
+                    groups=cast(Any, stored_projection.groups),
+                ).encode()
+            except Exception as error:
+                raise ActionError(
+                    "results.report.render_failed", f"{identity}: {error}"
+                ) from error
+            try:
+                publish_validation_outputs_locked(
+                    log.root, {"validation.md": report_bytes}
+                )
+                record_report_materialization(
+                    log.root,
+                    "validation",
+                    report_bytes,
+                    expected_generation=stored.generation,
+                )
+            except Exception as error:
+                raise ActionError(
+                    "results.report.write_failed",
+                    f"{identity}; report marker is stale: {error}",
+                ) from error
+            admission = load_validation_admission(log.root, stored.result_id)
+    prepared = prepare_reproduction_context(result, admission)
     return plan_reproduction(
         log,
         prepared,
@@ -201,7 +284,9 @@ def launch_reproduction(
     lock_fds = _acquire_scope_locks(log, entry)
     try:
         with operation_lock(log.root, "log.lock", mode="exclusive"):
-            plan = _prepare_plan(log, entry, include_all, runtime, selection)
+            plan = _prepare_plan(
+                log, entry, include_all, runtime, selection, publish_validation=True
+            )
             if not plan.executions:
                 from .reproduction_queries import reproduction_reconciliation_text
 
@@ -256,7 +341,9 @@ def dry_run_reproduction(
     lock_fds = _acquire_scope_locks(log, entry)
     try:
         with operation_lock(log.root, "log.lock", mode="exclusive"):
-            plan = _prepare_plan(log, entry, include_all, runtime, selection)
+            plan = _prepare_plan(
+                log, entry, include_all, runtime, selection, publish_validation=False
+            )
         preflight_execution_safety()
         return plan
     finally:
@@ -1670,6 +1757,7 @@ def _require_no_recovery_guard(
                 "reproduction.recovery.active",
                 f"orphaned worker cleanup still owns {guard_run}",
             )
+
 
 def _stop_workers_and_clean_scratch(
     run_root: Path, run_id: str

@@ -16,9 +16,7 @@ from validation.human_projection import ReportContext
 from validation.pyrun_state import PYRUN_EXECUTION_RE
 
 from .context import ENTRY_ID_RE
-from .model import ActionError
 from .reproduction_contract import (
-    PREEXECUTION_RESULT_SCHEMA,
     REPRODUCTION_RESULT_SCHEMA,
     valid_historical_reproduction_target,
 )
@@ -346,89 +344,6 @@ class ReproductionResults:
     def __post_init__(self) -> None:
         _validate_results(self)
 
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "artifacts": [item.as_dict() for item in self.artifacts],
-            "commands": [item.as_dict() for item in self.commands],
-            "runs": [item.as_dict() for item in self.runs],
-            "schema": RESULT_SCHEMA,
-            "summary": self.summary,
-            "updated_at": self.updated_at,
-        }
-
-    def serialized(self) -> str:
-        text = (
-            json.dumps(self.as_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-            + "\n"
-        )
-        if len(text.encode("utf-8")) > MAX_RESULT_BYTES:
-            raise ReproductionResultError("reproduction result exceeds 64 MiB")
-        return text
-
-    @classmethod
-    def from_json(cls, text: str) -> ReproductionResults:
-        if len(text.encode("utf-8")) > MAX_RESULT_BYTES:
-            raise ReproductionResultError("reproduction result exceeds 64 MiB")
-        try:
-            value = json.loads(text, object_pairs_hook=_unique_object)
-        except (json.JSONDecodeError, ReproductionResultError) as error:
-            raise ReproductionResultError(
-                f"invalid reproduction result: {error}"
-            ) from error
-        item = _mapping(value, "result")
-        schema = item.get("schema")
-        if schema not in {PREEXECUTION_RESULT_SCHEMA, RESULT_SCHEMA}:
-            raise ReproductionResultSchemaError(
-                "published reproduction result schema is unsupported; run "
-                "whole-log reproduction with --recheck to rebuild it"
-            )
-        fields = {
-            "artifacts",
-            "commands",
-            "runs",
-            "schema",
-            "summary",
-            "updated_at",
-        }
-        if set(item) != fields:
-            raise ReproductionResultError("result has incorrect fields")
-        artifacts = tuple(
-            _decode_artifact(value, index)
-            for index, value in enumerate(_sequence(item["artifacts"], "artifacts"))
-        )
-        runs = tuple(
-            _decode_run(value, index, current=True)
-            for index, value in enumerate(_sequence(item["runs"], "runs"))
-        )
-        if schema == PREEXECUTION_RESULT_SCHEMA and any(
-            run.target["kind"] == "execution" for run in runs
-        ):
-            raise ReproductionResultError("legacy results cannot target an execution")
-        commands = tuple(
-            _decode_command(value, index)
-            for index, value in enumerate(_sequence(item["commands"], "commands"))
-        )
-        result = cls(
-            _string(item["summary"], "summary"),
-            _timestamp(item["updated_at"], "updated_at"),
-            artifacts,
-            runs,
-            commands,
-        )
-        serialized = result.serialized()
-        if schema == PREEXECUTION_RESULT_SCHEMA:
-            serialized = (
-                json.dumps(
-                    {**result.as_dict(), "schema": PREEXECUTION_RESULT_SCHEMA},
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-        if text != serialized:
-            raise ReproductionResultError("result serialization is not canonical")
-        return result
 
 
 @dataclass(frozen=True)
@@ -478,73 +393,6 @@ class ArtifactQuery:
             "records": [dict(value) for value in self.records],
             "returned": self.returned,
         }
-
-
-def empty_reproduction_results(summary: str, *, updated_at: str) -> ReproductionResults:
-    """Create the canonical not-yet-reproduced state."""
-
-    return ReproductionResults(summary, _timestamp(updated_at, "updated_at"), (), ())
-
-
-def load_reproduction_results(path: Path) -> ReproductionResults:
-    """Load one regular canonical result without repair or cleanup."""
-
-    if path.is_symlink() or not path.is_file():
-        raise ReproductionResultError(f"result is not a regular file: {path}")
-    try:
-        return ReproductionResults.from_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError) as error:
-        raise ReproductionResultError(str(error)) from error
-
-
-def merge_reproduction_results(
-    current: ReproductionResults,
-    artifacts: Sequence[ArtifactResult],
-    run: RunResult,
-    *,
-    commands: Sequence[CommandResult] = (),
-    state: ReproductionStateProjection | None = None,
-) -> ReproductionResults:
-    """Replace published artifact and command cases and append one run."""
-
-    replacements = {(item.entry, item.artifact): item for item in artifacts}
-    if len(replacements) != len(artifacts):
-        raise ReproductionResultError("published artifacts are duplicated")
-    merged = {
-        (item.entry, item.artifact): item
-        for item in current.artifacts
-        if (item.entry, item.artifact) not in replacements
-    }
-    merged.update(replacements)
-    if state is not None:
-        merged = {key: value for key, value in merged.items() if key in state.reachable}
-    command_replacements = {(item.entry, item.execution_id): item for item in commands}
-    if len(command_replacements) != len(commands):
-        raise ReproductionResultError("published command results are duplicated")
-    merged_commands = {
-        (item.entry, item.execution_id): item
-        for item in current.commands
-        if (item.entry, item.execution_id) not in command_replacements
-    }
-    merged_commands.update(command_replacements)
-    if state is not None:
-        merged_commands = {
-            key: value
-            for key, value in merged_commands.items()
-            if key in state.reachable_commands
-        }
-    return ReproductionResults(
-        current.summary,
-        _timestamp(run.finished_at, "run.finished_at"),
-        tuple(sorted(merged.values(), key=_artifact_key)),
-        tuple(
-            sorted(
-                (*(item for item in current.runs if item.run_id != run.run_id), run),
-                key=_run_key,
-            )
-        ),
-        tuple(sorted(merged_commands.values(), key=_command_key)),
-    )
 
 
 def reconcile_run_folders(
@@ -759,6 +607,41 @@ def compose_reproduction_reconciliation_summary(
         ),
     )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def compose_reproduction_summary_projection(
+    artifacts: Mapping[str, object],
+    command_outcomes: Mapping[str, int] | None,
+    *,
+    latest_run_id: str | None,
+    reconciliation: bool = False,
+) -> str:
+    """Render a compact summary from bounded SQL scalar projections.
+
+    This deliberately accepts already-accounted counts instead of a
+    report projection.  It is used by summary and no-work paths, where loading
+    artifact, command, and run history rows is both
+    unnecessary and contrary to the result-store read boundary.
+    """
+
+    run_context: tuple[str, ...] = ()
+    if reconciliation:
+        run_context = (
+            "Current reconciliation: no commands executed; no run was created.",
+            "Latest completed run remains: "
+            + (f"`{latest_run_id}`" if latest_run_id is not None else "none"),
+        )
+    return "\n".join(
+        _summary_lines(
+            artifacts,
+            command_outcomes,
+            _SummaryPresentation(
+                "# Reproduction Summary",
+                run_context,
+                latest_run_id is not None,
+            ),
+        )
+    ).rstrip() + "\n"
 
 
 def artifact_summary_counts(
@@ -1644,27 +1527,3 @@ def _run_with_folder(run: RunResult, availability: str) -> RunResult:
 
 def _escape_code(value: str) -> str:
     return value.replace("`", "\\`").replace("|", "\\|")
-
-
-def load_results_or_empty(
-    path: Path, *, summary: str, updated_at: str, replace_outdated: bool = False
-) -> ReproductionResults:
-    """Load current results or replace outdated generated state when authorized."""
-
-    if not path.exists() and not path.is_symlink():
-        return empty_reproduction_results(summary, updated_at=updated_at)
-    try:
-        result = load_reproduction_results(path)
-    except ReproductionResultSchemaError as error:
-        if replace_outdated:
-            return empty_reproduction_results(summary, updated_at=updated_at)
-        raise ActionError(
-            "reproduction.results.schema_unsupported", str(error)
-        ) from error
-    except ReproductionResultError as error:
-        raise ActionError("reproduction.results.invalid", str(error)) from error
-    if result.summary != summary:
-        raise ActionError(
-            "reproduction.results.invalid", "result summary identity changed"
-        )
-    return result

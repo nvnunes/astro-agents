@@ -71,7 +71,7 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result | `research-log-reproduction-result/10` |
+| Reproduction result store | `<log>/.cache/results.sqlite` reproduction domain |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
 | Durable run state | `research-log-reproduction-run/7` |
@@ -86,7 +86,8 @@ The initial implementation must use these versions:
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
 | Isolated repair-check result | `research-log-repair-check-result/1` |
 
-Reproduction uses run/7, plan/9, status/7, and result/10. Older job files are
+Reproduction uses durable run-local state, status/7, and the consolidated
+result-store schema. Older job files are
 immutable but unsupported: the CLI reports `reproduction.run.unsupported` and
 directs the caller to start a new current-format run.
 
@@ -139,7 +140,7 @@ the selected entry. Graph limits do not authorize broader scope.
 
 | Resource | Limit |
 | --- | ---: |
-| `run.json` encoded bytes | 256 MiB |
+| Durable run `state.sqlite` data | 256 MiB |
 | Status projection encoded bytes | 64 MiB |
 | Staging manifest encoded bytes | 64 MiB |
 | Registered workers per execution | 1,024 |
@@ -188,7 +189,7 @@ also consume the ordinary file, path, and directory limits.
 
 | Resource | Limit |
 | --- | ---: |
-| `.cache/reproduction/results.json` encoded bytes | 64 MiB |
+| Consolidated result-store data per domain | 64 MiB |
 | Current artifact records | 10,000 |
 | Current command records | 10,000 |
 | Retained or availability-unknown run records | 10,000 |
@@ -238,10 +239,10 @@ The operational authority is:
 | `evidence.json` | Reproduction roots and exact retained evidence-source identity |
 | `data.json` | Named material location, declaration identity, and origin/generated classification |
 | `pyrun.json` | Current executable recipes and observed execution state |
-| `.cache/validation/results.json` and `.cache/validation/batches.json` | Reproduction admission result and per-chain projection |
+| `.cache/results.sqlite` validation domain | Reproduction admission result and per-chain projection |
 | `validation.md` | Source-controlled human validation projection only |
-| `.cache/reproduction/results.json` | Disposable local reproduction results and run index |
-| Durable run directory | Active, stopped, failed, and staged run-specific operational state |
+| `.cache/results.sqlite` reproduction domain | Disposable local reproduction results and run projection |
+| Durable run directory and `state.sqlite` | Active, stopped, failed, and staged run-specific operational state |
 | `reproduction.md` | Source-controlled human reproduction projection only |
 
 `evidence.json`, `data.json`, and `pyrun.json` together are the complete
@@ -1075,17 +1076,14 @@ They must reject `--entry`, `--include-all`, `--jobs`, and
 
 ### Durable State
 
-Each accepted run directory contains immutable `plan.json` using
-`research-log-reproduction-plan/9` and one canonical mutable `run.json` using
-`research-log-reproduction-run/7`. The plan is atomically written before the
-run record. Run discovery requires both files; an incomplete acceptance is
-invalid. The plan owns the target, selection, settings, command inventory,
-dependencies, recipes, comparison context, and admission. `run.json` has only
-`schema`, `run_id`, `paths`, `state`, `progress`, `timestamps`, and `workers`.
-Its state is mutable operational ownership; it does not embed a plan, source or
-validation snapshot, command queue, attempt number/history, copied settings,
-or checkpoints. Each invocation checkpoint is a separately validated owned
-file, and `staging.json` retains durable comparison and staged-output records.
+Each accepted run directory contains `state.sqlite`, the durable job authority.
+It stores one immutable accepted plan and mutable state, checkpoints,
+comparison context, and publication-retry state in typed tables. It is never a
+result-store projection or a JSON aggregate. The plan owns the target,
+selection, settings, command inventory, dependencies, recipes, comparison
+context, and admission; mutable job rows own only operational state. Result
+clearing never rewrites this database, staged outputs, diagnostics, retained
+baselines, or entry-root `pyrun.json` observations.
 
 `target` is exactly one of `{kind: "log", entry: null}`,
 `{kind: "entry", entry: ENTRY}`, or
@@ -1147,14 +1145,12 @@ temporary form `.eNNN-<execution-digest>.json.<pid>.tmp`; every completed
 checkpoint and every other directory entry retains strict path, schema,
 membership, size, and canonical-serialization validation.
 
-Every `run.json` load validates one bounded immutable byte snapshot. File-type,
-size, decoding, member validation, and canonical serialization checks apply to
-that same snapshot; a reader must not decode one generation and compare it with
-a later path read. Stable malformed and noncanonical records still fail closed
-with `reproduction.run.invalid`. Writers continue to publish by atomic
-replacement, and every read-modify-write transition loads mutable state only
-after acquiring the run-state lock. Callbacks retain the already accepted,
-immutable run ID rather than reading unlocked mutable state to rediscover it.
+Every durable-state read validates one bounded SQLite snapshot and its typed
+rows. A reader must not combine rows from different snapshots. Stable malformed
+or unsupported state fails closed with `reproduction.run.invalid`. Writers use
+short transactions while holding the run-state lock; callbacks retain the
+already accepted immutable run ID rather than rediscovering it from mutable
+state.
 
 ### Status
 
@@ -1165,7 +1161,7 @@ Default status is concise human text. `--json` emits one deterministic
 `active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
 `artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
 `operational_failure`, `surviving_workers`, and `resumable`. The values are the
-strict projection of `run.json`, accepted `plan.json`, and checkpoint files.
+strict projection of run-local `state.sqlite` rows.
 `resumable` is true only for a stopped run or the explicit publication-retry
 case; it is not attempt lineage or a selector for replanning.
 `active_executions` uses the run-state execution-reference shape and order.
@@ -1567,11 +1563,14 @@ The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
 
 ### Authoritative Result
 
-`<log>/.cache/reproduction/results.json` is disposable local state encoded as
-strict canonical UTF-8 JSON using
-`research-log-reproduction-result/10`. It has exactly this shape:
+`<log>/.cache/results.sqlite` is the sole disposable local authority for
+queryable reproduction results. The reproduction domain stores normalized
+artifact, execution, command, and terminal-run projection rows keyed by their
+stable identities. It has no maintained aggregate JSON encoding.
 
-```json
+<!-- Historical aggregate example removed: use `log results ... --format json`
+for an explicit, bounded export of a selected stored projection. -->
+<!--
 {
   "schema": "research-log-reproduction-result/10",
   "summary": "docs/research.md",
@@ -1669,7 +1668,7 @@ strict canonical UTF-8 JSON using
     }
   ]
 }
-```
+-->
 
 `summary` is the maintained summary path. `updated_at` is the latest successful
 result publication time. `artifacts` is sorted by
@@ -1788,7 +1787,7 @@ outcomes.
 ### Currentness
 
 Every artifact and command result records `recorded_at`, the commit time of that result to
-`.cache/reproduction/results.json`, regardless of outcome. A result is implicitly
+the reproduction domain, regardless of outcome. A result is implicitly
 stale when the producing execution has a non-null `last_run_at` later than
 `recorded_at`. Recipe, script, code, input, validation, and dependency changes
 may also make a case ineligible or require new work under the graph contract.
@@ -2007,8 +2006,8 @@ run. An unsupported job never blocks current-format admission or scheduling.
 
 ### Shared Publication
 
-Concurrent distinct-entry runs share `.cache/reproduction/results.json`,
-`reproduction.md`, and active-run indexing. Their shared writes must use one
+Concurrent distinct-entry runs share the reproduction domain of
+`.cache/results.sqlite` and `reproduction.md`. Their shared writes must use one
 brief log-local publication mutex built on the existing lock infrastructure.
 It is not a reproduction scope lock and is not held during planning, execution,
 comparison, or per-execution reproduction-requirement update.
@@ -2033,8 +2032,7 @@ the requirement.
 
 After reproduction-result publication succeeds and the run becomes complete,
 the supervisor releases its reproduction scope lock without invoking validation.
-Validation owns `.cache/validation/results.json`,
-`.cache/validation/batches.json`, and `validation.md` only when explicitly
+Validation owns its domain in `.cache/results.sqlite` and `validation.md` only when explicitly
 requested. Reproduction performs neither targeted refresh nor full validation.
 A later validation outcome does not change the completed reproduction status,
 reproduction requirements, or reproduction results.
@@ -2056,12 +2054,11 @@ Its shared-state changes use the publication mutex.
 Reproduction owns:
 
 ```text
-<log>/.cache/reproduction/results.json
+<log>/.cache/results.sqlite
 <log>/reproduction.md
 ```
 
-Validation continues to own `.cache/validation/results.json`,
-`.cache/validation/batches.json`, and `validation.md`.
+Validation continues to own its result-store domain and `validation.md`.
 Cutover removes the legacy Reproduction result section from `validation.md`.
 Validation may link to `reproduction.md` but must not duplicate reproduction
 state.
@@ -2079,10 +2076,12 @@ Every maintained summary receives:
 Reproduction: [latest report](<log>/reproduction.md)
 ```
 
-Cutover creates an empty local result and a report stating that no reproduction
-has yet completed. Removing the local result discards its history; it must not
-infer historical machine state from the report. Because current successful
-commands remain cache-independent, rebuilding the machine result requires an
+Scaffold creates neither an empty result store nor a placeholder report. The
+first completed reproduction creates the reproduction domain and derives the
+report. Removing result data never touches a run-local `state.sqlite`, retained
+baselines, or `pyrun.json`; surviving reports are nonauthoritative and cannot
+rebuild results. Because current successful commands remain cache-independent,
+rebuilding the machine result requires an
 explicit `--recheck` reproduction.
 
 ### Human Report
@@ -2298,21 +2297,11 @@ defaults, resumes them, or transfers their execution provenance. Start a new
 version-6 run instead. The maintained-corpus execution-state cutover is
 complete.
 
-The result reader accepts `research-log-reproduction-result/10` and the
-compatible `research-log-reproduction-result/9` shape. Result/9 contains only
-entry/log run targets. Reports, queries, incremental planning, and partial
-publication can read it; subsequent publication writes result/10 while
-preserving results outside the published scope. Read-only operations do not
-rewrite it.
-
-Other result schemas are unsupported generated state. Reports, queries,
-incremental planning, and partial publication refuse them. Whole-log
-reproduction with `--recheck` can rebuild that state: the complete plan does
-not decode unsupported prior results and may atomically replace them with
-result/10. Malformed records in either supported schema remain invalid and
-are never treated as outdated. Later schema changes require an explicit
-compatibility decision; unsupported-state replacement is limited to a
-whole-log recheck accepted with the current result schema.
+The result reader accepts only the current consolidated result-store schema.
+Missing, malformed, busy, or unsupported stores fail precisely and do not fall
+back to old JSON, reports, or run directories. A writer creates an absent store
+but never overwrites malformed or unsupported state. A later reproduction may
+publish fresh current results only through its normal accepted-plan path.
 
 An explicitly launched whole-log `--recheck` also recovers unsupported results
 when the accepted target is completely empty: no recorded commands (including

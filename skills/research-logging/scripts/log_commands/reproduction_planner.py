@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Literal, Mapping, Sequence, cast
 
 from research_log_data import (
     DataFile,
@@ -18,8 +18,7 @@ from research_log_data import (
     observe_fingerprint,
     resolve_input_token,
 )
-from research_log_paths import REPRODUCTION_RESULTS
-from validation.batch_projection import build_batch_projection
+from research_log_paths import RESULTS_STORE
 from validation.engine import RULES_VERSION, EvaluationEntryMaterial, EvaluationResult
 from validation.evidence import EvidenceFile, load_evidence_file
 from validation.evidence_comparison import evidence_comparison_identity
@@ -48,6 +47,9 @@ from .reproduction_contract import (
     canonical_execution_source_digest,
     canonical_record_digest,
 )
+
+if TYPE_CHECKING:
+    from validation.result_storage import ValidationAdmission
 
 MAX_REACHABLE_EXECUTIONS = 2_048
 MAX_ARTIFACT_CASES = 10_000
@@ -80,21 +82,17 @@ class ReproductionCommandInventory:
 
 @dataclass(frozen=True)
 class PreparedReproductionContext:
-    """One fresh, non-published full evaluation prepared under the log lock.
-
-    The caller owns locking and evaluation.  Planning consumes only these
-    loaded observations and the projection derived from the same result; it
-    never loads a published validation result or re-evaluates the log.
-    """
+    """One full evaluation and its accepted, stored admission decision."""
 
     evaluation: EvaluationResult
-    batch_projection: Mapping[str, object]
+    admission: "ValidationAdmission"
 
 
 def prepare_reproduction_context(
     evaluation: EvaluationResult,
+    admission: "ValidationAdmission",
 ) -> PreparedReproductionContext:
-    """Derive current admission input from one already completed full evaluation."""
+    """Bind planning to the exact full validation result just published."""
 
     if evaluation.record.completion is CompletionState.INCOMPLETE:
         raise ActionError(
@@ -102,13 +100,11 @@ def prepare_reproduction_context(
         )
     if evaluation.record.rules_version != RULES_VERSION:
         raise ActionError("reproduction.validation.invalid", "prepared rules are stale")
-    projection = build_batch_projection(
-        evaluation.record,
-        invocations=evaluation.context.invocations,
-        registries=evaluation.context.registries,
-        source_identity=canonical_record_digest(evaluation.record.as_dict()),
-    )
-    return PreparedReproductionContext(evaluation, projection)
+    if admission.validation_id == "" or admission.result_id == "":
+        raise ActionError(
+            "reproduction.validation.invalid", "stored validation is invalid"
+        )
+    return PreparedReproductionContext(evaluation, admission)
 
 
 @dataclass(frozen=True)
@@ -340,7 +336,7 @@ def plan_reproduction(  # noqa: PLR0913
     )
     _trace_selected_evidence(selected_ids, entries, state)
     _trace_queued_commands(state)
-    _apply_validation_admission(state, prepared.batch_projection)
+    _apply_validation_admission(state, prepared.admission)
     _apply_cycle_and_dependency_failures(state)
     retained_commands = dict(
         _load_prior_results(log, replace_outdated=selection.policy == RECHECK_SELECTION)
@@ -349,7 +345,7 @@ def plan_reproduction(  # noqa: PLR0913
     plan = _project_plan(
         state,
         ordered,
-        prepared.evaluation,
+        prepared,
         entry=entry,
     )
     plan.serialized()
@@ -1184,103 +1180,116 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
 
 
 def _apply_validation_admission(
-    state: _PlanningState, projection: Mapping[str, object]
+    state: _PlanningState, admission: "ValidationAdmission"
 ) -> None:
     """Exclude only executions owned by validation-blocked command batches."""
 
-    _validate_projected_admission(projection)
-    blocked = _blocked_validation_batches(projection)
-    entry_blockers = _entry_validation_blockers(projection)
-    _require_resolved_validation_blockers(projection)
-    chains = _mapping_items(projection.get("chains"))
+    _validate_stored_admission(admission)
+    blocked = _blocked_validation_batches(admission)
+    entry_blockers = _entry_validation_blockers(admission)
+    _require_resolved_validation_blockers(admission)
     for key, owner in sorted(state.selected.items()):
         entry_groups = entry_blockers.get(owner.entry.context.id)
         if entry_groups:
             _exclude_entry_execution(state, key, owner, entry_groups)
             continue
-        _apply_execution_admission(state, key, owner, chains, blocked)
+        _apply_execution_admission(state, key, owner, admission, blocked)
 
 
-def _validate_projected_admission(projection: Mapping[str, object]) -> None:
-    for group in _mapping_items(projection.get("chains")):
-        entry = _projected_physical_entry(group.get("entry"))
-        chain_id = str(group.get("chain_id"))
-        for finding in _mapping_items(group.get("findings")):
-            effect = _finding_effect(finding)
-            if effect not in {"none", "chain"} or (
-                effect == "chain"
-                and not _finding_affects_chain(finding, entry, chain_id)
+def _validate_stored_admission(admission: "ValidationAdmission") -> None:
+    groups = {group.identity: group for group in admission.groups}
+    if len(groups) != len(admission.groups):
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            "validation groups are duplicate",
+        )
+    for command in admission.commands:
+        group = groups.get(command.group_id)
+        if group is None or group.kind != "chain" or command.entry != group.entry:
+            raise ActionError(
+                "reproduction.validation.scope_unresolved",
+                "validation command group is invalid",
+            )
+    for finding in admission.findings:
+        group = groups.get(finding.group_id)
+        if group is None or finding.admission_effect not in {
+            "none",
+            "chain",
+            "entry",
+            "log",
+        }:
+            raise ActionError(
+                "reproduction.validation.scope_unresolved",
+                "validation finding has no supported admission effect",
+            )
+        if group.kind == "chain":
+            if finding.admission_effect not in {"none", "chain"} or (
+                finding.admission_effect == "chain"
+                and (
+                    finding.affected_chains != (group.identity,)
+                    or finding.affected_entries != (_physical_entry(group.entry),)
+                )
             ):
                 raise ActionError(
                     "reproduction.validation.scope_unresolved",
                     "validation chain has inconsistent admission ownership",
                 )
-    for group in _mapping_items(projection.get("unresolved")):
-        for finding in _mapping_items(group.get("findings")):
-            effect = _finding_effect(finding)
-            entries = _string_items(finding.get("affected_entries"))
-            chains = _string_items(finding.get("affected_chains"))
-            if (
-                effect == "chain"
-                or chains
-                or (effect == "entry" and len(entries) != 1)
-                or (effect in {"none", "log"} and entries)
-            ):
-                raise ActionError(
-                    "reproduction.validation.scope_unresolved",
-                    "validation finding has inconsistent admission ownership",
-                )
-
-
-def _blocked_validation_batches(
-    projection: Mapping[str, object],
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    blocked: dict[tuple[str, str], tuple[str, ...]] = {}
-    for group in _mapping_items(projection.get("chains")):
-        entry = _projected_physical_entry(group.get("entry"))
-        finding_ids = tuple(
-            sorted(
-                str(finding["identity"])
-                for finding in _mapping_items(group.get("findings"))
-                if _finding_effect(finding) == "chain"
-                and _finding_affects_chain(finding, entry, str(group["chain_id"]))
+        elif (
+            finding.admission_effect == "chain"
+            or finding.affected_chains
+            or (
+                finding.admission_effect == "entry"
+                and len(finding.affected_entries) != 1
             )
-        )
-        if finding_ids:
-            blocked[(entry, str(group["chain_id"]))] = finding_ids
-    return blocked
-
-
-def _require_resolved_validation_blockers(
-    projection: Mapping[str, object],
-) -> None:
-    for group in _mapping_items(projection.get("unresolved")):
-        if any(
-            _finding_effect(finding) == "log"
-            for finding in _mapping_items(group.get("findings"))
+            or (
+                finding.admission_effect in {"none", "log"} and finding.affected_entries
+            )
         ):
             raise ActionError(
                 "reproduction.validation.scope_unresolved",
-                "a blocking validation finding has no safe batch scope",
+                "validation finding has inconsistent admission ownership",
             )
 
 
+def _blocked_validation_batches(
+    admission: "ValidationAdmission",
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    blocked: dict[tuple[str, str], tuple[str, ...]] = {}
+    for group in admission.groups:
+        if group.kind != "chain":
+            continue
+        finding_ids = tuple(
+            sorted(
+                finding.identity
+                for finding in admission.findings
+                if finding.group_id == group.identity
+                and finding.admission_effect == "chain"
+            )
+        )
+        if finding_ids:
+            blocked[(_physical_entry(group.entry), group.identity)] = finding_ids
+    return blocked
+
+
+def _require_resolved_validation_blockers(admission: "ValidationAdmission") -> None:
+    if any(finding.admission_effect == "log" for finding in admission.findings):
+        raise ActionError(
+            "reproduction.validation.scope_unresolved",
+            "a blocking validation finding has no safe batch scope",
+        )
+
+
 def _entry_validation_blockers(
-    projection: Mapping[str, object],
+    admission: "ValidationAdmission",
 ) -> dict[str, tuple[tuple[str, tuple[str, ...]], ...]]:
     result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
-    for group in _mapping_items(projection.get("unresolved")):
-        by_entry: dict[str, list[str]] = {}
-        for finding in _mapping_items(group.get("findings")):
-            if _finding_effect(finding) != "entry":
-                continue
-            for entry in _string_items(finding.get("affected_entries")):
-                by_entry.setdefault(_projected_physical_entry(entry), []).append(
-                    str(finding["identity"])
-                )
-        for entry, identities in sorted(by_entry.items()):
+    groups = {group.identity: group for group in admission.groups}
+    for finding in admission.findings:
+        if finding.admission_effect != "entry":
+            continue
+        for entry in finding.affected_entries:
             result.setdefault(entry, []).append(
-                (str(group["chain_id"]), tuple(sorted(set(identities))))
+                (groups[finding.group_id].identity, (finding.identity,))
             )
     return {entry: tuple(groups) for entry, groups in sorted(result.items())}
 
@@ -1314,7 +1323,7 @@ def _apply_execution_admission(
     state: _PlanningState,
     key: ExecutionKey,
     owner: _Owner,
-    chains: Sequence[Mapping[str, object]],
+    admission: "ValidationAdmission",
     blocked: Mapping[tuple[str, str], tuple[str, ...]],
 ) -> None:
     targets = {
@@ -1327,22 +1336,20 @@ def _apply_execution_admission(
         .as_posix()
         for output, _kind in owner.execution.recipe.outputs
     }
-    matches = [
-        group
-        for group in chains
-        if _projected_physical_entry(group.get("entry")) == owner.entry.context.id
-        and any(
-            targets <= _projected_command_outputs(command)
-            for command in _mapping_items(group.get("commands"))
-        )
-    ]
+    groups = {group.identity: group for group in admission.groups}
+    matches = {
+        command.group_id
+        for command in admission.commands
+        if _physical_entry(groups[command.group_id].entry) == owner.entry.context.id
+        and targets <= set(command.outputs)
+    }
     if len(matches) != 1:
         raise ActionError(
             "reproduction.validation.scope_unresolved",
             f"execution has {len(matches)} projected batch matches: {key[1]}",
         )
-    group = matches[0]
-    batch_key = (owner.entry.context.id, str(group["chain_id"]))
+    group_id = next(iter(matches))
+    batch_key = (owner.entry.context.id, group_id)
     blockers = blocked.get(batch_key)
     if not blockers:
         state.admitted_batches.add(batch_key)
@@ -1362,71 +1369,22 @@ def _apply_execution_admission(
         )
 
 
-def _projected_physical_entry(value: object) -> str:
-    """Resolve one projected entry-document ID to its physical entry owner."""
-
-    if not isinstance(value, str):
-        raise ActionError(
-            "reproduction.validation.scope_unresolved",
-            "projected batch has no valid entry scope",
-        )
-    identity = parse_entry_document_name(f"{value}.md")
-    if identity is None:
-        raise ActionError(
-            "reproduction.validation.scope_unresolved",
-            f"projected batch has invalid entry scope: {value}",
-        )
-    return identity.id
-
-
-def _projected_command_outputs(command: Mapping[str, object]) -> set[str]:
-    """Return only material directly produced by one projected command."""
-
-    outputs = {
-        str(relationship["path"])
-        for relationship in _mapping_items(command.get("outputs"))
-        if isinstance(relationship.get("path"), str)
-    }
-    for collection in _mapping_items(command.get("collections")):
-        if collection.get("direction") != "output":
-            continue
-        root = collection.get("root")
-        if isinstance(root, str):
-            outputs.add(root)
-        outputs.update(
-            str(member)
-            for member in _sequence_items(collection.get("members"))
-            if isinstance(member, str)
-        )
-    return outputs
-
-
 def _sequence_items(value: object) -> Sequence[object]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return value
     return ()
 
 
-def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
-    return tuple(item for item in _sequence_items(value) if isinstance(item, Mapping))
+def _physical_entry(value: str) -> str:
+    """Resolve the stored entry-document identity to its physical entry owner."""
 
-
-def _finding_effect(finding: Mapping[str, object]) -> str:
-    effect = finding.get("admission_effect")
-    if effect not in {"none", "chain", "entry", "log"}:
+    identity = parse_entry_document_name(f"{value}.md")
+    if identity is None:
         raise ActionError(
             "reproduction.validation.scope_unresolved",
-            "validation finding has no supported admission effect",
+            f"stored validation group has invalid entry scope: {value}",
         )
-    return str(effect)
-
-
-def _finding_affects_chain(
-    finding: Mapping[str, object], entry: str, chain_id: str
-) -> bool:
-    entries = tuple(_string_items(finding.get("affected_entries")))
-    chains = tuple(_string_items(finding.get("affected_chains")))
-    return entries == (entry,) and chains == (chain_id,)
+    return identity.id
 
 
 def _string_items(value: object) -> tuple[str, ...]:
@@ -1440,9 +1398,7 @@ def _select_and_order(
     policy_skipped = {
         key
         for key, owner in state.selected.items()
-        if (
-            state.selection_policy == RECHECK_SELECTION
-        )
+        if (state.selection_policy == RECHECK_SELECTION)
         and not state.include_all
         and not owner.execution.auto_reproduce
     }
@@ -1637,7 +1593,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
 def _project_plan(
     state: _PlanningState,
     ordered: tuple[ExecutionKey, ...],
-    evaluation: EvaluationResult,
+    prepared: PreparedReproductionContext,
     *,
     entry: EntryContext | None,
 ) -> ReproductionPlan:
@@ -1701,8 +1657,10 @@ def _project_plan(
     failures = tuple(state.failures[key] for key in sorted(state.failures))
     comparisons = _project_comparisons(state, runnable)
     admission = {
-        "evaluated_at": evaluation.record.result_date,
-        "rules_version": evaluation.record.rules_version,
+        "evaluated_at": prepared.evaluation.record.result_date,
+        "rules_version": prepared.evaluation.record.rules_version,
+        "validation_id": prepared.admission.validation_id,
+        "validation_result_id": prepared.admission.result_id,
         "batch_admission": {
             "admitted": [
                 {"chain_id": chain, "entry": entry}
@@ -1880,9 +1838,7 @@ def _record_comparison_definitions(
     )
 
 
-def _comparison_output_target(
-    state: _PlanningState, entry_id: str, output: str
-) -> str:
+def _comparison_output_target(state: _PlanningState, entry_id: str, output: str) -> str:
     """Resolve a persisted comparison output under its selected entry root."""
 
     return (
@@ -2012,26 +1968,26 @@ def _load_prior_results(
     *,
     replace_outdated: bool,
 ) -> dict[ExecutionKey, Mapping[str, object]]:
-    from .reproduction_results import (
-        ReproductionResultError,
-        ReproductionResultSchemaError,
-        load_reproduction_results,
+    from .reproduction_result_storage import (
+        ReproductionStorageError,
+        load_current_execution_results,
     )
 
-    path = log.root / REPRODUCTION_RESULTS
+    path = log.root / RESULTS_STORE
     if not path.exists() and not path.is_symlink():
         return {}
     try:
-        value = load_reproduction_results(path)
-    except ReproductionResultSchemaError as error:
+        return cast(
+            dict[ExecutionKey, Mapping[str, object]],
+            load_current_execution_results(path),
+        )
+    except ReproductionStorageError as error:
         if replace_outdated:
             return {}
         raise ActionError(
-            "reproduction.results.schema_unsupported", str(error)
+            "reproduction.results.schema_unsupported",
+            f"{error}; run whole-log reproduction with --recheck to rebuild it",
         ) from error
-    except ReproductionResultError as error:
-        raise ActionError("reproduction.results.invalid", str(error)) from error
-    return {(item.entry, item.execution_id): item.as_dict() for item in value.commands}
 
 
 def _artifact(

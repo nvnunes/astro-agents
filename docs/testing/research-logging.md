@@ -116,6 +116,17 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_log_reproduction_queries.py \
 ```
 
+For consolidated result storage, render recovery, or scaffold changes, also run
+the focused store tests:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_result_store.py \
+  skills/research-logging/tests/test_log_results_render.py \
+  skills/research-logging/tests/test_log_scaffold.py
+```
+
 This focused command supplements rather than replaces the complete tool gate.
 
 The reproduction suite is migrating to fixed-plan fixtures. Its completion

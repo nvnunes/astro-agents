@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
+from research_log_result_store import ResultStoreError
+
 from .context import resolve_entry, resolve_log, resolve_log_creation
 from .model import (
     ActionError,
@@ -95,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
-    except (ActionError, OSError, UnicodeError) as error:
+    except (ActionError, ResultStoreError, OSError, UnicodeError) as error:
         return _report_failure(
             family, selected_task, error, dry_run="--dry-run" in arguments
         )

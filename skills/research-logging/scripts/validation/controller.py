@@ -8,12 +8,11 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from research_log_paths import (
-    VALIDATION_BATCHES,
+    RESULTS_STORE,
     VALIDATION_REPORT,
-    VALIDATION_RESULTS,
 )
 
 from .batch_projection import build_batch_projection
@@ -30,7 +29,6 @@ from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_
 from .human_projection import (
     ReportContext,
     load_report_context,
-    project_findings,
 )
 from .mechanical_results import CompletionState, MechanicalGeneratedRecord
 from .operation_state import (
@@ -52,8 +50,6 @@ from .validation_cache import ValidationCache, ValidationCacheError
 
 RESULT_SCHEMA = "research-log-validation-result/1"
 UNSUPPORTED_GENERATED_PATHS = (
-    "validation/batches.json",
-    "validation/results.json",
     "validation/manifest.json",
     "validation/outcomes",
     "validation/judgments",
@@ -114,9 +110,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         raise ValidationControllerError(
             f"summary must not be a symlink: {request.summary}"
         )
-    from .inspection import retain_result, timestamp
-
-    started_at = timestamp()
     requested_summary = request.summary.absolute()
     requested_log_root = requested_summary.with_suffix("")
     starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None = None
@@ -174,11 +167,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 result_date,
                 starting_snapshot=starting_snapshot,
             )
-            if request.publish and "record" in result:
-                result["_inspection_id"] = retain_result(
-                    summary, result, result["record"], result["_batch_projection"],
-                    {"kind": "full", "started_at": started_at},
-                )
             return result
     except (
         FingerprintCacheError,
@@ -258,7 +246,12 @@ def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
 
     summary = request.summary.resolve()
     _validate_request(summary)
-    from .inspection import retain_result, timestamp
+    from research_log_result_store import results_lock
+
+    from .result_storage import (
+        publish_validation_result,
+        result_metadata_from_evaluation,
+    )
 
     starting_snapshot = research_snapshot(summary)
     with operation_lock(summary.with_suffix(""), "log.lock", mode="exclusive"):
@@ -274,6 +267,9 @@ def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
                 writable=False,
                 reuse=not request.recompute_validation,
             ) as checks:
+                evaluation_started = datetime.now(timezone.utc).isoformat(
+                    timespec="microseconds"
+                )
                 result = evaluate_mechanical(
                     EvaluationRequest(
                         summary,
@@ -282,6 +278,9 @@ def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
                         fingerprints,
                         checks,
                     )
+                )
+                evaluation_finished = datetime.now(timezone.utc).isoformat(
+                    timespec="microseconds"
                 )
         if research_snapshot(summary) != starting_snapshot:
             return _source_changed_entry_result(request, "during_entry_evaluation")
@@ -296,28 +295,27 @@ def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
                 registries=result.context.registries,
                 source_identity=_value_digest(starting_snapshot),
             )
-            inspection_id = retain_result(
-                summary,
-                {
-                    "status": result.record.completion.value,
-                    "published": False,
-                    "coverage": {
-                        "entries": list(result.context.selected_documents),
-                        "dependencies": list(result.context.dependency_entries),
-                        "limitations": list(result.context.whole_log_conclusions),
-                    },
-                },
-                result.record.as_dict(),
-                dict(projection),
-                {
-                    "kind": "entry",
-                    "entry": request.entry_id,
-                    "started_at": timestamp(),
-                    "source_identity": _value_digest(starting_snapshot),
-                    "dependencies": json.dumps(result.context.dependency_entries),
-                    "limitations": json.dumps(result.context.whole_log_conclusions),
-                },
-            )
+            if result.record.completion is not CompletionState.INCOMPLETE:
+                with results_lock(summary.with_suffix("")):
+                    source_identity = _value_digest(starting_snapshot)
+                    from .result_storage import ValidationPublicationRequest
+
+                    inspection_id = publish_validation_result(
+                        ValidationPublicationRequest(
+                            summary.with_suffix(""),
+                            result.record,
+                            projection,
+                            None,
+                            result_metadata_from_evaluation(
+                                result.context, source_identity=source_identity
+                            ),
+                            kind="entry",
+                            entry=request.entry_id,
+                            started_at=evaluation_started,
+                            finished_at=evaluation_finished,
+                            source_identity=source_identity,
+                        )
+                    ).result_id
     return EntryValidationResult(result, inspection_id)
 
 
@@ -388,6 +386,9 @@ def _run_validation(
             writable=request.publish,
             reuse=not recompute_validation,
         ) as validation_cache:
+            evaluation_started = datetime.now(timezone.utc).isoformat(
+                timespec="microseconds"
+            )
             evaluation = evaluate_mechanical(
                 EvaluationRequest(
                     summary,
@@ -396,6 +397,9 @@ def _run_validation(
                     fingerprint_cache,
                     validation_cache,
                 )
+            )
+            evaluation_finished = datetime.now(timezone.utc).isoformat(
+                timespec="microseconds"
             )
             record = evaluation.record
             projection = build_batch_projection(
@@ -412,66 +416,109 @@ def _run_validation(
                     report_context=report_context,
                     batch_projection=projection,
                 )
-            finding_groups = project_findings(record, report_context)
-            mechanical = (record.canonical_json() + "\n").encode()
-            mechanical_digest = hashlib.sha256(mechanical).hexdigest()
-            projection_bytes = (
-                json.dumps(
-                    projection,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-                + "\n"
-            ).encode("utf-8")
-            outputs = {
-                VALIDATION_BATCHES: projection_bytes,
-                VALIDATION_REPORT: compose_validation_report(
-                    record, context=report_context, groups=finding_groups
-                ).encode(),
-            }
-            report_identity = _current_report_identity(log_root, fingerprint_cache)
-            mechanical_changed = report_identity != mechanical_digest
-            if mechanical_changed:
-                outputs[VALIDATION_RESULTS] = mechanical
-            published_identities = publish_validation_outputs_locked(
-                log_root,
-                outputs,
-                validate_current=lambda: _require_publication_state(
-                    summary,
-                    fingerprint_cache,
-                    starting_snapshot=starting_snapshot,
-                    unchanged_report_sha256=(
-                        None if mechanical_changed else mechanical_digest
-                    ),
-                ),
+            _require_publication_state(
+                summary,
+                fingerprint_cache,
+                starting_snapshot=starting_snapshot,
+                unchanged_report_sha256=None,
             )
-            if mechanical_changed:
-                fingerprint_cache.remember_regular_file(
-                    log_root / VALIDATION_RESULTS,
-                    digest=mechanical_digest,
-                    expected_size=len(mechanical),
-                    expected_identity=published_identities[VALIDATION_RESULTS],
+            from research_log_result_store import (
+                record_report_materialization,
+                results_lock,
+            )
+
+            from .result_storage import (
+                ValidationPublicationRequest,
+                load_validation_report_projection,
+                publish_validation_result,
+                result_metadata_from_evaluation,
+            )
+
+            with results_lock(log_root):
+                retained = publish_validation_result(
+                    ValidationPublicationRequest(
+                        log_root,
+                        record,
+                        projection,
+                        report_context,
+                        result_metadata_from_evaluation(
+                            evaluation.context,
+                            source_identity=_value_digest(starting_snapshot),
+                        ),
+                        started_at=evaluation_started,
+                        finished_at=evaluation_finished,
+                        source_identity=_value_digest(starting_snapshot),
+                    )
                 )
+                try:
+                    stored_projection = load_validation_report_projection(log_root)
+                    report_bytes = compose_validation_report(
+                        stored_projection.record,
+                        context=cast(ReportContext, stored_projection.context),
+                        groups=cast(Any, stored_projection.groups),
+                    ).encode()
+                except Exception as error:
+                    raise _committed_report_error(
+                        "render_failed", retained, error
+                    ) from error
+                try:
+                    publish_validation_outputs_locked(
+                        log_root,
+                        {VALIDATION_REPORT: report_bytes},
+                        validate_current=lambda: _require_unsupported_metadata_clear(
+                            summary
+                        ),
+                    )
+                except Exception as error:
+                    raise _committed_report_error(
+                        "write_failed", retained, error
+                    ) from error
+                try:
+                    record_report_materialization(
+                        log_root,
+                        "validation",
+                        report_bytes,
+                        expected_generation=retained.generation,
+                    )
+                except Exception as error:
+                    raise _committed_report_error(
+                        "write_failed", retained, error
+                    ) from error
             validation_cache.finish_published_run()
             metrics = {
                 **evaluation.metrics,
                 **fingerprint_cache.metrics.as_dict(),
                 **validation_cache.metrics.as_dict(),
             }
-            return _completed_result(
+            completed = _completed_result(
                 record,
                 metrics,
                 published=True,
                 report_context=report_context,
                 batch_projection=projection,
             )
+            completed["_inspection_id"] = retained.result_id
+            return completed
+
+
+def _committed_report_error(
+    kind: str, retained: object, error: Exception
+) -> ValidationControllerError:
+    """Name a report-only failure without recasting its committed result as failed."""
+
+    result_id = getattr(retained, "result_id", "unknown")
+    generation = getattr(retained, "generation", "unknown")
+    return ValidationControllerError(
+        "validation result committed: "
+        f"id={result_id}; generation={generation}; {error}",
+        code=f"results.report.{kind}",
+    )
 
 
 def _current_report_identity(
     log_root: Path, fingerprint_cache: FingerprintCache
 ) -> str | None:
-    path = log_root / VALIDATION_RESULTS
+    path = log_root / RESULTS_STORE
     if path.is_symlink() or not path.is_file():
         return None
     try:
@@ -517,7 +564,7 @@ def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
         if (log_root / relative).is_symlink() or (log_root / relative).exists()
     ]
     report = log_root / VALIDATION_REPORT
-    if report.is_file() and not (log_root / VALIDATION_RESULTS).is_file():
+    if report.is_file() and not (log_root / RESULTS_STORE).is_file():
         try:
             with report.open("rb") as handle:
                 raw_prefix = handle.read(1024 * 1024 + 1)
@@ -606,7 +653,7 @@ def _completed_result(
             context=report_context,
             published=published,
             human_report=(log_root / VALIDATION_REPORT).as_posix(),
-            mechanical_report=(log_root / VALIDATION_RESULTS).as_posix(),
+            mechanical_report=(log_root / RESULTS_STORE).as_posix(),
         ),
         "schema": RESULT_SCHEMA,
         "status": record.completion.value,

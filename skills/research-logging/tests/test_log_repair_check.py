@@ -893,6 +893,9 @@ class RepairCheckTests(unittest.TestCase):
             self.assertEqual(result.status, "matched")
             for sink in blocked:
                 sink.assert_not_called()
+            self.assertFalse((fixture.root / ".cache" / "results.sqlite").exists())
+            self.assertFalse((fixture.root / ".cache" / "reproduction").exists())
+            self.assertFalse((fixture.root / "tmp" / "reproduction").exists())
 
     def test_missing_current_input_does_not_launch_the_child(self) -> None:
         """Current input admission is a pre-launch boundary, not child policy."""

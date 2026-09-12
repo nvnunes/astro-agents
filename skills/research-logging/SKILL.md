@@ -38,8 +38,9 @@ Choose the core operation:
   workflows.
 - Explicit mechanical reproduction of a maintained log or one entry: read
   `references/operation-reproduce.md`. Ordinary reproduction does not target
-  one command. Reproduce is CLI-owned, uses JSON as its graph and execution
-  authority, and never becomes Record, Review, or Validate.
+  one command. Reproduce is CLI-owned, uses authored JSON declarations and
+  `pyrun.json` as graph/execution authority, and uses `results.sqlite` only for
+  disposable query results; it never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, causal group, finding class,
   malformed or legacy state, transaction residue, or other identified log
   defect: read `references/operation-repair.md`. Correction language such as
@@ -110,10 +111,16 @@ state does not start Repair without an explicit correction request.
   and authored prose as research-owned. Research operations never edit
   generated validation files; Validate reads research files and writes
   only the generated files defined in `references/file-validation-records.md`.
-- Treat generated reproduction jobs, machine results, and `reproduction.md` as
+- Treat generated reproduction jobs, the disposable `.cache/results.sqlite`
+  result store, and `reproduction.md` as
   Reproduce-owned. Other operations preserve them and never edit them by hand;
   their exact paths and mutation boundaries are defined in
   `references/file-reproduction-records.md`.
+- Treat reports as derived, nonauthoritative surfaces. `log init` and entry
+  scaffolding create no result store, empty result rows, or placeholder
+  reproduction report. Clearing result state never authorizes changes to a
+  durable run's `state.sqlite`, staged output, diagnostics, evidence baselines,
+  or `pyrun.json` observations.
 - If a maintained log command reports `operation.lock.conflict`, report the
   supplied owner metadata once and stop. Do not retry, poll, inspect process
   tables, or bypass the lock during the current operation.

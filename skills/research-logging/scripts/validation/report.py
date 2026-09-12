@@ -80,10 +80,8 @@ def compose_validation_command_report(
         lines.append("")
     lines.append(
         (
-            "Reports: "
+            "Report: "
             + _markdown_link("Human", human_report)
-            + " · "
-            + _markdown_link("JSON", mechanical_report)
             if published
             else "Report: Not published."
         )
@@ -118,8 +116,6 @@ def compose_validation_batch_report(
     for row in rows:
         report = (
             _markdown_link("Human", row.human_report)
-            + " · "
-            + _markdown_link("JSON", row.mechanical_report)
             if row.published
             else "Not published"
         )

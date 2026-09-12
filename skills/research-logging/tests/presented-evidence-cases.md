@@ -597,11 +597,12 @@ resolves a named issue before Validate is rerun.
 Given a separately authorized Repair of a published finding, the agent uses
 `log findings list` with exact entry or subject filters and then `log findings
 show` for one selected check. It does not parse `validation.md` or load
-`.cache/validation/results.json` directly. The query remains read-only and returns no
+`.cache/results.sqlite` directly; use `log results export --path LOG --format json`
+when an explicit export is required. The query remains read-only and returns no
 repair advice or inferred intent.
 
 Given complete findings, the CLI exits zero and publishes disposable machine state
-under `.cache/validation/` and the source-controlled `validation.md` report.
+in `.cache/results.sqlite` and the source-controlled `validation.md` report.
 Given an unavailable required observation, it returns `incomplete`, exits
 nonzero, and leaves the prior completed bundle unchanged. Dry-run always writes
 nothing.

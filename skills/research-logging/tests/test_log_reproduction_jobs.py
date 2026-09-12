@@ -39,25 +39,107 @@ from log_commands.reproduction_jobs import (
     _acquire_scope_locks,
     _canonical,
     _clear_recovery_guard,
+    _finish_stopped,
     _load_run,
     _publication_retry_skips,
     _status_projection,
     _verify_accepted_materials,
     _verify_checkpoint_inventory,
+    dry_run_reproduction,
     launch_reproduction,
     load_accepted_plan,
     resume_reproduction,
     supervise_reproduction,
 )
-from log_commands.reproduction_results import ReproductionResults
+from log_commands.reproduction_result_storage import (
+    initialize_empty_reproduction_results,
+)
 from reproduction_fixed_plan_test_support import accepted_plan, accepted_run
 from research_log_data import InputResource, ResourceIdentity, observe_fingerprint
+from research_log_paths import REPRODUCTION_REPORT, RESULTS_STORE
+from research_log_result_store import clear_result_store, result_generation
 from test_log_reproduction_planning import _Fixture
 from validation.operation_state import operation_lock
 from validation.pyrun_state import load_pyrun_state
 
 
 class ReproductionJobTests(unittest.TestCase):
+    def test_dry_run_keeps_validation_result_state_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            fixture = _Fixture(project)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            fixture.write_pyrun(
+                entry,
+                [fixture.execution(entry, "build", {"raw": raw}, {"output": output})],
+            )
+
+            plan = dry_run_reproduction(
+                fixture.log, entry=entry.id, include_all=False
+            )
+
+            self.assertEqual(plan.admission["validation_result_id"], "provisional")
+            self.assertFalse((fixture.log_root / ".cache" / "results.sqlite").exists())
+            self.assertFalse((fixture.log_root / "validation.md").exists())
+
+    def test_launch_captures_validation_context_for_rerender(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            fixture = _Fixture(project)
+            entry = fixture.entry(1)
+            raw = entry.root / "data" / "raw.txt"
+            output = entry.root / "data" / "output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            fixture.write_pyrun(
+                entry,
+                [fixture.execution(entry, "build", {"raw": raw}, {"output": output})],
+            )
+            with mock.patch(
+                "log_commands.reproduction_jobs._spawn_supervisor"
+            ) as handoff:
+                launch_reproduction(fixture.log, entry=entry.id, include_all=False)
+            run_root = handoff.call_args.args[1]
+            plan = load_accepted_plan(run_root)
+            self.assertNotEqual(plan.admission["validation_result_id"], "provisional")
+            self.assertTrue((fixture.log_root / "validation.md").is_file())
+            generation = result_generation(fixture.log_root, "validation")
+            fixture.summary.write_text("# Changed\n", encoding="utf-8")
+            from log_commands.inspection_cli import _render
+            from validation.result_storage import load_validation_report_projection
+
+            _render(fixture.log, "validation")
+            projection = load_validation_report_projection(fixture.log_root)
+            self.assertEqual(
+                projection.stored.result_id,
+                plan.admission["validation_result_id"],
+            )
+            self.assertEqual(
+                result_generation(fixture.log_root, "validation"), generation
+            )
+
     def test_fixed_plan_stop_resume_preserves_completed_branches_and_waits_for_b(
         self,
     ) -> None:
@@ -624,6 +706,108 @@ class ReproductionJobTests(unittest.TestCase):
                 load_accepted_plan(root).serialized(), accepted_plan().serialized()
             )
 
+    def test_clearing_results_preserves_an_actual_stopped_job_for_resume(self) -> None:
+        """Result deletion does not cross the stopped run's durable boundary."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log, run_root = accepted_run(project)
+            run_id = run_root.name
+            workspace = ReproductionWorkspace(
+                run_id,
+                run_root,
+                project,
+                run_root / "workspace",
+                run_root / "runtime",
+                run_root / "diagnostics",
+                run_root / "executions",
+            )
+            for directory_path in (
+                workspace.work_project,
+                workspace.runtime_root,
+                workspace.diagnostics_root,
+                workspace.staging_root,
+            ):
+                directory_path.mkdir(parents=True, exist_ok=True)
+            checkpoint = _checkpoint_path(
+                workspace, "e001", "pyrun-exec/v1:" + "1" * 64
+            )
+            checkpoint.parent.mkdir(parents=True)
+            _write_checkpoint(
+                checkpoint,
+                ExecutionCheckpoint(
+                    "e001", "pyrun-exec/v1:" + "1" * 64, "stopped",
+                    checkpoint.relative_to(run_root).as_posix(), None, (),
+                    "2030-01-01T00:00:00Z", "2030-01-01T00:00:01Z", 1.0,
+                    {
+                        "code": "stop_requested",
+                        "message": "stopped",
+                        "recorded_at": "2030-01-01T00:00:01Z",
+                    },
+                ),
+            )
+            staged = workspace.staging_root / "e001" / "retained.txt"
+            diagnostic = workspace.diagnostics_root / "retained.log"
+            for path, content in ((staged, b"staged\n"), (diagnostic, b"diagnostic\n")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            attempt = ExecutionAttempt(
+                "e001", "pyrun-exec/v1:" + "1" * 64, None, True,
+                "stop_requested", "stopped", None, (),
+                diagnostic.relative_to(run_root).as_posix(),
+                diagnostic.relative_to(run_root).as_posix(),
+            )
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._stop_workers_and_clean_scratch",
+                    return_value=(),
+                ),
+                mock.patch(
+                    "log_commands.reproduction_scheduler.release_run_scheduling"
+                ),
+            ):
+                _finish_stopped(
+                    log, run_root, run_id, (attempt,), wait_for_retry=False
+                )
+            self.assertEqual(
+                _load_run(run_root / "run.json")["state"]["status"], "stopped"
+            )
+
+            initialize_empty_reproduction_results(
+                log.root / RESULTS_STORE,
+                summary="docs/study.md",
+                updated_at="2030-01-01T00:00:00Z",
+            )
+            preserved = {
+                run_root / "plan.json": (run_root / "plan.json").read_bytes(),
+                checkpoint: checkpoint.read_bytes(),
+                staged: staged.read_bytes(),
+                diagnostic: diagnostic.read_bytes(),
+            }
+            clear_result_store(log.root)
+            self.assertEqual({path: path.read_bytes() for path in preserved}, preserved)
+            resumed_boundary: dict[Path, bytes] = {}
+
+            def observe_resume(
+                _log: object, _root: Path, _fds: object, *, mode: str
+            ) -> None:
+                self.assertEqual(mode, "stopped")
+                resumed_boundary.update({path: path.read_bytes() for path in preserved})
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_jobs._find_run", return_value=run_root
+                ),
+                mock.patch("log_commands.reproduction_jobs._verify_checkpoint_inventory"),
+                mock.patch(
+                    "log_commands.reproduction_jobs._spawn_supervisor",
+                    side_effect=observe_resume,
+                ),
+            ):
+                self.assertEqual(resume_reproduction(log, run_id), run_id)
+            self.assertEqual(resumed_boundary, preserved)
+
     def test_failed_dependency_skips_only_its_descendant_while_independent_work_runs(
         self,
     ) -> None:
@@ -841,17 +1025,13 @@ class ReproductionJobTests(unittest.TestCase):
                 encoding="utf-8",
             )
             accepted_plan_bytes = plan_path.read_bytes()
-            publication_root = fixture.log.root / ".cache" / "reproduction"
-            published_results = publication_root / "results.json"
-            published_report = publication_root / "report.md"
-            published_results.parent.mkdir(parents=True)
-            # A valid earlier bundle exercises retry compatibility as well as
-            # byte preservation on repeated transaction failure.
-            published_results.write_text(
-                ReproductionResults(
-                    "docs/study.md", "2030-01-01T00:00:00Z", (), (), ()
-                ).serialized(),
-                encoding="utf-8",
+            published_results = fixture.log.root / RESULTS_STORE
+            published_report = fixture.log.root / REPRODUCTION_REPORT
+            published_results.parent.mkdir(parents=True, exist_ok=True)
+            initialize_empty_reproduction_results(
+                published_results,
+                summary="docs/study.md",
+                updated_at="2030-01-01T00:00:00Z",
             )
             published_report.write_text("previous report\n", encoding="utf-8")
             previous_bundle = (

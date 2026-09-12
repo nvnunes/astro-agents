@@ -71,11 +71,11 @@ or evolution requires it.
 | Mechanical record | `research-log-mechanical/1` |
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
-| Published validation | `research-log-published-validation/2` |
+| Published validation export | `research-log-published-validation/2` (explicit export only) |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Entry validation CLI result | `research-log-entry-validation-cli-result/1` |
-| Inspection cache | `research-log-inspection-store/4` (SQLite user version 4) |
-| Cached result and view | `research-log-retained-result/1` and `research-log-result-view/1` |
+| Queryable result store | `<log>/.cache/results.sqlite` (current consolidated SQLite schema) |
+| Cached result and view | Store projections; JSON is explicit export only |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |
 | Project fingerprint cache | SQLite schema 1 |
@@ -1987,7 +1987,7 @@ relative to the maintained-log root:
 - `validation-state`; and
 - `.research-log-validation.lock`.
 
-When no active `.cache/validation/results.json` exists, the preflight also treats
+When no active `.cache/results.sqlite` exists, the preflight also treats
 `validation.md` as unsupported generated state if its bounded prefix contains
 the `| Entry | Date | Checked | Reproducibility |` table header or the
 `## Status Summary` marker. It does not parse any unsupported JSON, shard,
@@ -3404,7 +3404,7 @@ Each eligible standalone file or atomic generated output directory is
 connected, declared-retained, or orphaned. An exact bundle-member edge remains
 member-specific in the evidence and command graph, but it connects the complete
 bundle membership for ownership and orphan classification.
-`.cache/validation/results.json` records authoritative artifact-level orphan
+The validation domain of `.cache/results.sqlite` records authoritative artifact-level orphan
 checks. A named command input, named command output, or evidence reference counts
 as registry use. Output declaration use does not connect an unreached artifact
 to evidence. An unused data item produces one `orphan.input.unused` check; unused
@@ -3433,7 +3433,7 @@ the graph still identifies its current producer.
 
 `validation.md` reports one Hygiene finding count that combines orphan
 artifacts, unmatched outputs, and unused input declarations. Their distinct
-machine-readable checks remain in `.cache/validation/results.json` for repair.
+machine-readable checks remain in `.cache/results.sqlite` for repair.
 Machine-readable orphan metadata may group maximal all-orphan directories
 below, but never equal to, the owning entry root. Starting with each child
 directory, collapse the highest directory whose every eligible file is
@@ -3983,9 +3983,11 @@ in `Current Versions` and contains:
   generated reports.
 
 The explicit JSON CLI envelope does not duplicate the complete generated record on
-standard output. `.cache/validation/results.json` owns those checks. An unpublished
-dry-run or incomplete evaluation retains the complete validation-result record
-in its result because no replacement bundle was installed. An
+standard output. The validation domain in `.cache/results.sqlite` owns those checks.
+An unpublished dry-run or incomplete evaluation may retain its complete
+mechanical record in the invocation's in-memory result and explicit JSON
+envelope, but it does not write that observation to the consolidated result
+store. An
 unsupported-metadata envelope contains
 `code:"validation.unsupported_metadata"` and `observed.paths`, which lists
 every detected unsupported path. It contains no partial mechanical record.
@@ -4005,11 +4007,9 @@ publishing either the result or the rebuilt cache.
 A completed published evaluation owns exactly these active generated paths:
 
 ```text
-<log>/.cache/validation/results.json
-<log>/.cache/validation/batches.json
+<log>/.cache/results.sqlite
 <log>/validation.md
 <log>/.cache/research-log-validation.sqlite3
-<log>/.cache/research-log-inspection.sqlite3
 <log>/.cache/research-log-operations/log.lock
 ```
 
@@ -4027,16 +4027,17 @@ writable evaluation also owns the shared generated SQLite paths:
 <project>/.cache/research-log-fingerprints.sqlite3-shm
 ```
 
-`.cache/validation/results.json` is the current disposable machine authority
-and uses the mechanical-record schema listed in `Current Versions`. Its exact
-top-level fields are `schema`,
-`summary`, `rules_version`, `result_date`, `completion`, `checks`, and
-`scopes`. Checks are unique and sorted by `identity`; each contains
-`identity`, `scope`, `status`, `subject`, `dependencies`, and, only for
-`fail` or `unavailable`, `failure`. A failure contains `code`, `subject`,
-`observed`, `rule`, and an optional `dependency`. Scope aggregates contain
-`scope`, aggregate `status`, total `checks`, and counts for every check status.
-The record is canonical UTF-8 JSON with one trailing newline.
+`<log>/.cache/results.sqlite` is the sole disposable machine authority for
+queryable validation and reproduction results. Its validation domain retains
+the complete normalized mechanical record: result metadata, checks and their
+dependencies, findings, commands, artifacts, chains, unresolved groups, and
+repair batches as typed bounded rows. It keeps the latest completed full slot,
+the latest completed stable slot for each entry, and one diagnostic slot. A
+completed full result replaces the full slot and clears entry and diagnostic
+slots; an entry result replaces only its entry slot. Failed, incomplete, or
+unstable publication preserves the previous completed slots. JSON is produced
+only by an explicit export of a selected stored result; no maintained aggregate
+JSON file exists.
 
 `<log>/.cache/research-log-validation.sqlite3` is disposable per-log
 acceleration state using the schema and component versions listed in `Current
@@ -4098,7 +4099,7 @@ Structure projects machine scope `conformance`, and Hygiene projects machine
 scope `orphan`; neither display label changes the machine schema. Provenance
 counts unique starting artifacts by their worst human result. Internal codes,
 check identities, raw observed state, dependency mappings, passing totals, and
-ordinary `not_applicable` checks remain only in `results.json`.
+ordinary `not_applicable` checks remain only in the result store.
 
 Each direct failed or unavailable condition enters a status-sensitive finding
 signature using its code, resolved entry, normalized logical subject, violated
@@ -4147,16 +4148,16 @@ they do not parse reports or recalculate counts.
 
 #### Published Validation And Repair Batches
 
-Every completed publication writes `research-log-published-validation/2` to
-`.cache/validation/batches.json`, atomically with the result and human report. It
-retains the exact result, source, and rules identities and a content-derived
-`validation_id`. `source_identity` is the SHA-256 identity of the bounded
-starting research-source snapshot accepted for that evaluation.
-
-The JSON publication is ignored local cache state and a full validation can
-rebuild it. `validation.md` is the only source-controlled validation output.
-The former `validation/results.json` and `validation/batches.json` paths are
-unsupported and are never read as fallbacks.
+Every completed publication inserts the complete normalized validation
+projection in one result-store transaction. It retains the exact result,
+source, and rules identities and a content-derived `validation_id`.
+`source_identity` is the SHA-256 identity of the bounded starting
+research-source snapshot accepted for that evaluation. The report is derived:
+the result transaction commits before `validation.md` is atomically rendered.
+If rendering fails, the stored result remains queryable, its materialization
+marker is stale, and `log results render --kind validation` rerenders it
+without reevaluating research files. The former JSON result, batch, and custom
+inspection-store locations are unsupported and never read as fallbacks.
 
 Keep `chains` as the provenance projection: every same-entry connected component
 of unique producer-to-consumer edges, with commands, material collections, edges,
@@ -4301,23 +4302,22 @@ operation records under the same lock.
 
 ### Retained Validation Results
 
-Validation caches evaluated snapshots for selective inspection. This changes
-inspection and persistence, not mechanical findings or repair authority.
+Validation retains selective inspection projections in the validation domain
+of the consolidated result store. This changes persistence, not mechanical
+findings or repair authority.
 
 #### Ownership And Retention
 
-Use one tool-owned SQLite database,
-`<log>/.cache/research-log-inspection.sqlite3`, with store schema
-`research-log-inspection-store/4`. It retains immutable evaluation snapshots;
-`.cache/validation/results.json`, `batches.json`, and `validation.md` continue to own
-the latest published validation. The inspection database and its companions
-are generated, Git-ignored state. Keep the latest full result and the latest
-entry result keyed by its stable physical entry ID. Current repair groups are
-result content, not result selectors or historical certification state.
+Use the validation tables in `<log>/.cache/results.sqlite`; there is no custom
+inspection database, recursive packing layer, or parallel JSON result bundle.
+The store is generated, Git-ignored state. Keep the latest full result and the
+latest entry result keyed by its stable physical entry ID. Current repair groups
+are result content, not result selectors or historical certification state.
 Validating entry e001 replaces e001's cached result and leaves e002 available.
 The store accepts only its current schema. Read-only inspection of an obsolete
 cache reports that validation must rebuild it. On the next cache write, discard obsolete cache contents and initialize the current schema;
-do not migrate old records. Large entry sets use counted references.
+do not migrate old records. Large entry sets remain accessible through bounded,
+paged queries over indexed typed rows.
 The same store retains at most one latest authoring `diagnostic` snapshot per
 log. It contains already observed rejected-command details, not a validation
 result; capturing or inspecting it performs no reevaluation. A new diagnostic
@@ -4330,15 +4330,20 @@ a missing historical ID. Inspection reports missing state without implicitly
 evaluating sources, repairing a database, or importing older publications.
 
 Store metadata, repair batches, checks, commands, artifacts, collections,
-membership, and relationships as independently addressable records. Share repeated context
-within a result. Store collection membership as individually selectable members
-and long scalar values in bounded chunks, rather than one command-sized JSON
-blob. Validate source records and their relationships once during ingestion;
-indexed queries decode only selected bounded records. Small ordinary arrays may
-remain inline; collection membership remains behind a counted reference. SQL indexes are
-derived acceleration state; result content is cached evaluation state. Missing
-or corrupt content produces an explicit query error; it does not trigger
-automatic regeneration. No separate archive or index-maintenance CLI is needed.
+membership, and relationships as independently addressable typed rows. Share
+repeated context within a result. Bounded closed leaf records may use canonical
+JSON columns, but no generic entity/link/piece graph, collection-reference,
+long-string chunking, or content-addressed packing is permitted. Missing or
+corrupt content produces an explicit query error; it does not trigger automatic
+regeneration. No separate archive or index-maintenance CLI is needed.
+
+Batch storage retains direct batch findings, groups, and explicit
+batch-command/code matches only. The compact command junction uses its composite
+key without a SQLite rowid; a rejected command retains its naming finding's code,
+while an anchor-matched command retains each distinct code in its batch. Batch
+code and group selections join batch findings, and artifact selections join a
+qualifying command match to command-relationship paths. Do not materialize
+batch-to-artifact or other transitive fan-out links.
 
 Use the existing SQLite transaction pattern with foreign keys, rollback
 journaling, and full synchronous commits. One transaction inserts the complete
@@ -4367,25 +4372,26 @@ repopulate an authoritative full bundle.
 
 #### Production, Identity, And Publication
 
-Each non-dry-run full or entry evaluation attempts to cache its result before
-returning, including mechanically incomplete outcomes. Operational failures
-before an evaluation exists and unsupported-metadata preflight outcomes retain
-no result. Preserve dry-run's no-result-write contract: its default text says
-the result was not cached and has no result ID. Entry evaluation never writes
-published reports, research metadata, or validation caches.
+Each completed non-dry-run full or entry evaluation commits its complete
+normalized result to the database before any report publication. A mechanically
+incomplete evaluation, an operational failure before completion, or an
+unsupported-metadata preflight outcome does not replace a completed slot or
+return a retained result ID. Preserve dry-run's no-result-write contract: its
+default text says the result was not cached and has no result ID. Entry
+evaluation never writes published reports or research metadata.
 
-Assign an opaque UUID result ID and monotonic per-store commit sequence (reset by explicit cache deletion). Result
-schema `research-log-retained-result/1` has the following metadata; unavailable
+Assign an opaque UUID result ID and monotonic per-store generation (reset by explicit cache deletion). Result
+schema `research-log-retained-result/2` has the following metadata; unavailable
 values are explicit nulls with a reason, never inferred from old publications:
 
 | Field | Meaning |
 | --- | --- |
-| `result_id`, `sequence`, `schema` | Stable identity, commit ordering, and retained-result version. |
+| `result_id`, `generation`, `slot`, `schema` | Stable identity, commit ordering, retained slot, and retained-result version. |
 | `summary`, `kind` | Resolved logical-log summary path; kind is `full`, `entry`, or `diagnostic`. |
 | `started_at`, `finished_at`, `stored_at` | UTC timestamps for this evaluation and its store commit. |
 | `result_date`, `rules_version`, `source_schemas` | Existing calendar/report date and versions used; the report date is not the evaluation timestamp. |
-| `status`, `reason` | Existing completion classification and any incomplete reason. |
-| `source_identity` | Accepted source snapshot identity, or unavailable for an unstable/incomplete observation. |
+| `status`, `reason` | Completed validation classification, or the diagnostic failure classification and reason. |
+| `source_identity` | Accepted completed source snapshot identity; null for a diagnostic snapshot. |
 | `requested_entry`, `requested_chain` | Stable entry requested for scoped evaluation; null for a full result. A chain is current inspection context only. |
 | `requested_entries`, `dependency_entries`, `whole_log_limitations` | Selected documents' stable entry set, reached producer entries, and named conclusions unavailable to an entry result. |
 | `evaluated_scope`, `evaluated_checks` | Full log or actual evaluated entry set and its check count. |
@@ -4400,27 +4406,25 @@ Rejected commands are inspectable records, not evaluated findings.
 Preserve every evaluated check in retained content. Current-group inspection selects
 primary members and newly related findings;
 passing or unrelated entry checks do not expand the returned current-group scope.
-Include current membership and pending overlaps without
-asserting current-group coverage beyond the observed scoped result. An incomplete result says what was observed
-and what remained unavailable; it never uses a clear postcondition for missing
-coverage.
+Include current membership without asserting current-group coverage beyond the
+observed scoped result. An incomplete evaluation remains an unstored producer
+outcome and cannot be inspected as a completed retained result.
 
-Full validation publishes through its existing bundle transaction, then replaces
-the cached full result and clears prior entry and diagnostic results in one SQLite transaction.
-Keep the existing log-operation lock through that update. A failed publication
-leaves the prior cache untouched. A cache write failure preserves the validation
-outcome and exit status, but reports `results.store.write_failed` on stderr;
-default text also says that no new result was cached and supplies no result ID.
-It does not roll back a successfully published bundle. Readers still identify
-any surviving old cache results as historical. Failed or interrupted cache
+Full validation replaces its completed slot and clears prior entry and
+diagnostic slots in one SQLite transaction, then materializes `validation.md`
+from the committed rows while retaining the existing log-operation lock. A
+failed database transaction leaves the prior completed slot and report
+authoritative and reports `results.store.write_failed`. A report composition or
+file-replacement failure leaves the newly committed result queryable, preserves
+the previous report bytes, and leaves its materialization marker stale so
+`log results render` can retry without reevaluation. Failed or interrupted
 replacement cannot make an old result look like the new validation's result.
 
-An incomplete full evaluation replaces only the cached full observation,
-explicitly marked incomplete, without clearing entry results from the still
-published cycle. Complete full evaluations, including those with findings,
-start a new cycle. Preserve source-stability checks, bundle rollback, and
-conservative reuse after evaluation-cache failure. An ID identifies a saved
-observation, not present source validity.
+An incomplete full evaluation does not replace the cached full observation or
+clear entry results from the still-published cycle. Complete full evaluations,
+including those with findings, start a new cycle. Preserve source-stability
+checks and conservative reuse after evaluation-cache failure. An ID identifies
+a saved completed observation, not present source validity.
 
 The same rule applies to writable full validation invoked after reproduction;
 it does not alter reproduction's independent requirement update or promotion outcome.
@@ -4439,7 +4443,7 @@ the report. No agent flag is required for the ordinary view.
 `--format json` preserves the full and entry producer schemas. Callers
 parsing JSON request that format explicitly. JSON consumers needing cached
 result IDs use `results list --format json`. New inspection queries use schema
-`research-log-result-view/1`; full export uses `research-log-retained-result/1`.
+`research-log-result-view/1`; full export uses `research-log-retained-result/2`.
 There is no second producer envelope or additional legacy-format mode.
 Expected mechanical exit conventions remain unchanged. Query errors exit 2
 with a stable code and bounded explanation; cache-write warnings follow the
@@ -4453,51 +4457,50 @@ log results list --path LOG [--kind full|entry|diagnostic] [--entry ENTRY]
   [--chain CHAIN_ID | --batch BATCH_ID]
   [--limit N] [--cursor CURSOR]
 log results show --path LOG (--id RESULT_ID | --latest --kind full|entry|diagnostic)
-  [--view summary|codes|findings|batches|chains|commands|artifacts|collections|overlaps]
+  [--view summary|codes|findings|batches|chains|commands|artifacts]
   [--entry ENTRY] [--chain CHAIN_ID | --batch BATCH_ID] [--code CODE]
   [--limit N] [--cursor CURSOR]
 log results batch --path LOG --id RESULT_ID --batch BATCH_ID
 log results finding --path LOG --id RESULT_ID --finding CHECK_ID
 log results command --path LOG --id RESULT_ID --command COMMAND_ID
 log results artifact --path LOG --id RESULT_ID --artifact ARTIFACT_ID
-log results collection --path LOG --id RESULT_ID --collection COLLECTION_ID
-  [--limit N] [--cursor CURSOR]
-log results value --path LOG --id RESULT_ID --ref VALUE_REF [--cursor CURSOR]
 log results export --path LOG --id RESULT_ID
 ```
 
-`--code` selects the `findings`, `chains`, or `batches` view. Artifact IDs are
-their exact paths; command IDs and finding IDs are the evaluation identities returned in
-those views. Collection and value references are opaque content IDs.
+`--code` selects the `findings`, `batches`, `chains`, `commands`, or `artifacts`
+view. Batch-code and chain-code selection joins direct batch findings; command
+selection uses explicit batch-command/code matches; artifact selection joins
+those matches to input and output relationship paths. Artifact IDs are their
+exact paths; command IDs and finding IDs are the evaluation identities returned
+in those views.
 
 For results with primary repair batches, the cached summary also exposes the
 Structure count using the same finding classification and labels as the cross-log
 report. Compute it from indexed cached membership; do not expand collections or
-reevaluate research sources. Incomplete observations show `—`; diagnostic results
-without repair batches leave this field unavailable.
+reevaluate research sources. Diagnostic results without repair batches leave
+this field unavailable.
 
 `--view batches` lists current primary repair groups, while `--view chains`
 retains provenance membership and related findings. Batch rows show type,
 grouping reason, primary finding count, affected entries, and an inspection
 starting point. `results batch` retrieves the selected current group's anchors,
-primary members, and relationships through bounded records and counted
-references. Groups do not retain historical requests, reconciliation, or
-clearance semantics.
+primary members, and relationships through bounded normalized rows. Groups do
+not retain historical requests, reconciliation, or clearance semantics.
 
 In `show`, `--batch` selects primary members and their linked commands/materials,
 not every finding on a related chain. An entry filter matches a batch's affected
 entries, returning it once with its full scope identified; it does not narrow a
 multi-entry clearance claim. Store indexed entry/batch links and distinct primary
-ownership counts at ingestion. Do not decode an entire published validation or reconstruct
-relationships to answer a filtered view. For a diagnostic result without repair batches, report that batch inspection is
+ownership counts at ingestion. Derive filtered relationships through indexed
+direct rows; do not decode an entire published validation or materialize their
+transitive cross-product. For a diagnostic result without repair batches, report that batch inspection is
 unavailable; do not present missing grouping as zero pending work.
 
 Queries default to ready-to-read text; `--format json` selects equivalent
 structured views with schema `research-log-result-view/1`. Export alone emits
 the complete retained-result JSON schema, explicitly requested for automation;
-it is not a routine agent view. Current publications without a retained result
-remain accessible through `findings` queries. Results inspection reports missing
-or outdated cache state without starting validation.
+it is not a routine agent view. Findings and results inspection require retained
+state and report missing or outdated cache state without starting validation.
 
 `list` queries indexed metadata only, newest commit sequence first. Its exact
 filters intersect and show result ID, evaluation times, kind, requested entry,
@@ -4515,25 +4518,24 @@ check count, returned finding count, counts by code, affected-chain/command/
 artifact counts, and overlap count. Summaries of current validations also show primary batch
 counts by type/grouping reason, batch-size range, assigned direct finding count,
 and fallback finding count. Use these stored aggregates for coverage assessment;
-related links do not multiply counts. Empty, incomplete, and clear are distinct.
-Finding rows provide the exact code, subject or subject reference, observed
+related links do not multiply counts. Empty and clear are distinct; incomplete
+evaluations are not retained. Finding rows provide the exact code, subject, observed
 condition, violated rule, and related command locators. Command detail includes
-document/fence/ordinal and scalar command context; large text, relationship
-lists, and collections use counts and exact query references. Provenance-chain
+document/fence/ordinal and its bounded command context. Provenance-chain
 cross-entry context remains marked read-only. Batch views distinguish affected
-entries from dependency-only context; grouping itself grants no repair authority.
-Every reference returned by any view has a
-supported command that retrieves it within the same result.
+entries from dependency-only context; grouping itself grants no repair
+authority. Ordinary views return bounded entity rows; callers use explicit
+`results export` when they require the complete retained projection.
 
 Ordinary per-log text reports and new inspection views have a 16 KiB UTF-8
-response budget. Explicit legacy JSON and full export retain their respective
+response budget. Producer JSON and full export retain their respective
 machine-record bounds. Listing defaults to 20 items and accepts 1–100. Stop a page
 before exceeding either bound; report total matches, returned count, and an
 opaque continuation cursor for every omitted row. For a summary with too many
 code counts or targets, give the exact count and corresponding paged view.
-Large individual scalar values use `value` references and UTF-8-safe chunks of
-at most 4 KiB. Counts and references replace large values in both text and JSON;
-never silently shorten a command, path, condition, or collection. The root
+If one selected domain row cannot fit the ordinary response budget, fail with
+`results.view.too_large` and direct the caller to explicit export; never silently
+shorten a command, path, condition, relationship, or collection. The root
 producer's comparison lists every discovered log, including its result ID or
 failure; its total output scales with that bounded discovery rather than hiding
 logs to fit the per-log limit. It does not repeat per-log details.
@@ -4545,9 +4547,9 @@ or mismatched cursors with `results.cursor.invalid` and direct the caller to
 restart the listing. Detail cursors remain usable while their result exists.
 Do not compute a page by materializing all matching payloads. A summary reads
 stored aggregates; a selected finding/command reads its indexed records;
-a collection reads only the requested member page. Whole-result decoding,
-hashing, and relationship construction belong to ingestion or explicit export,
-not routine queries. No inspection-time source scans or implicit store repair.
+whole-result decoding, hashing, and relationship construction belong to
+ingestion or explicit export, not routine queries. No inspection-time source
+scans or implicit store repair.
 
 Unknown IDs, unsupported schemas, malformed content,
 and store contention use `results.id.missing`, `results.schema.unsupported`,
@@ -4555,10 +4557,9 @@ and store contention use `results.id.missing`, `results.schema.unsupported`,
 An unavailable store uses `results.store.missing`; unrecovered transaction state
 uses a precise read-only database error; failed persistence uses
 `results.store.write_failed`. Missing entity selectors use
-`results.entity.missing`. Errors distinguish a successfully retrieved incomplete
-evaluation from failed retrieval: inspection of an incomplete result exits zero
-and displays its incomplete status. No persistence failure returns a retained
-success envelope or a usable ID for the failed insertion.
+`results.entity.missing`. Incomplete evaluations have no retained result to
+retrieve. No persistence failure returns a retained success envelope or a usable
+ID for the failed insertion.
 
 ### Command-Provenance And Hygiene Diagnostics
 

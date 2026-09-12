@@ -35,7 +35,7 @@ class ReproductionQueryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ReproductionPlan.from_json(_canonical(value))
 
-    def test_aggregate_report_dispatch_supports_current_queries_only(self) -> None:
+    def test_report_dispatch_supports_current_queries_only(self) -> None:
         output = io.StringIO()
         with (
             mock.patch(
@@ -54,7 +54,7 @@ class ReproductionQueryTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "report\n")
         report.assert_called_once_with(mock.sentinel.log, entry="e001")
 
-    def test_aggregate_summary_and_root_dispatch_remain_available(self) -> None:
+    def test_summary_and_root_dispatch_remain_available(self) -> None:
         output = io.StringIO()
         with (
             mock.patch(
@@ -85,9 +85,7 @@ class ReproductionQueryTests(unittest.TestCase):
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(
-                main(
-                    ["reproduce", "report", "--root", str(root), "--summary"]
-                ),
+                main(["reproduce", "report", "--root", str(root), "--summary"]),
                 0,
             )
         self.assertEqual(output.getvalue(), "root\n")

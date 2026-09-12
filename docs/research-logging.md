@@ -71,10 +71,10 @@ The minimum structure is:
 <log>.md
 <log>/
   entries/
-  reproduction.md
 ```
 
-A populated log may contain:
+A generated report and disposable query results appear only after their owning
+operation completes. A populated log may contain:
 
 ```text
 <log>.md
@@ -84,11 +84,7 @@ A populated log may contain:
   validation.md
   reproduction.md
   .cache/
-    validation/
-      results.json
-      batches.json
-    reproduction/
-      results.json
+    results.sqlite
   entries/
     2026-05-01-e001-calibration-drift-check/
       e001.md
@@ -101,6 +97,13 @@ A populated log may contain:
       images/
       scripts/
 ```
+
+Reproduction runs additionally retain durable job state, checkpoints,
+comparison context, and diagnostics beneath the project's `tmp/reproduction/`
+run directory. Clearing disposable result rows never changes that run-local
+state, authored evidence baselines, fingerprint/selection caches, or
+`pyrun.json` observations. The Markdown reports are derived from the store and
+may be rerendered; they are never machine authority.
 
 Create other optional files and folders only when they are needed. Start navigation
 from the summary for current understanding, scan `entries/` by date and topic,
@@ -1169,9 +1172,11 @@ human-readable issue type. Each group shows at most ten targets and states when
 more were omitted. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
 
-The Markdown reports are the committed human surfaces. The tools maintain their
-detailed, rebuildable machine state below `<log>/.cache/`; a fresh checkout or
-cleared cache requires validation or reproduction to rebuild it. Ask the agent
+The Markdown reports are derived human surfaces. The tools maintain their
+detailed, rebuildable query state in `<log>/.cache/results.sqlite`; a fresh
+checkout or cleared result domain requires validation or reproduction to rebuild
+it. Clearing it does not disturb a durable reproduction run or `pyrun.json`.
+Ask the agent
 to inspect a finding rather than editing generated files. Validation reads the
 research record but changes only its own generated output.
 

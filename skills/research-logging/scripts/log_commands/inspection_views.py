@@ -6,26 +6,17 @@ import json
 import shlex
 from typing import Any
 
-from validation.inspection_store import InspectionError
-
-from .inspection_queries import MAX_VIEW_BYTES
+from .inspection_queries import MAX_VIEW_BYTES, InspectionError
 
 
 def _lines(value: Any, indent: str, command: str) -> list[str]:
-    if isinstance(value, dict) and value.get("type") in {"collection", "value"}:
-        kind = value["type"]
-        flag = "--ref" if kind == "value" else "--collection"
-        unit = "characters" if kind == "value" else "items"
-        return [
-            f"{indent}{value['count']} {unit}; "
-            f"log results {kind} {command} {flag} {value['ref']}"
-        ]
     if isinstance(value, dict):
         lines = []
         if {"result_id", "kind", "finished_at"} <= value.keys():
             command = (
                 command.rsplit(" --id ", 1)[0]
-                + " --id " + shlex.quote(value["result_id"])
+                + " --id "
+                + shlex.quote(value["result_id"])
             )
         lines.extend(_followups(value, indent, command))
         for key, item in value.items():

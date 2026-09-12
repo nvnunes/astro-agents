@@ -25,6 +25,7 @@ from validation.mechanical_results import (
     FailurePayload,
     MechanicalCheck,
 )
+from validation.result_storage import provisional_validation_admission
 
 
 class SummaryConfirmationTests(unittest.TestCase):
@@ -56,9 +57,10 @@ class SummaryConfirmationTests(unittest.TestCase):
                 registries=evaluated.scan["registries"],
                 source_identity="fixture",
             )
-            self.assertFalse(_blocked_validation_batches(projection))
-            self.assertFalse(_entry_validation_blockers(projection))
-            _require_resolved_validation_blockers(projection)
+            admission = provisional_validation_admission(evaluated.result, projection)
+            self.assertFalse(_blocked_validation_batches(admission))
+            self.assertFalse(_entry_validation_blockers(admission))
+            _require_resolved_validation_blockers(admission)
 
             logical = summary.with_suffix("")
             published = run_log(root, "validate", "--path", str(logical))

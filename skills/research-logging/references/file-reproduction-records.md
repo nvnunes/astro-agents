@@ -6,7 +6,7 @@ Use this file when Reproduce creates, reads, or publishes generated state.
 
 Reproduce may create or update only these generated paths:
 
-- `<log>/.cache/reproduction/results.json`;
+- `<log>/.cache/results.sqlite` and its safe SQLite companions;
 - `<log>/reproduction.md`;
 - `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>-<run-id>/` for a log
   run, or
@@ -21,11 +21,11 @@ Reproduce may create or update only these generated paths:
 - `<project>/.cache/research-log-operations/reproduction-scheduler.lock`, the
   existing-operation-lock mutex that serializes coordinator updates.
 
-`.cache/reproduction/results.json` is the current local machine authority for
+The reproduction domain of `.cache/results.sqlite` is the current local machine authority for
 artifact outcomes, unchanged terminal failure and block dispositions,
 per-run command accounting, and run history.
 `reproduction.md` is its source-controlled human-only projection. Agents do not
-parse either file during ordinary work. Historical result/10 execution rows are
+parse either surface during ordinary work. Historical execution rows are
 read-only; `log reproduce report --run-id` is unsupported. Status and command
 queries may still accept run IDs. Use the summary/list report routes for
 bounded status overviews:
@@ -36,8 +36,10 @@ for complete comparison detail. Use command queries to enumerate the execution
 units behind a compact command count; do not derive those lists by parsing this
 generated record.
 
-The machine record is disposable and rebuildable by reproduction. Removing it
-discards local result history and unchanged failure and block dispositions.
+The result domain is disposable and rebuildable by reproduction. Removing it
+discards local result history and unchanged failure and block dispositions, but
+never touches a run-local `state.sqlite`, staged outputs, diagnostics, evidence
+baselines, selection/fingerprint caches, or `pyrun.json`.
 Current `pyrun.json` state still determines which successful commands do not
 need reproduction. Rebuilding the discarded machine state requires an explicit
 reproduction `--recheck`; an ordinary incremental invocation may correctly
@@ -51,7 +53,7 @@ with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result schema is `research-log-reproduction-result/10`. Every newly
+The current result-store schema retains every newly
 published run counts every command in its log or entry exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
@@ -81,16 +83,11 @@ and adds only affected downstream commands already in that queue. It never
 infers this decision from artifact outcomes. `--recheck` is an initial-launch
 override and does not apply to resume.
 
-The reader accepts only the current result schema. Any older generated result
-is outdated and is not decoded, migrated, or used by incremental planning or a
-partial publication retry. The CLI instructs the caller to launch whole-log
-reproduction with `--recheck`; that complete plan may atomically replace the
-outdated machine result and Markdown report. Command list and show do not
-branch on concrete retired versions or reconstruct command rows from a retained
-run directory, published aggregates, or current metadata. Malformed current
-results remain invalid rather than being treated as outdated. The accepted
-source snapshot records the result schema it may publish, so a run accepted
-before a schema cutover cannot perform that replacement.
+The reader accepts only the current result-store schema. An unsupported or
+malformed store is not decoded, migrated, or used by incremental planning or a
+partial publication retry. Command list and show do not reconstruct command rows
+from a retained run directory, published aggregates, or current metadata. A
+run accepted before a schema cutover cannot publish into an unsupported store.
 
 For a current published command record, command show may supplement immutable
 accounting with the matching retained run checkpoint and bounded stdout and
@@ -113,10 +110,10 @@ relocate, or make a second copy of those outputs. A researcher may delete the
 folder manually; later reporting prunes a run-history row only when absence can
 be proved, and otherwise reports unknown availability.
 
-New runs use the strict run/plan/status v6 shapes. They retain the immutable logical
-queue and `jobs` cap, attempt lineage, every active entry-qualified execution,
-complete worker history, and per-attempt `active`, `succeeded`, `failed`, or
-`stopped` checkpoints. A
+New runs use run-local `state.sqlite` as durable job authority. It retains one
+immutable accepted plan, the logical queue and `jobs` cap, active
+entry-qualified execution state, worker state, checkpoints, comparison context,
+and publication-retry state. It has no attempt lineage. A
 scheduling permit is released only after terminal checkpoint publication and
 worker exit. Older job files remain untouched but are unsupported: Reproduce
 does not resume, migrate, or decode them, and directs the caller to start a
@@ -138,8 +135,8 @@ The maintained summary owns this stable navigation line:
 Reproduction: [latest report](<log>/reproduction.md)
 ```
 
-Record initialization creates the link and empty generated surfaces as one
-transaction. Reorganize preserves or relocates them. Reproduce never changes
+Record initialization creates the link only; it creates no result database,
+empty result rows, or placeholder report. Reorganize preserves or relocates it. Reproduce never changes
 the summary line.
 
 ## Publication Boundary
@@ -160,7 +157,8 @@ one-time path migration and is never read as a fallback.
 
 ## Current Run Records
 
-Current runs use one immutable `plan.json` at plan/9 plus run/7 and individual
-checkpoint files. Attempt histories, embedded plans, and one-command plans
-are unsupported. Result/10 may render historical execution rows passively, but
-no current command creates or reports a single-execution run.
+Current runs use one immutable accepted plan inside `state.sqlite` plus typed
+mutable job and checkpoint rows. Attempt histories, embedded duplicate plans,
+and one-command plans are unsupported. Result projections may render historical
+execution rows passively, but no current command creates or reports a
+single-execution run.

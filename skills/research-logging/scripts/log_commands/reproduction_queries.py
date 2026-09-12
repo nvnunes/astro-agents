@@ -5,11 +5,12 @@ from __future__ import annotations
 import re
 import shlex
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, cast
 
-from research_log_paths import REPRODUCTION_RESULTS
+from research_log_paths import RESULTS_STORE
 from validation.discovery import discover_summaries
 from validation.human_projection import load_report_context
 
@@ -19,26 +20,25 @@ from .reproduction_accounting import CommandAccountingError, project_command_sel
 from .reproduction_contract import ReproductionPlan
 from .reproduction_planner import (
     ReproductionCommandInventory,
+    ReproductionStateProjection,
     project_reproduction_command_inventory,
     project_reproduction_state,
 )
+from .reproduction_result_storage import (
+    load_reproduction_report_projection,
+    reproduction_summary_projection,
+)
 from .reproduction_results import (
     ArtifactCurrentness,
+    ArtifactResult,
     ReproductionResultError,
     ReproductionResults,
     ReproductionResultSchemaError,
     RunResult,
-    artifact_summary_counts,
     command_summary_counts,
-    compose_reproduction_reconciliation_summary,
     compose_reproduction_report,
-    compose_reproduction_summary,
-    current_command_query_metadata,
-    load_reproduction_results,
-    load_results_or_empty,
+    compose_reproduction_summary_projection,
     project_current_results,
-    query_artifacts,
-    run_is_resolved,
 )
 
 ARTIFACT_LIST_SCHEMA = "research-log-reproduction-artifact-list/1"
@@ -69,7 +69,7 @@ COMMAND_REASONS = (
 def reproduction_report(log: LogContext, *, entry: str | None) -> str:
     """Return the centralized current human report projection."""
 
-    results, currentness = _current(log)
+    results, currentness = _report_projection(log)
     return compose_reproduction_report(
         results,
         context=load_report_context(log.summary),
@@ -81,34 +81,62 @@ def reproduction_report(log: LogContext, *, entry: str | None) -> str:
 
 def reproduction_summary(log: LogContext) -> dict[str, object]:
     """Return the canonical compact summary for one maintained log."""
-
-    results, _currentness = _current(log)
-    latest = next((run for run in results.runs if run.status == "complete"), None)
+    try:
+        projection = reproduction_summary_projection(log.root / RESULTS_STORE)
+    except ReproductionResultSchemaError as error:
+        raise ActionError(
+            "reproduction.results.schema_unsupported", str(error)
+        ) from error
+    except Exception as error:
+        raise _result_store_error(error) from error
+    command = cast(Mapping[str, int], projection.get("command") or {})
+    artifact = cast(Mapping[str, int], projection.get("artifact") or {})
+    complete = projection.get("run") is not None
     return {
-        "artifacts": (
-            dict(artifact_summary_counts(results.artifacts, results.commands))
-            if latest is not None
-            else None
+        "artifacts": None
+        if not complete
+        else {
+            "matched": artifact["matched"],
+            "not_matched": artifact["not_matched"],
+            "not_compared": {
+                name: artifact[name]
+                for name in (
+                    "command_failed",
+                    "command_blocked",
+                    "command_skipped",
+                    "comparison_failed",
+                )
+            }
+            | {
+                "total": artifact["total"]
+                - artifact["matched"]
+                - artifact["not_matched"]
+            },
+            "total": artifact["total"],
+        },
+        "commands": None if not complete else dict(command_summary_counts(command)),
+        "generated_at": projection["updated_at"],
+        "run_id": projection.get("run_id"),
+        "resolved": None
+        if not complete
+        else all(
+            command[name] == 0
+            for name in ("blocked", "failed", "unchanged_blocked", "unchanged_failed")
         ),
-        "commands": (
-            dict(command_summary_counts(latest.command_outcomes))
-            if latest is not None and latest.command_outcomes is not None
-            else None
-        ),
-        "generated_at": results.updated_at,
-        "run_id": latest.run_id if latest is not None else None,
-        "resolved": run_is_resolved(latest) if latest is not None else None,
         "schema": SUMMARY_SCHEMA,
-        "status": "complete" if latest is not None else "not_run",
-        "summary": results.summary,
+        "status": "complete" if complete else "not_run",
+        "summary": projection["summary"],
     }
 
 
 def reproduction_summary_text(log: LogContext) -> str:
     """Return the canonical compact human summary for one maintained log."""
 
-    results, _currentness = _current(log)
-    return compose_reproduction_summary(results)
+    try:
+        projection = reproduction_summary_projection(log.root / RESULTS_STORE)
+    except Exception as error:
+        raise _result_store_error(error) from error
+    return _summary_text_from_projection(projection)
 
 
 def reproduction_reconciliation_text(
@@ -124,26 +152,65 @@ def reproduction_reconciliation_text(
             "reproduction.reconciliation.invalid",
             "a no-work reconciliation cannot contain runnable executions",
         )
-    project = resolve_project_root(log.root)
     try:
-        summary = log.summary.resolve().relative_to(project).as_posix()
-    except ValueError as error:
-        raise ActionError("reproduction.results.invalid", str(error)) from error
-    results = load_results_or_empty(
-        log.root / REPRODUCTION_RESULTS,
-        summary=summary,
-        updated_at=generated_at,
-    )
-    state = project_reproduction_state(log)
-    projected, _currentness = project_current_results(results, state)
+        projection = reproduction_summary_projection(log.root / RESULTS_STORE)
+    except Exception as error:
+        # An absent reproduction domain is cold state, not an invitation to
+        # construct an aggregate placeholder in memory.
+        if "reproduction result is absent" not in str(error):
+            raise _result_store_error(error) from error
+        projection = {"artifact": _empty_artifact_counts(), "run": None}
     outcomes = _no_work_command_outcomes(
         plan,
         project_reproduction_command_inventory(log, plan.target),
     )
-    return compose_reproduction_reconciliation_summary(
-        projected,
+    return compose_reproduction_summary_projection(
+        cast(Mapping[str, object], projection["artifact"]),
         outcomes,
+        latest_run_id=cast(str | None, projection.get("run_id")),
+        reconciliation=True,
     )
+
+
+def _summary_text_from_projection(projection: Mapping[str, object]) -> str:
+    """Format a scalar store projection without hydrating result history."""
+
+    if projection.get("run") is None:
+        return compose_reproduction_summary_projection(
+            _empty_artifact_counts(), None, latest_run_id=None
+        )
+    return compose_reproduction_summary_projection(
+        cast(Mapping[str, object], projection["artifact"]),
+        cast(Mapping[str, int], projection["command"]),
+        latest_run_id=cast(str | None, projection.get("run_id")),
+    )
+
+
+def _empty_artifact_counts() -> dict[str, object]:
+    return {
+        "matched": 0,
+        "not_matched": 0,
+        "not_compared": {
+            "command_failed": 0,
+            "command_blocked": 0,
+            "command_skipped": 0,
+            "comparison_failed": 0,
+            "total": 0,
+        },
+        "total": 0,
+    }
+
+
+def _result_store_error(error: Exception) -> ActionError:
+    """Map normalized-store failures without turning corrupt state into cold state."""
+    message = str(error)
+    if "unsupported" in message:
+        return ActionError("reproduction.results.schema_unsupported", message)
+    if "locked" in message or "busy" in message:
+        return ActionError("reproduction.results.busy", message)
+    if message == "reproduction result is absent":
+        return ActionError("reproduction.results.missing", message)
+    return ActionError("reproduction.results.invalid", message)
 
 
 def _no_work_command_outcomes(
@@ -171,6 +238,40 @@ def _no_work_command_outcomes(
         "succeeded": 0,
         "total": selection.total,
     }
+
+
+def _artifact_currentness(
+    artifacts: Sequence[ArtifactResult], state: ReproductionStateProjection
+) -> dict[tuple[str, str], str]:
+    """Derive currentness for only the artifact rows selected by the SQL view."""
+    result: dict[tuple[str, str], str] = {}
+    for artifact in artifacts:
+        entry = artifact.entry
+        path = artifact.artifact
+        execution_id = artifact.execution_id
+        if execution_id is None:
+            result[(entry, path)] = "current"
+            continue
+        if state.output_executions.get((entry, path)) not in {None, execution_id}:
+            result[(entry, path)] = "execution_changed"
+        elif (entry, execution_id) not in state.last_runs:
+            result[(entry, path)] = "execution_unavailable"
+        elif (
+            artifact.comparison is None
+            and state.comparison_definitions.get((entry, path)) is not None
+        ) or (
+            artifact.comparison is not None
+            and artifact.comparison.evidence_definition
+            != state.comparison_definitions.get((entry, path))
+        ):
+            result[(entry, path)] = "comparison_changed"
+        elif (
+            last_run := state.last_runs.get((entry, execution_id))
+        ) is not None and last_run > artifact.recorded_at:
+            result[(entry, path)] = "execution_reran"
+        else:
+            result[(entry, path)] = "current"
+    return result
 
 
 def root_reproduction_summary(root: Path) -> dict[str, object]:
@@ -406,19 +507,41 @@ def list_reproduction_artifacts(
 ) -> dict[str, object]:
     """Return at most 50 exact current artifact records."""
 
-    results, currentness = _current(log)
-    query = query_artifacts(
-        results,
-        currentness=currentness,
-        entry=entry,
-        outcome=outcome,
-        artifact=artifact,
+    if outcome is not None and outcome not in {
+        "matched",
+        "changed",
+        "failed",
+        "comparison_failed",
+        "skipped",
+    }:
+        raise ActionError(
+            "reproduction.artifact.outcome.invalid", f"unsupported outcome: {outcome}"
+        )
+    from .reproduction_result_storage import (
+        ReproductionStorageError,
+        reproduction_artifact_projection,
     )
+
+    try:
+        summary, matched, records = reproduction_artifact_projection(
+            log.root / RESULTS_STORE, entry=entry, outcome=outcome, artifact=artifact
+        )
+    except ReproductionStorageError as error:
+        raise ActionError("reproduction.results.missing", str(error)) from error
+    state = project_reproduction_state(log)
+    currentness = _artifact_currentness(records, state)
+    projected = [
+        {**item.as_dict(), "currentness": currentness[(item.entry, item.artifact)]}
+        for item in records
+    ]
     return {
-        **query.as_dict(),
+        "matched": matched,
+        "omitted": matched - len(projected),
+        "records": projected,
+        "returned": len(projected),
         "filters": {"artifact": artifact, "entry": entry, "outcome": outcome},
         "schema": ARTIFACT_LIST_SCHEMA,
-        "summary": results.summary,
+        "summary": summary,
     }
 
 
@@ -427,24 +550,23 @@ def show_reproduction_artifact(
 ) -> dict[str, object]:
     """Return one complete exact current artifact record."""
 
-    results, currentness = _current(log)
-    query = query_artifacts(
-        results, currentness=currentness, entry=entry, artifact=artifact
+    value = list_reproduction_artifacts(
+        log, entry=entry, outcome=None, artifact=artifact
     )
-    if query.matched == 0:
+    if value["matched"] == 0:
         raise ActionError(
             "reproduction.artifact.unknown",
             f"published reproduction contains no {entry}:{artifact}",
         )
-    if query.matched != 1:
+    if value["matched"] != 1:
         raise ActionError(
             "reproduction.artifact.ambiguous",
             f"published reproduction contains ambiguous {entry}:{artifact}",
         )
     return {
-        "artifact": dict(query.records[0]),
+        "artifact": dict(cast(Sequence[Mapping[str, object]], value["records"])[0]),
         "schema": ARTIFACT_SHOW_SCHEMA,
-        "summary": results.summary,
+        "summary": value["summary"],
     }
 
 
@@ -463,16 +585,9 @@ def list_reproduction_commands(
             "reproduction.command.bucket.invalid",
             f"unsupported command bucket: {bucket}",
         )
-    records, results, selected_run = _reproduction_command_records(log, run_id=run_id)
-    selected = [
-        record
-        for record in records
-        if (bucket is None or record["bucket"] == bucket)
-        and (entry is None or record["entry"] == entry)
-        and (reason is None or record["reason"] == reason)
-    ]
-    returned = selected[:50]
-    matched = len(selected)
+    summary, selected_run, matched, returned = _command_projection(
+        log, _CommandProjectionRequest(run_id, bucket, entry, reason, 50)
+    )
     load_run = lru_cache(maxsize=1)(lambda: _retained_command_run(log, selected_run))
     rows = []
     for record in returned:
@@ -494,7 +609,7 @@ def list_reproduction_commands(
         "returned": len(returned),
         "run_id": selected_run.run_id,
         "schema": COMMAND_LIST_SCHEMA,
-        "summary": results.summary,
+        "summary": summary,
     }
 
 
@@ -507,18 +622,15 @@ def show_reproduction_command(
 ) -> dict[str, object]:
     """Return one complete command record from completed-run accounting."""
 
-    records, results, selected_run = _reproduction_command_records(log, run_id=run_id)
-    selected = [
-        record
-        for record in records
-        if record["entry"] == entry and record["execution_id"] == execution_id
-    ]
-    if not selected:
+    summary, selected_run, matched, selected = _command_projection(
+        log, _CommandProjectionRequest(run_id, None, entry, None, 2, execution_id)
+    )
+    if matched == 0:
         raise ActionError(
             "reproduction.command.unknown",
             f"reproduction run contains no {entry}:{execution_id}",
         )
-    if len(selected) != 1:
+    if matched != 1:
         raise ActionError(
             "reproduction.command.ambiguous",
             f"reproduction run contains ambiguous {entry}:{execution_id}",
@@ -532,7 +644,7 @@ def show_reproduction_command(
         ),
         "run_id": selected_run.run_id,
         "schema": COMMAND_SHOW_SCHEMA,
-        "summary": results.summary,
+        "summary": summary,
     }
 
 
@@ -770,7 +882,8 @@ def _failure_summary(diagnostics: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(stream, Mapping) or not stream.get("available"):
             continue
         excerpt = re.sub(
-            r"(?:\x1b|�)\[[0-?]*[ -/]*[@-~]", "",
+            r"(?:\x1b|�)\[[0-?]*[ -/]*[@-~]",
+            "",
             str(stream.get("excerpt") or ""),
         )
         lines = excerpt.splitlines()
@@ -815,7 +928,8 @@ def _locate_command_checkpoint(
     from .reproduction_jobs import _checkpoint_dicts
 
     matches = [
-        item for item in _checkpoint_dicts(run_root)
+        item
+        for item in _checkpoint_dicts(run_root)
         if item.get("entry") == entry
         and item.get("execution_id") == execution_id
         and item.get("state") != "active"
@@ -913,41 +1027,49 @@ def _append_diagnostic_stream(
         lines.extend((f"--- {name} ---", excerpt.rstrip("\n"), f"--- end {name} ---"))
 
 
-def _reproduction_command_records(
-    log: LogContext, *, run_id: str | None
-) -> tuple[
-    list[dict[str, object]],
-    ReproductionResults,
-    RunResult,
-]:
-    """Load complete immutable rows from one completed reproduction run."""
+@dataclass(frozen=True)
+class _CommandProjectionRequest:
+    run_id: str | None
+    bucket: str | None
+    entry: str | None
+    reason: str | None
+    limit: int
+    execution_id: str | None = None
 
-    results = _published_results(log)
-    runs = [
-        run
-        for run in results.runs
-        if run.status == "complete" and (run_id is None or run.run_id == run_id)
-    ]
-    if not runs:
-        subject = "the latest completed run" if run_id is None else run_id
-        raise ActionError(
-            "reproduction.command.run_unavailable",
-            f"published reproduction contains no command accounting for {subject}",
+
+def _command_projection(
+    log: LogContext, request: _CommandProjectionRequest
+) -> tuple[str, RunResult, int, tuple[dict[str, object], ...]]:
+    """Read one exact command view without hydrating unrelated run history."""
+    from .reproduction_result_storage import (
+        CommandProjectionRequest,
+        ReproductionStorageError,
+        reproduction_command_projection,
+    )
+
+    try:
+        summary, run, matched, records = reproduction_command_projection(
+            log.root / RESULTS_STORE,
+            CommandProjectionRequest(
+                request.run_id,
+                request.bucket,
+                request.entry,
+                request.reason,
+                request.execution_id,
+                request.limit,
+            ),
+            project_root=resolve_project_root(log.root),
         )
-    selected_run = runs[0]
-    command_metadata = current_command_query_metadata(selected_run)
-    if command_metadata is None:
-        raise ActionError(
-            "reproduction.command.schema_unsupported",
-            "selected run has unsupported command-query metadata; run reproduction "
-            f"with --recheck to rebuild it: {selected_run.run_id}",
-        )
-    records = [
-        {**dict(record), "command": _recorded_command(record)}
-        for record in command_metadata.records
-    ]
-    _verify_command_record_counts(records, command_metadata.outcomes)
-    return records, results, selected_run
+    except ReproductionStorageError as error:
+        raise ActionError("reproduction.command.run_unavailable", str(error)) from error
+    return (
+        summary,
+        run,
+        matched,
+        tuple(
+            {**dict(record), "command": _recorded_command(record)} for record in records
+        ),
+    )
 
 
 def _recorded_command(detail: Mapping[str, object]) -> str:
@@ -1002,10 +1124,10 @@ def _verify_command_record_counts(
         )
 
 
-def _current(
+def _report_projection(
     log: LogContext,
 ) -> tuple[ReproductionResults, Mapping[tuple[str, str], ArtifactCurrentness]]:
-    path = log.root / REPRODUCTION_RESULTS
+    path = log.root / RESULTS_STORE
     if path.is_symlink() or not path.is_file():
         raise ActionError(
             "reproduction.results.missing",
@@ -1013,36 +1135,14 @@ def _current(
             f"rebuild it: {path}",
         )
     try:
-        results = load_reproduction_results(path)
+        results = load_reproduction_report_projection(
+            path, project_root=resolve_project_root(log.root)
+        )
         expected = resolve_project_root(log.root) / results.summary
         if expected.resolve() != log.summary.resolve():
             raise ReproductionResultError("result summary identity changed")
         state = project_reproduction_state(log)
         return project_current_results(results, state)
-    except ReproductionResultSchemaError as error:
-        raise ActionError(
-            "reproduction.results.schema_unsupported", str(error)
-        ) from error
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.results.invalid", str(error)) from error
-
-
-def _published_results(log: LogContext) -> ReproductionResults:
-    """Load historical results without consulting current command metadata."""
-
-    path = log.root / REPRODUCTION_RESULTS
-    if not path.is_file() or path.is_symlink():
-        raise ActionError(
-            "reproduction.results.missing",
-            f"No completed reproduction result. Run log reproduce --dry-run to "
-            f"check the current plan, then launch reproduction: {path}",
-        )
-    try:
-        results = load_reproduction_results(path)
-        expected = resolve_project_root(log.root) / results.summary
-        if expected.resolve() != log.summary.resolve():
-            raise ReproductionResultError("result summary identity changed")
-        return results
     except ReproductionResultSchemaError as error:
         raise ActionError(
             "reproduction.results.schema_unsupported", str(error)

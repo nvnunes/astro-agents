@@ -18,7 +18,6 @@ from validation.evidence import EvidenceRecord
 from validation.pyrun_state import PyrunExecution
 
 PLAN_SCHEMA = "research-log-reproduction-plan/9"
-PREEXECUTION_RESULT_SCHEMA = "research-log-reproduction-result/9"
 REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
@@ -353,10 +352,21 @@ def _validate_execution_members(
 def _validate_nested_plan(plan: ReproductionPlan) -> None:
     """Decode every retained command and evidence definition before lifecycle use."""
 
-    if set(plan.admission) != {"evaluated_at", "rules_version", "batch_admission"}:
+    if set(plan.admission) != {
+        "evaluated_at",
+        "rules_version",
+        "validation_id",
+        "validation_result_id",
+        "batch_admission",
+    }:
         raise ValueError("accepted reproduction plan admission is invalid")
-    if not isinstance(plan.admission["evaluated_at"], str) or not isinstance(
-        plan.admission["rules_version"], str
+    if (
+        not isinstance(plan.admission["evaluated_at"], str)
+        or not isinstance(plan.admission["rules_version"], str)
+        or not all(
+            isinstance(plan.admission[name], str) and plan.admission[name]
+            for name in ("validation_id", "validation_result_id")
+        )
     ):
         raise ValueError("accepted reproduction plan admission is invalid")
     command_keys = {

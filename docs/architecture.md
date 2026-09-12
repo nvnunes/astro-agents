@@ -277,10 +277,11 @@ Future validation changes must preserve these invariants:
   agents manage research material and do not modify validation or reproduction
   artifacts. Reproduction agents manage only generated reproduction state and
   never promote staged outputs into retained research material automatically.
-- **Committed reports, disposable machine state:** `validation.md` and
-  `reproduction.md` are the source-controlled human summaries. Detailed
-  validation and reproduction JSON lives below each log's ignored `.cache/`
-  directory and can be rebuilt by rerunning the owning operation.
+- **Derived reports, disposable query state:** `validation.md` and
+  `reproduction.md` are source-controlled human summaries derived from the
+  sole queryable authority, `<log>/.cache/results.sqlite`. They can be rerendered
+  without rerunning research work. Clearing result state never alters durable
+  run-local job state, authored evidence baselines, or `pyrun.json` observations.
 - **Low-cost evolution:** Generated record and cache schemas evolve
   independently. Cache state is disposable; authored evidence-format changes
   use an explicit upgrade rather than compatibility branches in validation.

@@ -15,7 +15,7 @@ contract version. It is the summary's complete reproduction surface and has no
 matching item in `## Contents`.
 
 Record initialization installs the link together with empty
-`.cache/reproduction/results.json` and a generated, source-controlled
+the reproduction domain in `.cache/results.sqlite` and a generated, source-controlled
 `reproduction.md` that states no run has completed. Record, Replace, Update
 Summary, Repair, and Reorganize preserve the line. Reproduce owns the generated
 machine and human surfaces but never changes this summary navigation.

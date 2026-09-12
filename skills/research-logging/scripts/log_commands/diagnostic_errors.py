@@ -5,9 +5,9 @@ from __future__ import annotations
 import shlex
 import sys
 
-from validation.inspection import retain_result, timestamp
+from validation.result_storage import publish_diagnostic_commands
 
-from .model import AUTHORING_RESULT_SCHEMA, ActionError
+from .model import ActionError
 
 
 def report_diagnostic(error: ActionError) -> None:
@@ -19,14 +19,16 @@ def report_diagnostic(error: ActionError) -> None:
     if error.diagnostic_log is None:
         print("Diagnostic not cached: log context unavailable.", file=sys.stderr)
         return
-    identity = retain_result(
-        error.diagnostic_log.with_name(error.diagnostic_log.name + ".md"),
-        {"status": "failed", "reason": error.code, "diagnostics": error.records},
-        {"schema": AUTHORING_RESULT_SCHEMA},
-        {},
-        {"kind": "diagnostic", "started_at": timestamp()},
-    )
-    if identity is not None:
+    try:
+        identity = publish_diagnostic_commands(
+            error.diagnostic_log,
+            error.diagnostic_log.name + ".md",
+            error.code,
+            error.records,
+        )
+    except (OSError, ValueError):
+        return
+    else:
         path = shlex.quote(str(error.diagnostic_log))
         print(f"Diagnostic: {identity} (authoring failure; no validation performed)")
         print(

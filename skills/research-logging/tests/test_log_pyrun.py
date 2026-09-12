@@ -127,7 +127,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             recipe = _recipe("data/result.csv")
             initial = _execution(recipe, auto_reproduce=True)
             _write_state(entry, (initial,))
-            validation = base / ".cache/validation/results.json"
+            validation = base / ".cache/results.sqlite"
             validation.parent.mkdir(parents=True)
             validation.write_text('{"sentinel":true}\n', encoding="utf-8")
             before_validation = validation.read_bytes()

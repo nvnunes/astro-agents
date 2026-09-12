@@ -1,170 +1,169 @@
-"""Current full and entry inspection retention contracts."""
+"""Normalized validation inspection contracts."""
 
-from __future__ import annotations
-
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from log_commands.inspection_queries import Query, inspect_result
-from log_commands.inspection_views import render_view
-from research_log_validation_test_support import mechanical_log
-from validation.inspection import save_result
-
-
-def _result(root: Path, *, entry: str) -> tuple:
-    summary, _ = mechanical_log(root)
-    finding = {
-        "identity": f"entry:{entry}:missing-output",
-        "code": "provenance.output.missing",
-        "subject": "missing.csv",
-        "status": "fail",
-    }
-    projection = {
-        "schema": "research-log-published-validation/2",
-        "validation_id": "fixture",
-        "source_identity": "source",
-        "unresolved": [],
-        "chains": [
-            {
-                "chain_id": "chain",
-                "entry": entry,
-                "commands": [],
-                "artifacts": ["missing.csv"],
-                "findings": [finding],
-            }
-        ],
-    }
-    return (
-        summary,
-        {"status": "complete_findings", "published": False, "findings": [finding]},
-        {
-            "schema": "research-log-mechanical/1",
-            "checks": [],
-            "result_date": "2026-09-08",
-            "rules_version": "fixture",
-        },
-        projection,
-        {"kind": "entry", "entry": entry, "started_at": "2026-09-08T12:00:00Z"},
-    )
+from log_commands.dispatcher import main
+from log_commands.inspection_queries import InspectionError, Query, inspect_result
+from research_log_result_store import ResultStoreError
+from validation.batch_projection import build_batch_projection
+from validation.mechanical_results import (
+    CheckScope,
+    CheckStatus,
+    FailurePayload,
+    MechanicalCheck,
+    MechanicalGeneratedRecord,
+)
+from validation.result_storage import (
+    ValidationPublicationRequest,
+    publish_validation_result,
+)
 
 
 class InspectionTests(unittest.TestCase):
-    def test_entry_collection_is_paged_at_one_hundred_thousand_members(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            result = list(_result(Path(directory), entry="e001"))
-            result[3]["chains"][0]["commands"] = [
-                {
-                    "identity": "cmd-e001",
-                    "entry": "e001",
-                    "document": "entries/e001.md",
-                    "fence": 1,
-                    "ordinal": 1,
-                    "outputs": [],
-                    "collections": [
-                        {
-                            "direction": "output",
-                            "mechanism": "directory",
-                            "members": [
-                                f"data/item-{index:06d}.csv" for index in range(100_000)
-                            ],
-                        }
-                    ],
-                }
-            ]
-            identity = save_result(*result)
-            log = result[0].with_suffix("")
-            command = inspect_result(
-                log, Query(action="command", result_id=identity, entity="cmd-e001")
+    def test_public_dispatcher_preserves_result_store_failure_code(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch(
+                "log_commands.dispatcher._dispatch_results",
+                side_effect=ResultStoreError("results.store.busy", "locked"),
+            ),
+            contextlib.redirect_stderr(output),
+        ):
+            self.assertEqual(main(["results", "show"]), 2)
+        self.assertIn("results.store.busy", output.getvalue())
+
+    def test_codes_page_has_exact_total_and_generation_bound_cursor(self):
+        """Code aggregation is keyset-paged, rather than treating a page as all rows."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            record = MechanicalGeneratedRecord.build(
+                str(root / "study.md"),
+                "fixture",
+                "2026-09-08",
+                (
+                    MechanicalCheck(
+                        "entry:e001:a",
+                        CheckScope.CONFORMANCE,
+                        CheckStatus.FAIL,
+                        "one",
+                        failure=FailurePayload("fixture.one", "one", {}, "rule"),
+                    ),
+                    MechanicalCheck(
+                        "entry:e001:b",
+                        CheckScope.CONFORMANCE,
+                        CheckStatus.FAIL,
+                        "two",
+                        failure=FailurePayload("fixture.two", "two", {}, "rule"),
+                    ),
+                ),
             )
-            self.assertLess(len(render_view(command).encode()), 16_384)
-            reference = command["items"][0]["collections"][0]["members"]["ref"]
+            projection = build_batch_projection(
+                record, invocations=(), registries=(), source_identity="source"
+            )
+            stored = publish_validation_result(
+                ValidationPublicationRequest(root, record, projection)
+            )
             first = inspect_result(
-                log, Query(action="collection", result_id=identity, entity=reference)
+                root, Query(result_id=stored.result_id, view="codes", limit=1)
             )
-            self.assertEqual((first["total"], first["returned"]), (100_000, 20))
+            self.assertEqual(first["total"], 2)
+            self.assertEqual(first["returned"], 1)
             self.assertIsNotNone(first["next_cursor"])
             second = inspect_result(
-                log,
+                root,
                 Query(
-                    action="collection",
-                    result_id=identity,
-                    entity=reference,
+                    result_id=stored.result_id,
+                    view="codes",
+                    limit=1,
                     cursor=first["next_cursor"],
                 ),
             )
-            self.assertEqual(second["items"][0], "data/item-000020.csv")
-
-            full_identity = save_result(
-                result[0],
-                {**result[1], "published": True},
-                result[2],
-                result[3],
-                {"kind": "full", "started_at": result[4]["started_at"]},
+            self.assertEqual(second["total"], 2)
+            self.assertEqual(second["returned"], 1)
+            publish_validation_result(
+                ValidationPublicationRequest(
+                    root,
+                    record,
+                    projection,
+                    kind="entry",
+                    entry="e001",
+                )
             )
-            full_command = inspect_result(
-                log,
-                Query(
-                    action="command", result_id=full_identity, entity="cmd-e001"
+            with self.assertRaisesRegex(InspectionError, "cursor"):
+                inspect_result(
+                    root,
+                    Query(
+                        result_id=stored.result_id,
+                        view="codes",
+                        limit=1,
+                        cursor=first["next_cursor"],
+                    ),
+                )
+            # A replacement increments validation generation, invalidating stale pages.
+            replacement = MechanicalGeneratedRecord.build(
+                str(root / "study.md"), "fixture", "2026-09-09", record.checks
+            )
+            publish_validation_result(
+                ValidationPublicationRequest(
+                    root,
+                    replacement,
+                    build_batch_projection(
+                        replacement,
+                        invocations=(),
+                        registries=(),
+                        source_identity="source",
+                    ),
+                )
+            )
+            with self.assertRaisesRegex(InspectionError, "cursor"):
+                inspect_result(
+                    root,
+                    Query(
+                        latest=True,
+                        kind="full",
+                        view="codes",
+                        limit=1,
+                        cursor=first["next_cursor"],
+                    ),
+                )
+
+    def test_sqlite_result_lists_and_exports(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            r = MechanicalGeneratedRecord.build(
+                str(root / "study.md"),
+                "fixture",
+                "2026-09-08",
+                (
+                    MechanicalCheck(
+                        "entry:e001:check",
+                        CheckScope.CONFORMANCE,
+                        CheckStatus.FAIL,
+                        "subject",
+                        failure=FailurePayload(
+                            "fixture.failure", "subject", {}, "rule"
+                        ),
+                    ),
                 ),
             )
-            full_reference = full_command["items"][0]["collections"][0]["members"][
-                "ref"
-            ]
-            full_page = inspect_result(
-                log,
-                Query(
-                    action="collection",
-                    result_id=full_identity,
-                    entity=full_reference,
-                ),
+            p = build_batch_projection(
+                r, invocations=(), registries=(), source_identity="source"
             )
-            self.assertEqual((full_page["total"], full_page["returned"]), (100_000, 20))
-
-    def test_entry_replacement_preserves_other_entry_until_full_publication(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            first = _result(root, entry="e001")
-            first_id = save_result(*first)
-            second = (*first[:4], {**first[4], "entry": "e002"})
-            second_id = save_result(*second)
-            replacement = save_result(*first)
-            log = first[0].with_suffix("")
-
-            listed = inspect_result(log, Query(action="list", kind="entry"))
+            stored = publish_validation_result(ValidationPublicationRequest(root, r, p))
             self.assertEqual(
-                {item["requested_entry"] for item in listed["items"]}, {"e001", "e002"}
-            )
-            with self.assertRaisesRegex(ValueError, "superseded or cleared"):
-                inspect_result(log, Query(result_id=first_id))
-            self.assertEqual(
-                inspect_result(log, Query(result_id=second_id))["result_id"], second_id
+                inspect_result(root, Query(action="list", kind="full"))["items"][0][
+                    "result_id"
+                ],
+                stored.result_id,
             )
             self.assertEqual(
-                inspect_result(log, Query(result_id=replacement))["status"],
-                "complete_findings",
+                inspect_result(
+                    root, Query(action="export", result_id=stored.result_id)
+                )["schema"],
+                "research-log-retained-result/2",
             )
-            summary = inspect_result(log, Query(result_id=replacement))["metadata"]
-            self.assertEqual(summary["dependency_entries"], [])
-            self.assertEqual(summary["whole_log_limitations"], [])
-            exported = inspect_result(
-                log, Query(action="export", result_id=replacement)
-            )
-            self.assertEqual(exported["dependency_entries"], [])
-            self.assertEqual(exported["whole_log_limitations"], [])
-
-            full = save_result(
-                first[0],
-                {**first[1], "published": True},
-                first[2],
-                first[3],
-                {"kind": "full", "started_at": first[4]["started_at"]},
-            )
-            self.assertEqual(
-                inspect_result(log, Query(result_id=full))["status"],
-                "complete_findings",
-            )
-            with self.assertRaisesRegex(ValueError, "superseded or cleared"):
-                inspect_result(log, Query(result_id=second_id))

@@ -8,27 +8,24 @@ execution state; validation reads it but never writes or repairs it.
 
 Mechanical Validate may create or update only these generated paths:
 
-- `<log>/.cache/validation/results.json`;
-- `<log>/.cache/validation/batches.json`;
+- `<log>/.cache/results.sqlite` and its safe SQLite companions;
 - `<log>/validation.md`;
-- `<log>/.cache/research-log-inspection.sqlite3` and its journal companions;
 - `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
   shared-memory companions;
 - `<log>/.cache/research-log-operations/log.lock`; and
 - `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
   and shared-memory companions.
 
-`.cache/validation/results.json` is the current local machine-readable result.
-`.cache/validation/batches.json` contains its provenance chains and primary
-repair batches, including inspection groups without an established common
-cause. Both are disposable and a full validation rebuilds them. Ordinary
-diagnosis and Repair use `log results` and `log findings`; they do not parse
-generated files directly. Missing current machine state requires a full
-validation before findings queries.
+The validation domain of `.cache/results.sqlite` is the current local
+machine-readable authority. It retains the complete normalized validation
+projection, including provenance chains and primary repair batches. It is
+disposable; ordinary diagnosis and Repair use `log results` and `log findings`
+and do not parse generated files directly. Missing current machine state
+requires validation before queries.
 
 `validation.md` is the concise, source-controlled human projection. Validate
 and Repair do not parse it as machine authority. Reproduction is a separate
-operation with `.cache/reproduction/results.json` and `reproduction.md`;
+operation with its own domain in `results.sqlite` and `reproduction.md`;
 mechanical validation preserves both.
 
 The human report omits run dates and contains one compact Area and Result
@@ -38,17 +35,17 @@ contains no internal failure codes, check identities, raw observed state,
 dependency mappings, passing totals, or repair instructions. A clear completed
 result says `No mechanical findings.`
 
-The inspection cache keeps the latest full observation and the latest scoped
+The validation domain keeps the latest full observation and the latest scoped
 result for each stable entry. A new entry validation replaces only that entry's
 result; a completed full validation replaces the full result and clears prior
-scoped results. Entry validation writes only this cache, preserving published
-validation and research-owned state.
+scoped results. Entry validation preserves research-owned state.
 Failed authoring commands may also retain the latest `diagnostic` snapshot per
-log in this cache. Its rejected-command details are not validation evidence.
+log in this domain. Its rejected-command details are not validation evidence.
 New diagnostics preserve full and entry results; full publication clears old
 diagnostics. Use the printed text-inspection command for omitted details.
-Inspection never evaluates research files. Cache-write failure warns without
-discarding the validation outcome and supplies no new result ID.
+Inspection never evaluates research files. A result transaction failure preserves
+the prior completed result; report rendering failure after commit leaves the
+result queryable and is recoverable with `log results render --kind validation`.
 
 All files below `.cache/` are disposable generated state. The nearest
 enclosing non-symlink Git worktree owns the project cache. Ignore every
@@ -83,12 +80,13 @@ publication failure does not replace the prior completed bundle. A dry run
 publishes nothing. If another maintained operation owns a conflicting lock,
 report its supplied owner metadata once and stop; do not retry or poll.
 
-The machine bundle is local cache state; `validation.md` is its durable human
-summary. Removing the cache does not alter the committed report, but machine
-queries require validation to rebuild current state. Reproduction planning has
-its own state and does not read or require the validation bundle.
-The former `validation/results.json` and `validation/batches.json` locations are
-unsupported after the one-time path migration and are never read as fallbacks.
+The result store is local cache state; `validation.md` is its derived human
+summary. Removing validation rows does not alter the existing report, but it is
+nonauthoritative and machine queries require validation to rebuild current
+state. Reproduction planning has its own state and does not require the latest
+validation result to remain present after admission. Former validation JSON,
+batch JSON, and inspection-database locations are unsupported after cutover and
+are never read as fallbacks.
 
 Do not edit generated records by hand. Report unsupported generated metadata
 and request separate authorization before archiving it outside the active log

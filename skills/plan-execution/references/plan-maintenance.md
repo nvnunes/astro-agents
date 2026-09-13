@@ -5,8 +5,9 @@ document does not affect maintenance.
 
 - Use an expandable list, not a table. Identify each recorded unit by its plan
   identifier and title, with one indented `State:` point. Use top-level entries
-  for Phases and nest their parts and plan tasks beneath them. For a plan without
-  those levels, use its highest-level work units.
+  for the highest-level work units the plan actually uses: plan tasks for a
+  simple plan, parts for grouped work, or phases for staged work. Nest
+  lower-level units only when separately executed or needing distinct state.
 - Use only these states: `not started`, `in progress`, `completed`, `blocked`,
   or `failed`.
 - Keep one current entry for each recorded unit and update it in place as work

@@ -10,6 +10,11 @@ happen while the public surface settles.
 Public release work is still settling. Until the first tagged release, use git
 history for detailed change-by-change context.
 
+- Made plan structure proportional to the work: simple plans use numbered plan
+  tasks, lettered parts group related tasks, and numbered phases represent
+  separable stages with stable, verifiable handoffs. Only complete phases may
+  be optionally sharded, and delegation additionally requires explicit
+  authorization.
 - Added researcher-directed semantic Review for research logs. Nineteen focused
   lenses compose into Analysis, Evidence, and Record review groups, while
   focused requests load only the selected lens material and unqualified

@@ -13,17 +13,30 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
 - State what completes the requested work. Treat downstream consequences as decisions, not automatic extensions; retain deferred work only when requested or needed to resume the scoped work.
 
 ## Structure
-- Use Title Case for Phase, Part, and Task headings. Distinguish a numbered
-  plan task from a Codex Task, which is a separate user-facing conversation.
-- Use numbered phases for work with meaningful stages or dependency boundaries. State each phase's action, output, and conditions for proceeding where relevant.
-- Break complex phases into lettered parts that group related work: `Phase 2`, `Part 2.C`.
-- Subdivide a large, coherent part into named, numbered plan tasks when individual scope, outputs, or tracking help: `Phase 2 > Part 2.C > Task 2.C.1`. Plan tasks may be sequential or independent. Keep this third level optional.
+- Use the shallowest hierarchy that makes execution clear. Use plan tasks as
+  the default top-level work units and number them: `Task 1`, `Task 2`.
+  Distinguish a numbered plan task from a Codex Task, which is a separate
+  user-facing conversation.
+- Group related plan tasks into lettered Parts when the grouping improves
+  ownership, sequencing, or tracking: `Part A > Task A.1`. Do not add Parts to
+  a short sequence that is already clear.
+- Introduce numbered Phases only for meaningful stages or cleanly separable
+  work with a distinct outcome and a dependency boundary, gate, or handoff.
+  Plan size alone does not justify Phases. State each Phase's outcome, required
+  inputs, and conditions for proceeding where relevant. A plan with Phases may
+  optionally move a complete Phase into its own plan file; plans without Phases
+  remain in one file.
+- A Phase may contain plan tasks directly or use lettered Parts for additional
+  grouping: `Phase 2 > Task 2.1` or `Phase 2 > Part 2.C > Task 2.C.1`. Plan
+  tasks use a number as their final identifier component and may be sequential
+  or independent.
+- Use Title Case for Phase, Part, and Task headings.
 - Use bullets for discrete requirements, outputs, and checks, numbered lists for ordered actions, and paragraphs for explanation.
 - Use only sections with useful content. A small plan may be a short sequence of actions; uncertainty about plan type does not justify a heavier template.
 - State each requirement once. After orientation, present work in execution
   order. Make each directly executed unit's owner, prerequisites, result,
   gates, and next transition clear without imposing a fixed template. In a
-  main agent plan, treat a delegated child plan as one execution unit whose
+  main agent plan, treat a delegated phase plan as one execution unit whose
   visible result is its handoff.
 - When a plan uses several agents, prefer one ownership table showing scope,
   role, model and reasoning effort where specified, and continuity
@@ -44,10 +57,11 @@ Inherit prose discipline from `skills/technical-writing/references/base.md`.
   detailed work.
 - Format the record as an expandable list, not a table. Identify each entry by
   its plan identifier and title, and initialize it with only an indented
-  `State:` point set to `not started`. Organize top-level entries by Phase and
-  nest parts and plan tasks beneath them only when separately executed or needing
-  distinct state. Use the plan's highest-level work units when those levels do
-  not apply. Do not add empty placeholders for possible later information.
+  `State:` point set to `not started`. Organize top-level entries by the
+  highest-level work units the plan actually uses: plan tasks for a simple
+  plan, Parts for grouped work, or Phases for staged work. Nest lower-level
+  units only when separately executed or needing distinct state. Do not add
+  empty placeholders for possible later information.
 
 ## Execution Detail
 - Use concrete action verbs and identify the owner and affected artifacts or
@@ -97,8 +111,9 @@ Include the following work in execution order:
 2. **Develop the implementation plan.** Have the executing Task use
    plan-writing to incorporate the completed design into the plan. Define
    cohesive, independently verifiable work units, their dependencies, acceptance
-   gates, and integration responsibilities. Add or revise implementation
-   Parts/Tasks as needed within the approved scope. Apply any required user-review checkpoint.
+   gates, and integration responsibilities. Add or revise implementation work
+   units at the shallowest useful hierarchy within the approved scope. Apply
+   any required user-review checkpoint.
 3. **Execute the refined plan.** Start dependent implementation only when its
    work units are executable, ownership and gates are specified, and blocking
    decisions are resolved.
@@ -134,7 +149,8 @@ plan may proceed directly to execution.
 
 ## Revision
 - Preserve explicit decisions, necessary implementation detail, and unresolved questions that affect execution; revise wording, length, and organization as needed.
-- Preserve stable phase names and numbering unless the requested change warrants adjustment.
+- Preserve stable work-unit names, identifiers, and numbering unless the
+  requested change warrants adjustment.
 - Consolidate repeated requirements under one owner and remove speculative additions.
 - Keep provisional or deferred work distinct from committed deliverables.
 

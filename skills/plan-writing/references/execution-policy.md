@@ -1,12 +1,12 @@
 # Execution Policy
 
-Place checks immediately after the work they verify. Each child plan contains
+Place checks immediately after the work they verify. Each phase plan contains
 or directly references its assigned checks and selected commit policy.
 
 Keep checks and reviews with the executing Task that owns the work. For
-delegated phases, assign cross-phase integration checks to the phase that assembles the result. The
-coordinating Task dispatches phases and acts on their handoffs; it does not
-repeat their checks or reviews.
+delegated phases, assign cross-phase integration checks to the phase that
+assembles the result. The coordinating Task dispatches phases and acts on their
+handoffs; it does not repeat their checks or reviews.
 
 In the plan that owns the work, place each independent agentic review immediately
 after the work it reviews. The executing Task coordinates the reviewer and

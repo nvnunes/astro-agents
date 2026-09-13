@@ -35,9 +35,10 @@ Current user-facing skills include the `technical-writing` base skill, narrower 
 
 Shared runtime behavior should be represented as a skill or kept inside the owning skill package. Avoid hidden cross-skill shared references for normal skill operation.
 
-`plan-writing` owns plan design, optional document sharding, and explicit
-Task assignments. Delegation requires a complete child shard and an
-explicit plan opt-in; sharding alone does not authorize it. `plan-execution`
+`plan-writing` owns plan design, optional phase sharding, and explicit Task
+assignments. Only plans with phases may be sharded; phased plans may remain in
+one file. Delegation applies to cleanly separable phases and requires a phase
+shard plus explicit plan opt-in; sharding alone does not authorize it. `plan-execution`
 uses one Task by default and owns authorized implementation, plan-authorized
 delegation, routine progress, handoffs, recovery, and completion. Each delegated
 Task owns its execution record, reviewer subagents, and human interaction. Substantive

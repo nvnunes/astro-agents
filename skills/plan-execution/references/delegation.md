@@ -2,14 +2,14 @@
 
 When your plan delegates a phase, start a fresh Task to execute it. That Task
 owns design through completion and user interaction. It coordinates independent
-reviews by reviewer subagents and addresses their findings. Keep Parts and
-numbered plan tasks within that phase Task.
+reviews by reviewer subagents and addresses their findings. Keep lettered Parts
+and numbered plan tasks within that phase Task.
 
 ## Start A Delegated Task
 
 For the next delegated Task assignment in your plan:
 
-1. Resolve the referenced child plan to an absolute path. Do not read it.
+1. Resolve the referenced phase plan to an absolute path. Do not read it.
 2. Start the explicitly authorized Task without passing it the current
    conversation context. Follow the Task tool's workspace rules and ensure its
    workspace can access the plan and required inputs. Record its Task ID in

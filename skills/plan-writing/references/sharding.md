@@ -1,52 +1,55 @@
 # Sharding And Delegated Execution
 
-Sharding moves a unit into a separate plan file. Delegation assigns a phase
-plan to a fresh Task. One Task can execute a sharded plan; sharding does not
-authorize delegation.
+Sharding moves a complete phase into a separate plan file. Only plans with
+phases may be sharded, and each phase may remain in the parent plan when a
+separate file would not improve planning or execution. Delegation assigns a
+phase shard to a fresh Task. One Task can execute all phase shards; sharding
+does not authorize delegation.
 
 ## Organize Plan Files
 
-Shard when a substantial, coherent unit is easier to plan or execute in a
-separate file. Headings and document length alone do not justify sharding.
-Obtain approval for the proposed file structure and record the reason in the
-parent plan.
+For a plan with phases, shard a complete phase only when a separate file makes
+that phase easier to plan or execute. Do not shard Parts or plan tasks. Headings
+and document length alone do not justify sharding. Obtain approval for the
+proposed file structure and record the reason in the parent plan.
 
 For example:
 
 ```text
 my-plan.md
 my-plan/
-  phase-01.md
   phase-02.md
 ```
 
-For each child plan:
+For each phase plan:
 
 - Write directly to its executor using imperative instructions.
 - Include its work, decisions, dependencies, checks, reviews, selected commit
   policy, and stopping conditions. State necessary boundaries directly.
 - Identify it and its execution order in the parent plan.
-- Keep detailed execution steps in the child plan and relationships between
+- Keep detailed execution steps in the phase plan and relationships between
   units in the parent plan. Reference shared requirements rather than copying
   them unless a delegated Task needs a self-contained instruction.
 - Preserve identifiers and repair affected links when extracting it.
 
 For single-Task execution, make transitions between files explicit. The same
-Task reads and executes each child plan in the stated order and maintains its
+Task reads and executes each phase plan in the stated order and maintains its
 execution record. Track aggregate progress in the parent without duplicating
-child-plan detail.
+phase-plan detail.
 
 ## Delegate Phases
 
-Execute ordinary plans in one Task. For large plans with well-separated phases,
-use an explicitly authorized coordinating Task and one executing Task per phase.
-Choose phase boundaries that provide stable contracts and verifiable handoffs;
-context pressure or file boundaries alone do not justify delegation.
+Execute plans in one Task by default. A cleanly separable phase with its own
+shard may be explicitly assigned to a fresh executing Task under a coordinating
+Task. Each delegated phase must have stable inputs, a distinct and independently
+verifiable outcome, and a clear handoff and continuation point. Plan size,
+context pressure, or file boundaries alone do not justify phases or delegation.
 
 The coordinating Task starts each authorized phase Task directly. Each phase
 Task owns design, implementation-plan refinement, implementation, checks, and
-corrections. It uses subagents only for independent review. Parts and numbered
-plan tasks remain within that phase Task, regardless of file organization.
+corrections. It uses subagents only for independent review. Lettered Parts and
+numbered plan tasks remain within that phase Task, regardless of file
+organization.
 
 Make each delegated phase plan executable without the parent plan. Include only
 its assigned work and required inputs; describe dependencies by their artifact

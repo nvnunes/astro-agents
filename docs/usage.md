@@ -65,7 +65,7 @@ Start with the skill name when you know the intended skill:
 - `$documentation-surface-review Review this project's documentation surface.`
 - `$project-upgrade-planning Plan this project's astro-agents upgrade.`
 - `$plan-writing Develop a plan for this migration.`
-- `$plan-execution Implement Part 1.A of the approved plan.`
+- `$plan-execution Implement Task 2 of the approved plan.`
 - `$research-logging Record an entry in the telemetry research log.`
 - `$science-writing Revise manuscript.tex for scientific clarity and claim discipline.`
 
@@ -73,9 +73,11 @@ Natural-language prompts can also lead the model to select skills, but explicit
 `$skill-name` invocation is clearer when the task could match more than one
 skill.
 
-Plan execution uses one Task unless the plan explicitly assigns named child
-shard files to fresh Tasks. A shard file alone is document organization,
-not delegation authority. Use `$plan-writing` to add or change those assignments
+Plans without phases remain in one file. Plans with phases may optionally put
+complete phases in their own shards; Parts and plan tasks are not sharded.
+Plan execution uses one Task unless the plan explicitly assigns named phase
+shards to fresh Tasks. A phase shard alone is document organization, not
+delegation authority. Use `$plan-writing` to add or change those assignments
 before execution. Each delegated Task owns its reviewer subagents and direct
 user interaction.
 

@@ -297,6 +297,27 @@ def load_evidence_file(
 ) -> EvidenceFile:
     """Read one exact entry-root evidence file with strict schema checks."""
 
+    records = decode_evidence_file_records(
+        path, log_root=log_root, entry_root=entry_root
+    )
+    root = entry_root.resolve()
+    for number, record in enumerate(records):
+        validate_evidence_record_context(
+            record,
+            subject=f"{path}:records[{number}]",
+            entry_root=root,
+        )
+    return EvidenceFile(path.resolve(), root, records)
+
+
+def decode_evidence_file_records(
+    path: Path,
+    *,
+    log_root: Path,
+    entry_root: Path,
+) -> tuple[EvidenceRecord, ...]:
+    """Decode bounded evidence declarations without reading declared documents."""
+
     path = path.resolve()
     log_root = log_root.resolve()
     entry_root = entry_root.resolve()
@@ -344,7 +365,6 @@ def load_evidence_file(
             item,
             subject=f"{path}:records[{number}]",
             entry_relative=entry_relative,
-            entry_root=entry_root,
         )
         for number, item in enumerate(raw_records)
     )
@@ -356,7 +376,26 @@ def load_evidence_file(
             {"ids": ids},
             "Evidence V4 JSON File Schema",
         )
-    return EvidenceFile(path=path, entry_root=entry_root, records=records)
+    return records
+
+
+def validate_evidence_record_context(
+    record: EvidenceRecord,
+    *,
+    subject: str,
+    entry_root: Path,
+) -> None:
+    """Require one decoded record's current entry-owned document context."""
+
+    root = entry_root.resolve()
+    target = root / PurePosixPath(record.document).name
+    _reject_symlinked_target(target, root, subject, record.document)
+    if not target.is_file():
+        _invalid(subject, {"document": record.document, "reason": "not_regular_file"})
+    try:
+        target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        _invalid(subject, {"document": record.document, "error": str(exc)})
 
 
 def evidence_file_from_records(
@@ -383,13 +422,18 @@ def evidence_file_from_records(
             record.as_dict(),
             subject=f"{path}:records[{index}]",
             entry_relative=entry_relative,
-            entry_root=root,
         )
         for index, record in enumerate(records)
     )
     ids = [record.id for record in decoded]
     if not decoded or len(ids) != len(set(ids)):
         _invalid(str(path), {"records": len(decoded), "ids": ids})
+    for index, record in enumerate(decoded):
+        validate_evidence_record_context(
+            record,
+            subject=f"{path}:records[{index}]",
+            entry_root=root,
+        )
     return EvidenceFile(expected, root, decoded)
 
 
@@ -407,7 +451,6 @@ def evidence_record_from_fields(
         fields,
         subject=subject,
         entry_relative=_relative(root, log_root.resolve(), "entry root"),
-        entry_root=root,
     )
 
 
@@ -928,7 +971,6 @@ def _decode_record(
     *,
     subject: str,
     entry_relative: str,
-    entry_root: Path,
 ) -> EvidenceRecord:
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})
@@ -944,7 +986,7 @@ def _decode_record(
         "output",
     }:
         _invalid(subject, {"fields": sorted(value), "kind": kind})
-    document = _document(value["document"], subject, entry_relative, entry_root)
+    document = _document(value["document"], subject, entry_relative)
     sources = value["sources"]
     maximum_sources = 1 if kind == "artifact" else MAX_SOURCES
     if not isinstance(sources, list) or not 1 <= len(sources) <= maximum_sources:
@@ -1054,9 +1096,7 @@ def _record_id(value: object, subject: str) -> str:
     return value
 
 
-def _document(
-    value: object, subject: str, entry_relative: str, entry_root: Path
-) -> str:
+def _document(value: object, subject: str, entry_relative: str) -> str:
     path = _normalized_relative(value, subject)
     if len(path.encode("utf-8")) > MAX_DOCUMENT_BYTES:
         _invalid(subject, {"document_bytes": len(path.encode("utf-8"))})
@@ -1064,14 +1104,6 @@ def _document(
         _invalid(subject, {"document": path, "entry": entry_relative})
     if not path.endswith(".md"):
         _invalid(subject, {"document": path})
-    target = entry_root / PurePosixPath(path).name
-    _reject_symlinked_target(target, entry_root, subject, path)
-    if not target.is_file():
-        _invalid(subject, {"document": path, "reason": "not_regular_file"})
-    try:
-        target.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        _invalid(subject, {"document": path, "error": str(exc)})
     return path
 
 

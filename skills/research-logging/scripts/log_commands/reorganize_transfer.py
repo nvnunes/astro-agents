@@ -4,34 +4,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Mapping
 
 from research_log_data import (
-    DataContractError,
     DataFile,
-    Fingerprint,
     InputResource,
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
     observe_fingerprint,
-    parse_fingerprint,
     resolve_input_token,
     validate_log_consistency,
 )
 from validation.commands import command_input_names
 from validation.evidence import (
-    EVIDENCE_SCHEMA,
-    MAX_EVIDENCE_FILE_BYTES,
     EvidenceFile,
     EvidenceRecord,
     EvidenceSource,
-    ReproductionTolerance,
+    decode_evidence_file_records,
     evidence_file_from_records,
     index_summary_references,
     load_evidence_file,
+    validate_evidence_record_context,
 )
-from validation.json_codec import decode_json
 from validation.locator import evaluate_locator
 from validation.operation_state import begin_reorganization, finish_guarded_publication
 from validation.presentation import (
@@ -47,12 +42,12 @@ from validation.pyrun_state import (
     load_pyrun_state,
 )
 from validation.retention import (
-    MAX_RETENTION_FILE_BYTES,
-    RETENTION_SCHEMA,
     RetentionFile,
     RetentionRecord,
+    decode_retention_file_records,
     load_retention_file,
     retention_file_from_records,
+    validate_retention_record_context,
 )
 from validation.transformation import compare_presentation, evaluate_transformation
 
@@ -60,8 +55,6 @@ from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult, TransferArguments
 from .scaffold import observe_physical_entries
 from .storage import PublicationError, atomic_write_texts
-
-_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -100,6 +93,7 @@ def transfer_registries(
         _retention_records(source),
     )
     selections = _selections(arguments, state.data, state.evidence, state.retention)
+    _validate_unselected_source_context(source, state, selections)
     _require_mapping_sources(
         maps, selections, state.data, state.evidence, state.retention
     )
@@ -758,157 +752,41 @@ def _evidence_records(entry: EntryContext) -> tuple[EvidenceRecord, ...]:
     path = entry.root / "evidence.json"
     if not path.exists() and not path.is_symlink():
         return ()
-    value = _registry(path, EVIDENCE_SCHEMA, MAX_EVIDENCE_FILE_BYTES)
-    records = tuple(
-        _raw_evidence(record, path) for record in cast(list[object], value["records"])
+    return decode_evidence_file_records(
+        path, log_root=entry.log.root, entry_root=entry.root
     )
-    _require_unique_ids(records, path)
-    return records
 
 
 def _retention_records(entry: EntryContext) -> tuple[RetentionRecord, ...]:
     path = entry.root / "retention.json"
     if not path.exists() and not path.is_symlink():
         return ()
-    value = _registry(path, RETENTION_SCHEMA, MAX_RETENTION_FILE_BYTES)
-    records = tuple(
-        _raw_retention(record, path) for record in cast(list[object], value["records"])
-    )
-    _require_unique_ids(records, path)
-    return records
+    return decode_retention_file_records(path, entry_root=entry.root)
 
 
-def _raw_evidence(value: object, path: Path) -> EvidenceRecord:
-    if not isinstance(value, Mapping):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    fields = cast(Mapping[str, Any], value)
-    sources = fields.get("sources")
-    required = {
-        "document",
-        "id",
-        "kind",
-        "sources",
-        "transformation",
-    }
-    allowed = required | {"reproduction_tolerance", "artifact_fingerprint"}
-    if not required <= set(fields) <= allowed or not isinstance(sources, list):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    decoded_sources: list[EvidenceSource] = []
-    kind = fields.get("kind")
-    for source in sources:
-        if not isinstance(source, Mapping) or set(source) != {"source", "locator"}:
-            raise ActionError("reorganize.transfer.schema_invalid", str(path))
-        locator = source.get("locator")
-        if not isinstance(source.get("source"), str) or not (
-            isinstance(locator, Mapping) or (kind == "artifact" and locator is None)
-        ):
-            raise ActionError("reorganize.transfer.schema_invalid", str(path))
-        decoded_sources.append(
-            EvidenceSource(
-                source["source"],
-                dict(locator) if isinstance(locator, Mapping) else None,
+def _validate_unselected_source_context(
+    source: EntryContext,
+    state: _SourceState,
+    selections: Mapping[str, frozenset[str]],
+) -> None:
+    """Validate source context except where the exact selected record moved."""
+
+    evidence_path = source.root / "evidence.json"
+    for index, evidence_record in enumerate(state.evidence):
+        if evidence_record.id not in selections["evidence"]:
+            validate_evidence_record_context(
+                evidence_record,
+                subject=f"{evidence_path}:records[{index}]",
+                entry_root=source.root,
             )
-        )
-    if not all(
-        isinstance(fields.get(name), str) for name in ("id", "document", "kind")
-    ):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    transformation = fields.get("transformation")
-    if transformation is not None and not isinstance(transformation, Mapping):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    raw_tolerance = fields.get("reproduction_tolerance")
-    if raw_tolerance is not None and (
-        not isinstance(raw_tolerance, Mapping)
-        or set(raw_tolerance) != {"absolute"}
-        or not isinstance(raw_tolerance.get("absolute"), str)
-    ):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    artifact_fingerprint, fingerprint_present = _artifact_fingerprint(
-        fields, kind, path
-    )
-    return EvidenceRecord(
-        fields["id"],
-        fields["document"],
-        fields["kind"],
-        tuple(decoded_sources),
-        dict(transformation) if transformation is not None else None,
-        (
-            ReproductionTolerance(raw_tolerance["absolute"])
-            if isinstance(raw_tolerance, Mapping)
-            else None
-        ),
-        artifact_fingerprint,
-        fingerprint_present,
-    )
-
-
-def _artifact_fingerprint(
-    fields: Mapping[str, Any], kind: object, path: Path
-) -> tuple[Fingerprint | None, bool]:
-    """Decode the optional v4 artifact observation without reinterpreting it."""
-
-    raw_fingerprint = fields.get("artifact_fingerprint", _MISSING)
-    present = raw_fingerprint is not _MISSING
-    if kind != "artifact" and present:
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    if raw_fingerprint is _MISSING or raw_fingerprint is None:
-        return None, present
-    try:
-        return parse_fingerprint(raw_fingerprint, str(path), kind="file"), present
-    except DataContractError as error:
-        raise ActionError("reorganize.transfer.schema_invalid", str(path)) from error
-
-
-def _raw_retention(value: object, path: Path) -> RetentionRecord:
-    if not isinstance(value, Mapping) or not isinstance(value.get("id"), str):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    fields = cast(Mapping[str, Any], value)
-    reason = fields.get("reason")
-    if reason is not None and not isinstance(reason, str):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    if "paths" in fields:
-        expected = {"id", "paths"} | ({"reason"} if "reason" in fields else set())
-        paths = fields.get("paths")
-        if (
-            set(fields) != expected
-            or not isinstance(paths, list)
-            or not all(isinstance(item, str) for item in paths)
-        ):
-            raise ActionError("reorganize.transfer.schema_invalid", str(path))
-        return RetentionRecord(fields["id"], paths=tuple(paths), reason=reason)
-    expected = {"directory", "id", "membership"} | (
-        {"reason"} if "reason" in fields else set()
-    )
-    directory = fields.get("directory")
-    if (
-        set(fields) != expected
-        or fields.get("membership") != "all-descendants"
-        or not isinstance(directory, str)
-    ):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    return RetentionRecord(fields["id"], directory=directory, reason=reason)
-
-
-def _require_unique_ids(records: tuple[object, ...], path: Path) -> None:
-    ids = [getattr(record, "id") for record in records]
-    if len(ids) != len(set(ids)):
-        raise ActionError(
-            "reorganize.transfer.schema_invalid", f"duplicate IDs: {path}"
-        )
-
-
-def _registry(path: Path, schema: str, maximum: int) -> Mapping[str, object]:
-    value = decode_json(
-        path.read_text(encoding="utf-8"), maximum_bytes=maximum, subject=str(path)
-    )
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != {"schema", "records"}
-        or value.get("schema") != schema
-        or not isinstance(value.get("records"), list)
-    ):
-        raise ActionError("reorganize.transfer.schema_invalid", str(path))
-    return cast(Mapping[str, object], value)
+    retention_path = source.root / "retention.json"
+    for index, retention_record in enumerate(state.retention):
+        if retention_record.id not in selections["retention"]:
+            validate_retention_record_context(
+                retention_record,
+                subject=f"{retention_path}:records[{index}]",
+                entry_root=source.root,
+            )
 
 
 def _result(

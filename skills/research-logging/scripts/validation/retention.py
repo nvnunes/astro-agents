@@ -86,6 +86,22 @@ class RetentionFile:
 def load_retention_file(path: Path, *, entry_root: Path) -> RetentionFile:
     """Read one strict entry-root ``retention.json`` file."""
 
+    records = decode_retention_file_records(path, entry_root=entry_root)
+    root = entry_root.resolve()
+    for index, record in enumerate(records):
+        validate_retention_record_context(
+            record,
+            subject=f"{path}:records[{index}]",
+            entry_root=root,
+        )
+    return RetentionFile(path=root / "retention.json", entry_root=root, records=records)
+
+
+def decode_retention_file_records(
+    path: Path, *, entry_root: Path
+) -> tuple[RetentionRecord, ...]:
+    """Decode bounded retention declarations without reading declared targets."""
+
     entry_root_symlink = entry_root.is_symlink()
     entry_root = entry_root.resolve()
     expected = entry_root / "retention.json"
@@ -106,14 +122,29 @@ def load_retention_file(path: Path, *, entry_root: Path) -> RetentionFile:
     if not raw_records or len(raw_records) > MAX_RETENTION_RECORDS:
         _invalid(path, {"records": len(raw_records)})
     records = tuple(
-        _decode_record(raw, f"{path}:records[{index}]", entry_root)
+        _decode_record(raw, f"{path}:records[{index}]")
         for index, raw in enumerate(raw_records)
     )
     ids = [record.id for record in records]
     if len(ids) != len(set(ids)):
         _invalid(path, {"reason": "duplicate_ids", "ids": ids})
     _validate_overlaps(records, path)
-    return RetentionFile(path=expected, entry_root=entry_root, records=records)
+    return records
+
+
+def validate_retention_record_context(
+    record: RetentionRecord,
+    *,
+    subject: str,
+    entry_root: Path,
+) -> None:
+    """Require one decoded retention record's current target context."""
+
+    root = entry_root.resolve()
+    for path in record.paths:
+        _validate_retention_file_context(path, subject, root)
+    if record.directory is not None:
+        _validate_retention_directory_context(record.directory, subject, root)
 
 
 def retention_file_from_records(
@@ -134,17 +165,23 @@ def retention_file_from_records(
             RETENTION_SCHEMA,
         )
     decoded = tuple(
-        _decode_record(record.as_dict(), f"{path}:records[{index}]", root)
+        _decode_record(record.as_dict(), f"{path}:records[{index}]")
         for index, record in enumerate(records)
     )
     ids = [record.id for record in decoded]
     if not decoded or len(ids) != len(set(ids)):
         _invalid(path, {"records": len(decoded), "ids": ids})
     _validate_overlaps(decoded, path)
+    for index, record in enumerate(decoded):
+        validate_retention_record_context(
+            record,
+            subject=f"{path}:records[{index}]",
+            entry_root=root,
+        )
     return RetentionFile(expected, root, decoded)
 
 
-def _decode_record(value: object, subject: str, entry_root: Path) -> RetentionRecord:
+def _decode_record(value: object, subject: str) -> RetentionRecord:
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})
     value = cast(Mapping[str, Any], value)
@@ -162,7 +199,7 @@ def _decode_record(value: object, subject: str, entry_root: Path) -> RetentionRe
             _invalid(subject, {"fields": sorted(value), "paths": paths})
         if len(paths) > MAX_RETENTION_PATHS or len(paths) != len(set(paths)):
             _invalid(subject, {"path_count": len(paths)})
-        decoded = tuple(_retention_file(item, subject, entry_root) for item in paths)
+        decoded = tuple(_normalized_relative(item, subject) for item in paths)
         return RetentionRecord(record_id, paths=decoded, reason=reason)
     expected = {"directory", "id", "membership"} | (
         {"reason"} if "reason" in value else set()
@@ -172,7 +209,7 @@ def _decode_record(value: object, subject: str, entry_root: Path) -> RetentionRe
             subject,
             {"fields": sorted(value), "membership": value.get("membership")},
         )
-    directory = _retention_directory(value.get("directory"), subject, entry_root)
+    directory = _normalized_relative(value.get("directory"), subject)
     return RetentionRecord(record_id, directory=directory, reason=reason)
 
 
@@ -187,8 +224,9 @@ def _record_id(value: object, subject: str) -> str:
     return value
 
 
-def _retention_file(value: object, subject: str, entry_root: Path) -> str:
-    path = _normalized_relative(value, subject)
+def _validate_retention_file_context(
+    path: str, subject: str, entry_root: Path
+) -> None:
     target = entry_root.joinpath(*PurePosixPath(path).parts)
     _reject_symlink(target, entry_root, subject, path)
     if not target.is_file():
@@ -198,11 +236,9 @@ def _retention_file(value: object, subject: str, entry_root: Path) -> str:
             {"path": path},
             RETENTION_SCHEMA,
         )
-    return path
-
-
-def _retention_directory(value: object, subject: str, entry_root: Path) -> str:
-    path = _normalized_relative(value, subject)
+def _validate_retention_directory_context(
+    path: str, subject: str, entry_root: Path
+) -> None:
     target = entry_root.joinpath(*PurePosixPath(path).parts)
     _reject_symlink(target, entry_root, subject, path)
     if not target.is_dir():
@@ -230,7 +266,6 @@ def _retention_directory(value: object, subject: str, entry_root: Path) -> str:
         _reject_symlink(child, entry_root, subject, path)
     if not any(child.is_file() for child in descendants):
         _invalid(subject, {"directory": path, "reason": "empty"})
-    return path
 
 
 def _validate_overlaps(records: tuple[RetentionRecord, ...], path: Path) -> None:

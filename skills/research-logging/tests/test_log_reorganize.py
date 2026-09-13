@@ -18,9 +18,13 @@ LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 SCRIPT_ROOT = LOG.parent
 sys.path.insert(0, str(SCRIPT_ROOT))
 
-from log_commands import reorganize, storage  # noqa: E402
+from log_commands import reorganize, reorganize_transfer, storage  # noqa: E402
 from log_commands.context import LogContext, resolve_entry, resolve_log  # noqa: E402
-from log_commands.model import EntryUpdateArguments  # noqa: E402
+from log_commands.model import (  # noqa: E402
+    ActionError,
+    EntryUpdateArguments,
+    TransferArguments,
+)
 from log_commands.storage import PublicationError  # noqa: E402
 from validation.operation_state import (  # noqa: E402
     REORGANIZE_RESIDUE,
@@ -766,6 +770,9 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "map",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            original_record = json.loads((source / "evidence.json").read_text())[
+                "records"
+            ][0]
 
             source_document.write_text(
                 source_document.read_text(encoding="utf-8").replace(section, ""),
@@ -813,6 +820,10 @@ class ReorganizeTransferTests(unittest.TestCase):
             self.assertEqual(
                 record["sources"], [{"locator": None, "source": "<map>"}]
             )
+            self.assertEqual(
+                record["artifact_fingerprint"],
+                original_record["artifact_fingerprint"],
+            )
             self.assertFalse((source / "data.json").exists())
             self.assertFalse((source / "evidence.json").exists())
 
@@ -855,6 +866,8 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "run-result",
                 "--source",
                 "result",
+                "--reproduction-tolerance",
+                "0.1",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
@@ -908,6 +921,10 @@ class ReorganizeTransferTests(unittest.TestCase):
             evidence = json.loads((destination / "evidence.json").read_text())
             self.assertEqual(
                 evidence["records"][0]["document"], destination_document_field
+            )
+            self.assertEqual(
+                evidence["records"][0]["reproduction_tolerance"],
+                {"absolute": "0.1"},
             )
             data = json.loads((destination / "data.json").read_text())
             self.assertEqual(data["inputs"][0]["name"], "result")
@@ -1124,6 +1141,216 @@ class ReorganizeTransferTests(unittest.TestCase):
             retention = json.loads((destination / "retention.json").read_text())
             self.assertEqual(retention["records"][0]["id"], "kept-run")
             self.assertEqual(retention["records"][0]["paths"], ["logs/retained.log"])
+
+    def test_transfer_rejects_malformed_selected_evidence_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            evidence_path = source / "evidence.json"
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-evidence/v4",
+                        "records": [
+                            {
+                                "document": source.relative_to(logical).as_posix()
+                                + "/e001.md",
+                                "id": "broken",
+                                "kind": "output",
+                                "sources": [
+                                    {"source": "<result>", "locator": {"line": 1}}
+                                ],
+                                "transformation": {"kind": "identity"},
+                                "unexpected": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = evidence_path.read_bytes()
+
+            completed = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--evidence",
+                "broken",
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("evidence.declaration.invalid", completed.stderr)
+            self.assertEqual(evidence_path.read_bytes(), before)
+            self.assertFalse((destination / "evidence.json").exists())
+
+    def test_transfer_rejects_invalid_unselected_retention_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            source_data = source / "data"
+            source_data.mkdir()
+            moved = source_data / "moved.txt"
+            stale = source_data / "stale.txt"
+            moved.write_text("moved\n", encoding="utf-8")
+            stale.write_text("stale\n", encoding="utf-8")
+            for record_id, path in (
+                ("keep-moved", "data/moved.txt"),
+                ("keep-stale", "data/stale.txt"),
+            ):
+                retained = run(
+                    root,
+                    "retention",
+                    "add",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--id",
+                    record_id,
+                    path,
+                )
+                self.assertEqual(retained.returncode, 0, retained.stderr)
+            destination_data = destination / "data"
+            destination_data.mkdir()
+            moved.rename(destination_data / moved.name)
+            stale.unlink()
+            registry = source / "retention.json"
+            before = registry.read_bytes()
+
+            completed = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--retention",
+                "keep-moved",
+                "--path-map",
+                "data/moved.txt",
+                "data/moved.txt",
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("retention.target.missing", completed.stderr)
+            self.assertEqual(registry.read_bytes(), before)
+            self.assertFalse((destination / "retention.json").exists())
+
+    def test_transfer_rejects_a_destination_record_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            for entry, value in ((source, "source"), (destination, "destination")):
+                target = entry / "data" / f"{value}.txt"
+                target.parent.mkdir()
+                target.write_text(value + "\n", encoding="utf-8")
+                registered = run(
+                    root,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001" if entry == source else "e002",
+                    "shared",
+                    target.relative_to(entry).as_posix(),
+                )
+                self.assertEqual(registered.returncode, 0, registered.stderr)
+            moved = destination / "data" / "moved.txt"
+            (source / "data" / "source.txt").rename(moved)
+            source_registry = source / "data.json"
+            destination_registry = destination / "data.json"
+            before = (source_registry.read_bytes(), destination_registry.read_bytes())
+
+            completed = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--data",
+                "shared",
+                "--path-map",
+                "data/source.txt",
+                "data/moved.txt",
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(
+                (source_registry.read_bytes(), destination_registry.read_bytes()),
+                before,
+            )
+
+    def test_transfer_publication_failure_preserves_registry_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            target = source / "data" / "result.txt"
+            target.parent.mkdir()
+            target.write_text("result\n", encoding="utf-8")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "result",
+                "data/result.txt",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            moved = destination / "data" / "result.txt"
+            moved.parent.mkdir()
+            target.rename(moved)
+            source_registry = source / "data.json"
+            before = source_registry.read_bytes()
+            arguments = TransferArguments(
+                "e001",
+                "e002",
+                (),
+                ("result",),
+                (),
+                False,
+                (),
+                (("data/result.txt", "data/result.txt"),),
+                (),
+                (),
+                (),
+                False,
+            )
+
+            with mock.patch.object(
+                reorganize_transfer,
+                "atomic_write_texts",
+                side_effect=PublicationError(OSError("injected failure"), ()),
+            ):
+                with self.assertRaises(ActionError) as raised:
+                    reorganize.transfer(resolve_log(logical), arguments)
+
+            self.assertEqual(raised.exception.code, "reorganize.transfer.failed")
+            self.assertEqual(source_registry.read_bytes(), before)
+            self.assertFalse((destination / "data.json").exists())
+            self.assertFalse(
+                (operation_directory(logical) / REORGANIZE_RESIDUE).exists()
+            )
 
 
 if __name__ == "__main__":

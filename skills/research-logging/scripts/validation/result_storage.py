@@ -180,7 +180,7 @@ def provisional_validation_admission(
             group_id = _string(group["chain_id"], "admission group identity")
             entry = _string(group["entry"], "admission group entry")
             groups.append(ValidationAdmissionGroup(group_id, kind, entry))
-            for command in _sequence(group["commands"], "admission commands"):
+            for command in _sequence(group.get("commands", []), "admission commands"):
                 assert isinstance(command, Mapping)
                 outputs = [
                     _string(item["path"], "admission output")

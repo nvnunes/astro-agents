@@ -8,6 +8,9 @@ Focused checks belong to the affected change; the complete gate blocks
 completion of any research-tool change. Unrelated research data problems do
 not add work to these implementation gates.
 
+The completed CLI simplification program has a durable
+[finding and scenario coverage index](research-logging-cli-simplification-coverage.md).
+
 ## Focused Contract And Validator Checks
 
 When changing `skills/research-logging/scripts/pyrun` or research-log
@@ -43,6 +46,15 @@ validation behavior, also run:
 ```bash
 ./.conda/bin/python -m unittest discover \
   -s skills/research-logging/tests -p 'test_research_log_validation*.py'
+```
+
+For changes spanning authoring, execution, validation, or reproduction
+preparation, run the current-format workflow test while iterating:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_integrated_workflow.py
 ```
 
 For output-code currentness or material-graph integration, use these focused

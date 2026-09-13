@@ -323,7 +323,7 @@ CATALOG: Mapping[str, FindingPresentation] = {
     "invocation.cid.duplicate": FindingPresentation(
         "Duplicate Command ID",
         "More than one recorded command or loop uses the same command ID "
-        "in this entry.",
+        "in this entry. Add distinct explicit --cid overrides.",
         "command",
     ),
     "invocation.cid.parameter_collision": FindingPresentation(
@@ -333,7 +333,8 @@ CATALOG: Mapping[str, FindingPresentation] = {
     ),
     "invocation.cid.unstable": FindingPresentation(
         "Unstable Command ID",
-        "Expansions of one recorded command or loop use different command IDs.",
+        "Expansions of one recorded command or loop use different command IDs. "
+        "Add one explicit --cid shared by the complete owner.",
         "command",
     ),
     "invocation.executable.unresolved": FindingPresentation(

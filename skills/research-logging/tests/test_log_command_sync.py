@@ -92,6 +92,21 @@ class LogCommandSyncTests(unittest.TestCase):
             self.assertEqual(after, before)
             self.assertFalse((entry / "pyrun.json").exists())
 
+    def test_implicit_cid_selects_the_python_program_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                "./pyrun scripts/build.py --count 2",
+            )
+
+            result = sync(logical)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=Path(directory)
+            )
+            self.assertEqual(set(state.commands), {"build"})
+
     def test_success_creates_pending_no_output_member_without_observing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(

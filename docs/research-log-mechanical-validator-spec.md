@@ -2855,6 +2855,23 @@ inert. The parser never executes shell or mines unsupported bodies for likely
 commands. Historical non-`pyrun` commands may be described in prose but do not
 participate in Provenance.
 
+A command with no runner options passes its Python program directly without a
+separator. Any runner option requires one leading runner-option group followed
+by `--` and the program. `--cid CID` is an optional runner override. When it is
+present, its valid value is the effective CID. When it is absent, the parser
+derives the effective CID from the lexical `.py` program filename without its
+suffix. The derived stem must use the same command-ID grammar as an authored
+CID: one ASCII alphanumeric followed only by ASCII alphanumerics, `_`, or `-`.
+Non-Python programs and invalid stems require an explicit `--cid`.
+
+The effective CID owns one command or bounded loop, is stable across all of
+that owner's expansions, and is unique across the entry's split documents.
+Repeated programs, basename collisions, multi-program owners, and program
+replacement that must preserve the prior identity require explicit overrides.
+Static discovery and the live runner derive the same effective CID at their
+shared parsing boundary. Diagnostics for a duplicate or unstable derived CID
+direct the author to add an explicit override; they do not invent suffixes.
+
 An exact file or repository-locator token is the whole argument `<name>`. A
 Git repository commit token is the whole argument `<name:commit>`. A directory
 member token is `<name>/` plus one non-empty normalized POSIX member path with
@@ -2905,7 +2922,7 @@ The suffix registry is `.csv`, `.tsv`, `.json`, `.jsonl`, `.npz`,
 `.jpeg`, `.svg`, and `.pdf`, compared case-sensitively. A suffix identifies a
 candidate only; it never assigns direction.
 
-`pyrun` accepts runner-visible role declarations before its required `--`
+`pyrun` accepts runner-visible role declarations before the runner-option `--`
 separator. `--other-inputs <selectors>`, `--other-outputs <selectors>`, and
 `--other-parameters <selectors>` each accept one comma-separated list of script
 option names without leading hyphens or one-based positional selectors written
@@ -3014,8 +3031,10 @@ owned descendant directories retain ordinary material behavior.
 
 ### `pyrun` Output-Support Records
 
-Current execution state is entry-root `pyrun.json`, with one CID bucket per
-authored command or bounded loop and one record per expanded parameter identity.
+Current execution state is entry-root `pyrun.json`, with one effective-CID
+bucket per authored command or bounded loop and one record per expanded
+parameter identity. The state stores the effective CID as an ordinary string
+and does not distinguish authored from derived CIDs.
 Every fence has exactly one owner, and every CID is stable and unique across an
 entry's split documents. The
 [reproduction specification](research-log-reproduction-spec.md#pyrunjson)
@@ -3214,25 +3233,25 @@ Ordinary output parameters use the existing mechanical input/output role
 rules. Retained process streams use one of these forms:
 
 ```bash
-./pyrun --cid run-study --capture-stdout "<stdout-log>" -- \
+./pyrun --capture-stdout "<stdout-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --cid run-study --capture-stderr "<stderr-log>" -- \
+./pyrun --capture-stderr "<stderr-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --cid run-study --capture-stdout-stderr "<run-log>" -- \
+./pyrun --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
 
 `--capture-stdout` and `--capture-stderr` may be combined with distinct
 targets. `--capture-stdout-stderr` is mutually exclusive with both. The
-required CID, one additional runner option, and `--` may stay on the `./pyrun`
-line. With several options, put `./pyrun`, the CID, each option-value pair, and
-`--` on separate lines. Line wrapping
-does not change parsing. Captured bytes are mirrored to the corresponding
+runner options and `--` may stay together on the `./pyrun` line; put the script
+on the following line. A command without runner options may put the Python
+script immediately after `./pyrun` and omit `--`. Line wrapping does not change
+parsing. Captured bytes are mirrored to the corresponding
 terminal stream. The shared stream pump drains each child pipe after an
 individual destination fails. Failure to write or durably flush a declared
 capture stops and reaps the child, prevents success publication, and leaves
@@ -3889,7 +3908,10 @@ cross-entry declaration disagreement remains a validation finding.
 
 `command sync` is the sole recipe and execution-policy editing route. The
 agent edits the selected Markdown owner first, then sync compares every current
-expansion with the selected CID bucket by parameter ID and complete recipe.
+expansion with the selected effective-CID bucket by parameter ID and complete
+recipe. The `--cid` selector passed to `command sync` names the effective CID,
+whether the Markdown owner authored it explicitly or derived it from its Python
+program name.
 Missing invocations become observation-empty records requiring reproduction;
 recipe changes retain only still-applicable observations and require
 reproduction; policy-only changes preserve observations and the requirement.
@@ -4804,7 +4826,9 @@ The same experimental section records one command that names
 
 ````markdown
 ```bash
-./pyrun --cid run-study -- scripts/run_study.py --input-dataset "<development-set>" --output-summary-csv data/results.csv
+./pyrun scripts/run_study.py \
+  --input-dataset "<development-set>" \
+  --output-summary-csv data/results.csv
 ```
 ````
 
@@ -4834,10 +4858,10 @@ executable interface unchanged is not a valid repair.
   recipe. Every local source used by the table must independently resolve to
   exactly one producing invocation unless it reaches an explicit origin.
 - A marked output block may select a retained command log. Declare the generated
-  log and use `./pyrun --cid CID --capture-stdout-stderr "<run-log>" -- ...` so it has
-  both a graph relationship and current execution support; raw redirection or
-  `tee` does not provide that support. The marked fence payload must still
-  match the selected retained text exactly.
+  log and use `./pyrun --capture-stdout-stderr "<run-log>" --` followed by the
+  Python program so it has both a graph relationship and current execution
+  support; raw redirection or `tee` does not provide that support. The marked
+  fence payload must still match the selected retained text exactly.
 - A whole-artifact evidence presentation resolves its one source token and
   compares that canonical path with the normalized Markdown target before
   comparing the current file's SHA-256 with its evidence-owned artifact
@@ -4858,7 +4882,7 @@ Suppose an entry records:
 
 ````markdown
 ```bash
-./pyrun --cid run-trials --other-outputs output-dir -- \
+./pyrun --other-outputs output-dir -- \
   scripts/run_trials.py \
   --reference "<reference-grid>" \
   --cases 1:40 \

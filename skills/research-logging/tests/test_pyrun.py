@@ -44,9 +44,11 @@ def run(
     cwd: Path,
     *,
     environment_updates: dict[str, str] | None = None,
+    add_default_cid: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     if (
-        len(command) >= 2
+        add_default_cid
+        and len(command) >= 2
         and Path(command[1]).name == "pyrun"
         and "--cid" not in command
     ):
@@ -203,6 +205,77 @@ def recorded_outputs(entry: Path) -> set[str]:
 
 
 class PyrunResolutionTests(unittest.TestCase):
+    def test_python_program_stem_defaults_to_cid(self) -> None:
+        for script in (
+            "scripts/model.py",
+            "<log>/scripts/model.py",
+            "/outside/research/model.py",
+        ):
+            with self.subTest(script=script):
+                layout = PYRUN_MODULE.parse_pyrun_arguments([script, "--mode", "exact"])
+
+                self.assertEqual(layout.cid, "model")
+                self.assertEqual(layout.script, script)
+                self.assertEqual(layout.script_arguments, ("--mode", "exact"))
+
+    def test_explicit_cid_overrides_python_program_stem(self) -> None:
+        for script in ("scripts/model.py", "scripts/model.sh", "scripts/model.v2.py"):
+            with self.subTest(script=script):
+                layout = PYRUN_MODULE.parse_pyrun_arguments(
+                    ["--cid", "stable-model", "--", script]
+                )
+
+                self.assertEqual(layout.cid, "stable-model")
+
+    def test_implicit_cid_requires_a_valid_python_program_stem(self) -> None:
+        cases = (
+            (["scripts/model.sh"], "cannot derive a command ID"),
+            (["scripts/model.v2.py"], "stem is not a valid command ID"),
+            (["scripts/.py"], "stem is not a valid command ID"),
+        )
+        for arguments, message in cases:
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaisesRegex(PYRUN_MODULE.PyrunContractError, message),
+            ):
+                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+
+    def test_runner_options_require_separator_with_implicit_cid(self) -> None:
+        layout = PYRUN_MODULE.parse_pyrun_arguments(
+            ["--exclusive", "--", "scripts/model.py"]
+        )
+
+        self.assertEqual(layout.cid, "model")
+        self.assertTrue(layout.exclusive)
+        with self.assertRaisesRegex(
+            PYRUN_MODULE.PyrunContractError,
+            "runner options require -- before the script",
+        ):
+            PYRUN_MODULE.parse_pyrun_arguments(
+                ["--exclusive", "scripts/model.py"]
+            )
+
+    def test_implicit_cid_publishes_to_the_derived_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/print_args.py",
+                    "--label",
+                    "visible",
+                ],
+                cwd=entry,
+                add_default_cid=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(state["commands"]), {"print_args"})
+
     def test_cid_is_runner_only_and_never_reaches_the_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))

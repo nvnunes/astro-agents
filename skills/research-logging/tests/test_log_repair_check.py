@@ -709,7 +709,7 @@ class RepairCheckTests(unittest.TestCase):
                 + "\n```bash\n./pyrun --output-data data/result.txt\n```\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ActionError, "missing --cid declaration"):
+            with self.assertRaisesRegex(ActionError, "cannot derive a command ID"):
                 run_repair_check(
                     fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )

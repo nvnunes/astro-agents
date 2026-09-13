@@ -415,8 +415,8 @@ class ClosedShellGrammarTests(unittest.TestCase):
     def test_one_command_and_one_loop_have_stable_cids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
-            command = _discover("./pyrun scripts/run.py --label fixed", context)
-            loop = _discover(
+            command = _discover_exact("./pyrun scripts/run.py --label fixed", context)
+            loop = _discover_exact(
                 "for value in alpha beta; do\n"
                 '  ./pyrun scripts/run.py --label "$value"\n'
                 "done",
@@ -425,10 +425,8 @@ class ClosedShellGrammarTests(unittest.TestCase):
 
             COMMAND.validate_command_structure(command.invocations)
             COMMAND.validate_command_structure(loop.invocations)
-            self.assertEqual(
-                {item.cid for item in command.invocations}, {"test-command"}
-            )
-            self.assertEqual({item.cid for item in loop.invocations}, {"test-command"})
+            self.assertEqual({item.cid for item in command.invocations}, {"run"})
+            self.assertEqual({item.cid for item in loop.invocations}, {"run"})
 
     def test_multiple_commands_in_one_loop_share_the_loop_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -471,17 +469,53 @@ class ClosedShellGrammarTests(unittest.TestCase):
                 len({item.authored_group for item in result.invocations}), 1
             )
 
-    def test_missing_and_malformed_cids_fail_discovery(self) -> None:
+    def test_invalid_explicit_and_implicit_cids_fail_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             for label, body in (
-                ("missing", "./pyrun scripts/run.py"),
                 ("malformed", "./pyrun --cid 'not valid' -- scripts/run.py"),
+                ("non-python", "./pyrun scripts/run.sh"),
+                ("invalid-stem", "./pyrun scripts/run.v2.py"),
             ):
                 with self.subTest(label=label):
                     result = _discover_exact(body, context)
                     self.assertFalse(result.invocations)
                     self.assertIn("cid", str(result.failures[0].error).lower())
+
+    def test_multiple_implicit_programs_in_one_loop_require_shared_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            write(context.entry_root / "scripts/other.py", "# fixture\n")
+            result = _discover_exact(
+                "for value in alpha beta; do\n"
+                '  ./pyrun scripts/run.py --label "$value"\n'
+                '  ./pyrun scripts/other.py --label "$value"\n'
+                "done",
+                context,
+            )
+
+            self.assertFalse(result.failures)
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.cid.unstable"
+            ):
+                COMMAND.validate_command_structure(result.invocations)
+
+    def test_duplicate_derived_cid_across_documents_fails_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            first = _discover_exact("./pyrun scripts/run.py --label first", context)
+            second = _discover_exact(
+                "./pyrun scripts/run.py --label second",
+                replace(context, document="entries/entry/other.md"),
+            )
+
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.cid.duplicate"
+            ):
+                COMMAND.validate_command_structure(
+                    (*first.invocations, *second.invocations)
+                )
 
     def test_duplicate_cid_across_documents_fails_structure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

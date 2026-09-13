@@ -126,8 +126,9 @@ class _PreparedCodeObservation:
 
 def usage() -> int:
     print(
-        "usage: pyrun --cid COMMAND_ID -- <script> [args...]\n"
-        "       pyrun --cid COMMAND_ID [--auto-reproduce=false] [--exclusive] "
+        "usage: pyrun <script.py> [args...]\n"
+        "       pyrun --cid COMMAND_ID -- <script> [args...]\n"
+        "       pyrun [--cid COMMAND_ID] [--auto-reproduce=false] [--exclusive] "
         "[--env NAME=value] "
         "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"

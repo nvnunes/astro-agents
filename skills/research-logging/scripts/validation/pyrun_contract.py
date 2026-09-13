@@ -126,10 +126,10 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         if state.captures:
             state.recipe_prefix.append("--")
         index += 1
-    if state.cid is None:
-        raise PyrunContractError("missing --cid declaration")
     if index >= len(arguments):
         raise PyrunContractError("missing script")
+    script = arguments[index]
+    cid = _effective_cid(script, state.cid)
     script_arguments = tuple(arguments[index + 1 :])
     roles = _normalized_roles(state.declarations)
     _validate_role_targets(roles, script_arguments)
@@ -137,18 +137,36 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         script_arguments, dict(roles), require_material_roles=False
     )
     return PyrunLayout(
-        index,
-        state.cid,
-        arguments[index],
-        script_arguments,
-        tuple((*state.signature_prefix, *script_arguments)),
-        tuple(state.captures),
-        roles,
-        tuple(sorted(state.environment.items())),
-        tuple((*state.recipe_prefix, *script_arguments)),
-        state.auto_reproduce,
-        state.exclusive,
+        script_index=index,
+        cid=cid,
+        script=script,
+        script_arguments=script_arguments,
+        parameters=tuple((*state.signature_prefix, *script_arguments)),
+        captures=tuple(state.captures),
+        roles=roles,
+        environment=tuple(sorted(state.environment.items())),
+        recipe_parameters=tuple((*state.recipe_prefix, *script_arguments)),
+        auto_reproduce=state.auto_reproduce,
+        exclusive=state.exclusive,
     )
+
+
+def _effective_cid(script: str, explicit_cid: str | None) -> str:
+    """Return the explicit CID or derive one from a lexical Python filename."""
+
+    if explicit_cid is not None:
+        return explicit_cid
+    filename = script.rsplit("/", 1)[-1]
+    if not filename.endswith(".py"):
+        raise PyrunContractError(
+            "program cannot derive a command ID; add an explicit --cid"
+        )
+    stem = filename.removesuffix(".py")
+    if _OPTION_SELECTOR_RE.fullmatch(stem) is None:
+        raise PyrunContractError(
+            "Python program stem is not a valid command ID; add an explicit --cid"
+        )
+    return stem
 
 
 def _consume_runner_option(

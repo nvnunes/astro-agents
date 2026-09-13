@@ -59,9 +59,10 @@ for every discovered log, including concise explanations for incomplete,
 blocked, or operationally failed rows. Present it unchanged; do not open
 generated reports or interpret the structured collections to reconstruct it.
 Do not build the log set with filename globs, and do not exclude a candidate
-because its basename is `validation.md`; discovery recognizes maintained
-summaries by their stable navigation line and sibling log root, so generated
-reports are not candidates.
+because its basename is `validation.md`. Discovery recognizes a regular summary
+only from its regular sibling log root and that root's regular `entries/`
+directory; it does not read Markdown. Validation owns every discovered
+candidate's content defects.
 
 Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
 `--dry-run` to evaluate without writing generated files. Use

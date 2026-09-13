@@ -22,6 +22,16 @@ does not fill an ID gap. An existing logical entry, inconsistent identity
 state, or recognizable partial scaffold fails precisely and is not treated as
 a retry or completed manually during Record.
 
+Given harmless changes to summary-title or report-navigation wording, or a
+noncanonical order of otherwise reliable entry rows, `log add` still allocates
+from the unambiguous `## Entries` inventory and preserves the unrelated wording.
+Duplicate Entries sections, IDs, targets, or physical collisions still fail.
+
+Given a regular `NAME.md`, regular sibling `NAME/`, and regular
+`NAME/entries/`, discovery returns the summary without opening its Markdown.
+Missing pairs are excluded; malformed discovered Markdown remains validation's
+responsibility.
+
 Given a request to investigate a question and record the work, Record
 implements or revises the needed scripts, runs the research, retains and
 analyzes the outputs, documents the evidence, and drafts grounded observations

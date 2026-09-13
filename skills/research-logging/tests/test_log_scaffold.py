@@ -276,6 +276,121 @@ class LogAddTests(unittest.TestCase):
             summary = logical.with_suffix(".md").read_text(encoding="utf-8")
             self.assertLess(summary.index("e001.md"), summary.index("e002.md"))
 
+    def test_add_ignores_unrelated_summary_header_and_navigation_wording(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical = initialize(root)
+            summary = logical.with_suffix(".md")
+            customized = (
+                summary.read_text(encoding="utf-8")
+                .replace("# Calibration Study", "Project notebook")
+                .replace(
+                    "Validation: [latest completed report](study/validation.md)",
+                    "Validation report is linked elsewhere.",
+                )
+                .replace(
+                    "Reproduction: [latest report](study/reproduction.md)",
+                    "Reproduction status is maintained separately.",
+                )
+            )
+            summary.write_text(customized, encoding="utf-8")
+
+            completed = add(root, logical)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            updated = summary.read_text(encoding="utf-8")
+            self.assertIn("Project notebook", updated)
+            self.assertIn("Validation report is linked elsewhere.", updated)
+            self.assertIn("Reproduction status is maintained separately.", updated)
+            self.assertIn("e001.md", updated)
+
+    def test_add_accepts_reordered_reliable_summary_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical = initialize(root)
+            self.assertEqual(add(root, logical).returncode, 0)
+            self.assertEqual(
+                add(
+                    root,
+                    logical,
+                    date="2026-09-05",
+                    title="Noise floor",
+                    slug="noise-floor",
+                ).returncode,
+                0,
+            )
+            summary = logical.with_suffix(".md")
+            text = summary.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.startswith("- `")]
+            summary.write_text(
+                text.replace("\n".join(lines), "\n".join(reversed(lines))),
+                encoding="utf-8",
+            )
+
+            completed = add(
+                root,
+                logical,
+                date="2026-09-06",
+                title="Final trial",
+                slug="final-trial",
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue(
+                (logical / "entries" / "2026-09-06-e003-final-trial").is_dir()
+            )
+
+    def test_add_rejects_an_ambiguous_entries_section(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical = initialize(root)
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8") + "\n## Entries\n",
+                encoding="utf-8",
+            )
+            before = summary.read_bytes()
+
+            completed = add(root, logical)
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(payload(completed)["code"], "summary.scaffold.invalid")
+            self.assertEqual(summary.read_bytes(), before)
+            self.assertEqual(list((logical / "entries").iterdir()), [])
+
+    def test_add_rejects_malformed_inventory_and_duplicate_physical_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical = initialize(root)
+            summary = logical.with_suffix(".md")
+            original = summary.read_text(encoding="utf-8")
+            summary.write_text(
+                original.replace("## Entries\n\n", "## Entries\n\n- not an entry\n"),
+                encoding="utf-8",
+            )
+
+            malformed = add(root, logical)
+
+            self.assertEqual(malformed.returncode, 2)
+            self.assertEqual(payload(malformed)["code"], "entry.identity.invalid")
+            self.assertEqual(list((logical / "entries").iterdir()), [])
+
+            summary.write_text(original, encoding="utf-8")
+            for name in (
+                "2026-09-01-e001-first",
+                "2026-09-02-e001-second",
+            ):
+                entry = logical / "entries" / name
+                entry.mkdir()
+                (entry / "e001.md").write_text("# Existing\n", encoding="utf-8")
+
+            duplicate = add(root, logical)
+
+            self.assertEqual(duplicate.returncode, 2)
+            self.assertEqual(
+                payload(duplicate)["code"], "entry.identity.inconsistent"
+            )
+
     def test_add_ignores_non_entry_files_in_entries_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

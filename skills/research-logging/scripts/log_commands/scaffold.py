@@ -279,34 +279,11 @@ def _inventory(log: LogContext) -> tuple[SummarySection, tuple[EntryObservation,
             EntryObservation(item.id, item.date, item.slug, item.root, documents)
         )
     ordered = tuple(sorted(entries, key=lambda item: _entry_number(item.id)))
-    if tuple(listed) != tuple(item.id for item in ordered):
-        raise ActionError(
-            "entry.identity.inconsistent", "summary entries are not in numeric order"
-        )
     return section, ordered
 
 
 def _summary_section(log: LogContext, text: str) -> SummarySection:
     lines = text.splitlines(keepends=True)
-    if not lines or not lines[0].startswith("# "):
-        raise ActionError("summary.scaffold.invalid", "summary has no level-one title")
-    validation = f"Validation: [latest completed report]({log.root.name}/validation.md)"
-    accepted = {validation, validation.replace("(", "(<", 1).replace(")", ">)", 1)}
-    if not any(line.rstrip("\r\n") in accepted for line in lines[1:3]):
-        raise ActionError(
-            "summary.scaffold.invalid", "summary validation link is not canonical"
-        )
-    reproduction = f"Reproduction: [latest report]({log.root.name}/reproduction.md)"
-    accepted_reproduction = {
-        reproduction,
-        reproduction.replace("(", "(<", 1).replace(")", ">)", 1),
-    }
-    if not any(
-        line.rstrip("\r\n") in accepted_reproduction for line in lines[3:6]
-    ):
-        raise ActionError(
-            "summary.scaffold.invalid", "summary reproduction link is not canonical"
-        )
     headings = [
         index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## Entries"
     ]
@@ -543,9 +520,7 @@ def _insert_entry(
     content = body.rstrip("\r\n")
     suffix = body[len(content) :]
     if not suffix:
-        raise ActionError(
-            "summary.scaffold.invalid", "Entries section lacks a separator"
-        )
+        suffix = "\n"
     relative = document.relative_to(log.summary.parent).as_posix()
     target = _markdown_target(relative)
     item = f"- `{date}` [{title}]({target})"

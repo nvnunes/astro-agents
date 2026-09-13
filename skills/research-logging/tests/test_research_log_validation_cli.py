@@ -9,6 +9,7 @@ from unittest import mock
 
 from research_log_cli_test_support import run_log as run_log_in_process
 from research_log_validation_test_support import mechanical_log, write
+from validation.discovery import discover_summaries
 
 
 def run_log(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -152,7 +153,7 @@ class ValidationCliTests(unittest.TestCase):
             root = Path(directory)
             ordinary, _ = mechanical_log(root)
             named_validation = root / "docs" / "validation.md"
-            (root / "docs" / "validation").mkdir()
+            (root / "docs" / "validation" / "entries").mkdir(parents=True)
             write(
                 named_validation,
                 "# Validation study\n\n"
@@ -182,6 +183,59 @@ class ValidationCliTests(unittest.TestCase):
                         named_validation.resolve().as_posix(),
                     )
                 ),
+            )
+
+    def test_discovery_uses_only_the_regular_filesystem_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            malformed = root / "docs" / "malformed.md"
+            malformed.write_bytes(b"\xffnot markdown")
+            (root / "docs" / "malformed" / "entries").mkdir(parents=True)
+            missing_entries = root / "docs" / "missing.md"
+            missing_entries.write_text("# Missing entries\n", encoding="utf-8")
+            (root / "docs" / "missing").mkdir()
+            linked_entries = root / "docs" / "linked" / "entries"
+            linked_entries.parent.mkdir()
+            linked_entries.symlink_to(malformed.with_suffix("") / "entries")
+            linked_summary = root / "docs" / "linked.md"
+            linked_summary.write_text("# Linked entries\n", encoding="utf-8")
+            summary_link = root / "docs" / "summary-link.md"
+            summary_link.symlink_to(summary)
+
+            with mock.patch.object(
+                Path,
+                "open",
+                side_effect=AssertionError("discovery opened Markdown"),
+            ):
+                discovered = discover_summaries(root)
+
+            self.assertEqual(
+                discovered["summaries"],
+                sorted(
+                    (
+                        summary.resolve().as_posix(),
+                        malformed.resolve().as_posix(),
+                    )
+                ),
+            )
+
+            validated = run_log(
+                root,
+                "validate",
+                "--root",
+                str(root),
+                "--dry-run",
+                "--format",
+                "json",
+            )
+            self.assertEqual(validated.returncode, 3)
+            failures = json.loads(validated.stdout)["failures"]
+            self.assertTrue(
+                any(
+                    item["summary"] == malformed.resolve().as_posix()
+                    for item in failures
+                )
             )
 
     def test_only_mechanical_validation_arguments_are_public(self) -> None:

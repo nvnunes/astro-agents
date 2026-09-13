@@ -198,7 +198,10 @@ start date and invoke:
 The command allocates one above the highest consistently observed entry ID,
 never fills a gap, creates the minimal entry document and `pyrun` symlink, and
 appends only the new `## Entries` item. It leaves summary interpretation,
-follow-ups, and generated validation unchanged.
+follow-ups, report-navigation prose, and generated validation unchanged. Safe
+allocation requires one unambiguous Entries inventory whose canonical links and
+IDs agree with the physical entry directories and documents; unrelated summary
+header wording and row order are not repair prerequisites.
 
 #### Continue an investigation
 

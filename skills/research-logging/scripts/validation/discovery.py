@@ -34,8 +34,7 @@ class SummaryDiscoveryError(ValueError):
 def discover_summaries(root: Path) -> dict[str, object]:
     """Return every maintained summary below one regular project root.
 
-    Discovery uses the maintained-summary navigation contract and sibling log
-    root, not a summary filename allowlist or generated-report filename denylist.
+    Discovery uses only the regular summary, sibling log root, and entries root.
     """
 
     if root.is_symlink():
@@ -48,7 +47,7 @@ def discover_summaries(root: Path) -> dict[str, object]:
     summaries = [
         path.resolve().as_posix()
         for path in _markdown_candidates(root)
-        if _is_maintained_summary(path, _read_candidate(path))
+        if _is_maintained_summary(path)
     ]
     return {
         "root": root.as_posix(),
@@ -83,35 +82,20 @@ def _markdown_candidates(root: Path) -> Iterator[Path]:
             yield path
 
 
-def _read_candidate(path: Path) -> str:
-    try:
-        with path.open(encoding="utf-8") as handle:
-            return handle.read(MAX_HEADER_CHARACTERS)
-    except (OSError, UnicodeError) as error:
-        raise SummaryDiscoveryError(
-            f"could not read Markdown candidate {path}: {error}"
-        ) from error
-
-
 def _raise_walk_error(error: OSError) -> None:
     raise SummaryDiscoveryError(
         f"could not traverse maintained-summary discovery root: {error}"
     ) from error
 
 
-def _is_maintained_summary(path: Path, text: str) -> bool:
-    lines = text.splitlines()
-    if not lines or not lines[0].startswith("# "):
-        return False
-    line_number = 1
-    if line_number < len(lines) and not lines[line_number]:
-        line_number += 1
-    target = f"{path.stem}/validation.md"
-    accepted = {
-        f"Validation: [latest completed report]({target})",
-        f"Validation: [latest completed report](<{target}>)",
-    }
-    if line_number >= len(lines) or lines[line_number] not in accepted:
-        return False
+def _is_maintained_summary(path: Path) -> bool:
+    """Return whether one regular Markdown path has the complete log pair."""
+
     log_root = path.with_suffix("")
-    return not log_root.is_symlink() and log_root.is_dir()
+    entries_root = log_root / "entries"
+    return (
+        not log_root.is_symlink()
+        and log_root.is_dir()
+        and not entries_root.is_symlink()
+        and entries_root.is_dir()
+    )

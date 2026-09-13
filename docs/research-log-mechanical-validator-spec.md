@@ -3751,12 +3751,15 @@ The validation and discovery operations are:
 ```
 
 `discover --root` performs bounded, read-only maintained-summary discovery
-beneath one regular non-symlink project root. It recognizes a summary by its
-H1-adjacent stable `Validation: [latest completed report](<log>/validation.md)`
-navigation line and regular sibling log root. It does not include or exclude a
-candidate based on the candidate's basename. It emits the discovery-result
-schema listed in `Current Versions`, with the resolved `root` and a sorted
-`summaries` array.
+beneath one regular non-symlink project root. It recognizes a regular nonsymlink
+`NAME.md` only from the regular nonsymlink `NAME/` and `NAME/entries/`
+companions. Discovery does not open or decode candidate Markdown and does not
+include or exclude a candidate based on its basename. Missing filesystem pairs
+are excluded; malformed candidate content remains in the result so validation
+can report it. Discovery retains its ignored-directory pruning, no-symlink
+traversal, 100,000-Markdown-candidate bound, and traversal-error behavior. It
+emits the discovery-result schema listed in `Current Versions`, with the
+resolved `root` and a sorted `summaries` array.
 
 `--path` names the logical `LOG` base whose `LOG.md` summary and `LOG/` root are
 both present. It does not accept either physical path as an alternative
@@ -3814,14 +3817,19 @@ canonical empty summary and matching `LOG/entries/`, publishing the summary
 last. An existing or partial target is a conflict rather than a retry.
 
 `log add` holds the log lock and then the newly allocated stable entry lock. It
-requires consistent IDs and document links across the summary inventory, entry
-directories, and entry documents; allocates one above the highest observed ID
+requires exactly one `## Entries` section and consistent IDs, dates, canonical
+document links, entry directories, and entry documents within that inventory.
+Malformed or ambiguous rows, duplicate IDs or targets, mismatched physical
+state, and occupied new targets fail. Summary row order, H1 wording, and
+validation/reproduction navigation wording or placement are not allocation
+preconditions. The command allocates one above the highest reliable physical ID
 without filling gaps; creates the minimal canonical entry document and a
 relative symlink to the active package's verified `pyrun`; and appends only the
 new summary item. The summary commits last. Ordinary publication failures roll
 back, while recognizable interruption residue fails closed for explicit
-Repair. Neither operation changes summary interpretation, follow-ups, optional
-support material, or generated validation state.
+Repair. Neither operation repairs or changes unrelated summary prose,
+interpretation, follow-ups, optional support material, or generated validation
+state.
 
 The input-registry operations are:
 

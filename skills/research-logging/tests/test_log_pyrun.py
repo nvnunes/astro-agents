@@ -15,6 +15,7 @@ from validation.pyrun_state import (
     PYRUN_RUNNER,
     ExecutionRecipe,
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     PyrunFile,
     execution_id,
@@ -78,7 +79,11 @@ def _write_state(
     state = PyrunFile(
         entry / "pyrun.json",
         entry,
-        {execution_id(item.recipe): item for item in executions},
+        {
+            "build": PyrunCommand(
+                {execution_id(item.recipe): item for item in executions}
+            )
+        },
     )
     (entry / "pyrun.json").write_text(state.serialized(), encoding="utf-8")
 
@@ -121,7 +126,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             root = Path(directory)
             base, entry = _fixture(
                 root,
-                "./pyrun --auto-reproduce=false -- scripts/build.py "
+                "./pyrun --cid build --auto-reproduce=false -- scripts/build.py "
                 "--output-data data/result.csv",
             )
             recipe = _recipe("data/result.csv")
@@ -150,8 +155,12 @@ class LogPyrunPolicyTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             after = json.loads((entry / "pyrun.json").read_text())
-            self.assertFalse(after["executions"][identity]["auto_reproduce"])
-            before["executions"][identity]["auto_reproduce"] = False
+            self.assertFalse(
+                after["commands"]["build"]["executions"][identity]["auto_reproduce"]
+            )
+            before["commands"]["build"]["executions"][identity]["auto_reproduce"] = (
+                False
+            )
             self.assertEqual(after, before)
             self.assertEqual(validation.read_bytes(), before_validation)
 
@@ -160,7 +169,8 @@ class LogPyrunPolicyTests(unittest.TestCase):
             root = Path(directory)
             base, entry = _fixture(
                 root,
-                "./pyrun --exclusive -- scripts/build.py --output-data data/result.csv",
+                "./pyrun --cid build --exclusive -- scripts/build.py "
+                "--output-data data/result.csv",
             )
             recipe = _recipe("data/result.csv")
             _write_state(entry, (_execution(recipe, auto_reproduce=True),))
@@ -182,8 +192,10 @@ class LogPyrunPolicyTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             state = json.loads((entry / "pyrun.json").read_text())
-            self.assertTrue(state["executions"][identity]["exclusive"])
-            self.assertEqual(state["schema"], "research-log-pyrun/v5")
+            self.assertTrue(
+                state["commands"]["build"]["executions"][identity]["exclusive"]
+            )
+            self.assertEqual(state["schema"], "research-log-pyrun/v6")
 
     def test_static_loop_setter_changes_every_distinct_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -191,7 +203,7 @@ class LogPyrunPolicyTests(unittest.TestCase):
             base, entry = _fixture(
                 root,
                 "for case in one two; do\n"
-                "  ./pyrun --auto-reproduce=false -- scripts/build.py "
+                "  ./pyrun --cid build --auto-reproduce=false -- scripts/build.py "
                 '--case "$case" '
                 '--output-data "data/$case.csv"\n'
                 "done",
@@ -220,7 +232,9 @@ class LogPyrunPolicyTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            state = json.loads((entry / "pyrun.json").read_text())["executions"]
+            state = json.loads((entry / "pyrun.json").read_text())["commands"]["build"][
+                "executions"
+            ]
             self.assertEqual(set(state), {execution_id(item) for item in recipes})
             self.assertTrue(all(not item["auto_reproduce"] for item in state.values()))
 
@@ -228,7 +242,8 @@ class LogPyrunPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             base, entry = _fixture(
-                root, "./pyrun scripts/build.py --output-data data/result.csv"
+                root,
+                "./pyrun --cid build -- scripts/build.py --output-data data/result.csv",
             )
             recipe = _recipe("data/result.csv")
             _write_state(entry, (_execution(recipe, auto_reproduce=True),))

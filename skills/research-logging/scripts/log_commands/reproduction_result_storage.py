@@ -42,6 +42,7 @@ class CommandProjectionRequest:
     bucket: str | None = None
     entry: str | None = None
     reason: str | None = None
+    cid: str | None = None
     execution_id: str | None = None
     limit: int = 50
 
@@ -54,7 +55,7 @@ class ReproductionPublicationRequest:
     run: RunResult
     artifacts: tuple[ArtifactResult, ...]
     commands: tuple[CommandResult, ...]
-    selected_execution_keys: tuple[tuple[str, str], ...]
+    selected_execution_keys: tuple[tuple[str, str, str], ...]
     selected_pre_execution_artifact_keys: tuple[tuple[str, str], ...]
 
 
@@ -65,6 +66,7 @@ class PublicationCommitQuery:
     run_id: str
     target_kind: str
     target_entry: str | None
+    target_cid: str | None
     target_execution_id: str | None
     include_all: bool
     accepted_at: str
@@ -113,7 +115,9 @@ def _validate_comparison_contracts(row: sqlite3.Row) -> None:
                 "evidence_definition",
             )
         ):
-            raise ReproductionStorageError("reproduction comparison contracts are invalid")
+            raise ReproductionStorageError(
+                "reproduction comparison contracts are invalid"
+            )
         return
     if row["comparison_contract"] != "research-log-reproduction-comparison/1":
         raise ReproductionStorageError("reproduction comparison contract is invalid")
@@ -160,12 +164,13 @@ def publish_reproduction_results(
             )
             db.execute(
                 "INSERT INTO reproduction_runs VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_pk,
                     run.run_id,
                     target["kind"],
                     target.get("entry"),
+                    target.get("cid"),
                     target.get("execution_id"),
                     int(run.include_all),
                     run.status,
@@ -202,10 +207,11 @@ def publish_reproduction_results(
             for order, record in enumerate(run.command_records or ()):
                 db.execute(
                     "INSERT INTO reproduction_run_commands VALUES "
-                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         run_pk,
                         record["entry"],
+                        record["cid"],
                         record["execution_id"],
                         order,
                         record["bucket"],
@@ -225,10 +231,11 @@ def publish_reproduction_results(
                 )
             for position, execution in enumerate(run.executions):
                 db.execute(
-                    "INSERT INTO reproduction_run_executions VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO reproduction_run_executions VALUES (?,?,?,?,?,?,?,?)",
                     (
                         run_pk,
                         execution["entry"],
+                        execution["cid"],
                         execution["execution_id"],
                         position,
                         execution.get("started_at"),
@@ -236,17 +243,18 @@ def publish_reproduction_results(
                         execution.get("elapsed_seconds"),
                     ),
                 )
-            for entry, execution_id in selected_execution_keys:
+            for entry, cid, execution_id in selected_execution_keys:
                 db.execute(
                     "DELETE FROM reproduction_artifact_results "
-                    "WHERE entry=? AND execution_id=?",
-                    (entry, execution_id),
+                    "WHERE entry=? AND cid=? AND execution_id=?",
+                    (entry, cid, execution_id),
                 )
             for command in command_rows:
                 db.execute(
-                    "INSERT INTO reproduction_execution_results VALUES (?,?,?,?,?,?) ON CONFLICT(entry,execution_id) DO UPDATE SET disposition=excluded.disposition,source_digest=excluded.source_digest,recorded_at=excluded.recorded_at,producing_run_id=excluded.producing_run_id",  # noqa: E501
+                    "INSERT INTO reproduction_execution_results VALUES (?,?,?,?,?,?,?) ON CONFLICT(entry,cid,execution_id) DO UPDATE SET disposition=excluded.disposition,source_digest=excluded.source_digest,recorded_at=excluded.recorded_at,producing_run_id=excluded.producing_run_id",  # noqa: E501
                     (
                         command.entry,
+                        command.cid,
                         command.execution_id,
                         command.disposition,
                         command.source_digest,
@@ -261,10 +269,11 @@ def publish_reproduction_results(
                     (artifact.entry, artifact.artifact),
                 )
                 db.execute(
-                    "INSERT INTO reproduction_artifact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(entry,artifact) DO UPDATE SET execution_id=excluded.execution_id,outcome=excluded.outcome,reason=excluded.reason,recorded_at=excluded.recorded_at,producing_run_id=excluded.producing_run_id,comparison_contract=excluded.comparison_contract,comparison_profile=excluded.comparison_profile,expected_json=excluded.expected_json,regenerated_json=excluded.regenerated_json,evidence_contract=excluded.evidence_contract,evidence_definition=excluded.evidence_definition",  # noqa: E501
+                    "INSERT INTO reproduction_artifact_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(entry,artifact) DO UPDATE SET cid=excluded.cid,execution_id=excluded.execution_id,outcome=excluded.outcome,reason=excluded.reason,recorded_at=excluded.recorded_at,producing_run_id=excluded.producing_run_id,comparison_contract=excluded.comparison_contract,comparison_profile=excluded.comparison_profile,expected_json=excluded.expected_json,regenerated_json=excluded.regenerated_json,evidence_contract=excluded.evidence_contract,evidence_definition=excluded.evidence_definition",  # noqa: E501
                     (
                         artifact.entry,
                         artifact.artifact,
+                        artifact.cid,
                         artifact.execution_id,
                         artifact.outcome,
                         artifact.reason,
@@ -330,6 +339,7 @@ def lookup_reproduction_run_commit(
     expected = (
         query.target_kind,
         query.target_entry,
+        query.target_cid,
         query.target_execution_id,
         int(query.include_all),
         query.status,
@@ -340,7 +350,7 @@ def lookup_reproduction_run_commit(
     try:
         with result_snapshot(_root(path)) as db:
             row = db.execute(
-                "SELECT target_kind,target_entry,target_execution_id,include_all,"
+                "SELECT target_kind,target_entry,target_cid,target_execution_id,include_all,"
                 "status,accepted_at,finished_at,folder_path "
                 "FROM reproduction_runs WHERE run_id=?",
                 (query.run_id,),
@@ -366,11 +376,11 @@ def _validate_selected_identities(
     run: RunResult,
     artifacts: tuple[ArtifactResult, ...],
     commands: tuple[CommandResult, ...],
-    selected_execution_keys: tuple[tuple[str, str], ...],
+    selected_execution_keys: tuple[tuple[str, str, str], ...],
     selected_pre_execution_artifact_keys: tuple[tuple[str, str], ...],
 ) -> None:
     """Require a closed selected projection before any result-store mutation."""
-    execution_keys = {(item.entry, item.execution_id) for item in commands}
+    execution_keys = {(item.entry, item.cid, item.execution_id) for item in commands}
     pre_execution_keys = {
         (item.entry, item.artifact) for item in artifacts if item.execution_id is None
     }
@@ -388,7 +398,7 @@ def _validate_selected_identities(
         or any(item.run_id != run.run_id for item in commands)
         or any(
             item.execution_id is not None
-            and (item.entry, item.execution_id) not in execution_keys
+            and (item.entry, item.cid, item.execution_id) not in execution_keys
             for item in artifacts
         )
     ):
@@ -421,16 +431,22 @@ def _validate_explicit_export_bound(db: sqlite3.Connection, path: Path) -> None:
     if (
         db.execute("SELECT count(*) FROM reproduction_artifact_results").fetchone()[0]
         > MAX_ARTIFACT_RESULTS
-        or db.execute("SELECT count(*) FROM reproduction_execution_results").fetchone()[0]
+        or db.execute("SELECT count(*) FROM reproduction_execution_results").fetchone()[
+            0
+        ]
         > MAX_COMMAND_RESULTS
         or db.execute("SELECT count(*) FROM reproduction_runs").fetchone()[0]
         > MAX_RUN_RESULTS
     ):
-        raise ReproductionStorageError("reproduction publication exceeds cumulative row bound")
+        raise ReproductionStorageError(
+            "reproduction publication exceeds cumulative row bound"
+        )
     try:
         _stream_reproduction_export(db, MAX_RESULT_BYTES)
     except ExportTooLarge:
-        raise ReproductionStorageError("reproduction publication exceeds cumulative byte bound")
+        raise ReproductionStorageError(
+            "reproduction publication exceeds cumulative byte bound"
+        )
 
 
 def export_reproduction_results(path: Path) -> ReproductionResults:
@@ -478,9 +494,7 @@ def _artifact_from_row(db: sqlite3.Connection, row: sqlite3.Row) -> ArtifactResu
             else parse_fingerprint(json.loads(row["expected_json"]), "expected"),
             None
             if row["regenerated_json"] is None
-            else parse_fingerprint(
-                json.loads(row["regenerated_json"]), "regenerated"
-            ),
+            else parse_fingerprint(json.loads(row["regenerated_json"]), "regenerated"),
             row["evidence_definition"],
             evidence,
         )
@@ -488,6 +502,7 @@ def _artifact_from_row(db: sqlite3.Connection, row: sqlite3.Row) -> ArtifactResu
     return ArtifactResult(
         row["entry"],
         row["artifact"],
+        row["cid"],
         row["execution_id"],
         row["outcome"],
         row["reason"],
@@ -504,17 +519,19 @@ def _run_from_row(
 
     target = {"kind": row["target_kind"], "entry": row["target_entry"]}
     if row["target_execution_id"] is not None:
+        target["cid"] = row["target_cid"]
         target["execution_id"] = row["target_execution_id"]
     executions = tuple(
         {
             "entry": item["entry"],
+            "cid": item["cid"],
             "execution_id": item["execution_id"],
             "started_at": item["started_at"],
             "finished_at": item["finished_at"],
             "elapsed_seconds": item["elapsed_seconds"],
         }
         for item in db.execute(
-            "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
+            "SELECT entry,cid,execution_id,started_at,finished_at,elapsed_seconds "
             "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
             (row["run_pk"],),
         )
@@ -522,7 +539,7 @@ def _run_from_row(
     records = tuple(
         _validated_command_detail(item)
         for item in db.execute(
-            "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+            "SELECT entry,cid,execution_id,bucket,reason,terminal_disposition,"
             "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
             "queued,requires_reproduction,run_selection,details_json,recipe_json "
             "FROM reproduction_run_commands WHERE run_pk=? ORDER BY plan_order",
@@ -618,9 +635,7 @@ def _write_artifact_export(
                     ),
                     (
                         "evidence_definition",
-                        lambda output: output.write_value(
-                            row["evidence_definition"]
-                        ),
+                        lambda output: output.write_value(row["evidence_definition"]),
                     ),
                 )
             )
@@ -628,11 +643,12 @@ def _write_artifact_export(
             (
                 (
                     "expected",
-                    lambda output: _write_optional_json(
-                        output, row["expected_json"]
-                    ),
+                    lambda output: _write_optional_json(output, row["expected_json"]),
                 ),
-                ("profile", lambda output: output.write_value(row["comparison_profile"])),
+                (
+                    "profile",
+                    lambda output: output.write_value(row["comparison_profile"]),
+                ),
                 (
                     "regenerated",
                     lambda output: _write_optional_json(
@@ -729,6 +745,7 @@ def _write_run_export(
 
     target_value = {"kind": row["target_kind"], "entry": row["target_entry"]}
     if row["target_execution_id"] is not None:
+        target_value["cid"] = row["target_cid"]
         target_value["execution_id"] = row["target_execution_id"]
     _write_callbacks(
         encoder,
@@ -759,7 +776,10 @@ def _write_run_export(
                     {"availability": "unknown", "path": row["folder_path"]}
                 ),
             ),
-            ("include_all", lambda target: target.write_value(bool(row["include_all"]))),
+            (
+                "include_all",
+                lambda target: target.write_value(bool(row["include_all"])),
+            ),
             ("run_id", lambda target: target.write_value(row["run_id"])),
             ("status", lambda target: target.write_value(row["status"])),
             ("target", lambda target: target.write_value(target_value)),
@@ -772,7 +792,7 @@ def _write_run_executions(
 ) -> None:
     encoder.write_array(
         db.execute(
-            "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
+            "SELECT entry,cid,execution_id,started_at,finished_at,elapsed_seconds "
             "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
             (row["run_pk"],),
         ),
@@ -780,22 +800,27 @@ def _write_run_executions(
     )
 
 
-def _write_run_command_export(
-    encoder: CappedJsonEncoder, row: sqlite3.Row
-) -> None:
+def _write_run_command_export(encoder: CappedJsonEncoder, row: sqlite3.Row) -> None:
     json.loads(row["details_json"])
     json.loads(row["recipe_json"])
     _write_callbacks(
         encoder,
         (
-            ("auto_reproduce", lambda target: target.write_value(bool(row["auto_reproduce"]))),
+            (
+                "auto_reproduce",
+                lambda target: target.write_value(bool(row["auto_reproduce"])),
+            ),
             ("bucket", lambda target: target.write_value(row["bucket"])),
             ("cwd", lambda target: target.write_value(row["cwd"])),
             ("details", lambda target: target.append(row["details_json"])),
             ("entry", lambda target: target.write_value(row["entry"])),
+            ("cid", lambda target: target.write_value(row["cid"])),
             ("execution_id", lambda target: target.write_value(row["execution_id"])),
             ("exclusive", lambda target: target.write_value(bool(row["exclusive"]))),
-            ("prior_disposition", lambda target: target.write_value(row["prior_disposition"])),
+            (
+                "prior_disposition",
+                lambda target: target.write_value(row["prior_disposition"]),
+            ),
             ("queued", lambda target: target.write_value(bool(row["queued"]))),
             ("reason", lambda target: target.write_value(row["reason"])),
             ("recipe", lambda target: target.append(row["recipe_json"])),
@@ -836,9 +861,9 @@ def _stream_reproduction_export(db: sqlite3.Connection, limit: int) -> int:
     def write_commands(target: CappedJsonEncoder) -> None:
         target.write_array(
             db.execute(
-                "SELECT entry,execution_id,disposition,source_digest,recorded_at,"
+                "SELECT entry,cid,execution_id,disposition,source_digest,recorded_at,"
                 "producing_run_id FROM reproduction_execution_results "
-                "ORDER BY entry,execution_id"
+                "ORDER BY entry,cid,execution_id"
             ),
             lambda output, row: output.write_value(CommandResult(*row).as_dict()),
         )
@@ -861,7 +886,7 @@ def _stream_reproduction_export(db: sqlite3.Connection, limit: int) -> int:
                 (
                     "schema",
                     lambda target: target.write_value(
-                        "research-log-reproduction-result/10"
+                        "research-log-reproduction-result/11"
                     ),
                 ),
                 ("summary", lambda target: target.write_value(metadata["summary"])),
@@ -955,6 +980,7 @@ def _load_reproduction_projection(
                     ArtifactResult(
                         row["entry"],
                         row["artifact"],
+                        row["cid"],
                         row["execution_id"],
                         row["outcome"],
                         row["reason"],
@@ -966,7 +992,7 @@ def _load_reproduction_projection(
             commands = tuple(
                 CommandResult(*row)
                 for row in db.execute(
-                    "SELECT entry,execution_id,disposition,source_digest,recorded_at,producing_run_id FROM reproduction_execution_results ORDER BY entry,execution_id"  # noqa: E501
+                    "SELECT entry,cid,execution_id,disposition,source_digest,recorded_at,producing_run_id FROM reproduction_execution_results ORDER BY entry,cid,execution_id"  # noqa: E501
                 )
             )
             runs = []
@@ -975,17 +1001,19 @@ def _load_reproduction_projection(
             ):
                 target = {"kind": row["target_kind"], "entry": row["target_entry"]}
                 if row["target_execution_id"] is not None:
+                    target["cid"] = row["target_cid"]
                     target["execution_id"] = row["target_execution_id"]
                 executions = tuple(
                     {
                         "entry": item["entry"],
+                        "cid": item["cid"],
                         "execution_id": item["execution_id"],
                         "started_at": item["started_at"],
                         "finished_at": item["finished_at"],
                         "elapsed_seconds": item["elapsed_seconds"],
                     }
                     for item in db.execute(
-                        "SELECT entry,execution_id,started_at,finished_at,elapsed_seconds "
+                        "SELECT entry,cid,execution_id,started_at,finished_at,elapsed_seconds "
                         "FROM reproduction_run_executions WHERE run_pk=? ORDER BY position",
                         (row["run_pk"],),
                     )
@@ -993,7 +1021,7 @@ def _load_reproduction_projection(
                 records = tuple(
                     _validated_command_detail(item)
                     for item in db.execute(
-                        "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+                        "SELECT entry,cid,execution_id,bucket,reason,terminal_disposition,"
                         "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
                         "queued,requires_reproduction,run_selection,details_json,recipe_json "
                         "FROM reproduction_run_commands WHERE run_pk=? ORDER BY plan_order",
@@ -1098,7 +1126,7 @@ def reproduction_artifact_projection(
                 "SELECT count(*) FROM reproduction_artifact_results" + where, bindings
             ).fetchone()[0]
             rows = db.execute(
-                "SELECT entry,artifact,execution_id,outcome,reason,recorded_at,"
+                "SELECT entry,artifact,cid,execution_id,outcome,reason,recorded_at,"
                 "producing_run_id,comparison_contract,comparison_profile,expected_json,regenerated_json,"
                 "evidence_contract,evidence_definition FROM reproduction_artifact_results"
                 + where
@@ -1151,6 +1179,7 @@ def reproduction_artifact_projection(
                     ArtifactResult(
                         row["entry"],
                         row["artifact"],
+                        row["cid"],
                         row["execution_id"],
                         row["outcome"],
                         row["reason"],
@@ -1195,7 +1224,9 @@ def reproduction_summary_projection(path: Path) -> dict[str, object]:
                 "FROM reproduction_artifact_results"
             ).fetchone()
             if counts[7]:
-                raise ReproductionStorageError("reproduction artifact outcome is invalid")
+                raise ReproductionStorageError(
+                    "reproduction artifact outcome is invalid"
+                )
             artifact = {
                 "matched": counts[0] or 0,
                 "not_matched": counts[1] or 0,
@@ -1258,6 +1289,7 @@ def reproduction_command_projection(
                 "entry": row["target_entry"],
             }
             if row["target_execution_id"] is not None:
+                target["cid"] = row["target_cid"]
                 target["execution_id"] = row["target_execution_id"]
             availability = (
                 "unknown"
@@ -1299,6 +1331,7 @@ def reproduction_command_projection(
                 ("bucket", request.bucket),
                 ("entry", request.entry),
                 ("reason", request.reason),
+                ("cid", request.cid),
                 ("execution_id", request.execution_id),
             ):
                 if value is not None:
@@ -1311,7 +1344,7 @@ def reproduction_command_projection(
             records = tuple(
                 _validated_command_detail(item)
                 for item in db.execute(
-                    "SELECT entry,execution_id,bucket,reason,terminal_disposition,"
+                    "SELECT entry,cid,execution_id,bucket,reason,terminal_disposition,"
                     "source_digest,auto_reproduce,cwd,exclusive,prior_disposition,"
                     "queued,requires_reproduction,run_selection,details_json,recipe_json "
                     "FROM reproduction_run_commands"
@@ -1334,6 +1367,7 @@ def _validated_command_detail(row: sqlite3.Row) -> dict[str, object]:
         "cwd": row["cwd"],
         "details": json.loads(row["details_json"]),
         "entry": row["entry"],
+        "cid": row["cid"],
         "execution_id": row["execution_id"],
         "exclusive": bool(row["exclusive"]),
         "prior_disposition": row["prior_disposition"],
@@ -1350,18 +1384,19 @@ def _validated_command_detail(row: sqlite3.Row) -> dict[str, object]:
 
 def load_current_execution_results(
     path: Path,
-) -> dict[tuple[str, str], dict[str, object]]:
+) -> dict[tuple[str, str, str], dict[str, object]]:
     """Return only planner reuse columns, keyed by compound execution identity."""
     try:
         with result_snapshot(_root(path)) as db:
             rows = db.execute(
-                "SELECT entry,execution_id,disposition,source_digest,recorded_at,producing_run_id FROM reproduction_execution_results ORDER BY entry,execution_id"  # noqa: E501
+                "SELECT entry,cid,execution_id,disposition,source_digest,recorded_at,producing_run_id FROM reproduction_execution_results ORDER BY entry,cid,execution_id"  # noqa: E501
             ).fetchall()
     except (ResultStoreError, sqlite3.Error) as error:
         raise ReproductionStorageError(str(error)) from error
     return {
-        (row["entry"], row["execution_id"]): {
+        (row["entry"], row["cid"], row["execution_id"]): {
             "entry": row["entry"],
+            "cid": row["cid"],
             "execution_id": row["execution_id"],
             "disposition": row["disposition"],
             "source_digest": row["source_digest"],

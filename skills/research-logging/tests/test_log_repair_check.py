@@ -183,7 +183,13 @@ class RepairCheckTests(unittest.TestCase):
         state_path = next((fixture.log_root / "entries").glob("*/pyrun.json"))
         state = json.loads(state_path.read_text(encoding="utf-8"))
         script = next((fixture.log_root / "entries").glob("*/scripts/*.py"))
-        state["executions"][identity]["observed"]["script"]["digest"] = hashlib.sha256(
+        matches = [
+            command["executions"][identity]
+            for command in state["commands"].values()
+            if identity in command["executions"]
+        ]
+        self.assertEqual(len(matches), 1)
+        matches[0]["observed"]["script"]["digest"] = hashlib.sha256(
             script.read_bytes()
         ).hexdigest()
         state_path.write_text(
@@ -219,7 +225,9 @@ class RepairCheckTests(unittest.TestCase):
             entry_root=entry.root,
             project_root=fixture.root.resolve(),
         )
-        prior = state.executions[identity]
+        prior = state.execution(invocation.cid, identity)
+        self.assertIsNotNone(prior)
+        assert prior is not None
         script = entry.root / recipe.script
         script.write_text(script_text, encoding="utf-8")
         observed = replace(
@@ -306,8 +314,7 @@ class RepairCheckTests(unittest.TestCase):
                                             "decimal_places": 1,
                                             "mode": "fixed",
                                         },
-                                    }
-                                    ,
+                                    },
                                     {
                                         "source": {"input": 1, "item": 0},
                                         "render": {
@@ -496,7 +503,7 @@ class RepairCheckTests(unittest.TestCase):
         document.write_text(
             "# Directory output\n\n## Run\n\n`Background:`\n\nFixture.\n\n"
             "`Steps:`\n\n```bash\n"
-            "./pyrun scripts/directory.py --input-data '<source>' "
+            "./pyrun --cid directory -- scripts/directory.py --input-data '<source>' "
             "--output-data '<bundle>'\n```\n\n`Results:`\n\n"
             "[source](data/source.txt)<!-- eid:source-fixture -->\n",
             encoding="utf-8",
@@ -544,30 +551,35 @@ class RepairCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(ActionError, "unknown execution"):
                 run_repair_check(
                     fixture.log,
-                    RepairCheckRequest("e001", "pyrun-exec/v1:" + "0" * 64),
+                    RepairCheckRequest("e001", "repair", "pyrun-exec/v2:" + "0" * 64),
                 )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_selector_rejects_alias_and_prefix_before_log_access(self) -> None:
-        identity = "pyrun-exec/v1:" + "1" * 64
-        for selected in (identity.removeprefix("pyrun-exec/v1:"), identity[:40]):
-            with self.subTest(selected=selected), self.assertRaisesRegex(
-                ActionError, "full pyrun-exec/v1 ID"
+        identity = "pyrun-exec/v2:" + "1" * 64
+        for selected in (identity.removeprefix("pyrun-exec/v2:"), identity[:40]):
+            with (
+                self.subTest(selected=selected),
+                self.assertRaisesRegex(ActionError, "full pyrun-exec/v2 ID"),
             ):
                 run_repair_check(
-                    mock.sentinel.log, RepairCheckRequest("e001", selected)
+                    mock.sentinel.log, RepairCheckRequest("e001", "repair", selected)
                 )
 
     def test_timeout_range_is_checked_before_locking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))
             with self.assertRaisesRegex(ActionError, "execution-timeout-seconds"):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity, 0))
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity, 0)
+                )
 
     def test_result_contract_is_nonpublishing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             value = result.as_dict()
             self.assertEqual(value["schema"], "research-log-repair-check-result/1")
             self.assertFalse(value["published"])
@@ -602,6 +614,8 @@ class RepairCheckTests(unittest.TestCase):
                 str(fixture.summary.with_suffix("")),
                 "--entry",
                 "e001",
+                "--cid",
+                "repair",
                 "--execution-id",
                 identity,
             )
@@ -617,6 +631,7 @@ class RepairCheckTests(unittest.TestCase):
                     "schema",
                     "summary",
                     "entry",
+                    "cid",
                     "execution_id",
                     "status",
                     "exit_status",
@@ -645,7 +660,9 @@ class RepairCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))
             before = self._snapshot(fixture.root)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "matched")
             self.assertEqual(result.exit_status, 0)
             self.assertEqual(before, self._snapshot(fixture.root))
@@ -663,10 +680,10 @@ class RepairCheckTests(unittest.TestCase):
                 document.read_text(encoding="utf-8").replace("repair.py", "other.py"),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(
-                ActionError, "current command selection is absent"
-            ):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            with self.assertRaisesRegex(ActionError, "recipe differs"):
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_ambiguous_selector_fails_before_workspace_creation(self) -> None:
@@ -677,8 +694,10 @@ class RepairCheckTests(unittest.TestCase):
             document.write_text(
                 text + text[text.index("## repair") :], encoding="utf-8"
             )
-            with self.assertRaisesRegex(ActionError, "absent or ambiguous"):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            with self.assertRaisesRegex(ActionError, "invocation.cid.duplicate"):
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_invalid_current_command_fails_before_workspace_creation(self) -> None:
@@ -690,8 +709,10 @@ class RepairCheckTests(unittest.TestCase):
                 + "\n```bash\n./pyrun --output-data data/result.txt\n```\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(ActionError, "material.candidate.unresolved"):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            with self.assertRaisesRegex(ActionError, "missing --cid declaration"):
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_stale_current_recipe_is_not_executed(self) -> None:
@@ -707,7 +728,9 @@ class RepairCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ActionError, "current command selection is absent"
             ):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_changed_direct_input_executes_and_reports_historical_difference(
@@ -717,7 +740,9 @@ class RepairCheckTests(unittest.TestCase):
             fixture, identity = self._fixture(Path(directory))
             source = next((fixture.log_root / "entries").glob("*/data/source.txt"))
             source.write_text("changed\n", encoding="utf-8")
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "different")
             self.assertTrue(result.inputs[0]["differs_from_recorded"])
             self._assert_workspace(result)
@@ -736,7 +761,7 @@ class RepairCheckTests(unittest.TestCase):
                 side_effect=AssertionError("repair check must not launch a producer"),
             ) as producer:
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
             self.assertEqual(result.status, "matched")
             self._assert_workspace(result)
@@ -750,15 +775,15 @@ class RepairCheckTests(unittest.TestCase):
                 side_effect=AssertionError("repair check must not launch a producer"),
             ) as producer:
                 baseline = run_repair_check(
-                    fixture.log, RepairCheckRequest("e002", identity)
+                    fixture.log, RepairCheckRequest("e002", "pattern", identity)
                 )
                 (bundle / "ignored.bin").write_bytes(b"changed ignored")
                 ignored = run_repair_check(
-                    fixture.log, RepairCheckRequest("e002", identity)
+                    fixture.log, RepairCheckRequest("e002", "pattern", identity)
                 )
                 (bundle / "selected-a.txt").write_text("changed\n", encoding="utf-8")
                 selected = run_repair_check(
-                    fixture.log, RepairCheckRequest("e002", identity)
+                    fixture.log, RepairCheckRequest("e002", "pattern", identity)
                 )
             self.assertEqual(baseline.status, "matched")
             self.assertEqual(ignored.status, "matched")
@@ -785,7 +810,7 @@ class RepairCheckTests(unittest.TestCase):
                 self._refresh_script_observation(fixture, identity)
                 before = retained.read_bytes()
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "build", identity)
                 )
                 self.assertEqual(result.status, expected)
                 self.assertEqual(retained.read_bytes(), before)
@@ -820,7 +845,7 @@ class RepairCheckTests(unittest.TestCase):
                 self._refresh_script_observation(fixture, identity)
                 before = retained.read_bytes()
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "build", identity)
                 )
                 self.assertEqual(
                     (result.status, result.exit_status), ("unavailable", 3)
@@ -863,7 +888,7 @@ class RepairCheckTests(unittest.TestCase):
                 ),
             ):
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
             self.assertEqual(result.status, "matched")
             self.assertEqual(entered, ["enter", "exit"] * 3)
@@ -888,7 +913,7 @@ class RepairCheckTests(unittest.TestCase):
                     for sink in sinks
                 ]
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
             self.assertEqual(result.status, "matched")
             for sink in blocked:
@@ -910,7 +935,9 @@ class RepairCheckTests(unittest.TestCase):
             source = next((fixture.log_root / "entries").glob("*/data/source.txt"))
             source.unlink()
             before = self._retained_identity(fixture.root)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self.assertEqual(result.workspace, None)
             self.assertFalse(marker.exists())
@@ -931,7 +958,9 @@ class RepairCheckTests(unittest.TestCase):
             replacement.write_text("source\n", encoding="utf-8")
             source.unlink()
             source.symlink_to(replacement)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self.assertEqual(result.workspace, None)
             self.assertFalse(marker.exists())
@@ -948,7 +977,9 @@ class RepairCheckTests(unittest.TestCase):
                 '{"schema": "research-log-data/v5", "inputs": "invalid"}\n',
                 encoding="utf-8",
             )
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self.assertEqual(result.workspace, None)
             self.assertFalse(marker.exists())
@@ -977,7 +1008,7 @@ class RepairCheckTests(unittest.TestCase):
                 else:
                     authority.write_text(contents, encoding="utf-8")
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
                 self.assertEqual(
                     (result.status, result.exit_status), ("unavailable", 3)
@@ -1002,7 +1033,7 @@ class RepairCheckTests(unittest.TestCase):
             self._refresh_script_observation(fixture, identity)
             before = self._retained_identity(fixture.root)
             result = run_repair_check(
-                fixture.log, RepairCheckRequest("e001", identity, 1)
+                fixture.log, RepairCheckRequest("e001", "repair", identity, 1)
             )
             self.assertEqual(
                 (result.status, result.exit_status), ("execution_failed", 3)
@@ -1051,7 +1082,7 @@ class RepairCheckTests(unittest.TestCase):
                     ),
                 ):
                     result = run_repair_check(
-                        fixture.log, RepairCheckRequest("e001", identity)
+                        fixture.log, RepairCheckRequest("e001", "repair", identity)
                     )
                 self.assertEqual(result.status, expected)
                 self._assert_workspace(result)
@@ -1095,7 +1126,7 @@ class RepairCheckTests(unittest.TestCase):
                 self.assertRaisesRegex(OSError, "confinement construction failed"),
             ):
                 run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
             self.assertEqual(len(scratches), 1)
             self.assertFalse(scratches[0].exists())
@@ -1137,7 +1168,9 @@ class RepairCheckTests(unittest.TestCase):
                 ),
                 self.assertRaises(ReproductionControlPlaneError) as caught,
             ):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             for scratch in scratches:
                 real_rmtree(scratch, ignore_errors=True)
             self.assertTrue(caught.exception.cleanup_incomplete)
@@ -1173,7 +1206,7 @@ class RepairCheckTests(unittest.TestCase):
             self.confinement.stop()
             try:
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity, 10)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity, 10)
                 )
             finally:
                 self.confinement.start()
@@ -1225,7 +1258,8 @@ class RepairCheckTests(unittest.TestCase):
                         side_effect=capture_popen,
                     ):
                         result = run_repair_check(
-                            fixture.log, RepairCheckRequest("e001", identity, 10)
+                            fixture.log,
+                            RepairCheckRequest("e001", "repair", identity, 10),
                         )
                 finally:
                     timer.cancel()
@@ -1241,7 +1275,9 @@ class RepairCheckTests(unittest.TestCase):
                 self.assertTrue(result.execution["failure"] in {"stop_requested", None})
                 workspace = self._assert_workspace(result)
                 self.assertIn("child started", result.diagnostics["stdout"])
-                self.assertTrue(Path(result.diagnostics["stderr_path"]).is_relative_to(workspace))
+                self.assertTrue(
+                    Path(result.diagnostics["stderr_path"]).is_relative_to(workspace)
+                )
                 self.assertEqual(before, self._retained_identity(fixture.root))
 
     def test_live_survivor_cleanup_reports_exit_two_without_leaking_worker(
@@ -1296,7 +1332,7 @@ class RepairCheckTests(unittest.TestCase):
                     ),
                 ):
                     result = run_repair_check(
-                        fixture.log, RepairCheckRequest("e001", identity, 10)
+                        fixture.log, RepairCheckRequest("e001", "repair", identity, 10)
                     )
             finally:
                 timer.cancel()
@@ -1311,7 +1347,9 @@ class RepairCheckTests(unittest.TestCase):
             )
             workspace = self._assert_workspace(result)
             self.assertIn("survivor fixture started", result.diagnostics["stdout"])
-            self.assertTrue(Path(result.diagnostics["stderr_path"]).is_relative_to(workspace))
+            self.assertTrue(
+                Path(result.diagnostics["stderr_path"]).is_relative_to(workspace)
+            )
             self.assertEqual(before, self._retained_identity(fixture.root))
 
     def test_retained_identity_is_unchanged_for_match_difference_and_failure(
@@ -1339,7 +1377,7 @@ class RepairCheckTests(unittest.TestCase):
                     self._refresh_script_observation(fixture, identity)
                 before = self._retained_identity(fixture.root)
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
                 self.assertEqual(result.status, expected)
                 self._assert_workspace(result)
@@ -1358,7 +1396,9 @@ class RepairCheckTests(unittest.TestCase):
             retained = next((fixture.log_root / "entries").glob("*/data/result.txt"))
             retained.write_text("changed baseline\n", encoding="utf-8")
             before = self._retained_identity(fixture.root)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(
                 (result.status, result.exit_status), ("comparison_unavailable", 3)
             )
@@ -1378,7 +1418,9 @@ class RepairCheckTests(unittest.TestCase):
                 "from pathlib import Path\nimport sys\n"
                 "Path(sys.argv[-1]).write_text('different\\n')\n",
             )
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "different")
             self.assertTrue(result.execution["sources"][0]["differs_from_recorded"])
             self._assert_workspace(result)
@@ -1394,7 +1436,9 @@ class RepairCheckTests(unittest.TestCase):
             # Keep the recorded recipe observation current: a repair check tests the
             # current repair declaration, not a deliberately stale script baseline.
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "different")
             self._assert_workspace(result)
             self.assertFalse((fixture.root / "tmp" / "reproduction").exists())
@@ -1404,7 +1448,9 @@ class RepairCheckTests(unittest.TestCase):
             fixture, identity = self._fixture(Path(directory))
             self._replace_script(fixture, "import sys\nsys.exit(17)\n")
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "execution_failed")
             self.assertEqual(result.execution["returncode"], 17)
             self._assert_workspace(result)
@@ -1414,7 +1460,9 @@ class RepairCheckTests(unittest.TestCase):
             fixture, identity = self._fixture(Path(directory))
             self._replace_script(fixture, "print('no output')\n")
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "execution_failed")
             self.assertEqual(result.execution["failure"], "output_missing")
 
@@ -1428,7 +1476,9 @@ class RepairCheckTests(unittest.TestCase):
                 "Path(sys.argv[-1]).write_text('source\\n')\n",
             )
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self._assert_workspace(result)
 
@@ -1443,7 +1493,9 @@ class RepairCheckTests(unittest.TestCase):
                 "Path(sys.argv[-1]).write_text(Path(sys.argv[-3]).read_text())\n",
             )
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self._assert_workspace(result)
 
@@ -1458,7 +1510,9 @@ class RepairCheckTests(unittest.TestCase):
                 "Path(sys.argv[-1]).write_text('source\\n')\n",
             )
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("unavailable", 3))
             self._assert_workspace(result)
 
@@ -1472,7 +1526,9 @@ class RepairCheckTests(unittest.TestCase):
                 "Path(sys.argv[-1]).write_text(Path(sys.argv[-3]).read_text())\n",
             )
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "matched")
             self.assertIn("out", result.diagnostics["stdout"])
             self.assertIn("err", result.diagnostics["stderr"])
@@ -1491,7 +1547,9 @@ class RepairCheckTests(unittest.TestCase):
             ) as reserve:
                 reserve.side_effect = ActionError("reproduction.locked", "busy")
                 with self.assertRaisesRegex(ActionError, "busy"):
-                    run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+                    run_repair_check(
+                        fixture.log, RepairCheckRequest("e001", "repair", identity)
+                    )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
     def test_output_binding_covers_equals_and_combined_capture_forms(self) -> None:
@@ -1521,7 +1579,9 @@ class RepairCheckTests(unittest.TestCase):
             fixture, identity = self._fixture(Path(directory))
             retained = next((fixture.log_root / "entries").glob("*/data/result.txt"))
             before = retained.read_bytes()
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual(result.status, "matched")
             output = Path(result.outputs[0]["path"])
             self.assertTrue(output.is_relative_to(Path(result.workspace or "")))
@@ -1532,7 +1592,7 @@ class RepairCheckTests(unittest.TestCase):
         cases = (
             (
                 "equals",
-                "./pyrun scripts/repair.py --input-data '<source>' "
+                "./pyrun --cid repair -- scripts/repair.py --input-data '<source>' "
                 "--output-data='<result>'",
                 "from pathlib import Path\nimport sys\n"
                 "source = sys.argv[-2]\n"
@@ -1541,28 +1601,28 @@ class RepairCheckTests(unittest.TestCase):
             ),
             (
                 "positional",
-                "./pyrun --other-inputs @1 --other-outputs @2 -- "
+                "./pyrun --cid repair --other-inputs @1 --other-outputs @2 -- "
                 "scripts/repair.py '<source>' '<result>'",
                 "from pathlib import Path\nimport sys\n"
                 "Path(sys.argv[-1]).write_text(Path(sys.argv[-2]).read_text())\n",
             ),
             (
                 "stdout",
-                "./pyrun --capture-stdout '<result>' -- "
+                "./pyrun --cid repair --capture-stdout '<result>' -- "
                 "scripts/repair.py --input-data '<source>'",
                 "from pathlib import Path\nimport sys\n"
                 "print(Path(sys.argv[-1]).read_text(), end='')\n",
             ),
             (
                 "stderr",
-                "./pyrun --capture-stderr '<result>' -- "
+                "./pyrun --cid repair --capture-stderr '<result>' -- "
                 "scripts/repair.py --input-data '<source>'",
                 "from pathlib import Path\nimport sys\n"
                 "print(Path(sys.argv[-1]).read_text(), end='', file=sys.stderr)\n",
             ),
             (
                 "combined",
-                "./pyrun --capture-stdout-stderr '<result>' -- "
+                "./pyrun --cid repair --capture-stdout-stderr '<result>' -- "
                 "scripts/repair.py --input-data '<source>'",
                 "from pathlib import Path\nimport sys\n"
                 "print(Path(sys.argv[-1]).read_text(), end='')\n",
@@ -1579,7 +1639,7 @@ class RepairCheckTests(unittest.TestCase):
                     fixture, identity, command, script
                 )
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
                 )
                 self.assertEqual(result.status, "matched", result.as_dict())
                 output = Path(result.outputs[0]["path"])
@@ -1601,7 +1661,7 @@ class RepairCheckTests(unittest.TestCase):
                 )
                 before = self._retained_identity(fixture.root)
                 result = run_repair_check(
-                    fixture.log, RepairCheckRequest("e001", identity)
+                    fixture.log, RepairCheckRequest("e001", "directory", identity)
                 )
                 self.assertEqual(result.status, expected, result.as_dict())
                 output = Path(result.outputs[0]["path"])
@@ -1635,7 +1695,8 @@ class RepairCheckTests(unittest.TestCase):
     def test_signal_exit_mapping_and_cleanup_precedence(self) -> None:
         invocation = SimpleNamespace(
             entry="e001",
-            execution_id="pyrun-exec/v1:" + "0" * 64,
+            cid="repair",
+            execution_id="pyrun-exec/v2:" + "0" * 64,
             execution=SimpleNamespace(observed=SimpleNamespace(inputs=())),
         )
         authority = SimpleNamespace(invocation=invocation, inputs={}, sources=())
@@ -1647,13 +1708,14 @@ class RepairCheckTests(unittest.TestCase):
         ):
             attempt = ExecutionAttempt(
                 "e001",
+                "repair",
                 invocation.execution_id,
                 None,
                 True,
                 None,
                 None,
                 ExecutionCheckpoint(
-                    "e001", invocation.execution_id, "stopped", "", None, ()
+                    "e001", "repair", invocation.execution_id, "stopped", "", None, ()
                 ),
                 (),
                 "stdout",
@@ -1673,13 +1735,14 @@ class RepairCheckTests(unittest.TestCase):
             )
         survivor = ExecutionAttempt(
             "e001",
+            "repair",
             invocation.execution_id,
             None,
             True,
             "worker_cleanup_incomplete",
             "survivor",
             ExecutionCheckpoint(
-                "e001", invocation.execution_id, "failed", "", None, ()
+                "e001", "repair", invocation.execution_id, "failed", "", None, ()
             ),
             (),
             "stdout",
@@ -1707,7 +1770,7 @@ class RepairCheckTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(OSError, "lock I/O failed"):
                     run_repair_check(
-                        fixture.log, RepairCheckRequest("e001", identity)
+                        fixture.log, RepairCheckRequest("e001", "repair", identity)
                     )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
@@ -1716,7 +1779,7 @@ class RepairCheckTests(unittest.TestCase):
         for received, exit_status in (([signal.SIGINT], 130), ([signal.SIGTERM], 143)):
             result = repair_check_module._unavailable_result(
                 SimpleNamespace(summary=Path("docs/study.md")),
-                RepairCheckRequest("e001", "pyrun-exec/v1:" + "0" * 64),
+                RepairCheckRequest("e001", "repair", "pyrun-exec/v2:" + "0" * 64),
                 ActionError("repair_check.source.changed", "late"),
                 workspace=workspace,
                 diagnostics={"stdout": "", "stderr": ""},
@@ -1737,7 +1800,9 @@ class RepairCheckTests(unittest.TestCase):
                 "Path(sys.argv[-1]).write_text(Path(sys.argv[-3]).read_text())\n",
             )
             self._refresh_script_observation(fixture, identity)
-            result = run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+            result = run_repair_check(
+                fixture.log, RepairCheckRequest("e001", "repair", identity)
+            )
             self.assertEqual((result.status, result.exit_status), ("matched", 0))
 
     def test_missing_summary_owned_split_document_rejects_before_child(self) -> None:
@@ -1745,11 +1810,11 @@ class RepairCheckTests(unittest.TestCase):
             fixture, identity = self._fixture(Path(directory))
             entry = next((fixture.log_root / "entries").glob("*"))
             with fixture.summary.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"\n- [Missing](study/entries/{entry.name}/e001a.md)\n"
-                )
+                handle.write(f"\n- [Missing](study/entries/{entry.name}/e001a.md)\n")
             with self.assertRaisesRegex(ActionError, "e001a.md"):
-                run_repair_check(fixture.log, RepairCheckRequest("e001", identity))
+                run_repair_check(
+                    fixture.log, RepairCheckRequest("e001", "repair", identity)
+                )
             self.assertFalse((fixture.root / "tmp" / "repair-check").exists())
 
 

@@ -21,6 +21,7 @@ from validation.pyrun_state import (
     PYRUN_FILENAME,
     ExecutionRecipe,
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     execution_id,
     load_pyrun_state,
@@ -71,16 +72,22 @@ def _edit_locked(
 ) -> ActionResult:
     path = entry.root / PYRUN_FILENAME
     state = load_pyrun_state(path, entry_root=entry.root, project_root=project)
-    old = state.executions.get(identity)
-    if old is None:
+    matches = [
+        (cid, execution)
+        for cid, candidate, execution in state.execution_items()
+        if candidate == identity
+    ]
+    if len(matches) != 1:
         raise ActionError("pyrun.edit.missing", f"no recorded execution {identity}")
+    cid, old = matches[0]
     data_path = entry.root / "data.json"
     data = (
         load_data_file(data_path, entry_root=entry.root) if data_path.exists() else None
     )
     recipe = _matching_recipe(entry, old, edit, data, project)
     new_id = execution_id(recipe)
-    if new_id != identity and new_id in state.executions:
+    command = state.commands[cid]
+    if new_id != identity and new_id in command.executions:
         raise ActionError(
             "pyrun.edit.collision", "corrected execution ID already exists"
         )
@@ -97,11 +104,15 @@ def _edit_locked(
         requires_reproduction=True,
         last_run_at=None,
     )
-    executions = dict(state.executions)
+    executions = dict(command.executions)
     del executions[identity]
     executions[new_id] = corrected
     text = validated_pyrun_serialization(
-        replace(state, executions=executions), project_root=project
+        replace(
+            state,
+            commands={**state.commands, cid: PyrunCommand(executions)},
+        ),
+        project_root=project,
     )
     record: dict[str, object] = {
         "previous_execution_id": identity,

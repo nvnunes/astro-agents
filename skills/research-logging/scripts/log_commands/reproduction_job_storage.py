@@ -33,7 +33,7 @@ from .reproduction_paths import (
     project_tmp_relative,
 )
 
-JOB_STORE_VERSION = 1
+JOB_STORE_VERSION = 2
 MAX_JOB_STORE_BYTES = 256 * 1024 * 1024
 MAX_STATUS_BYTES = 64 * 1024 * 1024
 MAX_CHECKPOINT_OUTPUTS = 256
@@ -46,7 +46,8 @@ MAX_PATH_BYTES = 2 * 1024
 JOB_LOCK_NAME = "state.lock"
 _COMPANIONS = ("-journal", "-wal", "-shm")
 _RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
-_EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
+_EXECUTION_ID_RE = re.compile(r"pyrun-exec/v2:[0-9a-f]{64}\Z")
+_CID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _SOURCE_DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 _CHECKPOINT_STATES = frozenset({"active", "succeeded", "failed", "stopped"})
@@ -104,6 +105,7 @@ CREATE TABLE run_state (
     comparison_failed INTEGER NOT NULL CHECK(comparison_failed >= 0),
     skipped INTEGER NOT NULL CHECK(skipped >= 0),
     latest_execution_entry TEXT,
+    latest_execution_cid TEXT,
     latest_execution_id TEXT,
     latest_execution_code TEXT,
     latest_execution_message TEXT,
@@ -113,10 +115,10 @@ CREATE TABLE run_state (
     operational_recorded_at TEXT,
     CHECK((status IS NULL AND phase IS NOT NULL) OR
           (status IS NOT NULL AND phase IS NULL)),
-    CHECK((latest_execution_entry IS NULL AND latest_execution_id IS NULL AND
+    CHECK((latest_execution_entry IS NULL AND latest_execution_cid IS NULL AND latest_execution_id IS NULL AND
            latest_execution_code IS NULL AND latest_execution_message IS NULL AND
            latest_execution_recorded_at IS NULL) OR
-          (latest_execution_entry IS NOT NULL AND latest_execution_id IS NOT NULL AND
+          (latest_execution_entry IS NOT NULL AND latest_execution_cid IS NOT NULL AND latest_execution_id IS NOT NULL AND
            latest_execution_code IS NOT NULL AND latest_execution_message IS NOT NULL AND
            latest_execution_recorded_at IS NOT NULL)),
     CHECK((operational_code IS NULL AND operational_message IS NULL AND
@@ -145,6 +147,7 @@ CREATE TABLE accepted_commands (
     run_id TEXT NOT NULL,
     command_pk INTEGER NOT NULL CHECK(command_pk >= 1),
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     selection TEXT NOT NULL CHECK(selection IN ('run', 'not_needed', 'unchanged', 'blocked', 'policy')),
     auto_reproduce INTEGER NOT NULL CHECK(auto_reproduce IN (0, 1)),
@@ -164,7 +167,7 @@ CREATE TABLE accepted_commands (
     details_json TEXT NOT NULL,
     data_declaration_json TEXT,
     PRIMARY KEY(run_id, command_pk),
-    UNIQUE(run_id, entry, execution_id),
+    UNIQUE(run_id, entry, cid, execution_id),
     FOREIGN KEY(run_id) REFERENCES runs(run_id) ON DELETE RESTRICT,
     CHECK((selection = 'unchanged' AND prior_disposition IS NOT NULL) OR
           (selection <> 'unchanged' AND prior_disposition IS NULL)),
@@ -478,7 +481,7 @@ CREATE TABLE publication_state (
           (stage = 'result_committed' AND publication_identity IS NOT NULL AND result_generation IS NOT NULL AND report_generation IS NULL) OR
           (stage = 'complete' AND publication_identity IS NOT NULL AND result_generation IS NOT NULL AND report_generation IS NOT NULL))
 );
-CREATE INDEX accepted_commands_identity ON accepted_commands(run_id, entry, execution_id);
+CREATE INDEX accepted_commands_identity ON accepted_commands(run_id, entry, cid, execution_id);
 CREATE INDEX accepted_executions_order ON accepted_executions(run_id, plan_order);
 CREATE INDEX execution_checkpoints_state ON execution_checkpoints(run_id, state, command_pk);
 CREATE INDEX workers_state ON workers(run_id, state, command_pk);
@@ -577,6 +580,7 @@ class ExecutionPermitAttachment:
     """Compare-and-set request that attaches one scheduler permit."""
 
     entry: str
+    cid: str
     execution_id: str
     permit_id: str
     checkpointed_at: str
@@ -588,6 +592,7 @@ class ExecutionStart:
     """Compare-and-set request that records the immediately pending launch."""
 
     entry: str
+    cid: str
     execution_id: str
     permit_id: str
     checkpointed_at: str
@@ -603,6 +608,7 @@ class ExecutionTerminal:
     """Atomic terminal state, timing, diagnostic, and output update."""
 
     entry: str
+    cid: str
     execution_id: str
     permit_id: str
     state: Literal["succeeded", "failed", "stopped"]
@@ -622,6 +628,7 @@ class CheckpointProjection:
     """Bounded durable checkpoint projection for one accepted execution."""
 
     entry: str
+    cid: str
     execution_id: str
     state: str
     permit_id: str | None
@@ -647,6 +654,7 @@ class DiagnosticProjection:
     message: str
     recorded_at: str
     entry: str | None = None
+    cid: str | None = None
     execution_id: str | None = None
 
 
@@ -684,6 +692,7 @@ class ExecutionIdentity:
     """One accepted execution identity within the run selected by its path."""
 
     entry: str
+    cid: str
     execution_id: str
 
 
@@ -808,6 +817,7 @@ class ExecutionComparisonWrite:
     """Complete replacement for one execution's staged comparison children."""
 
     entry: str
+    cid: str
     execution_id: str
     complete: bool
     retained_bytes: int
@@ -822,6 +832,7 @@ class RequirementEffect:
     """Checkpoint that the accepted execution's external requirement is clear."""
 
     entry: str
+    cid: str
     execution_id: str
     recorded_at: str
 
@@ -1284,13 +1295,17 @@ class LockedJobStore:
     ) -> ExecutionReadiness:
         """Read one accepted execution's direct durable dependencies only."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         with self._snapshot():
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             rows = self._db.execute(
-                "SELECT c.entry, c.execution_id, p.state, d.dependency_command_pk "
+                "SELECT c.entry, c.cid, c.execution_id, p.state, d.dependency_command_pk "
                 "FROM accepted_execution_dependencies d "
                 "JOIN accepted_commands c ON c.run_id=d.run_id "
                 "AND c.command_pk=d.dependency_command_pk "
@@ -1307,9 +1322,13 @@ class LockedJobStore:
             failed: list[ExecutionIdentity] = []
             for row in rows:
                 dependency = ExecutionIdentity(
-                    cast(str, row["entry"]), cast(str, row["execution_id"])
+                    cast(str, row["entry"]),
+                    cast(str, row["cid"]),
+                    cast(str, row["execution_id"]),
                 )
-                _require_execution_identity(dependency.entry, dependency.execution_id)
+                _require_execution_identity(
+                    dependency.entry, dependency.cid, dependency.execution_id
+                )
                 if row["state"] == "failed" or _stored_dependency_skip(
                     self._db, run_id, int(row["dependency_command_pk"])
                 ):
@@ -1327,13 +1346,17 @@ class LockedJobStore:
     ) -> CheckpointProjection | None:
         """Read only one execution checkpoint and its bounded outputs."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         with self._snapshot():
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             row = self._db.execute(
-                "SELECT p.*, c.entry, c.execution_id FROM execution_checkpoints p "
+                "SELECT p.*, c.entry, c.cid, c.execution_id FROM execution_checkpoints p "
                 "JOIN accepted_commands c USING(run_id, command_pk) "
                 "WHERE p.run_id=? AND p.command_pk=?",
                 (run_id, command_pk),
@@ -1373,10 +1396,14 @@ class LockedJobStore:
     ) -> RequirementEffectProjection:
         """Read one accepted execution's comparison/effect state only."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         with self._snapshot():
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             row = self._db.execute(
                 "SELECT c.accepted_requires_reproduction, "
@@ -1402,14 +1429,14 @@ class LockedJobStore:
     ) -> AcceptedSchedulingProjection:
         """Read one bounded immutable scheduling row without plan reconstruction."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         with self._snapshot():
             row = self._db.execute(
-                "SELECT c.run_id, c.entry, c.execution_id, c.exclusive, "
+                "SELECT c.run_id, c.entry, c.cid, c.execution_id, c.exclusive, "
                 "e.plan_order, e.run_path FROM accepted_commands c "
                 "JOIN accepted_executions e USING(run_id, command_pk) "
-                "WHERE c.entry=? AND c.execution_id=?",
-                (identity.entry, identity.execution_id),
+                "WHERE c.entry=? AND c.cid=? AND c.execution_id=?",
+                (identity.entry, identity.cid, identity.execution_id),
             ).fetchone()
             if row is None:
                 raise JobStoreInvariantError(
@@ -1420,12 +1447,13 @@ class LockedJobStore:
                 "FROM accepted_execution_claims "
                 "WHERE run_id=? AND command_pk=("
                 "SELECT command_pk FROM accepted_commands "
-                "WHERE run_id=? AND entry=? AND execution_id=?) "
+                "WHERE run_id=? AND entry=? AND cid=? AND execution_id=?) "
                 "ORDER BY claim_kind, position LIMIT ?",
                 (
                     row["run_id"],
                     row["run_id"],
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     3 * MAX_ACCEPTED_SCHEDULING_CLAIMS + 1,
                 ),
@@ -1481,7 +1509,11 @@ class LockedJobStore:
         _validate_permit_attachment(attachment)
         with self._transaction("permit_attachment"):
             run_id, command_pk = _command_identity(
-                self._db, attachment.entry, attachment.execution_id, runnable=True
+                self._db,
+                attachment.entry,
+                attachment.cid,
+                attachment.execution_id,
+                runnable=True,
             )
             existing = self._db.execute(
                 "SELECT state, permit_id, scratch_path FROM execution_checkpoints "
@@ -1562,7 +1594,11 @@ class LockedJobStore:
         _require_timestamp(updated_at, "permit clear time")
         with self._transaction("permit_clear"):
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             row = self._db.execute(
                 "SELECT state, permit_id, released_permit_id "
@@ -1598,11 +1634,15 @@ class LockedJobStore:
     ) -> None:
         """Clear exact scratch ownership after its directory is removed."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         _require_scratch_path(scratch_path, "scratch path")
         with self._transaction("scratch_clear"):
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             row = self._db.execute(
                 "SELECT state, scratch_path FROM execution_checkpoints "
@@ -1632,7 +1672,7 @@ class LockedJobStore:
         _validate_execution_start(start)
         with self._transaction("execution_start"):
             run_id, command_pk = _command_identity(
-                self._db, start.entry, start.execution_id, runnable=True
+                self._db, start.entry, start.cid, start.execution_id, runnable=True
             )
             row = self._db.execute(
                 "SELECT state, permit_id, elapsed_seconds, scratch_path "
@@ -1890,7 +1930,11 @@ class LockedJobStore:
             raise JobStoreInvariantError("terminal checkpoint retains a live worker")
         with self._transaction("terminal_checkpoint"):
             run_id, command_pk = _command_identity(
-                self._db, terminal.entry, terminal.execution_id, runnable=True
+                self._db,
+                terminal.entry,
+                terminal.cid,
+                terminal.execution_id,
+                runnable=True,
             )
             row = self._db.execute(
                 "SELECT state, permit_id, started_at, elapsed_seconds, scratch_path "
@@ -1995,13 +2039,15 @@ class LockedJobStore:
                 changed = self._db.execute(
                     "UPDATE run_state SET "
                     "completed_executions=completed_executions+?, "
-                    "latest_execution_entry=?, latest_execution_id=?, "
+                    "latest_execution_entry=?, latest_execution_cid=?, "
+                    "latest_execution_id=?, "
                     "latest_execution_code=?, latest_execution_message=?, "
                     "latest_execution_recorded_at=?, updated_at=? "
                     "WHERE run_id=? AND status IS NULL",
                     (
                         completed_delta,
                         terminal.entry,
+                        terminal.cid,
                         terminal.execution_id,
                         terminal.failure_code,
                         terminal.failure_message,
@@ -2049,11 +2095,15 @@ class LockedJobStore:
     ) -> None:
         """Replace worker rows for one execution without touching siblings."""
 
-        _require_execution_identity(identity.entry, identity.execution_id)
+        _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
         _validate_workers(workers)
         with self._transaction("execution_workers"):
             run_id, command_pk = _command_identity(
-                self._db, identity.entry, identity.execution_id, runnable=True
+                self._db,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                runnable=True,
             )
             checkpoint = self._db.execute(
                 "SELECT state, permit_id, scratch_path FROM execution_checkpoints "
@@ -2169,7 +2219,7 @@ class LockedJobStore:
                 "p.released_permit_id, p.checkpointed_at, p.started_at, "
                 "p.finished_at, p.elapsed_seconds, p.failure_code, "
                 "p.failure_message, p.failure_recorded_at, p.stdout_path, "
-                "p.stderr_path, p.scratch_path, c.entry, c.execution_id, "
+                "p.stderr_path, p.scratch_path, c.entry, c.cid, c.execution_id, "
                 "e.plan_order "
                 "FROM execution_checkpoints p "
                 "JOIN accepted_commands c USING(run_id, command_pk) "
@@ -2187,7 +2237,7 @@ class LockedJobStore:
             )
             worker_rows = self._db.execute(
                 "SELECT w.worker_id, w.parent_worker_id, w.command_pk, w.pid, "
-                "w.registered_at, w.last_observed_at, c.entry, c.execution_id "
+                "w.registered_at, w.last_observed_at, c.entry, c.cid, c.execution_id "
                 "FROM workers w "
                 "LEFT JOIN accepted_commands c USING(run_id, command_pk) "
                 "WHERE w.run_id=? AND w.state='running' "
@@ -2201,7 +2251,9 @@ class LockedJobStore:
                 (
                     (
                         ExecutionIdentity(
-                            cast(str, row["entry"]), cast(str, row["execution_id"])
+                            cast(str, row["entry"]),
+                            cast(str, row["cid"]),
+                            cast(str, row["execution_id"]),
                         )
                         if row["command_pk"] is not None
                         else None
@@ -2256,7 +2308,11 @@ class LockedJobStore:
         _validate_comparison_write(comparison)
         with self._transaction("comparison"):
             run_id, command_pk = _command_identity(
-                self._db, comparison.entry, comparison.execution_id, runnable=True
+                self._db,
+                comparison.entry,
+                comparison.cid,
+                comparison.execution_id,
+                runnable=True,
             )
             lifecycle = _sole_row(
                 self._db,
@@ -2405,11 +2461,11 @@ class LockedJobStore:
     def record_requirement_effect(self, effect: RequirementEffect) -> None:
         """Compare-and-set one completed comparison's requirement checkpoint."""
 
-        _require_execution_identity(effect.entry, effect.execution_id)
+        _require_execution_identity(effect.entry, effect.cid, effect.execution_id)
         _require_timestamp(effect.recorded_at, "requirement effect time")
         with self._transaction("requirement_effect"):
             run_id, command_pk = _command_identity(
-                self._db, effect.entry, effect.execution_id, runnable=True
+                self._db, effect.entry, effect.cid, effect.execution_id, runnable=True
             )
             row = self._db.execute(
                 "SELECT e.comparison_recorded_at, e.requirement_cleared_at, "
@@ -2797,7 +2853,7 @@ def _insert_accepted_job(db: sqlite3.Connection, accepted: AcceptedJob) -> None:
     db.execute(
         "INSERT INTO run_state VALUES "
         "(?, NULL, 'accepted', NULL, NULL, NULL, NULL, NULL, ?, 0, 0, 0, 0, 0, 0, "
-        "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+        "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
         (accepted.run_id, accepted.accepted_at),
     )
     db.execute(
@@ -2853,22 +2909,27 @@ def _insert_commands(
     db: sqlite3.Connection,
     run_id: str,
     commands: Sequence[Mapping[str, object]],
-) -> dict[tuple[str, str], int]:
-    keys: dict[tuple[str, str], int] = {}
+) -> dict[tuple[str, str, str], int]:
+    keys: dict[tuple[str, str, str], int] = {}
     for command_pk, command in enumerate(commands, 1):
         _validate_command_snapshot(command)
         state = cast(Mapping[str, object], command["execution_state"])
         recipe = cast(Mapping[str, object], state["recipe"])
-        key = (cast(str, command["entry"]), cast(str, command["execution_id"]))
+        key = (
+            cast(str, command["entry"]),
+            cast(str, command["cid"]),
+            cast(str, command["execution_id"]),
+        )
         keys[key] = command_pk
         db.execute(
             "INSERT INTO accepted_commands VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 command_pk,
                 key[0],
                 key[1],
+                key[2],
                 command["selection"],
                 int(cast(bool, command["auto_reproduce"])),
                 int(cast(bool, command["exclusive"])),
@@ -2924,7 +2985,7 @@ def _insert_materials_and_command_links(
     db: sqlite3.Connection,
     run_id: str,
     plan: ReproductionPlan,
-    command_keys: Mapping[tuple[str, str], int],
+    command_keys: Mapping[tuple[str, str, str], int],
 ) -> dict[tuple[str, str, str], int]:
     materials = cast(
         Sequence[Mapping[str, object]], plan.comparison_context["materials"]
@@ -2989,7 +3050,11 @@ def _insert_materials_and_command_links(
 
     for command in plan.commands:
         command_pk = command_keys[
-            (cast(str, command["entry"]), cast(str, command["execution_id"]))
+            (
+                cast(str, command["entry"]),
+                cast(str, command["cid"]),
+                cast(str, command["execution_id"]),
+            )
         ]
         state = cast(Mapping[str, object], command["execution_state"])
         recipe = cast(Mapping[str, object], state["recipe"])
@@ -3062,10 +3127,14 @@ def _insert_executions(
     db: sqlite3.Connection,
     run_id: str,
     executions: Sequence[Mapping[str, object]],
-    command_keys: Mapping[tuple[str, str], int],
+    command_keys: Mapping[tuple[str, str, str], int],
 ) -> None:
     for execution in executions:
-        key = (cast(str, execution["entry"]), cast(str, execution["execution_id"]))
+        key = (
+            cast(str, execution["entry"]),
+            cast(str, execution["cid"]),
+            cast(str, execution["execution_id"]),
+        )
         command_pk = command_keys[key]
         db.execute(
             "INSERT INTO accepted_executions VALUES (?, ?, ?, ?)",
@@ -3074,8 +3143,8 @@ def _insert_executions(
         for position, dependency in enumerate(
             cast(Sequence[str], execution["depends_on"])
         ):
-            dependency_entry, dependency_id = dependency.split(":pyrun-exec/", 1)
-            dependency_key = (dependency_entry, "pyrun-exec/" + dependency_id)
+            dependency_entry, dependency_cid, dependency_id = dependency.split(":", 2)
+            dependency_key = (dependency_entry, dependency_cid, dependency_id)
             db.execute(
                 "INSERT INTO accepted_execution_dependencies VALUES (?, ?, ?, ?)",
                 (run_id, command_pk, command_keys[dependency_key], position),
@@ -3101,12 +3170,18 @@ def _insert_cases_boundaries_failures(
     db: sqlite3.Connection,
     run_id: str,
     plan: ReproductionPlan,
-    command_keys: Mapping[tuple[str, str], int],
+    command_keys: Mapping[tuple[str, str, str], int],
 ) -> None:
     for position, case in enumerate(plan.cases):
         execution_id = case.get("execution_id")
         command_pk = (
-            command_keys.get((cast(str, case["entry"]), execution_id))
+            command_keys.get(
+                (
+                    cast(str, case["entry"]),
+                    cast(str, case["cid"]),
+                    execution_id,
+                )
+            )
             if isinstance(execution_id, str)
             else None
         )
@@ -3159,7 +3234,7 @@ def _insert_comparisons(
     db: sqlite3.Connection,
     run_id: str,
     plan: ReproductionPlan,
-    command_keys: Mapping[tuple[str, str], int],
+    command_keys: Mapping[tuple[str, str, str], int],
 ) -> None:
     comparisons = cast(
         Sequence[Mapping[str, object]], plan.comparison_context["comparisons"]
@@ -3168,6 +3243,7 @@ def _insert_comparisons(
         command_pk = command_keys[
             (
                 cast(str, comparison["entry"]),
+                cast(str, comparison["cid"]),
                 cast(str, comparison["execution_id"]),
             )
         ]
@@ -3251,15 +3327,19 @@ def _load_accepted_plan(db: sqlite3.Connection) -> ReproductionPlan:
 
 def _load_commands(
     db: sqlite3.Connection, run_id: str
-) -> tuple[tuple[Mapping[str, object], ...], dict[int, tuple[str, str]]]:
+) -> tuple[tuple[Mapping[str, object], ...], dict[int, tuple[str, str, str]]]:
     commands: list[Mapping[str, object]] = []
-    identities: dict[int, tuple[str, str]] = {}
+    identities: dict[int, tuple[str, str, str]] = {}
     rows = db.execute(
         "SELECT * FROM accepted_commands WHERE run_id=? ORDER BY command_pk", (run_id,)
     ).fetchall()
     for row in rows:
         command_pk = int(row["command_pk"])
-        key = (cast(str, row["entry"]), cast(str, row["execution_id"]))
+        key = (
+            cast(str, row["entry"]),
+            cast(str, row["cid"]),
+            cast(str, row["execution_id"]),
+        )
         identities[command_pk] = key
         parameters = [
             item["value"]
@@ -3351,9 +3431,10 @@ def _load_commands(
             ),
             "details": _decode_json(row["details_json"], list),
             "entry": key[0],
+            "cid": key[1],
             "entry_root": row["entry_root"],
             "exclusive": bool(row["exclusive"]),
-            "execution_id": key[1],
+            "execution_id": key[2],
             "execution_state": execution_state,
             "prior_disposition": row["prior_disposition"],
             "project_root": row["project_root"],
@@ -3394,7 +3475,7 @@ def _load_admission(db: sqlite3.Connection, run_id: str) -> Mapping[str, object]
 def _load_comparison_context(
     db: sqlite3.Connection,
     run_id: str,
-    identities: Mapping[int, tuple[str, str]],
+    identities: Mapping[int, tuple[str, str, str]],
 ) -> Mapping[str, object]:
     materials = []
     for row in db.execute(
@@ -3432,8 +3513,9 @@ def _load_comparison_context(
             {
                 "definition_identity": row["definition_identity"],
                 "entry": identities[command_pk][0],
+                "cid": identities[command_pk][1],
                 "evidence_records": records,
-                "execution_id": identities[command_pk][1],
+                "execution_id": identities[command_pk][2],
                 "output": row["artifact"],
             }
         )
@@ -3465,7 +3547,7 @@ def _load_comparison_context(
         "comparisons": comparisons,
         "evidence_only": evidence_only,
         "materials": materials,
-        "result_schema": "research-log-reproduction-result/10",
+        "result_schema": "research-log-reproduction-result/11",
         "schema": "research-log-reproduction-comparison-context/1",
     }
 
@@ -3473,7 +3555,7 @@ def _load_comparison_context(
 def _load_executions(
     db: sqlite3.Connection,
     run_id: str,
-    identities: Mapping[int, tuple[str, str]],
+    identities: Mapping[int, tuple[str, str, str]],
 ) -> tuple[Mapping[str, object], ...]:
     executions = []
     for row in db.execute(
@@ -3483,7 +3565,7 @@ def _load_executions(
         (run_id,),
     ):
         command_pk = int(row["command_pk"])
-        entry, execution_id = identities[command_pk]
+        entry, cid, execution_id = identities[command_pk]
         dependencies = []
         for item in db.execute(
             "SELECT dependency_command_pk FROM accepted_execution_dependencies "
@@ -3491,7 +3573,7 @@ def _load_executions(
             (run_id, command_pk),
         ):
             dependency = identities[int(item["dependency_command_pk"])]
-            dependencies.append(f"{dependency[0]}:{dependency[1]}")
+            dependencies.append(f"{dependency[0]}:{dependency[1]}:{dependency[2]}")
         claims: dict[str, list[object]] = {
             "read": [],
             "write": [],
@@ -3508,6 +3590,7 @@ def _load_executions(
                 "auto_reproduce": bool(row["auto_reproduce"]),
                 "depends_on": dependencies,
                 "entry": entry,
+                "cid": cid,
                 "exclusive": bool(row["exclusive"]),
                 "execution_id": execution_id,
                 "order": int(row["plan_order"]),
@@ -3531,15 +3614,20 @@ def _load_executions(
 def _load_cases(
     db: sqlite3.Connection,
     run_id: str,
-    identities: Mapping[int, tuple[str, str]],
+    identities: Mapping[int, tuple[str, str, str]],
 ) -> tuple[Mapping[str, object], ...]:
     return tuple(
         {
             "artifact": row["artifact"],
             "disposition": row["disposition"],
             "entry": row["entry"],
-            "execution_id": (
+            "cid": (
                 identities[int(row["command_pk"])][1]
+                if row["command_pk"] is not None
+                else None
+            ),
+            "execution_id": (
+                identities[int(row["command_pk"])][2]
                 if row["command_pk"] is not None
                 else None
             ),
@@ -3596,7 +3684,7 @@ def _load_run_status(db: sqlite3.Connection) -> RunStatus:
     )
     run_id = cast(str, row["run_id"])
     checkpoint_rows = db.execute(
-        "SELECT p.*, c.entry, c.execution_id, e.plan_order "
+        "SELECT p.*, c.entry, c.cid, c.execution_id, e.plan_order "
         "FROM execution_checkpoints p "
         "JOIN accepted_commands c USING(run_id, command_pk) "
         "JOIN accepted_executions e USING(run_id, command_pk) "
@@ -3610,7 +3698,9 @@ def _load_run_status(db: sqlite3.Connection) -> RunStatus:
         (
             (
                 ExecutionIdentity(
-                    cast(str, item["entry"]), cast(str, item["execution_id"])
+                    cast(str, item["entry"]),
+                    cast(str, item["cid"]),
+                    cast(str, item["execution_id"]),
                 )
                 if item["command_pk"] is not None
                 else None
@@ -3625,7 +3715,7 @@ def _load_run_status(db: sqlite3.Connection) -> RunStatus:
             ),
         )
         for item in db.execute(
-            "SELECT w.*, c.entry, c.execution_id FROM workers w "
+            "SELECT w.*, c.entry, c.cid, c.execution_id FROM workers w "
             "LEFT JOIN accepted_commands c USING(run_id, command_pk) "
             "WHERE w.run_id=? ORDER BY COALESCE(c.entry, ''), "
             "COALESCE(c.execution_id, ''), w.worker_id",
@@ -3638,6 +3728,7 @@ def _load_run_status(db: sqlite3.Connection) -> RunStatus:
             cast(str, row["latest_execution_message"]),
             cast(str, row["latest_execution_recorded_at"]),
             cast(str, row["latest_execution_entry"]),
+            cast(str, row["latest_execution_cid"]),
             cast(str, row["latest_execution_id"]),
         )
         if row["latest_execution_code"] is not None
@@ -3713,6 +3804,7 @@ def _checkpoint_projection(
     )
     return CheckpointProjection(
         cast(str, item["entry"]),
+        cast(str, item["cid"]),
         cast(str, item["execution_id"]),
         cast(str, item["state"]),
         cast(str | None, item["permit_id"]),
@@ -3736,6 +3828,7 @@ def _permit_checkpoint_projection(item: sqlite3.Row) -> CheckpointProjection:
 
     return CheckpointProjection(
         cast(str, item["entry"]),
+        cast(str, item["cid"]),
         cast(str, item["execution_id"]),
         cast(str, item["state"]),
         cast(str | None, item["permit_id"]),
@@ -3805,7 +3898,7 @@ def _load_comparison_writes(
 ) -> tuple[ExecutionComparisonWrite, ...]:
     run_id = cast(str, _sole_row(db, "SELECT run_id FROM runs")[0])
     command_rows = db.execute(
-        "SELECT s.*, c.entry, c.execution_id, e.plan_order "
+        "SELECT s.*, c.entry, c.cid, c.execution_id, e.plan_order "
         "FROM staged_executions s JOIN accepted_commands c USING(run_id, command_pk) "
         "JOIN accepted_executions e USING(run_id, command_pk) "
         "WHERE s.run_id=? ORDER BY e.plan_order",
@@ -3907,6 +4000,7 @@ def _load_comparison_writes(
         values.append(
             ExecutionComparisonWrite(
                 cast(str, command["entry"]),
+                cast(str, command["cid"]),
                 cast(str, command["execution_id"]),
                 bool(command["complete"]),
                 int(command["retained_bytes"]),
@@ -3976,11 +4070,14 @@ def _resolve_recovery_workers(
         command_pk: int | None = None
         if observation.identity is not None:
             _require_execution_identity(
-                observation.identity.entry, observation.identity.execution_id
+                observation.identity.entry,
+                observation.identity.cid,
+                observation.identity.execution_id,
             )
             _run_id, command_pk = _command_identity(
                 db,
                 observation.identity.entry,
+                observation.identity.cid,
                 observation.identity.execution_id,
                 runnable=True,
             )
@@ -4102,7 +4199,9 @@ def _validate_scheduler_ownership(projection: SchedulerOwnerProjection) -> None:
             raise JobStoreInvariantError("terminal run retains an attached permit")
     for identity, worker in projection.running_workers:
         if identity is not None:
-            _require_execution_identity(identity.entry, identity.execution_id)
+            _require_execution_identity(
+                identity.entry, identity.cid, identity.execution_id
+            )
         _validate_worker_record(worker)
         if worker.state != "running":
             raise JobStoreInvariantError("scheduler worker is not live")
@@ -4163,7 +4262,9 @@ def _require_run_worker_capacity(
 
 
 def _validate_comparison_write(comparison: ExecutionComparisonWrite) -> None:
-    _require_execution_identity(comparison.entry, comparison.execution_id)
+    _require_execution_identity(
+        comparison.entry, comparison.cid, comparison.execution_id
+    )
     if not isinstance(comparison.complete, bool):
         raise JobStoreInvariantError("comparison completeness is invalid")
     if (
@@ -4610,7 +4711,11 @@ def _audit_comparison_write(
 ) -> None:
     _validate_comparison_write(comparison)
     run_id, command_pk = _command_identity(
-        db, comparison.entry, comparison.execution_id, runnable=True
+        db,
+        comparison.entry,
+        comparison.cid,
+        comparison.execution_id,
+        runnable=True,
     )
     if run_id != accepted_run_id:
         raise JobStoreInvariantError("stored comparison belongs to another run")
@@ -4779,14 +4884,16 @@ def _validate_command_snapshot(command: Mapping[str, object]) -> None:
 
 
 def _validate_permit_attachment(attachment: ExecutionPermitAttachment) -> None:
-    _require_execution_identity(attachment.entry, attachment.execution_id)
+    _require_execution_identity(
+        attachment.entry, attachment.cid, attachment.execution_id
+    )
     if not _bounded_string(attachment.permit_id):
         raise JobStoreInvariantError("execution permit is invalid")
     _require_timestamp(attachment.checkpointed_at, "permit attachment time")
 
 
 def _validate_execution_start(start: ExecutionStart) -> None:
-    _require_execution_identity(start.entry, start.execution_id)
+    _require_execution_identity(start.entry, start.cid, start.execution_id)
     if not _bounded_string(start.permit_id):
         raise JobStoreInvariantError("execution start permit is empty")
     _require_timestamp(start.checkpointed_at, "checkpoint time")
@@ -4808,7 +4915,7 @@ def _validate_execution_start(start: ExecutionStart) -> None:
 
 
 def _validate_execution_terminal(terminal: ExecutionTerminal) -> None:
-    _require_execution_identity(terminal.entry, terminal.execution_id)
+    _require_execution_identity(terminal.entry, terminal.cid, terminal.execution_id)
     if not _bounded_string(terminal.permit_id):
         raise JobStoreInvariantError("terminal checkpoint permit is invalid")
     if terminal.state not in _TERMINAL_CHECKPOINT_STATES:
@@ -4893,9 +5000,10 @@ def _validate_terminal_output_ownership(
         )
 
 
-def _require_execution_identity(entry: str, execution_id: str) -> None:
+def _require_execution_identity(entry: str, cid: str, execution_id: str) -> None:
     if (
         ENTRY_ID_RE.fullmatch(entry) is None
+        or _CID_RE.fullmatch(cid) is None
         or _EXECUTION_ID_RE.fullmatch(execution_id) is None
     ):
         raise JobStoreInvariantError("execution identity is invalid")
@@ -4910,7 +5018,7 @@ def _validate_run_failure(failure: RunFailure) -> None:
 def _validate_identity_value(
     identity: ExecutionIdentity, value: str, label: str
 ) -> None:
-    _require_execution_identity(identity.entry, identity.execution_id)
+    _require_execution_identity(identity.entry, identity.cid, identity.execution_id)
     if not _bounded_string(value):
         raise JobStoreInvariantError(f"execution {label} is invalid")
 
@@ -4958,14 +5066,19 @@ def _require_quiescent_run(db: sqlite3.Connection, run_id: str) -> None:
 
 
 def _command_identity(
-    db: sqlite3.Connection, entry: str, execution_id: str, *, runnable: bool
+    db: sqlite3.Connection,
+    entry: str,
+    cid: str,
+    execution_id: str,
+    *,
+    runnable: bool,
 ) -> tuple[str, int]:
     join = " JOIN accepted_executions e USING(run_id, command_pk)" if runnable else ""
     rows = db.execute(
         "SELECT c.run_id, c.command_pk FROM accepted_commands c"
         + join
-        + " WHERE c.entry=? AND c.execution_id=?",
-        (entry, execution_id),
+        + " WHERE c.entry=? AND c.cid=? AND c.execution_id=?",
+        (entry, cid, execution_id),
     ).fetchall()
     if len(rows) != 1:
         raise JobStoreInvariantError("execution is not uniquely accepted and runnable")
@@ -5317,12 +5430,14 @@ def _validate_status_children(status: RunStatus) -> None:
             raise JobStoreInvariantError("terminal run retains an attached permit")
     if len(status.workers) > MAX_RUN_WORKERS:
         raise JobStoreInvariantError("run worker count crossed its bound")
-    worker_groups: dict[tuple[str, str] | None, list[WorkerRecord]] = {}
+    worker_groups: dict[tuple[str, str, str] | None, list[WorkerRecord]] = {}
     for identity, worker in status.workers:
-        key: tuple[str, str] | None = None
+        key: tuple[str, str, str] | None = None
         if identity is not None:
-            _require_execution_identity(identity.entry, identity.execution_id)
-            key = (identity.entry, identity.execution_id)
+            _require_execution_identity(
+                identity.entry, identity.cid, identity.execution_id
+            )
+            key = (identity.entry, identity.cid, identity.execution_id)
         worker_groups.setdefault(key, []).append(worker)
     for workers in worker_groups.values():
         _validate_workers(workers)
@@ -5337,21 +5452,46 @@ def _validate_diagnostic_projection(
         raise JobStoreInvariantError("stored diagnostic is incomplete")
     _require_timestamp(diagnostic.recorded_at, "diagnostic time")
     if execution:
-        if diagnostic.entry is None or diagnostic.execution_id is None:
+        if (
+            diagnostic.entry is None
+            or diagnostic.cid is None
+            or diagnostic.execution_id is None
+        ):
             raise JobStoreInvariantError("stored execution diagnostic has no identity")
-        _require_execution_identity(diagnostic.entry, diagnostic.execution_id)
+        _require_execution_identity(
+            diagnostic.entry, diagnostic.cid, diagnostic.execution_id
+        )
     elif execution is False and (
-        diagnostic.entry is not None or diagnostic.execution_id is not None
+        diagnostic.entry is not None
+        or diagnostic.cid is not None
+        or diagnostic.execution_id is not None
     ):
         raise JobStoreInvariantError("stored run diagnostic has an execution identity")
-    elif (diagnostic.entry is None) != (diagnostic.execution_id is None):
+    elif (
+        len(
+            {
+                diagnostic.entry is None,
+                diagnostic.cid is None,
+                diagnostic.execution_id is None,
+            }
+        )
+        != 1
+    ):
         raise JobStoreInvariantError("stored diagnostic has a partial identity")
-    elif diagnostic.entry is not None and diagnostic.execution_id is not None:
-        _require_execution_identity(diagnostic.entry, diagnostic.execution_id)
+    elif (
+        diagnostic.entry is not None
+        and diagnostic.cid is not None
+        and diagnostic.execution_id is not None
+    ):
+        _require_execution_identity(
+            diagnostic.entry, diagnostic.cid, diagnostic.execution_id
+        )
 
 
 def _validate_checkpoint_projection(checkpoint: CheckpointProjection) -> None:
-    _require_execution_identity(checkpoint.entry, checkpoint.execution_id)
+    _require_execution_identity(
+        checkpoint.entry, checkpoint.cid, checkpoint.execution_id
+    )
     if checkpoint.state not in _CHECKPOINT_STATES:
         raise JobStoreInvariantError("stored checkpoint state is invalid")
     if checkpoint.permit_id is not None and not _bounded_string(checkpoint.permit_id):

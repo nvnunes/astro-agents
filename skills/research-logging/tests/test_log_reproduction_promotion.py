@@ -69,12 +69,8 @@ class ReproductionPromotionTests(unittest.TestCase):
             def require_overlap_before_publication(
                 _log: object, _outputs: object
             ) -> None:
-                self.assertIn(
-                    "reproduction-promotion-index.lock", held_operation_locks
-                )
-                self.assertNotIn(
-                    "reproduction-publication.lock", held_operation_locks
-                )
+                self.assertIn("reproduction-promotion-index.lock", held_operation_locks)
+                self.assertNotIn("reproduction-publication.lock", held_operation_locks)
 
             with (
                 mock.patch(
@@ -122,6 +118,7 @@ class ReproductionPromotionTests(unittest.TestCase):
                         root,
                         RequirementEffect(
                             comparison.entry,
+                            comparison.cid,
                             comparison.execution_id,
                             "2030-01-01T00:02:00Z",
                         ),
@@ -133,17 +130,18 @@ class ReproductionPromotionTests(unittest.TestCase):
                         identities = [
                             tuple(row)
                             for row in db.execute(
-                                "SELECT entry, execution_id "
+                                "SELECT entry, cid, execution_id "
                                 "FROM reproduction_run_commands"
                             )
                         ]
                     self.assertEqual(
                         identities,
-                        [(comparison.entry, comparison.execution_id)],
+                        [(comparison.entry, comparison.cid, comparison.execution_id)],
                     )
                     shown = show_reproduction_command(
                         fixture.log,
                         entry=comparison.entry,
+                        cid=comparison.cid,
                         execution_id=comparison.execution_id,
                         run_id=accepted.run_id,
                     )
@@ -162,6 +160,7 @@ class ReproductionPromotionTests(unittest.TestCase):
                         promote_execution(
                             fixture.log,
                             run_id=accepted.run_id,
+                            cid=comparison.cid,
                             execution_id=comparison.execution_id,
                         )
                     self.assertEqual(raised.exception.code, "results.store.missing")
@@ -171,6 +170,7 @@ class ReproductionPromotionTests(unittest.TestCase):
                 result = promote_execution(
                     fixture.log,
                     run_id=accepted.run_id,
+                    cid=comparison.cid,
                     execution_id=comparison.execution_id,
                 )
                 self.assertEqual(result.outputs, (artifact,))
@@ -256,12 +256,18 @@ class ReproductionPromotionTests(unittest.TestCase):
             ):
                 path.write_text(text, encoding="utf-8")
             first = _PromotedOutput(
-                "first.txt", "file", first_staged, first_destination,
+                "first.txt",
+                "file",
+                first_staged,
+                first_destination,
                 _fingerprint(first_destination, "file"),
                 _fingerprint(first_staged, "file"),
             )
             second = _PromotedOutput(
-                "second.txt", "file", second_staged, second_destination,
+                "second.txt",
+                "file",
+                second_staged,
+                second_destination,
                 _fingerprint(second_destination, "file"),
                 _fingerprint(second_staged, "file"),
             )
@@ -341,15 +347,19 @@ class ReproductionPromotionTests(unittest.TestCase):
             root,
         ):
             execution_id = str(plan.executions[0]["execution_id"])
+            cid = str(plan.executions[0]["cid"])
             _start_and_finish(root, plan, 0)
             record_execution_comparison(
                 root, replace(_comparison(plan, 0), complete=False)
             )
             with self.assertRaisesRegex(ActionError, "incomplete"):
-                _load_current_bundle(root, accepted.run_id, execution_id)
+                _load_current_bundle(root, accepted.run_id, cid, execution_id)
             with self.assertRaisesRegex(ActionError, "expected one staged"):
                 _load_current_bundle(
-                    root, accepted.run_id, "pyrun-exec/v1:" + "2" * 64
+                    root,
+                    accepted.run_id,
+                    cid,
+                    "pyrun-exec/v2:" + "2" * 64,
                 )
 
     def test_staged_paths_cannot_escape_the_accepted_run_root(self) -> None:

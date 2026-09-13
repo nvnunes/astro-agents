@@ -46,7 +46,7 @@ def current_supervisor_callbacks(
 def accepted_plan(
     *, executions: tuple[dict[str, object], ...] = ()
 ) -> ReproductionPlan:
-    """Return the smallest closed plan/9 fixture without legacy state fields."""
+    """Return the smallest closed plan/10 fixture without legacy state fields."""
 
     return ReproductionPlan(
         "summary.md",
@@ -69,7 +69,7 @@ def accepted_plan(
             "comparisons": [],
             "evidence_only": [],
             "materials": [],
-            "result_schema": "research-log-reproduction-result/10",
+            "result_schema": "research-log-reproduction-result/11",
         },
         (),
         executions,
@@ -88,9 +88,7 @@ def publication_run(root: Path) -> tuple[LogContext, Path]:
     log_root.mkdir()
     log = LogContext(summary.resolve(), log_root.resolve())
     run_id = "reproduce-20300101t000000z-fixture"
-    logical = canonical_run_path(
-        "2030-01-01T00:00:00Z", f"reproduce-study-{run_id}"
-    )
+    logical = canonical_run_path("2030-01-01T00:00:00Z", f"reproduce-study-{run_id}")
     run_root = root / logical
     run_root.mkdir(parents=True)
     return log, run_root

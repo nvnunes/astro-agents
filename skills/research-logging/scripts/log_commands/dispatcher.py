@@ -788,6 +788,7 @@ def _dispatch_repair_check(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log repair-check")
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry", required=True)
+    parser.add_argument("--cid", required=True)
     parser.add_argument("--execution-id", required=True)
     parser.add_argument(
         "--execution-timeout-seconds",
@@ -800,7 +801,7 @@ def _dispatch_repair_check(arguments: Sequence[str]) -> int:
     result = run_repair_check(
         resolve_log(args.path),
         RepairCheckRequest(
-            args.entry, args.execution_id, args.execution_timeout_seconds
+            args.entry, args.cid, args.execution_id, args.execution_timeout_seconds
         ),
     )
     if args.format == "json":
@@ -906,6 +907,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         parser = argparse.ArgumentParser(prog="log reproduce promote")
         parser.add_argument("--path", required=True, type=Path)
         parser.add_argument("--run-id", required=True)
+        parser.add_argument("--cid", required=True)
         parser.add_argument("--execution-id", required=True)
         args = parser.parse_args(arguments[1:])
         from .reproduction_promotion import promote_execution
@@ -913,6 +915,7 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         result = promote_execution(
             resolve_log(args.path),
             run_id=args.run_id,
+            cid=args.cid,
             execution_id=args.execution_id,
         )
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
@@ -1063,6 +1066,7 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
     listing.add_argument("--path", required=True, type=Path)
     listing.add_argument("--bucket")
     listing.add_argument("--entry")
+    listing.add_argument("--cid")
     listing.add_argument("--reason")
     listing.add_argument("--run-id")
     showing = actions.add_parser(
@@ -1070,6 +1074,7 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
     )
     showing.add_argument("--path", required=True, type=Path)
     showing.add_argument("--entry", required=True)
+    showing.add_argument("--cid", required=True)
     showing.add_argument("--execution-id", required=True)
     showing.add_argument("--run-id")
     for subparser in (listing, showing):
@@ -1088,6 +1093,7 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
             log,
             bucket=args.bucket,
             entry=args.entry,
+            cid=args.cid,
             reason=args.reason,
             run_id=args.run_id,
         )
@@ -1104,6 +1110,7 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
         result = show_reproduction_command(
             log,
             entry=args.entry,
+            cid=args.cid,
             execution_id=args.execution_id,
             run_id=args.run_id,
         )

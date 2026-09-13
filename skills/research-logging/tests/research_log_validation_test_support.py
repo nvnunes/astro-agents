@@ -150,7 +150,7 @@ def mechanical_log(
         "`Background:`\n\nWhat is the success rate?\n\n"
         "`Steps:`\n\n"
         "```bash\n"
-        "./pyrun scripts/model.py --input-catalog '<catalog>' "
+        "./pyrun --cid model -- scripts/model.py --input-catalog '<catalog>' "
         f"--{output_option} '<results>'\n"
         "```\n\n"
         "`Results:`\n\n"

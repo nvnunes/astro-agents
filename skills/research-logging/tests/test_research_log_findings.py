@@ -100,6 +100,7 @@ class FindingsCliTests(unittest.TestCase):
         ) -> Invocation:
             return Invocation(
                 identity=identity,
+                cid=identity,
                 document=f"entries/{entry}.md",
                 entry=entry,
                 fence=1,
@@ -197,6 +198,7 @@ class FindingsCliTests(unittest.TestCase):
 
         producer = Invocation(
             identity="producer",
+            cid="producer",
             document="entries/e001.md",
             entry="e001",
             fence=1,
@@ -227,6 +229,7 @@ class FindingsCliTests(unittest.TestCase):
         )
         consumer = Invocation(
             identity="consumer",
+            cid="consumer",
             document="entries/e001.md",
             entry="e001",
             fence=1,
@@ -277,6 +280,7 @@ class FindingsCliTests(unittest.TestCase):
         )
         invocation = Invocation(
             identity="consumer",
+            cid="consumer",
             document="entries/e002.md",
             entry="e002",
             fence=1,

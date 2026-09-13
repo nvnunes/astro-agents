@@ -19,7 +19,7 @@ def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def run_pyrun(entry: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return run_pyrun_process(entry, *arguments)
+    return run_pyrun_process(entry, "--cid", "build", "--", *arguments)
 
 
 def result(value: subprocess.CompletedProcess[str]) -> dict[str, object]:
@@ -127,7 +127,9 @@ class LogDataTests(unittest.TestCase):
                 script = entry / "scripts" / "build.py"
                 script.write_text("raise RuntimeError('must not run')\n")
                 document = entry / "e001.md"
-                command = './pyrun scripts/build.py --output "<restored>"'
+                command = (
+                    './pyrun --cid build -- scripts/build.py --output "<restored>"'
+                )
                 document.write_text(
                     "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
                     + command
@@ -191,9 +193,18 @@ class LogDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
             rejected = run(
-                entry, "data", "add-generated", "--path", str(logical),
-                "--entry", "e001", "generated", "data/generated.csv",
-                "--kind", "file", "--requires-reproduction",
+                entry,
+                "data",
+                "add-generated",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "generated",
+                "data/generated.csv",
+                "--kind",
+                "file",
+                "--requires-reproduction",
             )
             self.assertEqual(rejected.returncode, 2)
             self.assertIn(
@@ -410,9 +421,7 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
             self.assertEqual(data_inputs(entry)[0]["name"], "renamed-repository")
-            removed = run(
-                entry, "data", "remove", *common, "renamed-repository"
-            )
+            removed = run(entry, "data", "remove", *common, "renamed-repository")
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertFalse((entry / "data.json").exists())
 
@@ -641,7 +650,7 @@ class LogDataTests(unittest.TestCase):
             document.write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
                 "```bash\n"
-                "./pyrun scripts/build.py --input \"<source>\" "
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/generated.csv\n"
                 "```\n\n`Results:`\n\nGenerated output.\n",
                 encoding="utf-8",
@@ -739,7 +748,7 @@ class LogDataTests(unittest.TestCase):
             (entry / "e001.md").write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
                 "```bash\n"
-                './pyrun scripts/build.py --input "<source>" '
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/generated.csv\n"
                 "```\n\n`Results:`\n\nGenerated output.\n",
                 encoding="utf-8",
@@ -753,9 +762,7 @@ class LogDataTests(unittest.TestCase):
                 "generated",
                 "data/generated.csv",
             )
-            self.assertEqual(
-                result(strict)["code"], "data.changed"
-            )
+            self.assertEqual(result(strict)["code"], "data.changed")
             before = (entry / "data.json").read_bytes()
             checked = run(
                 entry,
@@ -832,7 +839,7 @@ class LogDataTests(unittest.TestCase):
             (producer / "e001.md").write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
                 "```bash\n"
-                "./pyrun scripts/build.py --output \"<result>\"\n"
+                './pyrun --cid build -- scripts/build.py --output "<result>"\n'
                 "```\n\n`Results:`\n\nPending.\n",
                 encoding="utf-8",
             )
@@ -938,22 +945,24 @@ class LogDataTests(unittest.TestCase):
             )
             (producer / "e001.md").write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
-                "```bash\n./pyrun scripts/build.py --output \"<result>\"\n```\n"
+                "```bash\n"
+                './pyrun --cid build -- scripts/build.py --output "<result>"\n'
+                "```\n"
                 "\n`Results:`\n\nPending.\n",
                 encoding="utf-8",
             )
             declared = run(
-                    producer,
-                    "data",
-                    "add-generated",
-                    "--path",
-                    str(logical),
-                    "--entry",
-                    "e001",
-                    "--kind",
-                    "file",
-                    "result",
-                    "data/result.csv",
+                producer,
+                "data",
+                "add-generated",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--kind",
+                "file",
+                "result",
+                "data/result.csv",
             )
             self.assertEqual(declared.returncode, 0, declared.stderr)
             local = consumer / "data" / "result.csv"
@@ -999,7 +1008,9 @@ class LogDataTests(unittest.TestCase):
             )
             (entry / "e001.md").write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
-                "```bash\n./pyrun scripts/build.py --output \"<bundle>\"\n```\n"
+                "```bash\n"
+                './pyrun --cid build -- scripts/build.py --output "<bundle>"\n'
+                "```\n"
                 "\n`Results:`\n\nPending.\n",
                 encoding="utf-8",
             )
@@ -1025,9 +1036,7 @@ class LogDataTests(unittest.TestCase):
                     "files": ["manifest.json"],
                 },
             )
-            executed = run_pyrun(
-                entry, "scripts/build.py", "--output", "<bundle>"
-            )
+            executed = run_pyrun(entry, "scripts/build.py", "--output", "<bundle>")
             self.assertEqual(executed.returncode, 0, executed.stderr)
             self.assertEqual(data_inputs(entry)[0]["identity"], item["identity"])
 
@@ -1069,11 +1078,11 @@ class LogDataTests(unittest.TestCase):
             )
             (entry / "e001.md").write_text(
                 "# Trial\n\n## Intermediate\n\n`Steps:`\n\n```bash\n"
-                './pyrun scripts/build.py --input "<source>" '
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/intermediate.csv\n"
                 "```\n\n`Results:`\n\nPending.\n\n"
                 "## Final\n\n`Steps:`\n\n```bash\n"
-                './pyrun scripts/build.py --input "<intermediate>" '
+                './pyrun --cid build -- scripts/build.py --input "<intermediate>" '
                 "--output data/final.csv\n"
                 "```\n\n`Results:`\n\nProduced.\n",
                 encoding="utf-8",
@@ -1106,9 +1115,7 @@ class LogDataTests(unittest.TestCase):
                 "final",
                 "data/final.csv",
             )
-            self.assertEqual(
-                result(strict)["code"], "data.changed"
-            )
+            self.assertEqual(result(strict)["code"], "data.changed")
             pending = run(
                 entry,
                 "data",
@@ -1151,8 +1158,8 @@ class LogDataTests(unittest.TestCase):
             )
             (producer / "e001.md").write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
-                './pyrun scripts/build.py --input "<source>" '
-                '--output data/shared.csv\n'
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
+                "--output data/shared.csv\n"
                 "```\n\n`Results:`\n\nGenerated.\n",
                 encoding="utf-8",
             )
@@ -1255,7 +1262,7 @@ class LogDataTests(unittest.TestCase):
             document.write_text(
                 "# Trial\n\n## Bundle\n\n`Steps:`\n\n"
                 "```bash\n"
-                "./pyrun scripts/bundle.py --input \"<source>\" "
+                './pyrun --cid build -- scripts/bundle.py --input "<source>" '
                 "--output-dir data/bundle\n"
                 "```\n\n`Results:`\n\nGenerated bundle.\n",
                 encoding="utf-8",
@@ -1319,7 +1326,7 @@ class LogDataTests(unittest.TestCase):
                 encoding="utf-8",
             )
             command = (
-                "./pyrun scripts/build.py --input \"<source>\" "
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/generated.csv"
             )
             document = entry / "e001.md"
@@ -1339,12 +1346,11 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(executed.returncode, 0, executed.stderr)
             support_path = entry / "pyrun.json"
             support = json.loads(support_path.read_text(encoding="utf-8"))
-            execution_id = next(iter(support["executions"]))
-            support["executions"][execution_id]["requires_reproduction"] = True
+            executions = support["commands"]["build"]["executions"]
+            execution_id = next(iter(executions))
+            executions[execution_id]["requires_reproduction"] = True
             support_path.write_text(
-                json.dumps(
-                    support, ensure_ascii=False, indent=2, sort_keys=True
-                )
+                json.dumps(support, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n",
                 encoding="utf-8",
             )
@@ -1356,9 +1362,7 @@ class LogDataTests(unittest.TestCase):
                 "generated",
                 "data/generated.csv",
             )
-            self.assertEqual(
-                result(unconfirmed)["code"], "data.changed"
-            )
+            self.assertEqual(result(unconfirmed)["code"], "data.changed")
             pending = run(
                 entry,
                 "data",
@@ -1370,11 +1374,9 @@ class LogDataTests(unittest.TestCase):
             )
             self.assertEqual(pending.returncode, 0, pending.stderr)
             self.assertEqual(len(data_inputs(entry)), 2)
-            support["executions"][execution_id]["requires_reproduction"] = False
+            executions[execution_id]["requires_reproduction"] = False
             support_path.write_text(
-                json.dumps(
-                    support, ensure_ascii=False, indent=2, sort_keys=True
-                )
+                json.dumps(support, ensure_ascii=False, indent=2, sort_keys=True)
                 + "\n",
                 encoding="utf-8",
             )
@@ -1455,7 +1457,7 @@ class LogDataTests(unittest.TestCase):
             document = entry / "e001.md"
             document.write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n```bash\n"
-                "./pyrun scripts/build.py --input \"<source>\" "
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/generated.csv\n"
                 "```\n\n`Results:`\n\nGenerated.\n",
                 encoding="utf-8",
@@ -1565,7 +1567,7 @@ class LogDataTests(unittest.TestCase):
             document.write_text(
                 "# Trial\n\n## Build\n\n`Steps:`\n\n"
                 "```bash\n"
-                "./pyrun scripts/build.py --input \"<source>\" "
+                './pyrun --cid build -- scripts/build.py --input "<source>" '
                 "--output data/generated.csv\n"
                 "```\n\n`Results:`\n\nGenerated output.\n",
                 encoding="utf-8",
@@ -1600,20 +1602,14 @@ class LogDataTests(unittest.TestCase):
                 json.dumps(evidence) + "\n", encoding="utf-8"
             )
 
-            incomplete = run(
-                entry, "data", "rename", *common, "source", "renamed"
-            )
+            incomplete = run(entry, "data", "rename", *common, "source", "renamed")
             self.assertEqual(incomplete.returncode, 2)
             before = (entry / "data.json").read_bytes()
             document.write_text(
-                document.read_text(encoding="utf-8").replace(
-                    "<source>", "<renamed>"
-                ),
+                document.read_text(encoding="utf-8").replace("<source>", "<renamed>"),
                 encoding="utf-8",
             )
-            renamed = run(
-                entry, "data", "rename", *common, "source", "renamed"
-            )
+            renamed = run(entry, "data", "rename", *common, "source", "renamed")
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
             payload = result(renamed)
             self.assertEqual(len(payload["records"]), 1)
@@ -1652,9 +1648,7 @@ class LogDataTests(unittest.TestCase):
                 document = entry / "e001.md"
                 document.write_text(
                     "# Entry e001\n\n## Map\n\n`Background:`\n\nMap context.\n\n"
-                    "`Steps:`\n\nOpen the map.\n\n`Results:`\n\n"
-                    + markup
-                    + "\n",
+                    "`Steps:`\n\nOpen the map.\n\n`Results:`\n\n" + markup + "\n",
                     encoding="utf-8",
                 )
                 authored = run(
@@ -1668,9 +1662,7 @@ class LogDataTests(unittest.TestCase):
                     "map",
                 )
                 self.assertEqual(authored.returncode, 0, authored.stderr)
-                before = json.loads((entry / "evidence.json").read_text())[
-                    "records"
-                ][0]
+                before = json.loads((entry / "evidence.json").read_text())["records"][0]
 
                 renamed = run(entry, "data", "rename", *common, "map", "figure")
                 self.assertEqual(renamed.returncode, 0, renamed.stderr)
@@ -1701,9 +1693,7 @@ class LogDataTests(unittest.TestCase):
                 "schema": "research-log-evidence/v4",
                 "records": [
                     {
-                        "document": (entry / "e001.md")
-                        .relative_to(logical)
-                        .as_posix(),
+                        "document": (entry / "e001.md").relative_to(logical).as_posix(),
                         "id": "value",
                         "kind": "statistic",
                         "sources": [
@@ -1807,8 +1797,7 @@ class LogDataTests(unittest.TestCase):
                     )
                 self.assertTrue(
                     (
-                        operation_directory(logical)
-                        / f"{REGISTRY_RESIDUE_PREFIX}e001"
+                        operation_directory(logical) / f"{REGISTRY_RESIDUE_PREFIX}e001"
                     ).is_file()
                 )
                 listed = run(entry, "data", "list", *common)
@@ -1836,7 +1825,9 @@ class LogDataTests(unittest.TestCase):
             document = entry / "e001.md"
             document.write_text(
                 "# Trial\n\n## Use\n\n`Steps:`\n\n"
-                "```bash\n./pyrun scripts/use.py --input \"<source>\"\n```\n"
+                "```bash\n"
+                './pyrun --cid build -- scripts/use.py --input "<source>"\n'
+                "```\n"
                 "\n`Results:`\n\nUsed input.\n",
                 encoding="utf-8",
             )
@@ -1886,8 +1877,7 @@ class LogDataTests(unittest.TestCase):
                         )
                     )
             outputs = [
-                process.communicate(timeout=20)
-                for process, _, _, _ in processes
+                process.communicate(timeout=20) for process, _, _, _ in processes
             ]
             for entry_id in ("e001", "e002"):
                 returncodes = sorted(

@@ -51,6 +51,7 @@ def _invocation(
 ) -> object:
     return COMMAND.Invocation(
         identity=identity,
+        cid=identity,
         document="entry.md",
         entry="e001",
         fence=1,
@@ -64,8 +65,7 @@ def _invocation(
         script_identity="fixture",
         inputs=(),
         outputs=tuple(
-            COMMAND.MaterialRelationship(path, "output", "option")
-            for path in outputs
+            COMMAND.MaterialRelationship(path, "output", "option") for path in outputs
         ),
         collections=tuple(
             COMMAND.MaterialCollection("output", "directory", "output", (), path)
@@ -156,11 +156,12 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             command_context = _context(root, (source,))
             invocations = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --input-data '<source>' --output-data data/first.csv
-./pyrun scripts/run.py --input-data '<source>' --output-data data/second.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py --input-data '<source>' "
+                "--output-data data/first.csv\n"
+                "./pyrun --cid build -- scripts/run.py --input-data '<source>' "
+                "--output-data data/second.csv\n"
+                "```\n",
                 command_context,
             ).invocations
             context = PROVENANCE.CompleteProvenanceContext(
@@ -366,12 +367,8 @@ class ProvenanceLineageTests(unittest.TestCase):
             ambiguous = root / "ambiguous.csv"
             for path in (target, missing, ambiguous):
                 write(path, "value\n1\n")
-            first = _invocation(
-                "first", 0, outputs=(ambiguous.resolve().as_posix(),)
-            )
-            second = _invocation(
-                "second", 1, outputs=(ambiguous.resolve().as_posix(),)
-            )
+            first = _invocation("first", 0, outputs=(ambiguous.resolve().as_posix(),))
+            second = _invocation("second", 1, outputs=(ambiguous.resolve().as_posix(),))
             final = replace(
                 _invocation("final", 2, outputs=(target.resolve().as_posix(),)),
                 inputs=(
@@ -407,9 +404,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             for path in (target, intermediate, independent):
                 write(path, "value\n1\n")
             earlier = replace(
-                _invocation(
-                    "cycle", 0, outputs=(intermediate.resolve().as_posix(),)
-                ),
+                _invocation("cycle", 0, outputs=(intermediate.resolve().as_posix(),)),
                 inputs=(
                     COMMAND.MaterialRelationship(
                         target.resolve().as_posix(), "input", "option"
@@ -537,9 +532,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             self.assertEqual(
                 [
                     match.producer.identity
-                    for match in index.lookup(
-                        origin_root.as_posix(), before_sequence=2
-                    )
+                    for match in index.lookup(origin_root.as_posix(), before_sequence=2)
                 ],
                 ["member", "exact"],
             )
@@ -623,16 +616,12 @@ class ProvenanceLineageTests(unittest.TestCase):
             invocation = _invocation(
                 "member",
                 0,
-                outputs=(
-                    (Path(resource.canonical_target) / "member.csv").as_posix(),
-                ),
+                outputs=((Path(resource.canonical_target) / "member.csv").as_posix(),),
             )
             second = _invocation(
                 "second",
                 1,
-                outputs=(
-                    (Path(resource.canonical_target) / "second.csv").as_posix(),
-                ),
+                outputs=((Path(resource.canonical_target) / "second.csv").as_posix(),),
             )
             invocations = (invocation, second)
             index = PROVENANCE.build_producer_index(invocations)
@@ -673,7 +662,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             write(target, "value\n1\n")
             commands = COMMAND.discover_commands(
                 "```bash\n"
-                "./pyrun scripts/run.py --output-data data/final.csv\n"
+                "./pyrun --cid build -- scripts/run.py --output-data data/final.csv\n"
                 "```\n",
                 context,
             ).invocations
@@ -701,10 +690,10 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --input-data '<source>' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py --input-data '<source>' "
+                "--output-data data/final.csv\n"
+                "```\n",
                 context,
             ).invocations
 
@@ -730,11 +719,10 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --input-directory '<source>' --output-data data/final.csv
-```
-<!-- command-1 input-directory = input-directory -->
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py "
+                "--input-directory '<source>' --output-data data/final.csv\n"
+                "```\n<!-- command-1 input-directory = input-directory -->\n",
                 context,
             ).invocations
 
@@ -785,10 +773,10 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --input-data '<source>/selected.csv' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py "
+                "--input-data '<source>/selected.csv' "
+                "--output-data data/final.csv\n```\n",
                 context,
             ).invocations
 
@@ -825,10 +813,10 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --input-data '<baseline>/build.log' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py "
+                "--input-data '<baseline>/build.log' "
+                "--output-data data/final.csv\n```\n",
                 context,
             ).invocations
 
@@ -864,11 +852,11 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (generated,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --output-data data/intermediate.csv
-./pyrun scripts/run.py --input-data '<generated>' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py "
+                "--output-data data/intermediate.csv\n"
+                "./pyrun --cid build -- scripts/run.py --input-data '<generated>' "
+                "--output-data data/final.csv\n```\n",
                 context,
             ).invocations
 
@@ -891,7 +879,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             context = _context(root, (source,))
             commands = COMMAND.discover_commands(
                 "```bash\n"
-                "./pyrun scripts/run.py --input-data '<source>' "
+                "./pyrun --cid build -- scripts/run.py --input-data '<source>' "
                 "--output-data data/final.csv\n"
                 "```\n",
                 context,
@@ -921,11 +909,11 @@ class ProvenanceLineageTests(unittest.TestCase):
             write(entry_root / "scripts/build.py", "# fixture\n")
             write(entry_root / "scripts/final.py", "# fixture\n")
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/build.py --output-data data/source.csv
-./pyrun scripts/final.py --input-data '<source>' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/build.py "
+                "--output-data data/source.csv\n"
+                "./pyrun --cid build -- scripts/final.py --input-data '<source>' "
+                "--output-data data/final.csv\n```\n",
                 context,
             ).invocations
 
@@ -947,8 +935,8 @@ class ProvenanceLineageTests(unittest.TestCase):
                 PROVENANCE.evaluate_provenance(target, ())
             commands = COMMAND.discover_commands(
                 """```bash
-./pyrun scripts/run.py --output-data data/final.csv
-./pyrun scripts/run.py --output-data data/final.csv
+./pyrun --cid build -- scripts/run.py --output-data data/final.csv
+./pyrun --cid build -- scripts/run.py --output-data data/final.csv
 ```
 """,
                 context,
@@ -970,13 +958,13 @@ class ProvenanceLineageTests(unittest.TestCase):
             )
             context = _context(root, (bundle,))
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/run.py --output-directory data/bundle
-./pyrun scripts/run.py --input-directory '<bundle>' --output-data data/final.csv
-```
-<!-- command-1 output-directory = output-directory -->
-<!-- command-2 input-directory = input-directory -->
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/run.py "
+                "--output-directory data/bundle\n"
+                "./pyrun --cid build -- scripts/run.py --input-directory '<bundle>' "
+                "--output-data data/final.csv\n```\n"
+                "<!-- command-1 output-directory = output-directory -->\n"
+                "<!-- command-2 input-directory = input-directory -->\n",
                 context,
             ).invocations
 
@@ -1003,12 +991,12 @@ class ProvenanceLineageTests(unittest.TestCase):
             write(entry_root / "scripts/build.py", "# fixture\n")
             write(entry_root / "scripts/final.py", "# fixture\n")
             commands = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/build.py --output-data data/bundle/a.csv
-./pyrun scripts/final.py --input-directory '<bundle>' --output-data data/final.csv
-```
-<!-- command-2 input-directory = input-directory -->
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/build.py "
+                "--output-data data/bundle/a.csv\n"
+                "./pyrun --cid build -- scripts/final.py "
+                "--input-directory '<bundle>' --output-data data/final.csv\n"
+                "```\n<!-- command-2 input-directory = input-directory -->\n",
                 context,
             ).invocations
 

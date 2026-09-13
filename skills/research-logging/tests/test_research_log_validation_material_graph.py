@@ -47,7 +47,7 @@ def _surface(root: Path) -> tuple[Path, Path, object, object]:
     )
     invocations = COMMAND.discover_commands(
         """```bash
-./pyrun scripts/build.py --input-data '<source>' \
+./pyrun --cid build -- scripts/build.py --input-data '<source>' \
   --output-data data/reached.csv --output-data data/sibling.csv
 ```
 """,
@@ -95,7 +95,7 @@ def _bundle_surface(root: Path) -> tuple[Path, Path, object, object]:
     )
     invocations = COMMAND.discover_commands(
         """```bash
-./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
+./pyrun --cid build -- scripts/build.py --input-data '<source>' --output-dir data/bundle
 ```
 """,
         context,
@@ -120,15 +120,14 @@ def _bundle_consumer_surface(
         data_file=data_file,
         require_experimental_context=False,
     )
-    input_option = (
-        "--input-directory" if input_token == "<bundle>" else "--input-data"
-    )
+    input_option = "--input-directory" if input_token == "<bundle>" else "--input-data"
     invocations = COMMAND.discover_commands(
-        f"""```bash
-./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
-./pyrun scripts/use.py {input_option} '{input_token}' --output-data data/final.csv
-```
-""",
+        "```bash\n"
+        "./pyrun --cid build -- scripts/build.py --input-data '<source>' "
+        "--output-dir data/bundle\n"
+        f"./pyrun --cid build -- scripts/use.py {input_option} "
+        f"'{input_token}' --output-data data/final.csv\n"
+        "```\n",
         context,
     ).invocations
     return entry_root, data_file, invocations, final.resolve().as_posix()
@@ -275,9 +274,7 @@ class MaterialGraphTests(unittest.TestCase):
                 result.orphan.connected,
             )
             input_materials = {
-                edge.source.identity
-                for edge in result.edges
-                if edge.kind == "input"
+                edge.source.identity for edge in result.edges if edge.kind == "input"
             }
             self.assertTrue(members.issubset(input_materials))
             self.assertNotIn(bundle, input_materials)
@@ -326,11 +323,12 @@ class MaterialGraphTests(unittest.TestCase):
                 require_experimental_context=False,
             )
             invocations = COMMAND.discover_commands(
-                """```bash
-./pyrun scripts/build.py --input-data '<source>' --output-dir data/bundle
-./pyrun scripts/use.py --input-results-root '<bundle>' --output-data data/final.csv
-```
-""",
+                "```bash\n"
+                "./pyrun --cid build -- scripts/build.py --input-data '<source>' "
+                "--output-dir data/bundle\n"
+                "./pyrun --cid build -- scripts/use.py "
+                "--input-results-root '<bundle>' --output-data data/final.csv\n"
+                "```\n",
                 context,
             ).invocations
             final = (output_data / "final.csv").resolve().as_posix()
@@ -383,9 +381,7 @@ class MaterialGraphTests(unittest.TestCase):
             )
 
             input_materials = {
-                edge.source.identity
-                for edge in result.edges
-                if edge.kind == "input"
+                edge.source.identity for edge in result.edges if edge.kind == "input"
             }
             self.assertIn(model, input_materials)
             self.assertNotIn(metrics, input_materials)
@@ -525,8 +521,7 @@ class MaterialGraphTests(unittest.TestCase):
             self.assertNotIn(bundle, result.orphan.orphaned)
             self.assertTrue(
                 all(
-                    not path.startswith(bundle + "/")
-                    for path in result.orphan.orphaned
+                    not path.startswith(bundle + "/") for path in result.orphan.orphaned
                 )
             )
 

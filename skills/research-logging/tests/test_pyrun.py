@@ -30,12 +30,35 @@ sys.modules[LOADER.name] = PYRUN_MODULE
 LOADER.exec_module(PYRUN_MODULE)
 
 
+def _parse_pyrun_arguments(arguments: list[str]):
+    separator = [] if arguments and arguments[0].startswith("--") else ["--"]
+    return PYRUN_MODULE.parse_pyrun_arguments(
+        ["--cid", "test-command", *separator, *arguments]
+        if "--cid" not in arguments
+        else arguments
+    )
+
+
 def run(
     command: list[str],
     cwd: Path,
     *,
     environment_updates: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if (
+        len(command) >= 2
+        and Path(command[1]).name == "pyrun"
+        and "--cid" not in command
+    ):
+        arguments = command[2:]
+        separator = [] if arguments and arguments[0].startswith("--") else ["--"]
+        command = [
+            *command[:2],
+            "--cid",
+            "test-command",
+            *separator,
+            *arguments,
+        ]
     environment = os.environ.copy()
     environment.pop("PYTHONHOME", None)
     if environment_updates is not None:
@@ -151,7 +174,9 @@ def add_directory_input(entry: Path, name: str, directory: Path) -> None:
 def execution_records(entry: Path) -> dict[str, dict[str, object]]:
     """Return the execution map published by one test entry."""
 
-    return json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))["executions"]
+    return json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))["commands"][
+        "test-command"
+    ]["executions"]
 
 
 def execution_for_output(entry: Path, output: str) -> dict[str, object]:
@@ -178,8 +203,31 @@ def recorded_outputs(entry: Path) -> set[str]:
 
 
 class PyrunResolutionTests(unittest.TestCase):
+    def test_cid_is_runner_only_and_never_reaches_the_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--cid",
+                    "private-command-id",
+                    "--",
+                    "scripts/print_args.py",
+                    "--label",
+                    "visible",
+                ],
+                cwd=entry,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "--label\nvisible\n")
+            self.assertNotIn("private-command-id", result.stdout)
+
     def test_environment_options_are_normalized_into_the_signature(self) -> None:
-        first = PYRUN_MODULE.parse_pyrun_arguments(
+        first = _parse_pyrun_arguments(
             [
                 "--env",
                 "OMP_NUM_THREADS=2",
@@ -191,7 +239,7 @@ class PyrunResolutionTests(unittest.TestCase):
                 "exact",
             ]
         )
-        second = PYRUN_MODULE.parse_pyrun_arguments(
+        second = _parse_pyrun_arguments(
             [
                 "--env",
                 "CUDA_VISIBLE_DEVICES=0",
@@ -238,10 +286,10 @@ class PyrunResolutionTests(unittest.TestCase):
                 self.subTest(arguments=arguments),
                 self.assertRaises(PYRUN_MODULE.PyrunContractError),
             ):
-                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+                _parse_pyrun_arguments(arguments)
 
     def test_other_role_layout_is_normalized_and_not_persisted(self) -> None:
-        first = PYRUN_MODULE.parse_pyrun_arguments(
+        first = _parse_pyrun_arguments(
             [
                 "--other-inputs",
                 "weights,catalog",
@@ -257,7 +305,7 @@ class PyrunResolutionTests(unittest.TestCase):
                 "data/results.csv",
             ]
         )
-        second = PYRUN_MODULE.parse_pyrun_arguments(
+        second = _parse_pyrun_arguments(
             [
                 "--other-outputs",
                 "results",
@@ -289,7 +337,7 @@ class PyrunResolutionTests(unittest.TestCase):
         )
 
     def test_other_roles_and_capture_have_distinct_signature_ownership(self) -> None:
-        layout = PYRUN_MODULE.parse_pyrun_arguments(
+        layout = _parse_pyrun_arguments(
             [
                 "--other-outputs",
                 "results",
@@ -324,7 +372,7 @@ class PyrunResolutionTests(unittest.TestCase):
         )
 
     def test_auto_reproduce_is_policy_outside_recipe_parameters(self) -> None:
-        layout = PYRUN_MODULE.parse_pyrun_arguments(
+        layout = _parse_pyrun_arguments(
             ["--auto-reproduce=false", "--", "scripts/model.py", "--mode", "exact"]
         )
 
@@ -342,13 +390,11 @@ class PyrunResolutionTests(unittest.TestCase):
             ["--auto-reproduce=true", "--", "scripts/model.py"],
         ):
             with self.assertRaises(PYRUN_MODULE.PyrunContractError):
-                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+                _parse_pyrun_arguments(arguments)
 
     def test_exclusive_is_policy_outside_execution_identity(self) -> None:
-        ordinary = PYRUN_MODULE.parse_pyrun_arguments(
-            ["scripts/model.py", "--mode", "exact"]
-        )
-        exclusive = PYRUN_MODULE.parse_pyrun_arguments(
+        ordinary = _parse_pyrun_arguments(["scripts/model.py", "--mode", "exact"])
+        exclusive = _parse_pyrun_arguments(
             ["--exclusive", "--", "scripts/model.py", "--mode", "exact"]
         )
 
@@ -362,12 +408,12 @@ class PyrunResolutionTests(unittest.TestCase):
             ["--exclusive=false", "--", "scripts/model.py"],
         ):
             with self.assertRaises(PYRUN_MODULE.PyrunContractError):
-                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+                _parse_pyrun_arguments(arguments)
 
     def test_explicit_environment_is_separate_from_capture_recipe_parameters(
         self,
     ) -> None:
-        layout = PYRUN_MODULE.parse_pyrun_arguments(
+        layout = _parse_pyrun_arguments(
             [
                 "--env",
                 "MODE=exact",
@@ -615,7 +661,13 @@ class PyrunOutputSupportTests(unittest.TestCase):
             ready = entry / "data/ready.json"
             child_pid = None
             with subprocess.Popen(
-                [sys.executable, str(PYRUN), *arguments],
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--cid",
+                    "test-command",
+                    *arguments,
+                ],
                 cwd=entry,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -788,7 +840,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
                 r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
             )
 
-    def test_overlapping_recipe_replaces_prior_execution_in_full(self) -> None:
+    def test_overlapping_parameter_member_is_rejected_without_state_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -802,6 +854,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            outcomes = []
             for outputs in (
                 ("data/first.txt", "data/shared.txt"),
                 ("data/shared.txt", "data/third.txt"),
@@ -810,10 +863,13 @@ class PyrunOutputSupportTests(unittest.TestCase):
                 for output in outputs:
                     command.extend(("--output-file", output))
                 result = run(command, cwd=entry)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                outcomes.append(result)
 
+            self.assertEqual(outcomes[0].returncode, 0, outcomes[0].stderr)
+            self.assertNotEqual(outcomes[1].returncode, 0)
+            self.assertIn("output_ownership_overlap", outcomes[1].stderr)
             self.assertEqual(
-                recorded_outputs(entry), {"data/shared.txt", "data/third.txt"}
+                recorded_outputs(entry), {"data/first.txt", "data/shared.txt"}
             )
             self.assertEqual(len(execution_records(entry)), 1)
 
@@ -1172,7 +1228,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v5")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v6")
             record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["exclusive"], False)
             self.assertIs(record["requires_reproduction"], False)
@@ -1884,6 +1940,8 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
                 [
                     sys.executable,
                     str(PYRUN),
+                    "--cid",
+                    "test-command",
                     "--capture-stdout",
                     "data/out.log",
                     "--capture-stderr",
@@ -1987,6 +2045,8 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
                 [
                     sys.executable,
                     str(PYRUN),
+                    "--cid",
+                    "test-command",
                     "--capture-stdout",
                     "data/run.log",
                     "--",

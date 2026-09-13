@@ -48,7 +48,6 @@ import sys
 import tempfile
 import threading
 from contextlib import ExitStack
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterable, Mapping
@@ -58,7 +57,7 @@ from log_commands.context import (
     LogContext,
     parse_entry_directory_name,
 )
-from log_commands.storage import PublicationError, atomic_write_texts, entry_lock
+from log_commands.storage import atomic_write_texts, entry_lock
 from pyrun_code_observer import (
     MAX_CODE_PATHS,
     CodeObservationError,
@@ -70,7 +69,6 @@ from research_log_data import (
     DataContractError,
     DataFile,
     Fingerprint,
-    data_file_from_inputs,
     input_token_candidate,
     input_token_parts,
     load_data_file,
@@ -82,8 +80,6 @@ from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.operation_state import (
     OperationLockError,
-    begin_registry_transaction,
-    finish_guarded_publication,
 )
 from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_contract import (
@@ -100,9 +96,9 @@ from validation.pyrun_outputs import (
     portable_output_path,
 )
 from validation.pyrun_state import (
-    ExecutionRecipe,
     ObservedExecution,
     PyrunStateError,
+    build_execution_recipe,
     ordinary_execution,
     portable_script_path,
     publish_execution_locked,
@@ -118,8 +114,9 @@ CAPTURE_TERMINATION_SECONDS = 1.0
 
 def usage() -> int:
     print(
-        "usage: pyrun <script> [args...]\n"
-        "       pyrun [--auto-reproduce=false] [--exclusive] [--env NAME=value] "
+        "usage: pyrun --cid COMMAND_ID -- <script> [args...]\n"
+        "       pyrun --cid COMMAND_ID [--auto-reproduce=false] [--exclusive] "
+        "[--env NAME=value] "
         "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
@@ -276,6 +273,7 @@ def _execution_layout(
     argv: list[str],
 ) -> tuple[
     str,
+    str,
     tuple[str, ...],
     tuple[str, ...],
     dict[str, str],
@@ -291,6 +289,7 @@ def _execution_layout(
     except PyrunContractError as error:
         raise SystemExit(f"pyrun: {error}") from error
     return (
+        layout.cid,
         layout.script,
         layout.script_arguments,
         layout.recipe_parameters,
@@ -781,6 +780,7 @@ def main(argv: list[str]) -> int:
                 )
             data = _load_data(entry)
             (
+                cid,
                 script_argument,
                 script_args,
                 parameters,
@@ -895,7 +895,9 @@ def main(argv: list[str]) -> int:
             if data is not None:
                 for name, expected in sorted(observed_inputs.items()):
                     try:
-                        current_input = fingerprint_cache.observe_resource(data.by_name[name])
+                        current_input = fingerprint_cache.observe_resource(
+                            data.by_name[name]
+                        )
                     except (DataContractError, FingerprintCacheError) as error:
                         raise SystemExit(
                             f"pyrun: could not re-observe input {name!r}: {error}"
@@ -944,43 +946,43 @@ def main(argv: list[str]) -> int:
                     )
                 output_kinds[key] = output_kind
                 observed_outputs[key] = fingerprint
-            if observed_outputs:
-                recipe = ExecutionRecipe(
-                    script_identity,
-                    parameters,
-                    tuple(sorted(explicit_env.items())),
-                    tuple(sorted(observed_inputs)),
-                    tuple(sorted(output_kinds.items())),
-                    parameter_roles,
-                )
-                observed = ObservedExecution(
-                    script_observation.fingerprint,
-                    tuple(sorted(observed_inputs.items())),
-                    code_support,
-                    tuple(sorted(observed_outputs.items())),
-                )
-                completed_at = (
-                    datetime.now(timezone.utc)
-                    .replace(microsecond=0)
-                    .isoformat()
-                    .replace("+00:00", "Z")
-                )
-                try:
-                    publish_execution_locked(
-                        entry,
-                        ordinary_execution(
-                            recipe,
-                            observed,
-                            auto_reproduce=auto_reproduce,
-                            exclusive=exclusive,
-                            last_run_at=completed_at,
-                        ),
-                        project_root=root,
-                        companion_updates={},
-                        publish_updates=atomic_write_texts,
-                    )
-                except PublicationError as error:
-                    raise
+            recipe = build_execution_recipe(
+                script_identity,
+                parameters,
+                tuple(sorted(explicit_env.items())),
+                tuple(sorted(observed_inputs)),
+                tuple(sorted(output_kinds.items())),
+                parameter_roles,
+                subject=entry / "pyrun.json",
+                entry_root=entry,
+                project_root=root,
+            )
+            observed = ObservedExecution(
+                script_observation.fingerprint,
+                tuple(sorted(observed_inputs.items())),
+                code_support,
+                tuple(sorted(observed_outputs.items())),
+            )
+            completed_at = (
+                datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            publish_execution_locked(
+                entry,
+                cid,
+                ordinary_execution(
+                    recipe,
+                    observed,
+                    auto_reproduce=auto_reproduce,
+                    exclusive=exclusive,
+                    last_run_at=completed_at,
+                ),
+                project_root=root,
+                companion_updates={},
+                publish_updates=atomic_write_texts,
+            )
             return returncode
     except PyrunContractError as error:
         raise SystemExit(f"pyrun: {error}") from error

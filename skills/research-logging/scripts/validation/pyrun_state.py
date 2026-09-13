@@ -33,13 +33,13 @@ from .pyrun_outputs import (
 if TYPE_CHECKING:
     from .commands import Invocation
 
-PYRUN_SCHEMA = "research-log-pyrun/v5"
+PYRUN_SCHEMA = "research-log-pyrun/v6"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
 PYRUN_EXECUTION_CONTRACT = "research-log-pyrun-execution/2"
-PYRUN_EXECUTION_PREFIX = "pyrun-exec/v1:"
-PYRUN_EXECUTION_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
+PYRUN_EXECUTION_PREFIX = "pyrun-exec/v2:"
+PYRUN_EXECUTION_RE = re.compile(r"pyrun-exec/v2:[0-9a-f]{64}\Z")
 PYRUN_BACKUP_RE = re.compile(r"pyrun\.json(?:\.[2-9][0-9]*)?\.bak\Z")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 ENVIRONMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -86,9 +86,9 @@ class ExecutionRecipe:
 
 @dataclass(frozen=True)
 class ObservedExecution:
-    """Complete observations for one script, input, code, and output set."""
+    """Available observations for one script, input, code, and output set."""
 
-    script: Fingerprint
+    script: Fingerprint | None
     inputs: tuple[tuple[str, Fingerprint], ...]
     code: tuple[tuple[str, Fingerprint], ...]
     outputs: tuple[tuple[str, Fingerprint], ...]
@@ -100,7 +100,7 @@ class ObservedExecution:
             "code": {name: value.as_dict() for name, value in self.code},
             "inputs": {name: value.as_dict() for name, value in self.inputs},
             "outputs": {name: value.as_dict() for name, value in self.outputs},
-            "script": self.script.as_dict(),
+            "script": self.script.as_dict() if self.script is not None else None,
         }
 
 
@@ -135,12 +135,28 @@ class PyrunExecution:
 
 
 @dataclass(frozen=True)
+class PyrunCommand:
+    """One CID-owned parameter execution mapping."""
+
+    executions: Mapping[str, PyrunExecution]
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the exact persisted command projection."""
+
+        return {
+            "executions": {
+                key: self.executions[key].as_dict() for key in sorted(self.executions)
+            }
+        }
+
+
+@dataclass(frozen=True)
 class PyrunFile:
-    """One entry-owned mapping from stable execution IDs to current state."""
+    """One entry-owned mapping from CIDs to parameter executions."""
 
     path: Path
     entry_root: Path
-    executions: Mapping[str, PyrunExecution]
+    commands: Mapping[str, PyrunCommand]
     schema: str = PYRUN_SCHEMA
 
     def as_dict(self) -> dict[str, object]:
@@ -154,11 +170,27 @@ class PyrunFile:
                 "Pyrun Execution State",
             )
         return {
-            "executions": {
-                key: self.executions[key].as_dict() for key in sorted(self.executions)
+            "commands": {
+                cid: self.commands[cid].as_dict() for cid in sorted(self.commands)
             },
             "schema": self.schema,
         }
+
+    def execution(self, cid: str, identity: str) -> PyrunExecution | None:
+        """Return one complete-key execution, if present."""
+
+        command = self.commands.get(cid)
+        return command.executions.get(identity) if command is not None else None
+
+    def execution_items(self) -> tuple[tuple[str, str, PyrunExecution], ...]:
+        """Return all executions in canonical CID and parameter order."""
+
+        return tuple(
+            (cid, identity, command.executions[identity])
+            for cid in sorted(self.commands)
+            for command in (self.commands[cid],)
+            for identity in sorted(command.executions)
+        )
 
     def serialized(self) -> str:
         """Return canonical UTF-8 JSON with one trailing newline."""
@@ -173,6 +205,7 @@ class PyrunFile:
 class ExecutionAssociation:
     """One current command associated with its exact persisted execution."""
 
+    cid: str
     identity: str
     execution: PyrunExecution
 
@@ -196,6 +229,143 @@ class ResolvedExecutionOutput:
     owner: ExecutionAssociation | None
 
 
+@dataclass(frozen=True)
+class CurrentExecution:
+    """One current expanded invocation and its canonical recipe."""
+
+    identity: str
+    invocation: Invocation
+    recipe: ExecutionRecipe
+
+
+@dataclass(frozen=True)
+class ExecutionChange:
+    """One stored/current member pair with a changed recipe or policy."""
+
+    current: CurrentExecution
+    stored: PyrunExecution
+
+
+@dataclass(frozen=True)
+class CommandComparison:
+    """Disjoint comparison of one current CID and its stored bucket."""
+
+    missing: tuple[CurrentExecution, ...]
+    stale: tuple[ExecutionAssociation, ...]
+    recipe_changed: tuple[ExecutionChange, ...]
+    policy_changed: tuple[ExecutionChange, ...]
+    unchanged: tuple[ExecutionAssociation, ...]
+
+
+def compare_command(
+    state: PyrunFile,
+    cid: str,
+    invocations: tuple[Invocation, ...],
+    *,
+    project_root: Path,
+) -> CommandComparison:
+    """Compare one current CID against its stored parameter executions."""
+
+    current: dict[str, CurrentExecution] = {}
+    for invocation in invocations:
+        if invocation.cid != cid:
+            _invalid(invocation.document, {"cid": invocation.cid, "expected": cid})
+        recipe = recipe_from_invocation(
+            invocation, entry_root=state.entry_root, project_root=project_root
+        )
+        identity = execution_id(recipe)
+        if identity in current:
+            _invalid(
+                invocation.document,
+                {"cid": cid, "execution_id": identity, "reason": "parameter_collision"},
+            )
+        current[identity] = CurrentExecution(identity, invocation, recipe)
+    stored = state.commands.get(cid, PyrunCommand({})).executions
+    missing: list[CurrentExecution] = []
+    recipe_changed: list[ExecutionChange] = []
+    policy_changed: list[ExecutionChange] = []
+    unchanged: list[ExecutionAssociation] = []
+    for identity, member in sorted(current.items()):
+        prior = stored.get(identity)
+        if prior is None:
+            missing.append(member)
+        elif prior.recipe != member.recipe:
+            recipe_changed.append(ExecutionChange(member, prior))
+        elif (
+            prior.auto_reproduce != member.invocation.auto_reproduce
+            or prior.exclusive != member.invocation.exclusive
+        ):
+            policy_changed.append(ExecutionChange(member, prior))
+        else:
+            unchanged.append(ExecutionAssociation(cid, identity, prior))
+    stale = tuple(
+        ExecutionAssociation(cid, identity, stored[identity])
+        for identity in sorted(set(stored) - set(current))
+    )
+    return CommandComparison(
+        tuple(missing),
+        stale,
+        tuple(recipe_changed),
+        tuple(policy_changed),
+        tuple(unchanged),
+    )
+
+
+def pending_execution(current: CurrentExecution) -> PyrunExecution:
+    """Create a recipe-only member without manufacturing observations."""
+
+    return PyrunExecution(
+        True,
+        current.invocation.auto_reproduce,
+        None,
+        PYRUN_RUNNER,
+        PYRUN_ENVIRONMENT_PROFILE,
+        PYRUN_EXECUTION_CONTRACT,
+        current.recipe,
+        ObservedExecution(None, (), (), ()),
+        current.invocation.exclusive,
+    )
+
+
+def changed_execution(change: ExecutionChange) -> PyrunExecution:
+    """Retain only historical observations applicable to the current recipe."""
+
+    old = change.stored
+    new = change.current.recipe
+    if old.recipe == new:
+        return replace(
+            old,
+            auto_reproduce=change.current.invocation.auto_reproduce,
+            exclusive=change.current.invocation.exclusive,
+        )
+    same_script = old.recipe.script == new.script
+    inputs = tuple(
+        (name, value) for name, value in old.observed.inputs if name in set(new.inputs)
+    )
+    output_contract = dict(new.outputs)
+    outputs = tuple(
+        (name, value)
+        for name, value in old.observed.outputs
+        if dict(old.recipe.outputs).get(name) == output_contract.get(name)
+    )
+    return PyrunExecution(
+        True,
+        change.current.invocation.auto_reproduce,
+        None,
+        old.runner,
+        old.environment_profile,
+        old.execution_contract,
+        new,
+        ObservedExecution(
+            old.observed.script if same_script else None,
+            inputs,
+            old.observed.code if same_script else (),
+            outputs,
+        ),
+        change.current.invocation.exclusive,
+    )
+
+
 def associate_execution(
     state: PyrunFile, invocation: Invocation, *, project_root: Path
 ) -> ExecutionAssociation | None:
@@ -212,16 +382,20 @@ def associate_execution(
     except PyrunStateError:
         return None
     identity = execution_id(recipe)
-    execution = state.executions.get(identity)
-    return ExecutionAssociation(identity, execution) if execution is not None else None
+    execution = state.execution(invocation.cid, identity)
+    return (
+        ExecutionAssociation(invocation.cid, identity, execution)
+        if execution is not None
+        else None
+    )
 
 
 def execution_output_owners(state: PyrunFile) -> OutputOwnerIndex:
     """Index every persisted output identity by its owning execution."""
 
     owners: dict[str, ExecutionAssociation] = {}
-    for identity, execution in state.executions.items():
-        association = ExecutionAssociation(identity, execution)
+    for cid, identity, execution in state.execution_items():
+        association = ExecutionAssociation(cid, identity, execution)
         for output, _ in execution.recipe.outputs:
             owners[output] = association
     return OutputOwnerIndex(state.entry_root, owners)
@@ -268,11 +442,17 @@ def resolve_execution_output(
     )
 
 
-def execution_id(recipe: ExecutionRecipe) -> str:
-    """Return the stable v1 identity of one normalized execution recipe."""
+def execution_id(recipe: ExecutionRecipe | tuple[str, ...]) -> str:
+    """Return the stable v2 identity of normalized child-script parameters."""
 
     payload = json.dumps(
-        recipe.as_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        list(
+            recipe_script_parameters(recipe.parameters)
+            if isinstance(recipe, ExecutionRecipe)
+            else recipe
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
     ).encode("utf-8")
     return PYRUN_EXECUTION_PREFIX + hashlib.sha256(payload).hexdigest()
 
@@ -333,17 +513,39 @@ def recipe_from_invocation(
         if prior != kind:
             _invalid(invocation.document, {"output": key, "reason": "kind_conflict"})
     parameters = invocation.recipe_parameters or invocation.parameters
-    recipe = ExecutionRecipe(
+    return build_execution_recipe(
         script,
         parameters,
         invocation.environment,
         inputs,
         tuple(sorted(outputs.items())),
         invocation.parameter_roles,
+        subject=invocation.document,
+        entry_root=entry_root,
+        project_root=project_root,
+    )
+
+
+def build_execution_recipe(
+    script: str,
+    parameters: tuple[str, ...],
+    environment: tuple[tuple[str, str], ...],
+    inputs: tuple[str, ...],
+    outputs: tuple[tuple[str, str], ...],
+    parameter_roles: tuple[tuple[str, str], ...],
+    *,
+    subject: object,
+    entry_root: Path,
+    project_root: Path | None,
+) -> ExecutionRecipe:
+    """Build and validate one canonical recipe for every producer path."""
+
+    recipe = ExecutionRecipe(
+        script, parameters, environment, inputs, outputs, parameter_roles
     )
     _decode_recipe(
         recipe.as_dict(),
-        invocation.document,
+        str(subject),
         entry_root=entry_root,
         project_root=project_root,
     )
@@ -506,10 +708,9 @@ def parse_pyrun_state_text(
         value = decode_json(raw, maximum_bytes=MAX_FILE_BYTES, subject=str(subject))
     except V2JsonError as error:
         _invalid(subject, {"error": str(error)})
-    if not isinstance(value, Mapping) or set(value) != {"executions", "schema"}:
+    if not isinstance(value, Mapping):
         _invalid(subject, {"fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
-    raw_executions = value.get("executions")
     schema = value.get("schema")
     if schema != PYRUN_SCHEMA:
         raise PyrunStateError(
@@ -518,27 +719,47 @@ def parse_pyrun_state_text(
             {"schema": schema, "supported": PYRUN_SCHEMA},
             "Pyrun Execution State",
         )
-    if not isinstance(raw_executions, Mapping):
+    if set(value) != {"commands", "schema"}:
+        _invalid(subject, {"fields": _fields(value)})
+    raw_commands = value.get("commands")
+    if not isinstance(raw_commands, Mapping):
         _invalid(subject, {"schema": value.get("schema")})
-    if not raw_executions or len(raw_executions) > MAX_EXECUTIONS:
+    if not raw_commands or len(raw_commands) > MAX_EXECUTIONS:
         _invalid(
             subject,
-            {"executions": len(raw_executions), "limit": MAX_EXECUTIONS},
+            {"commands": len(raw_commands), "limit": MAX_EXECUTIONS},
         )
-    executions: dict[str, PyrunExecution] = {}
-    for key, raw_execution in raw_executions.items():
-        if not isinstance(key, str) or PYRUN_EXECUTION_RE.fullmatch(key) is None:
-            _invalid(subject, {"execution_id": key})
-        execution = _decode_execution(
-            raw_execution,
-            f"{subject}:executions[{key!r}]",
-            entry_root=root,
-            project_root=project_root,
-        )
-        if execution_id(execution.recipe) != key:
-            _invalid(subject, {"execution_id": key, "reason": "identity_mismatch"})
-        executions[key] = execution
-    result = PyrunFile(expected, root, executions)
+    commands: dict[str, PyrunCommand] = {}
+    execution_count = 0
+    for cid, raw_command in raw_commands.items():
+        if not isinstance(cid, str) or NAME_RE.fullmatch(cid) is None:
+            _invalid(subject, {"cid": cid})
+        if not isinstance(raw_command, Mapping) or set(raw_command) != {"executions"}:
+            _invalid(subject, {"cid": cid, "fields": _fields(raw_command)})
+        raw_executions = raw_command.get("executions")
+        if not isinstance(raw_executions, Mapping) or not raw_executions:
+            _invalid(subject, {"cid": cid, "executions": _fields(raw_executions)})
+        executions: dict[str, PyrunExecution] = {}
+        for key, raw_execution in raw_executions.items():
+            if not isinstance(key, str) or PYRUN_EXECUTION_RE.fullmatch(key) is None:
+                _invalid(subject, {"cid": cid, "execution_id": key})
+            execution = _decode_execution(
+                raw_execution,
+                f"{subject}:commands[{cid!r}]:executions[{key!r}]",
+                entry_root=root,
+                project_root=project_root,
+            )
+            if execution_id(execution.recipe) != key:
+                _invalid(
+                    subject,
+                    {"cid": cid, "execution_id": key, "reason": "identity_mismatch"},
+                )
+            executions[key] = execution
+            execution_count += 1
+        commands[cid] = PyrunCommand(executions)
+    if execution_count > MAX_EXECUTIONS:
+        _invalid(subject, {"executions": execution_count, "limit": MAX_EXECUTIONS})
+    result = PyrunFile(expected, root, commands)
     _validate_ownership(result, project_root=project_root)
     if raw != result.serialized():
         _invalid(subject, {"reason": "noncanonical_serialization"})
@@ -566,13 +787,14 @@ def parse_pyrun_execution(
 
 def publish_execution_locked(
     entry_root: Path,
+    cid: str,
     execution: PyrunExecution,
     *,
     project_root: Path | None = None,
     companion_updates: Mapping[Path, str] | None = None,
     publish_updates: Callable[[Mapping[Path, str | None]], None] | None = None,
 ) -> PyrunFile:
-    """Atomically replace every overlapping owner under the entry lock."""
+    """Atomically replace one complete key under the entry lock."""
 
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
@@ -582,21 +804,15 @@ def publish_execution_locked(
             if path.exists() or path.is_symlink()
             else empty_pyrun_state(root)
         )
-        candidate_paths = _output_targets(
-            execution.recipe, entry_root=root, project_root=project_root
-        )
-        executions = {
-            key: value
-            for key, value in current.executions.items()
-            if not _target_sets_overlap(
-                candidate_paths,
-                _output_targets(
-                    value.recipe, entry_root=root, project_root=project_root
-                ),
-            )
-        }
-        executions[execution_id(execution.recipe)] = execution
-        result = PyrunFile(path, root, executions)
+        if NAME_RE.fullmatch(cid) is None:
+            _invalid(path, {"cid": cid, "reason": "invalid"})
+        identity = execution_id(execution.recipe)
+        commands = dict(current.commands)
+        command = commands.get(cid, PyrunCommand({}))
+        executions = dict(command.executions)
+        executions[identity] = execution
+        commands[cid] = PyrunCommand(executions)
+        result = PyrunFile(path, root, commands)
         serialized = _validated_serialization(result, project_root=project_root)
         if companion_updates:
             if publish_updates is None or path in companion_updates:
@@ -616,6 +832,7 @@ def publish_execution_locked(
 
 def update_auto_reproduce_locked(
     entry_root: Path,
+    cid: str,
     execution_ids: tuple[str, ...],
     *,
     auto_reproduce: bool,
@@ -629,20 +846,23 @@ def update_auto_reproduce_locked(
     selected = tuple(dict.fromkeys(execution_ids))
     if not selected or len(selected) != len(execution_ids):
         _invalid(path, {"reason": "execution_selection_invalid"})
-    missing = sorted(set(selected) - set(current.executions))
+    command = current.commands.get(cid)
+    existing = command.executions if command is not None else {}
+    missing = sorted(set(selected) - set(existing))
     if missing:
         _invalid(path, {"reason": "execution_missing", "executions": missing})
-    executions = dict(current.executions)
+    executions = dict(existing)
     for key in selected:
         value = executions[key]
         executions[key] = replace(value, auto_reproduce=auto_reproduce)
-    result = PyrunFile(path, root, executions)
+    result = _with_command_executions(current, cid, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
 
 
 def update_exclusive_locked(
     entry_root: Path,
+    cid: str,
     execution_ids: tuple[str, ...],
     *,
     exclusive: bool,
@@ -656,19 +876,22 @@ def update_exclusive_locked(
     selected = tuple(dict.fromkeys(execution_ids))
     if not selected or len(selected) != len(execution_ids):
         _invalid(path, {"reason": "execution_selection_invalid"})
-    missing = sorted(set(selected) - set(current.executions))
+    command = current.commands.get(cid)
+    existing = command.executions if command is not None else {}
+    missing = sorted(set(selected) - set(existing))
     if missing:
         _invalid(path, {"reason": "execution_missing", "executions": missing})
-    executions = dict(current.executions)
+    executions = dict(existing)
     for key in selected:
         executions[key] = replace(executions[key], exclusive=exclusive)
-    result = PyrunFile(path, root, executions)
+    result = _with_command_executions(current, cid, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
 
 
 def without_executions(
     entry_root: Path,
+    cid: str,
     execution_ids: tuple[str, ...],
     *,
     project_root: Path | None = None,
@@ -681,25 +904,24 @@ def without_executions(
     selected = tuple(dict.fromkeys(execution_ids))
     if not selected or len(selected) != len(execution_ids):
         _invalid(path, {"reason": "execution_selection_invalid"})
-    missing = sorted(set(selected) - set(current.executions))
+    command = current.commands.get(cid)
+    existing = command.executions if command is not None else {}
+    missing = sorted(set(selected) - set(existing))
     if missing:
         _invalid(path, {"reason": "execution_missing", "executions": missing})
-    result = PyrunFile(
-        path,
-        root,
-        {
-            key: value
-            for key, value in current.executions.items()
-            if key not in selected
-        },
+    result = _with_command_executions(
+        current,
+        cid,
+        {key: value for key, value in existing.items() if key not in selected},
     )
-    if result.executions:
+    if result.commands:
         _validated_serialization(result, project_root=project_root)
     return result
 
 
 def clear_reproduction_requirement_locked(
     entry_root: Path,
+    cid: str,
     execution_id_value: str,
     *,
     project_root: Path | None = None,
@@ -709,18 +931,19 @@ def clear_reproduction_requirement_locked(
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
     current = load_pyrun_state(path, entry_root=root, project_root=project_root)
-    value = current.executions.get(execution_id_value)
+    value = current.execution(cid, execution_id_value)
     if value is None:
         _invalid(path, {"execution_id": execution_id_value, "reason": "missing"})
-    executions = dict(current.executions)
+    executions = dict(current.commands[cid].executions)
     executions[execution_id_value] = replace(value, requires_reproduction=False)
-    result = PyrunFile(path, root, executions)
+    result = _with_command_executions(current, cid, executions)
     _atomic_write(path, _validated_serialization(result, project_root=project_root))
     return result
 
 
 def retire_execution_locked(
     entry_root: Path,
+    cid: str,
     execution_id_value: str,
     *,
     project_root: Path | None = None,
@@ -729,12 +952,27 @@ def retire_execution_locked(
 
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
-    result = without_executions(root, (execution_id_value,), project_root=project_root)
-    if result.executions:
+    result = without_executions(
+        root, cid, (execution_id_value,), project_root=project_root
+    )
+    if result.commands:
         _atomic_write(path, _validated_serialization(result, project_root=project_root))
     else:
         _atomic_remove(path)
     return result
+
+
+def _with_command_executions(
+    state: PyrunFile,
+    cid: str,
+    executions: Mapping[str, PyrunExecution],
+) -> PyrunFile:
+    commands = dict(state.commands)
+    if executions:
+        commands[cid] = PyrunCommand(dict(executions))
+    else:
+        commands.pop(cid, None)
+    return PyrunFile(state.path, state.entry_root, commands)
 
 
 def quarantine_invalid_pyrun_state(
@@ -829,7 +1067,11 @@ def _decode_execution(
         project_root=project_root,
     )
     observed = _decode_observed(
-        value.get("observed"), recipe, subject, entry_root=entry_root
+        value.get("observed"),
+        recipe,
+        subject,
+        entry_root=entry_root,
+        allow_partial=requires_reproduction,
     )
     return PyrunExecution(
         requires_reproduction,
@@ -889,7 +1131,7 @@ def _decode_recipe(
         or inputs != sorted(set(inputs))
     ):
         _invalid(subject, {"inputs": inputs})
-    if not isinstance(outputs, Mapping) or not outputs or len(outputs) > MAX_OUTPUTS:
+    if not isinstance(outputs, Mapping) or len(outputs) > MAX_OUTPUTS:
         _invalid(subject, {"outputs": _fields(outputs)})
     decoded_outputs: list[tuple[str, str]] = []
     for key, kind in outputs.items():
@@ -961,6 +1203,7 @@ def _decode_observed(
     subject: str,
     *,
     entry_root: Path,
+    allow_partial: bool,
 ) -> ObservedExecution:
     fields = {"code", "inputs", "outputs", "script"}
     if not isinstance(value, Mapping) or set(value) != fields:
@@ -973,13 +1216,28 @@ def _decode_observed(
         maximum=MAX_OUTPUTS,
         kinds=dict(recipe.outputs),
     )
-    if tuple(name for name, _ in inputs) != recipe.inputs:
+    input_names = tuple(name for name, _ in inputs)
+    output_names = tuple(name for name, _ in outputs)
+    if (not allow_partial and input_names != recipe.inputs) or not set(
+        input_names
+    ).issubset(recipe.inputs):
         _invalid(subject, {"reason": "observed_input_keys"})
-    if tuple(name for name, _ in outputs) != tuple(name for name, _ in recipe.outputs):
+    recipe_output_names = tuple(name for name, _ in recipe.outputs)
+    if (not allow_partial and output_names != recipe_output_names) or not set(
+        output_names
+    ).issubset(recipe_output_names):
         _invalid(subject, {"reason": "observed_output_keys"})
     code = _decode_code(value.get("code"), subject, entry_root=entry_root)
+    raw_script = value.get("script")
+    script = (
+        None
+        if raw_script is None and allow_partial
+        else _decode_fingerprint(raw_script, subject, kind="file")
+    )
+    if script is None and code:
+        _invalid(subject, {"reason": "observed_code_without_script"})
     return ObservedExecution(
-        _decode_fingerprint(value.get("script"), subject, kind="file"),
+        script,
         inputs,
         code,
         outputs,
@@ -1030,15 +1288,16 @@ def _decode_code(
 
 
 def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> str:
-    if not value.executions or len(value.executions) > MAX_EXECUTIONS:
-        _invalid(value.path, {"executions": len(value.executions)})
+    items = value.execution_items()
+    if not items or len(items) > MAX_EXECUTIONS:
+        _invalid(value.path, {"executions": len(items)})
     _validate_ownership(value, project_root=project_root)
-    for key, execution in value.executions.items():
+    for cid, key, execution in items:
         if key != execution_id(execution.recipe):
             _invalid(value.path, {"execution_id": key, "reason": "identity_mismatch"})
         decoded = _decode_execution(
             execution.as_dict(),
-            f"{value.path}:executions[{key!r}]",
+            f"{value.path}:commands[{cid!r}]:executions[{key!r}]",
             entry_root=value.entry_root,
             project_root=project_root,
         )
@@ -1054,23 +1313,23 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
 
 
 def _validate_ownership(value: PyrunFile, *, project_root: Path | None) -> None:
-    owners: list[tuple[str, tuple[Path, ...]]] = []
-    for key, execution in value.executions.items():
+    owners: list[tuple[str, str, tuple[Path, ...]]] = []
+    for cid, key, execution in value.execution_items():
         targets = _output_targets(
             execution.recipe,
             entry_root=value.entry_root,
             project_root=project_root,
         )
-        for prior_key, prior_targets in owners:
+        for prior_cid, prior_key, prior_targets in owners:
             if _target_sets_overlap(targets, prior_targets):
                 _invalid(
                     value.path,
                     {
-                        "executions": sorted((prior_key, key)),
+                        "executions": sorted(((prior_cid, prior_key), (cid, key))),
                         "reason": "output_ownership_overlap",
                     },
                 )
-        owners.append((key, targets))
+        owners.append((cid, key, targets))
 
 
 def _require_nonoverlapping_outputs(

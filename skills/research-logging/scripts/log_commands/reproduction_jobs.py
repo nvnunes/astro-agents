@@ -132,7 +132,7 @@ from .reproduction_result_storage import PublicationCommitQuery
 
 STATUS_SCHEMA = "research-log-reproduction-status/7"
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
-EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
+EXECUTION_ID_RE = re.compile(r"pyrun-exec/v2:[0-9a-f]{64}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 MAX_STATUS_BYTES = 64 * 1024 * 1024
 MAX_RUN_DIRECTORIES = 100_000
@@ -377,13 +377,13 @@ def _compare_current_stage(context: _CurrentSupervisorContext) -> None:
     project_root = resolve_project_root(context.log.root)
     workspace = open_current_workspace(project_root, context.run_root, status.run_id)
     recorded = {
-        (item.entry, item.execution_id): item
+        (item.entry, item.cid, item.execution_id): item
         for item in load_current_recorded_comparisons(
             context.run_root, workspace, verify_outputs=True
         )
     }
     for attempt in current_execution_attempts(context.log, context.plan, workspace):
-        key = (attempt.entry, attempt.execution_id)
+        key = (attempt.entry, attempt.cid, attempt.execution_id)
         comparison = recorded.get(key)
         if comparison is None:
             comparison = compare_current_execution_outputs(
@@ -406,15 +406,16 @@ def _compare_current_stage(context: _CurrentSupervisorContext) -> None:
         context.plan.executions, key=lambda item: cast(int, item["order"])
     ):
         entry = cast(str, planned["entry"])
+        cid = cast(str, planned["cid"])
         execution_id = cast(str, planned["execution_id"])
-        key = (entry, execution_id)
+        key = (entry, cid, execution_id)
         if key in recorded:
             continue
         checkpoint = load_execution_checkpoint(
-            context.run_root, ExecutionIdentity(entry, execution_id)
+            context.run_root, ExecutionIdentity(entry, cid, execution_id)
         )
         readiness = load_execution_readiness(
-            context.run_root, ExecutionIdentity(entry, execution_id)
+            context.run_root, ExecutionIdentity(entry, cid, execution_id)
         )
         if checkpoint is None and readiness.disposition == "dependency_failed":
             recorded[key] = record_current_dependency_skip(
@@ -426,7 +427,7 @@ def _compare_current_stage(context: _CurrentSupervisorContext) -> None:
             continue
         raise ActionError(
             "reproduction.comparison.inventory_invalid",
-            f"execution has no terminal comparison input: {entry}:{execution_id}",
+            f"execution has no terminal comparison input: {entry}:{cid}:{execution_id}",
         )
 
 
@@ -513,19 +514,22 @@ def _current_completed_publication(
         verify_outputs=True,
     )
     checkpoint_keys = {
-        (item.entry, item.execution_id) for item in projection.checkpoints
+        (item.entry, item.cid, item.execution_id) for item in projection.checkpoints
     }
     comparisons = tuple(
-        item for item in stored if (item.entry, item.execution_id) in checkpoint_keys
+        item
+        for item in stored
+        if (item.entry, item.cid, item.execution_id) in checkpoint_keys
     )
     skipped = tuple(
         {
             "entry": item.entry,
+            "cid": item.cid,
             "execution_id": item.execution_id,
             "reason": "dependency_failed",
         }
         for item in stored
-        if (item.entry, item.execution_id) not in checkpoint_keys
+        if (item.entry, item.cid, item.execution_id) not in checkpoint_keys
         and all(
             artifact.outcome == "skipped" and artifact.reason == "dependency_failed"
             for artifact in item.artifacts
@@ -554,6 +558,7 @@ def _current_completed_publication(
             {
                 "elapsed_seconds": item.elapsed_seconds,
                 "entry": item.entry,
+                "cid": item.cid,
                 "execution_id": item.execution_id,
                 "finished_at": item.finished_at,
                 "started_at": item.started_at,
@@ -564,6 +569,7 @@ def _current_completed_publication(
                     cast(int, planned["order"])
                     for planned in context.plan.executions
                     if planned["entry"] == value.entry
+                    and planned["cid"] == value.cid
                     and planned["execution_id"] == value.execution_id
                 ),
             )
@@ -600,6 +606,7 @@ def _current_publication_query(
         request.run_id,
         cast(str, target["kind"]),
         cast(str | None, target.get("entry")),
+        cast(str | None, target.get("cid")),
         cast(str | None, target.get("execution_id")),
         request.plan.include_all,
         request.accepted_at,
@@ -1516,7 +1523,9 @@ def _terminalize_current_active_executions(
     status = load_current_run_status(run_root)
     for initial_checkpoint in status.checkpoints:
         checkpoint = initial_checkpoint
-        identity = ExecutionIdentity(checkpoint.entry, checkpoint.execution_id)
+        identity = ExecutionIdentity(
+            checkpoint.entry, checkpoint.cid, checkpoint.execution_id
+        )
         if checkpoint.state == "active":
             if checkpoint.permit_id is None:
                 raise ActionError(
@@ -1539,6 +1548,7 @@ def _terminalize_current_active_executions(
                 run_root,
                 ExecutionTerminal(
                     checkpoint.entry,
+                    checkpoint.cid,
                     checkpoint.execution_id,
                     checkpoint.permit_id,
                     "stopped",
@@ -1565,6 +1575,7 @@ def _terminalize_current_active_executions(
                     project_root,
                     status.run_id,
                     checkpoint.entry,
+                    checkpoint.cid,
                     checkpoint.execution_id,
                     accepted.plan_order,
                 ),
@@ -1659,10 +1670,10 @@ def _require_no_recovery_exclusion(
             and _pid_alive(owner.supervisor_pid)
         )
         needs_recovery = (
-            status.status is None and status.phase == "stopping"
-        ) or (
-            owner is not None and owner.state == "running" and not owner_live
-        ) or (status.status is None and not owner_live)
+            (status.status is None and status.phase == "stopping")
+            or (owner is not None and owner.state == "running" and not owner_live)
+            or (status.status is None and not owner_live)
+        )
         target_entry = cast(str | None, plan.target["entry"])
         if needs_recovery and (
             entry is None or target_entry is None or entry == target_entry
@@ -1683,10 +1694,13 @@ def _recovery_worker_observations(
     observed: list[RecoveryWorkerObservation] = []
     for survivor in survivors:
         entry = survivor.get("entry")
+        cid = survivor.get("cid")
         execution_id = survivor.get("execution_id")
         identity = (
-            ExecutionIdentity(entry, execution_id)
-            if isinstance(entry, str) and isinstance(execution_id, str)
+            ExecutionIdentity(entry, cid, execution_id)
+            if isinstance(entry, str)
+            and isinstance(cid, str)
+            and isinstance(execution_id, str)
             else None
         )
         registered_at = survivor.get("registered_at")
@@ -1699,9 +1713,7 @@ def _recovery_worker_observations(
                     cast(str | None, survivor.get("parent_worker_id")),
                     cast(int, survivor["pid"]),
                     "running",
-                    registered_at
-                    if isinstance(registered_at, str)
-                    else observed_at,
+                    registered_at if isinstance(registered_at, str) else observed_at,
                     last_observed_at
                     if isinstance(last_observed_at, str)
                     else observed_at,
@@ -1712,7 +1724,7 @@ def _recovery_worker_observations(
 
 
 def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:
-    found: dict[int, tuple[psutil.Process, str | None, str | None]] = {}
+    found: dict[int, tuple[psutil.Process, str | None, str | None, str | None]] = {}
     try:
         for process in psutil.process_iter(["pid"]):
             try:
@@ -1720,8 +1732,8 @@ def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:
                 if marker == run_id or (
                     isinstance(marker, str) and marker.startswith(f"{run_id}:")
                 ):
-                    entry, execution = _marker_identity(run_id, marker)
-                    found[process.pid] = (process, entry, execution)
+                    entry, cid, execution = _marker_identity(run_id, marker)
+                    found[process.pid] = (process, entry, cid, execution)
             except psutil.Error:
                 continue
     except (OSError, psutil.Error) as error:
@@ -1739,10 +1751,11 @@ def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:
     return [
         {
             "entry": found[process.pid][1],
+            "cid": found[process.pid][2],
             "worker_id": f"worker-{process.pid}",
             "parent_worker_id": None,
             "pid": process.pid,
-            "execution_id": found[process.pid][2],
+            "execution_id": found[process.pid][3],
             "state": "running",
             "registered_at": now,
             "last_observed_at": now,
@@ -1751,17 +1764,21 @@ def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:
     ]
 
 
-def _marker_identity(run_id: str, marker: object) -> tuple[str | None, str | None]:
+def _marker_identity(
+    run_id: str, marker: object
+) -> tuple[str | None, str | None, str | None]:
     if not isinstance(marker, str) or not marker.startswith(f"{run_id}:"):
-        return None, None
+        return None, None, None
     parts = marker.removeprefix(f"{run_id}:").split(":")
-    if len(parts) == 2 and re.fullmatch(r"e[0-9]{3}", parts[0]) is not None:
-        digest = parts[1]
+    if (
+        len(parts) == 3
+        and re.fullmatch(r"e[0-9]{3}", parts[0]) is not None
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", parts[1]) is not None
+    ):
+        digest = parts[2]
         if re.fullmatch(r"[0-9a-f]{64}", digest) is not None:
-            return parts[0], f"pyrun-exec/v1:{digest}"
-    if len(parts) == 1 and re.fullmatch(r"[0-9a-f]{64}", parts[0]) is not None:
-        return None, f"pyrun-exec/v1:{parts[0]}"
-    return None, None
+            return parts[0], parts[1], f"pyrun-exec/v2:{digest}"
+    return None, None, None
 
 
 def load_accepted_plan(run_root: Path) -> ReproductionPlan:
@@ -1789,7 +1806,7 @@ def _current_status_projection(status: object, run_root: Path) -> Mapping[str, o
     if not isinstance(status, RunStatus):
         raise ActionError("reproduction.run.invalid", "invalid current run status")
     active_keys = {
-        (item.entry, item.execution_id)
+        (item.entry, item.cid, item.execution_id)
         for item in status.checkpoints
         if item.state == "active" and item.permit_id is not None
     }
@@ -1797,19 +1814,21 @@ def _current_status_projection(status: object, run_root: Path) -> Mapping[str, o
         {
             **asdict(worker),
             "entry": None if identity is None else identity.entry,
+            "cid": None if identity is None else identity.cid,
             "execution_id": None if identity is None else identity.execution_id,
         }
         for identity, worker in status.workers
     ]
     active = [
-        {"entry": item.entry, "execution_id": item.execution_id}
+        {"entry": item.entry, "cid": item.cid, "execution_id": item.execution_id}
         for item in status.checkpoints
-        if (item.entry, item.execution_id) in active_keys
+        if (item.entry, item.cid, item.execution_id) in active_keys
     ]
     timings = [
         {
             "elapsed_seconds": item.elapsed_seconds,
             "entry": item.entry,
+            "cid": item.cid,
             "execution_id": item.execution_id,
             "failure": (
                 None

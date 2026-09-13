@@ -19,6 +19,7 @@ from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     PyrunFile,
     load_pyrun_state,
@@ -62,12 +63,14 @@ class PromotionResult:
 
     run_id: str
     entry: str
+    cid: str
     execution_id: str
     outputs: tuple[str, ...]
 
     def as_dict(self) -> Mapping[str, object]:
         return {
             "entry": self.entry,
+            "cid": self.cid,
             "execution_id": self.execution_id,
             "outputs": list(self.outputs),
             "run_id": self.run_id,
@@ -106,42 +109,51 @@ class _PromotionResolution:
     run_root: Path
     plan: ReproductionPlan
     entry_id: str
+    cid: str
     execution_id: str
     bundle: _StagingBundle
 
 
 def promote_execution(
-    log: LogContext, *, run_id: str, execution_id: str
+    log: LogContext, *, run_id: str, cid: str, execution_id: str
 ) -> PromotionResult:
     """Promote one complete current staging bundle without changing its source."""
 
     run_root = _find_run(log, run_id)
     plan = load_accepted_plan(run_root)
-    bundle = _load_current_bundle(run_root, run_id, execution_id)
+    bundle = _load_current_bundle(run_root, run_id, cid, execution_id)
     entry_id = _required_string(bundle.record, "entry")
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
     with entry_lock(entry):
         outputs = _resolve_outputs(
             _PromotionResolution(
-                project, entry.root, run_root, plan, entry_id, execution_id, bundle
+                project,
+                entry.root,
+                run_root,
+                plan,
+                entry_id,
+                cid,
+                execution_id,
+                bundle,
             )
         )
         marker = _begin_promotion(log, run_id, execution_id, outputs)
         try:
-            _publish_promotion(log, plan, entry_id, execution_id, outputs)
+            _publish_promotion(log, plan, entry_id, cid, execution_id, outputs)
         finally:
             _finish_promotion(log, marker)
     return PromotionResult(
         run_id,
         entry_id,
+        cid,
         execution_id,
         tuple(item.artifact for item in outputs),
     )
 
 
 def _load_current_bundle(
-    run_root: Path, run_id: str, execution_id: str
+    run_root: Path, run_id: str, cid: str, execution_id: str
 ) -> _StagingBundle:
     """Project one complete staged execution from the current SQLite store."""
 
@@ -154,7 +166,9 @@ def _load_current_bundle(
             "reproduction.promotion.execution_missing", "run identity changed"
         )
     matches = [
-        item for item in projection.comparisons if item.execution_id == execution_id
+        item
+        for item in projection.comparisons
+        if item.cid == cid and item.execution_id == execution_id
     ]
     if len(matches) != 1:
         raise ActionError(
@@ -197,6 +211,7 @@ def _load_current_bundle(
             "complete": True,
             "diagnostics": list(comparison.diagnostics),
             "entry": comparison.entry,
+            "cid": comparison.cid,
             "execution_id": comparison.execution_id,
             "outputs": outputs,
             "path": comparison.workspace_path,
@@ -207,13 +222,15 @@ def _load_current_bundle(
 def _resolve_outputs(
     context: _PromotionResolution,
 ) -> tuple[_PromotedOutput, ...]:
-    accepted = accepted_invocation(context.plan, context.entry_id, context.execution_id)
+    accepted = accepted_invocation(
+        context.plan, context.entry_id, context.cid, context.execution_id
+    )
     state = load_pyrun_state(
         context.entry_root / "pyrun.json",
         entry_root=context.entry_root,
         project_root=context.project,
     )
-    execution = state.executions.get(context.execution_id)
+    execution = state.execution(context.cid, context.execution_id)
     if execution is None:
         raise ActionError(
             "reproduction.promotion.execution_changed", "execution is no longer current"
@@ -401,12 +418,13 @@ def _publish_promotion(
     log: LogContext,
     plan: ReproductionPlan,
     entry_id: str,
+    cid: str,
     execution_id: str,
     outputs: Sequence[_PromotedOutput],
 ) -> None:
     project = resolve_project_root(log.root)
     text_candidates, prior_text = _metadata_candidates(
-        log, plan, entry_id, execution_id, outputs
+        log, plan, entry_id, cid, execution_id, outputs
     )
     installed: tuple[_InstalledOutput, ...] = ()
     try:
@@ -459,6 +477,7 @@ def _metadata_candidates(
     log: LogContext,
     plan: ReproductionPlan,
     entry_id: str,
+    cid: str,
     execution_id: str,
     outputs: Sequence[_PromotedOutput],
 ) -> tuple[dict[Path, str], dict[Path, str]]:
@@ -467,8 +486,13 @@ def _metadata_candidates(
     state = load_pyrun_state(
         entry.root / "pyrun.json", entry_root=entry.root, project_root=project
     )
-    execution = state.executions[execution_id]
-    accepted = accepted_invocation(plan, entry_id, execution_id)
+    execution = state.execution(cid, execution_id)
+    if execution is None:
+        raise ActionError(
+            "reproduction.promotion.execution_changed",
+            "execution is no longer current",
+        )
+    accepted = accepted_invocation(plan, entry_id, cid, execution_id)
     if (
         execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
         or execution.observed.as_dict() != accepted.execution.observed.as_dict()
@@ -511,9 +535,17 @@ def _metadata_candidates(
         ),
         execution.exclusive,
     )
-    executions = dict(state.executions)
+    command = state.commands.get(cid)
+    if command is None:
+        raise ActionError(
+            "reproduction.promotion.execution_changed",
+            "command is no longer current",
+        )
+    executions = dict(command.executions)
     executions[execution_id] = candidate_execution
-    candidate_state = PyrunFile(state.path, state.entry_root, executions)
+    commands = dict(state.commands)
+    commands[cid] = PyrunCommand(executions)
+    candidate_state = PyrunFile(state.path, state.entry_root, commands)
     updates = {
         state.path: validated_pyrun_serialization(candidate_state, project_root=project)
     }

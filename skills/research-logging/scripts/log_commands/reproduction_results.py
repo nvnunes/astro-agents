@@ -36,6 +36,7 @@ MAX_RUN_RESULTS = 10_000
 MAX_QUERY_RESULTS = 50
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
+CID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 OUTCOMES = ("matched", "changed", "failed", "comparison_failed", "skipped")
 COMMAND_OUTCOMES = (
     "not_automatic",
@@ -176,6 +177,7 @@ class ArtifactResult:
 
     entry: str
     artifact: str
+    cid: str | None
     execution_id: str | None
     outcome: str
     reason: str | None
@@ -187,6 +189,10 @@ class ArtifactResult:
         _entry(self.entry, "artifact.entry")
         _artifact_path(self.artifact, "artifact.artifact")
         outcome = _choice(self.outcome, OUTCOMES, "artifact.outcome")
+        if (self.cid is None) != (self.execution_id is None):
+            raise ReproductionResultError("artifact has a partial command identity")
+        if self.cid is not None:
+            _cid(self.cid, "artifact.cid")
         if self.execution_id is not None:
             _execution(self.execution_id)
         if outcome in {"matched", "changed"} and self.execution_id is None:
@@ -211,6 +217,7 @@ class ArtifactResult:
                 self.comparison.as_dict() if self.comparison is not None else None
             ),
             "entry": self.entry,
+            "cid": self.cid,
             "execution_id": self.execution_id,
             "outcome": self.outcome,
             "reason": self.reason,
@@ -224,6 +231,7 @@ class CommandResult:
     """One reusable terminal result for an entry-qualified command."""
 
     entry: str
+    cid: str
     execution_id: str
     disposition: str
     source_digest: str
@@ -232,6 +240,7 @@ class CommandResult:
 
     def __post_init__(self) -> None:
         _entry(self.entry, "command.entry")
+        _cid(self.cid, "command.cid")
         _execution(self.execution_id)
         _choice(self.disposition, COMMAND_DISPOSITIONS, "command.disposition")
         _sha256_digest(self.source_digest, "command.source_digest")
@@ -242,6 +251,7 @@ class CommandResult:
         return {
             "disposition": self.disposition,
             "entry": self.entry,
+            "cid": self.cid,
             "execution_id": self.execution_id,
             "recorded_at": self.recorded_at,
             "run_id": self.run_id,
@@ -343,7 +353,6 @@ class ReproductionResults:
 
     def __post_init__(self) -> None:
         _validate_results(self)
-
 
 
 @dataclass(frozen=True)
@@ -472,11 +481,12 @@ def project_current_results(
         if item.execution_id is None:
             currentness[key] = ArtifactCurrentness(True)
             continue
+        assert item.cid is not None
         current_execution = state.output_executions.get(key)
-        if current_execution is not None and current_execution != item.execution_id:
+        execution_key = (item.entry, item.cid, item.execution_id)
+        if current_execution is not None and current_execution != execution_key:
             currentness[key] = ArtifactCurrentness(False, "execution_changed")
             continue
-        execution_key = (item.entry, item.execution_id)
         if current_execution is None and execution_key not in state.last_runs:
             currentness[key] = ArtifactCurrentness(False, "execution_unavailable")
             continue
@@ -631,17 +641,20 @@ def compose_reproduction_summary_projection(
             "Latest completed run remains: "
             + (f"`{latest_run_id}`" if latest_run_id is not None else "none"),
         )
-    return "\n".join(
-        _summary_lines(
-            artifacts,
-            command_outcomes,
-            _SummaryPresentation(
-                "# Reproduction Summary",
-                run_context,
-                latest_run_id is not None,
-            ),
-        )
-    ).rstrip() + "\n"
+    return (
+        "\n".join(
+            _summary_lines(
+                artifacts,
+                command_outcomes,
+                _SummaryPresentation(
+                    "# Reproduction Summary",
+                    run_context,
+                    latest_run_id is not None,
+                ),
+            )
+        ).rstrip()
+        + "\n"
+    )
 
 
 def artifact_summary_counts(
@@ -871,6 +884,7 @@ def _decode_artifact(value: object, index: int) -> ArtifactResult:
     item = _mapping(value, f"artifacts[{index}]")
     fields = {
         "artifact",
+        "cid",
         "comparison",
         "entry",
         "execution_id",
@@ -892,6 +906,10 @@ def _decode_artifact(value: object, index: int) -> ArtifactResult:
         raise ReproductionResultError(f"unsupported artifact reason: {reason!r}")
     raw_execution = item["execution_id"]
     execution_id = None if raw_execution is None else _execution(raw_execution)
+    raw_cid = item["cid"]
+    cid = None if raw_cid is None else _cid(raw_cid, f"artifacts[{index}].cid")
+    if (cid is None) != (execution_id is None):
+        raise ReproductionResultError("artifact has a partial command identity")
     if execution_id is None and outcome in {"matched", "changed"}:
         raise ReproductionResultError("matched or changed artifact needs execution ID")
     comparison = (
@@ -904,6 +922,7 @@ def _decode_artifact(value: object, index: int) -> ArtifactResult:
     return ArtifactResult(
         entry,
         artifact,
+        cid,
         execution_id,
         outcome,
         cast(str | None, reason),
@@ -918,6 +937,7 @@ def _decode_command(value: object, index: int) -> CommandResult:
     if set(item) != {
         "disposition",
         "entry",
+        "cid",
         "execution_id",
         "recorded_at",
         "run_id",
@@ -926,6 +946,7 @@ def _decode_command(value: object, index: int) -> CommandResult:
         raise ReproductionResultError(f"commands[{index}] has incorrect fields")
     return CommandResult(
         _entry(item["entry"], f"commands[{index}].entry"),
+        _cid(item["cid"], f"commands[{index}].cid"),
         _execution(item["execution_id"]),
         _choice(
             item["disposition"],
@@ -946,6 +967,7 @@ def _decode_command_record(value: object, index: int) -> Mapping[str, object]:
         "cwd",
         "details",
         "entry",
+        "cid",
         "execution_id",
         "exclusive",
         "prior_disposition",
@@ -960,6 +982,7 @@ def _decode_command_record(value: object, index: int) -> Mapping[str, object]:
     if set(item) != fields:
         raise ReproductionResultError(f"command_records[{index}] has incorrect fields")
     entry = _entry(item["entry"], f"command_records[{index}].entry")
+    cid = _cid(item["cid"], f"command_records[{index}].cid")
     execution_id = _execution(item["execution_id"])
     for name in (
         "auto_reproduce",
@@ -1030,6 +1053,7 @@ def _decode_command_record(value: object, index: int) -> Mapping[str, object]:
         "cwd": cwd,
         "details": list(cast(Sequence[str], details)),
         "entry": entry,
+        "cid": cid,
         "execution_id": execution_id,
         "exclusive": item["exclusive"],
         "prior_disposition": prior,
@@ -1187,18 +1211,20 @@ def _execution_timings(value: object) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, (list, tuple)) or len(value) > 2_048:
         raise ReproductionResultError("run executions are invalid")
     decoded: list[Mapping[str, object]] = []
-    identities: set[tuple[str, str]] = set()
+    identities: set[tuple[str, str, str]] = set()
     for index, raw in enumerate(value):
         item = _mapping(raw, f"run.executions[{index}]")
         if set(item) != {
             "elapsed_seconds",
             "entry",
+            "cid",
             "execution_id",
             "finished_at",
             "started_at",
         }:
             raise ReproductionResultError("run execution timing fields are invalid")
         entry = _entry(item["entry"], f"run.executions[{index}].entry")
+        cid = _cid(item["cid"], f"run.executions[{index}].cid")
         identity = item["execution_id"]
         if (
             not isinstance(identity, str)
@@ -1220,7 +1246,7 @@ def _execution_timings(value: object) -> tuple[Mapping[str, object], ...]:
             or elapsed < 0
         ):
             raise ReproductionResultError("run execution elapsed time is invalid")
-        key = (entry, identity)
+        key = (entry, cid, identity)
         if key in identities:
             raise ReproductionResultError("run execution timing is duplicated")
         identities.add(key)
@@ -1228,6 +1254,7 @@ def _execution_timings(value: object) -> tuple[Mapping[str, object], ...]:
             {
                 "elapsed_seconds": float(elapsed),
                 "entry": entry,
+                "cid": cid,
                 "execution_id": identity,
                 "finished_at": finished,
                 "started_at": started,
@@ -1250,9 +1277,11 @@ def _validate_results(results: ReproductionResults) -> None:
         raise ReproductionResultError("artifact results are not canonically ordered")
     if len(keys) != len(set(keys)):
         raise ReproductionResultError("artifact result identities are duplicated")
-    command_keys = [(item.entry, item.execution_id) for item in results.commands]
+    command_keys = [
+        (item.entry, item.cid, item.execution_id) for item in results.commands
+    ]
     if command_keys != sorted(
-        command_keys, key=lambda key: (_entry_key(key[0]), key[1])
+        command_keys, key=lambda key: (_entry_key(key[0]), key[1], key[2])
     ):
         raise ReproductionResultError("command results are not canonically ordered")
     if len(command_keys) != len(set(command_keys)):
@@ -1299,9 +1328,14 @@ def _command_records(
         _decode_command_record(item, index) for index, item in enumerate(value)
     )
     keys = [
-        (cast(str, item["entry"]), cast(str, item["execution_id"])) for item in decoded
+        (
+            cast(str, item["entry"]),
+            cast(str, item["cid"]),
+            cast(str, item["execution_id"]),
+        )
+        for item in decoded
     ]
-    if keys != sorted(keys, key=lambda key: (_entry_key(key[0]), key[1])):
+    if keys != sorted(keys, key=lambda key: (_entry_key(key[0]), key[1], key[2])):
         raise ReproductionResultError("run command records are not canonically ordered")
     if len(keys) != len(set(keys)):
         raise ReproductionResultError("run command record identities are duplicated")
@@ -1409,6 +1443,13 @@ def _timestamp(value: object, subject: str) -> str:
 def _entry(value: object, subject: str) -> str:
     text = _string(value, subject)
     if ENTRY_ID_RE.fullmatch(text) is None:
+        raise ReproductionResultError(f"{subject} is invalid")
+    return text
+
+
+def _cid(value: object, subject: str) -> str:
+    text = _string(value, subject)
+    if CID_RE.fullmatch(text) is None:
         raise ReproductionResultError(f"{subject} is invalid")
     return text
 

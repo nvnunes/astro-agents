@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import replace
@@ -24,6 +25,34 @@ HUMAN = importlib.import_module("validation.human_projection")
 PROVENANCE = importlib.import_module("validation.provenance")
 REPORT = importlib.import_module("validation.report")
 COMMANDS = importlib.import_module("validation.commands")
+
+_EVALUATE_MECHANICAL = ENGINE.evaluate_mechanical
+
+
+def _evaluate_current_fixture(request: Any) -> Any:
+    """Add stable CIDs to legacy test prose immediately before evaluation."""
+
+    log_root = Path(request.summary_path).with_suffix("")
+    for entry_root in sorted(
+        path for path in log_root.rglob("entries/*") if path.is_dir()
+    ):
+        counts: dict[str, int] = {}
+        for document in sorted(entry_root.glob("*.md")):
+            text = document.read_text(encoding="utf-8")
+
+            def add_cid(match: re.Match[str]) -> str:
+                tail = text[match.end() : text.find("\n", match.end())]
+                script = re.search(r"scripts/([A-Za-z0-9_-]+)\.py", tail)
+                stem = script.group(1) if script is not None else "command"
+                counts[stem] = counts.get(stem, 0) + 1
+                cid = stem if counts[stem] == 1 else f"{stem}-{counts[stem]}"
+                separator = "" if tail.lstrip().startswith("--") else "-- "
+                return f"./pyrun --cid {cid} {separator}"
+
+            current = re.sub(r"\./pyrun (?![^\n]*--cid\b)", add_cid, text)
+            if current != text:
+                document.write_text(current, encoding="utf-8")
+    return _EVALUATE_MECHANICAL(request)
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -217,14 +246,14 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
     state = PYRUN_STATE.PyrunFile(
         entry / PYRUN_STATE.PYRUN_FILENAME,
         entry,
-        {identity: execution},
+        {"model": PYRUN_STATE.PyrunCommand({identity: execution})},
     )
     write(entry / PYRUN_STATE.PYRUN_FILENAME, state.serialized())
     return identity
 
 
 def _evaluate(summary: Path) -> Any:
-    evaluation = ENGINE.evaluate_mechanical(
+    evaluation = _evaluate_current_fixture(
         ENGINE.EvaluationRequest(summary, "2026-08-29")
     )
     return SimpleNamespace(
@@ -396,7 +425,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "./pyrun scripts/model.py", "python scripts/model.py"
                 ),
             )
-            result = ENGINE.evaluate_mechanical(
+            result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -433,12 +462,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     else original(path, state)
                 ),
             ):
-                incomplete = ENGINE.evaluate_mechanical(request)
+                incomplete = _evaluate_current_fixture(request)
             self.assertEqual(
                 incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
             )
             self.assertEqual(
-                ENGINE.evaluate_mechanical(request).record.completion,
+                _evaluate_current_fixture(request).record.completion,
                 RESULTS.CompletionState.COMPLETE_CLEAR,
             )
 
@@ -465,12 +494,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     outcome="unavailable",
                 ),
             ):
-                incomplete = ENGINE.evaluate_mechanical(request)
+                incomplete = _evaluate_current_fixture(request)
             self.assertEqual(
                 incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
             )
             self.assertEqual(
-                ENGINE.evaluate_mechanical(request).record.completion,
+                _evaluate_current_fixture(request).record.completion,
                 RESULTS.CompletionState.COMPLETE_CLEAR,
             )
 
@@ -508,9 +537,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             state = PYRUN_STATE.load_pyrun_state(
                 path, entry_root=entry, project_root=root
             )
-            changed = dict(state.executions)
+            changed = dict(state.commands["model"].executions)
             changed[identity] = replace(changed[identity], auto_reproduce=False)
-            write(path, PYRUN_STATE.PyrunFile(path, entry, changed).serialized())
+            write(
+                path,
+                PYRUN_STATE.PyrunFile(
+                    path, entry, {"model": PYRUN_STATE.PyrunCommand(changed)}
+                ).serialized(),
+            )
 
             evaluation = _evaluate(summary)
 
@@ -1454,9 +1488,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry,
                 entry.read_text().replace(
                     "./pyrun scripts/model.py --input-catalog '<catalog>' ",
-                    "./pyrun scripts/preprocess.py --input-data '<catalog>' "
-                    "--output-data '<intermediate>'\n"
-                    "./pyrun scripts/model.py --input-data '<intermediate>' ",
+                    "./pyrun --cid preprocess -- scripts/preprocess.py "
+                    "--input-data '<catalog>' --output-data '<intermediate>'\n"
+                    "```\n\n```bash\n"
+                    "./pyrun --cid model -- scripts/model.py "
+                    "--input-data '<intermediate>' ",
                 ),
             )
             support_path = entry_root / "pyrun-outputs.json"
@@ -1516,8 +1552,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 complete_document.replace(
-                    "./pyrun scripts/preprocess.py --input-data '<catalog>' "
-                    "--output-data '<intermediate>'\n",
+                    "./pyrun --cid preprocess -- scripts/preprocess.py "
+                    "--input-data '<catalog>' --output-data '<intermediate>'\n"
+                    "```\n\n```bash\n",
                     "",
                 ),
             )
@@ -1971,7 +2008,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             other_state = PYRUN_STATE.PyrunFile(
                 other_entry / PYRUN_STATE.PYRUN_FILENAME,
                 other_entry,
-                {identity: execution},
+                {"build": PYRUN_STATE.PyrunCommand({identity: execution})},
             )
             write(
                 other_state.path,
@@ -2326,7 +2363,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             command = (
                 "## Trial\n\n"
                 "`Steps:`\n\n"
-                "```bash\n./pyrun scripts/run.py --output-data data/result.csv\n```\n\n"
+                "```bash\n./pyrun --cid run -- scripts/run.py "
+                "--output-data data/result.csv\n```\n\n"
                 "`Results:`\n\nDone.\n"
             )
             write(first, command)
@@ -3727,7 +3765,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "_observe_script_identity",
                 wraps=ENGINE._observe_script_identity,
             ) as observe:
-                result = ENGINE.evaluate_mechanical(
+                result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
                         "2026-08-29",
@@ -3755,10 +3793,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
-            scoped = ENGINE.evaluate_mechanical(
+            scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -3790,8 +3828,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, _ = _log(Path(directory))
             request = ENGINE.EvaluationRequest(summary, "2026-08-29")
             with mock.patch("validation.engine.time.perf_counter", return_value=1.0):
-                first = ENGINE.evaluate_mechanical(request)
-                second = ENGINE.evaluate_mechanical(request)
+                first = _evaluate_current_fixture(request)
+                second = _evaluate_current_fixture(request)
             first_projection = HUMAN.project_findings(
                 first.record, HUMAN.load_report_context(summary)
             )
@@ -3900,7 +3938,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n",
             )
 
-            result = ENGINE.evaluate_mechanical(
+            result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -3988,7 +4026,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             # recorded input fingerprint after its support record was written.
             write(producer_root / "data/catalog.csv", "id\n2\n")
 
-            result = ENGINE.evaluate_mechanical(
+            result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -4060,10 +4098,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
             write(summary, summary.read_text() + "\n" + "\n".join(links) + "\n")
 
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
-            scoped = ENGINE.evaluate_mechanical(
+            scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -4190,10 +4228,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
             )
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
-            scoped = ENGINE.evaluate_mechanical(
+            scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -4336,10 +4374,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Fourth](study/entries/2026-08-30-e004-fourth/e004.md)\n"
                 "- [Consumer](study/entries/2026-08-31-e002-consumer/e002.md)\n",
             )
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
-            scoped = ENGINE.evaluate_mechanical(
+            scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -4476,10 +4514,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
                 "- [Later](study/entries/2026-08-29-e001-study/e001b.md)\n",
             )
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
-            scoped = ENGINE.evaluate_mechanical(
+            scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
                     "2026-08-29",
@@ -4619,7 +4657,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
                 "- [Unrelated](study/entries/2026-08-31-e003-unrelated/e003.md)\n",
             )
-            full = ENGINE.evaluate_mechanical(
+            full = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
             with (
@@ -4647,7 +4685,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     ENGINE, "_entry_presentations", wraps=ENGINE._entry_presentations
                 ) as presentations,
             ):
-                result = ENGINE.evaluate_mechanical(
+                result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
                         "2026-08-29",
@@ -4788,7 +4826,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         material.resolve().as_posix(), index.rejected_candidates
                     )
 
-                result = ENGINE.evaluate_mechanical(
+                result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
                         "2026-08-29",
@@ -4818,7 +4856,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
 
-            result = ENGINE.evaluate_mechanical(
+            result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(summary, "2026-08-29")
             )
 

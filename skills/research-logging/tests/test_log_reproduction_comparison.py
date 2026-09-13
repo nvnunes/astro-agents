@@ -55,10 +55,12 @@ class ReproductionComparisonTests(unittest.TestCase):
             ):
                 path.mkdir(exist_ok=True)
             execution = plan.executions[0]
+            cid = str(execution["cid"])
             identity = str(execution["execution_id"])
             private = (
                 workspace.staging_root
                 / entry.id
+                / cid
                 / identity.rsplit(":", 1)[-1]
                 / entry.root.relative_to(project)
                 / "data"
@@ -68,9 +70,7 @@ class ReproductionComparisonTests(unittest.TestCase):
             private.write_text("output-00\n", encoding="utf-8")
             retained = entry.root / "data" / "output-00.txt"
             retained.write_text("changed after acceptance\n", encoding="utf-8")
-            attempt = current_execution_attempts(
-                fixture.log, plan, workspace
-            )[0]
+            attempt = current_execution_attempts(fixture.log, plan, workspace)[0]
             comparison = compare_current_execution_outputs(
                 fixture.log,
                 plan,
@@ -88,7 +88,11 @@ class ReproductionComparisonTests(unittest.TestCase):
 
     def test_empty_context_has_no_live_comparison_fallback(self) -> None:
         comparison = accepted_comparison(
-            accepted_plan(), "e001", "pyrun-exec/v1:" + "0" * 64, "data/out"
+            accepted_plan(),
+            "e001",
+            "fixture",
+            "pyrun-exec/v2:" + "0" * 64,
+            "data/out",
         )
         self.assertIsNone(comparison)
 
@@ -126,14 +130,14 @@ class ReproductionComparisonTests(unittest.TestCase):
             # Both present and regenerated values agree, but neither is the
             # accepted output observation frozen in the plan.
             output.write_text("replaced\n", encoding="utf-8")
-            regenerated = _private_output(workspace, entry, identity, output)
+            regenerated = _private_output(workspace, entry, "build", identity, output)
             regenerated.parent.mkdir(parents=True, exist_ok=True)
             regenerated.write_text("replaced\n", encoding="utf-8")
             comparison = compare_current_execution_outputs(
                 fixture.log,
                 plan,
                 workspace,
-                _current_attempt(entry.id, identity),
+                _current_attempt(entry.id, "build", identity),
                 recorded_at="2030-01-01T00:01:00Z",
             )
 
@@ -153,10 +157,10 @@ class ReproductionComparisonTests(unittest.TestCase):
             )
             run_root, workspace = _current_workspace(fixture, entry, plan)
             _start_and_finish(run_root, plan, 0)
-            regenerated = _private_output(workspace, entry, identity, output)
+            regenerated = _private_output(workspace, entry, "build", identity, output)
             regenerated.parent.mkdir(parents=True, exist_ok=True)
             regenerated.write_text("stable\nruntime 2\n", encoding="utf-8")
-            attempt = _current_attempt(entry.id, identity)
+            attempt = _current_attempt(entry.id, "build", identity)
 
             evidence_match = compare_current_execution_outputs(
                 fixture.log,
@@ -178,7 +182,7 @@ class ReproductionComparisonTests(unittest.TestCase):
             )
             _start_and_finish(second_root, plan, 0)
             second_regenerated = _private_output(
-                second_workspace, entry, identity, output
+                second_workspace, entry, "build", identity, output
             )
             second_regenerated.parent.mkdir(parents=True, exist_ok=True)
             second_regenerated.write_text("stable\nruntime 2\n", encoding="utf-8")
@@ -186,7 +190,7 @@ class ReproductionComparisonTests(unittest.TestCase):
                 fixture.log,
                 plan,
                 second_workspace,
-                _current_attempt(entry.id, identity),
+                _current_attempt(entry.id, "build", identity),
                 recorded_at="2030-01-01T00:01:00Z",
             )
             self.assertFalse(replaced.matched)
@@ -305,21 +309,24 @@ def _current_workspace(
 def _private_output(
     workspace: ReproductionWorkspace,
     entry: EntryContext,
+    cid: str,
     identity: str,
     output: Path,
 ) -> Path:
     return (
         workspace.staging_root
         / entry.id
+        / cid
         / identity.rsplit(":", 1)[-1]
         / entry.root.resolve().relative_to(workspace.source_project.resolve())
         / output.resolve().relative_to(entry.root.resolve())
     )
 
 
-def _current_attempt(entry: str, identity: str) -> ExecutionAttempt:
+def _current_attempt(entry: str, cid: str, identity: str) -> ExecutionAttempt:
     checkpoint = ExecutionCheckpoint(
         entry,
+        cid,
         identity,
         "succeeded",
         "state.sqlite",
@@ -328,6 +335,7 @@ def _current_attempt(entry: str, identity: str) -> ExecutionAttempt:
     )
     return ExecutionAttempt(
         entry,
+        cid,
         identity,
         0,
         False,

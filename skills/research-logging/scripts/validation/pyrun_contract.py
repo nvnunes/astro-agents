@@ -20,6 +20,7 @@ PYRUN_ROLE_OPTIONS = {
     "--other-parameters": "ordinary",
 }
 PYRUN_ENV_OPTION = "--env"
+PYRUN_CID_OPTION = "--cid"
 PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
 PYRUN_EXCLUSIVE_OPTION = "--exclusive"
 PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
@@ -49,6 +50,7 @@ class PyrunLayout:
     """The script, parameters, captures, and material-role declarations."""
 
     script_index: int
+    cid: str
     script: str
     script_arguments: tuple[str, ...]
     parameters: tuple[str, ...]
@@ -65,6 +67,7 @@ class _RunnerState:
     captures: list[tuple[str, str]] = field(default_factory=list)
     declarations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     environment: dict[str, str] = field(default_factory=dict)
+    cid: str | None = None
     signature_prefix: list[str] = field(default_factory=list)
     recipe_prefix: list[str] = field(default_factory=list)
     auto_reproduce: bool = True
@@ -87,6 +90,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         | PYRUN_ROLE_OPTIONS.keys()
         | {
             PYRUN_ENV_OPTION,
+            PYRUN_CID_OPTION,
             PYRUN_DISABLE_AUTO_REPRODUCE_OPTION,
             PYRUN_EXCLUSIVE_OPTION,
         }
@@ -105,7 +109,8 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
             break
         index = _consume_runner_option(arguments, index, state)
     if (
-        state.captures
+        state.cid is not None
+        or state.captures
         or state.declarations
         or state.environment
         or not state.auto_reproduce
@@ -124,6 +129,8 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
         if state.captures:
             state.recipe_prefix.append("--")
         index += 1
+    if state.cid is None:
+        raise PyrunContractError("missing --cid declaration")
     if index >= len(arguments):
         raise PyrunContractError("missing script")
     script_arguments = tuple(arguments[index + 1 :])
@@ -134,6 +141,7 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
     )
     return PyrunLayout(
         index,
+        state.cid,
         arguments[index],
         script_arguments,
         tuple((*state.signature_prefix, *script_arguments)),
@@ -168,6 +176,12 @@ def _consume_runner_option(
         if name in state.environment:
             raise PyrunContractError(f"duplicate --env declaration for {name}")
         state.environment[name] = value
+    elif option == PYRUN_CID_OPTION:
+        if state.cid is not None:
+            raise PyrunContractError("duplicate --cid declaration")
+        if _OPTION_SELECTOR_RE.fullmatch(target) is None:
+            raise PyrunContractError("--cid requires a valid command ID")
+        state.cid = target
     elif option in PYRUN_CAPTURE_STREAMS:
         state.captures.append((option, target))
         state.signature_prefix.extend((option, target))

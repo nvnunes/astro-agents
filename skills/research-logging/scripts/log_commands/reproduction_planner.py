@@ -59,7 +59,7 @@ MAX_GRAPH_DEPTH = 64
 MAX_BOUNDARIES = 10_000
 MAX_FAILURES = 10_000
 RESULT_MAX_BYTES = 64 * 1024 * 1024
-ExecutionKey = tuple[str, str]
+ExecutionKey = tuple[str, str, str]
 SelectionPolicy = Literal["incremental", "recheck"]
 INCREMENTAL_SELECTION: SelectionPolicy = "incremental"
 RECHECK_SELECTION: SelectionPolicy = "recheck"
@@ -118,6 +118,7 @@ class _EntryState:
 @dataclass(frozen=True)
 class _Owner:
     entry: _EntryState
+    cid: str
     execution_id: str
     execution: PyrunExecution
     output: str
@@ -128,7 +129,7 @@ class _Owner:
     def key(self) -> ExecutionKey:
         """Return the entry-qualified identity of this physical execution."""
 
-        return self.entry.context.id, self.execution_id
+        return self.entry.context.id, self.cid, self.execution_id
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,7 @@ class _Failure:
     execution_id: str | None
     reason: str
     dependencies: tuple[str, ...] = ()
+    cid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,8 +200,8 @@ class ReproductionStateProjection:
     """Current evidence reachability and execution timing without validation."""
 
     reachable: frozenset[tuple[str, str]]
-    output_executions: Mapping[tuple[str, str], str]
-    last_runs: Mapping[tuple[str, str], str | None]
+    output_executions: Mapping[tuple[str, str], ExecutionKey]
+    last_runs: Mapping[ExecutionKey, str | None]
     comparison_definitions: Mapping[tuple[str, str], str | None] = field(
         default_factory=dict
     )
@@ -215,8 +217,8 @@ class _ReachabilityProjector:
     entries: Mapping[str, _EntryState]
     owners: Mapping[str, tuple[_Owner, ...]]
     reachable: set[tuple[str, str]] = field(default_factory=set)
-    output_executions: dict[tuple[str, str], str] = field(default_factory=dict)
-    last_runs: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    output_executions: dict[tuple[str, str], ExecutionKey] = field(default_factory=dict)
+    last_runs: dict[ExecutionKey, str | None] = field(default_factory=dict)
     comparison_definitions: dict[tuple[str, str], str | None] = field(
         default_factory=dict
     )
@@ -230,7 +232,7 @@ class _ReachabilityProjector:
         for output, _ in owner.execution.recipe.outputs:
             artifact_key = (owner.entry.context.id, output)
             self.reachable.add(artifact_key)
-            self.output_executions[artifact_key] = owner.execution_id
+            self.output_executions[artifact_key] = owner.key
             self.comparison_definitions[artifact_key] = _comparison_identity(
                 owner, output, self.project_root
             )
@@ -259,10 +261,8 @@ class _ReachabilityProjector:
         self.reachable.add((evidence_entry.context.id, evidence_artifact))
         if len(candidates) == 1:
             evidence_key = (evidence_entry.context.id, evidence_artifact)
-            self.output_executions[evidence_key] = candidates[0].execution_id
-            self.last_runs[(evidence_entry.context.id, candidates[0].execution_id)] = (
-                candidates[0].execution.last_run_at
-            )
+            self.output_executions[evidence_key] = candidates[0].key
+            self.last_runs[candidates[0].key] = candidates[0].execution.last_run_at
             self.execution(candidates[0])
 
     def result(self) -> ReproductionStateProjection:
@@ -490,7 +490,7 @@ def project_reproduction_command_inventory(
                 str(getattr(error, "code", "reproduction.metadata.invalid")),
                 str(error),
             ) from error
-        executions = list(state.executions.values())
+        executions = [item[2] for item in state.execution_items()]
         total += len(executions)
         policy_skipped += sum(
             execution.requires_reproduction and not execution.auto_reproduce
@@ -538,12 +538,13 @@ def project_reproduction_command_details(
                 str(error),
             ) from error
         cwd = context.root.resolve().relative_to(project_root).as_posix()
-        for execution_id, execution in sorted(state.executions.items()):
+        for cid, execution_id, execution in state.execution_items():
             details.append(
                 {
                     "auto_reproduce": execution.auto_reproduce,
                     "cwd": cwd,
                     "entry": context.id,
+                    "cid": cid,
                     "execution_id": execution_id,
                     "exclusive": execution.exclusive,
                     "recipe": execution.recipe.as_dict(),
@@ -632,7 +633,7 @@ def _owner_index(
 ) -> dict[str, tuple[_Owner, ...]]:
     found: dict[str, list[_Owner]] = defaultdict(list)
     for state in entries.values():
-        for identity, execution in state.pyrun.executions.items():
+        for cid, identity, execution in state.pyrun.execution_items():
             for output, kind in execution.recipe.outputs:
                 target = (
                     output_target_path(
@@ -642,7 +643,7 @@ def _owner_index(
                     .as_posix()
                 )
                 found[target].append(
-                    _Owner(state, identity, execution, output, target, kind)
+                    _Owner(state, cid, identity, execution, output, target, kind)
                 )
     return {
         target: tuple(
@@ -757,6 +758,7 @@ def _trace_out_of_scope_resource(
             execution_id,
             "skipped",
             "outside_entry",
+            candidates[0].cid if len(candidates) == 1 else None,
         )
 
 
@@ -806,6 +808,7 @@ def _stop_at_nonautomatic_policy(
             producer.execution_id,
             "skipped",
             "non_automatic",
+            producer.cid,
         )
     return True
 
@@ -824,7 +827,7 @@ def _trace_execution(
     for output, _ in owner.execution.recipe.outputs:
         state.cases.setdefault(
             (owner.entry.context.id, output),
-            _case(owner.entry.context.id, output, identity, "run", None),
+            _case(owner.entry.context.id, output, identity, "run", None, owner.cid),
         )
     if not trace_inputs:
         state.visited.add(key)
@@ -850,6 +853,7 @@ def _trace_execution(
                     identity,
                     "missing_input",
                     (name,),
+                    owner.cid,
                 ),
             )
             state.blocked.add(key)
@@ -881,8 +885,12 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         project_root=state.project_root,
     )
     failures: list[tuple[str, str]] = []
-    failure = _record_source_material(
-        state, owner, script, "script", execution.observed.script
+    failure = (
+        ("script", "missing_observation")
+        if execution.observed.script is None
+        else _record_source_material(
+            state, owner, script, "script", execution.observed.script
+        )
     )
     if failure is not None:
         failures.append(failure)
@@ -927,6 +935,7 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
                     owner.execution_id,
                     reason,
                     details,
+                    owner.cid,
                 ),
             )
 
@@ -1085,6 +1094,7 @@ def _record_boundary_failure(
                 consumer.execution_id,
                 reason,
                 details,
+                consumer.cid,
             ),
         )
 
@@ -1129,6 +1139,7 @@ def _record_failure(state: _PlanningState, failure: _Failure) -> None:
         failure.execution_id,
         "failed",
         failure.reason,
+        failure.cid,
     )
     if len(state.failures) > MAX_FAILURES:
         raise ActionError("reproduction.plan.resource_limit", "failure limit exceeded")
@@ -1147,6 +1158,7 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
                     owner.execution_id,
                     "dependency_cycle",
                     tuple(_reference(value) for value in sorted(state.cycle_members)),
+                    owner.cid,
                 ),
             )
     changed = True
@@ -1175,6 +1187,7 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
                         owner.execution_id,
                         "skipped",
                         "dependency_failed",
+                        owner.cid,
                     )
                 changed = True
 
@@ -1315,6 +1328,7 @@ def _exclude_entry_execution(
                 owner.execution_id,
                 "validation_blocked",
                 finding_ids,
+                owner.cid,
             ),
         )
 
@@ -1346,7 +1360,7 @@ def _apply_execution_admission(
     if len(matches) != 1:
         raise ActionError(
             "reproduction.validation.scope_unresolved",
-            f"execution has {len(matches)} projected batch matches: {key[1]}",
+            f"execution has {len(matches)} projected batch matches: {key[2]}",
         )
     group_id = next(iter(matches))
     batch_key = (owner.entry.context.id, group_id)
@@ -1365,6 +1379,7 @@ def _apply_execution_admission(
                 owner.execution_id,
                 "validation_blocked",
                 blockers,
+                owner.cid,
             ),
         )
 
@@ -1493,6 +1508,7 @@ def _project_current_cases(state: _PlanningState, current: set[ExecutionKey]) ->
                 owner.execution_id,
                 "current",
                 None,
+                owner.cid,
             )
 
 
@@ -1582,6 +1598,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
                 for value in sorted(state.dependencies.get(key, set()))
             ],
             "entry": owner.entry.context.id,
+            "cid": owner.cid,
             "execution": canonical_execution_source_digest(owner.execution.as_dict()),
             "execution_id": owner.execution_id,
             "materials": materials,
@@ -1609,6 +1626,7 @@ def _project_plan(
                     for value in state.dependencies.get(key, set()) & ordered_set
                 ),
                 "entry": owner.entry.context.id,
+                "cid": owner.cid,
                 "execution_id": owner.execution_id,
                 "order": order_index[key],
                 "outputs": sorted(
@@ -1630,7 +1648,11 @@ def _project_plan(
         key=lambda value: (str(value["role"]), str(value["identity"])),
     )
     command_details = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
+        (
+            cast(str, item["entry"]),
+            cast(str, item["cid"]),
+            cast(str, item["execution_id"]),
+        ): item
         for item in _project_command_details(state)
     }
     commands = tuple(
@@ -1690,7 +1712,7 @@ def _project_plan(
             "materials": materials,
             "evidence_only": _project_evidence_only_context(state, comparisons),
             "comparisons": comparisons,
-            "result_schema": "research-log-reproduction-result/10",
+            "result_schema": "research-log-reproduction-result/11",
             "schema": "research-log-reproduction-comparison-context/1",
         },
         cases,
@@ -1711,12 +1733,13 @@ def _project_command_details(
     for entry_id in state.selected_entries:
         current = state.entries[entry_id]
         cwd = current.context.root.resolve().relative_to(state.project_root).as_posix()
-        for execution_id, execution in sorted(current.pyrun.executions.items()):
+        for cid, execution_id, execution in current.pyrun.execution_items():
             reasons = sorted(
                 {
                     cast(str, case["reason"])
                     for case in state.cases.values()
                     if case.get("entry") == entry_id
+                    and case.get("cid") == cid
                     and case.get("execution_id") == execution_id
                     and isinstance(case.get("reason"), str)
                 }
@@ -1729,6 +1752,7 @@ def _project_command_details(
                     "entry_root": current.context.root.as_posix(),
                     "project_root": state.project_root.as_posix(),
                     "entry": entry_id,
+                    "cid": cid,
                     "execution_id": execution_id,
                     "exclusive": execution.exclusive,
                     "queued": execution.auto_reproduce or state.include_all,
@@ -1758,6 +1782,7 @@ def _project_comparisons(
     return [
         {
             "entry": owner.entry.context.id,
+            "cid": owner.cid,
             "execution_id": owner.execution_id,
             "output": output,
             "evidence_records": (
@@ -2015,11 +2040,13 @@ def _case(
     execution_id: str | None,
     disposition: str,
     reason: str | None,
+    cid: str | None = None,
 ) -> dict[str, object]:
     return {
         "artifact": artifact,
         "disposition": disposition,
         "entry": entry,
+        "cid": cid,
         "execution_id": execution_id,
         "reason": reason,
     }
@@ -2112,4 +2139,4 @@ def _entry_order(value: str) -> int:
 def _reference(key: ExecutionKey) -> str:
     """Return an unambiguous run-local dependency reference."""
 
-    return f"{key[0]}:{key[1]}"
+    return f"{key[0]}:{key[1]}:{key[2]}"

@@ -52,6 +52,7 @@ from validation.operation_state import operation_lock
 from validation.pyrun_state import (
     ExecutionRecipe,
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     PyrunFile,
     execution_id,
@@ -278,10 +279,10 @@ class _Fixture:
         document = entry.root / f"{entry.id}.md"
         if not document.exists():
             document.write_text("# Entry\n", encoding="utf-8")
-        command = "./pyrun"
+        command = f"./pyrun --cid {name}"
         if not auto_reproduce:
-            command += " --auto-reproduce=false --"
-        command += " scripts/{name}.py".format(name=name)
+            command += " --auto-reproduce=false"
+        command += " -- scripts/{name}.py".format(name=name)
         command += "".join(
             f" --input-data '<{input_name}>'" for input_name in sorted(inputs)
         )
@@ -303,7 +304,12 @@ class _Fixture:
         state = PyrunFile(
             entry.root / "pyrun.json",
             entry.root,
-            dict(executions),
+            {
+                execution.recipe.script.rsplit("/", 1)[-1].removesuffix(
+                    ".py"
+                ): PyrunCommand({identity: execution})
+                for identity, execution in executions
+            },
         )
         (entry.root / "pyrun.json").write_text(state.serialized(), encoding="utf-8")
 
@@ -392,6 +398,7 @@ def _seed_command_results(
     commands = tuple(
         CommandResult(
             cast(str, value["entry"]),
+            cast(str, value["cid"]),
             cast(str, value["execution_id"]),
             disposition,
             cast(str, value["source_digest"]),
@@ -442,13 +449,17 @@ def _seed_command_results(
             run,
             (),
             commands,
-            tuple((item.entry, item.execution_id) for item in commands),
+            tuple((item.entry, item.cid, item.execution_id) for item in commands),
             (),
         ),
     )
     if disposition == "succeeded":
         selected = {
-            (cast(str, item["entry"]), cast(str, item["execution_id"]))
+            (
+                cast(str, item["entry"]),
+                cast(str, item["cid"]),
+                cast(str, item["execution_id"]),
+            )
             for item in plan.executions
         }
         for state_path in sorted((fixture.log_root / "entries").glob("*/pyrun.json")):
@@ -459,16 +470,21 @@ def _seed_command_results(
                 entry_root=entry_root,
                 project_root=fixture.root,
             )
-            executions = {
-                identity: (
-                    replace(execution, requires_reproduction=False)
-                    if (entry_id, identity) in selected
-                    else execution
+            commands = {
+                cid: PyrunCommand(
+                    {
+                        identity: (
+                            replace(execution, requires_reproduction=False)
+                            if (entry_id, cid, identity) in selected
+                            else execution
+                        )
+                        for identity, execution in command.executions.items()
+                    }
                 )
-                for identity, execution in state.executions.items()
+                for cid, command in state.commands.items()
             }
             state_path.write_text(
-                PyrunFile(state_path, entry_root, executions).serialized(),
+                PyrunFile(state_path, entry_root, commands).serialized(),
                 encoding="utf-8",
             )
 
@@ -607,6 +623,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             def owner(identity: str, output: str):
                 value = mock.Mock()
                 value.entry.context = entry
+                value.cid = f"{identity}-command"
                 value.execution_id = identity
                 value.execution.recipe.outputs = ((output, "file"),)
                 return value
@@ -617,9 +634,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             state = mock.Mock()
             state.project_root = fixture.root
             state.selected = {
-                ("e001", "blocked"): blocked,
-                ("e001", "dependent"): dependent,
-                ("e001", "independent"): independent,
+                ("e001", "blocked-command", "blocked"): blocked,
+                ("e001", "dependent-command", "dependent"): dependent,
+                ("e001", "independent-command", "independent"): independent,
             }
             state.blocked = set()
             state.admitted_batches = set()
@@ -627,7 +644,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             state.failures = {}
             state.cases = {}
             state.dependencies = {
-                ("e001", "dependent"): {("e001", "blocked")},
+                ("e001", "dependent-command", "dependent"): {
+                    ("e001", "blocked-command", "blocked")
+                },
             }
             state.cycle_members = set()
             projection = {
@@ -710,7 +729,10 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             self.assertEqual(
                 state.blocked,
-                {("e001", "blocked"), ("e001", "dependent")},
+                {
+                    ("e001", "blocked-command", "blocked"),
+                    ("e001", "dependent-command", "dependent"),
+                },
             )
             self.assertIn(("e001", "independent-chain"), state.admitted_batches)
             self.assertEqual(
@@ -727,6 +749,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             def owner(entry: EntryContext, identity: str, output: str):
                 value = mock.Mock()
                 value.entry.context = entry
+                value.cid = f"{identity}-command"
                 value.execution_id = identity
                 value.execution.recipe.outputs = ((output, "file"),)
                 return value
@@ -736,8 +759,8 @@ class ReproductionPlanningTests(unittest.TestCase):
             state = mock.Mock()
             state.project_root = fixture.root
             state.selected = {
-                ("e001", "blocked"): blocked,
-                ("e002", "independent"): independent,
+                ("e001", "blocked-command", "blocked"): blocked,
+                ("e002", "independent-command", "independent"): independent,
             }
             state.blocked = set()
             state.admitted_batches = set()
@@ -787,7 +810,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             _apply_validation_admission(state, _stored_admission(projection))
 
-            self.assertEqual(state.blocked, {("e001", "blocked")})
+            self.assertEqual(state.blocked, {("e001", "blocked-command", "blocked")})
             self.assertEqual(state.admitted_batches, {("e002", "independent-chain")})
             self.assertEqual(
                 state.excluded_batches,
@@ -802,6 +825,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             def owner(identity: str, output: str):
                 value = mock.Mock()
                 value.entry.context = entry
+                value.cid = f"{identity}-command"
                 value.execution_id = identity
                 value.execution.recipe.outputs = ((output, "file"),)
                 return value
@@ -811,8 +835,8 @@ class ReproductionPlanningTests(unittest.TestCase):
             state = mock.Mock()
             state.project_root = fixture.root
             state.selected = {
-                ("e001", "admitted"): admitted,
-                ("e001", "blocked"): blocked,
+                ("e001", "admitted-command", "admitted"): admitted,
+                ("e001", "blocked-command", "blocked"): blocked,
             }
             state.blocked = set()
             state.admitted_batches = set()
@@ -867,7 +891,7 @@ class ReproductionPlanningTests(unittest.TestCase):
 
             _apply_validation_admission(state, _stored_admission(projection))
 
-            self.assertEqual(state.blocked, {("e001", "blocked")})
+            self.assertEqual(state.blocked, {("e001", "blocked-command", "blocked")})
             self.assertEqual(state.admitted_batches, {("e001", "admitted-chain")})
             self.assertEqual(
                 state.excluded_batches,
@@ -880,13 +904,14 @@ class ReproductionPlanningTests(unittest.TestCase):
             entry = fixture.entry(1)
             owner = mock.Mock()
             owner.entry.context = entry
+            owner.cid = "selected-command"
             owner.execution_id = "selected"
             owner.execution.recipe.outputs = (("data/result.csv", "file"),)
             target = (entry.root / "data" / "result.csv").as_posix()
             final = (entry.root / "data" / "final.csv").as_posix()
             state = mock.Mock()
             state.project_root = fixture.root
-            state.selected = {("e001", "selected"): owner}
+            state.selected = {("e001", "selected-command", "selected"): owner}
             state.blocked = set()
             state.admitted_batches = set()
             state.excluded_batches = {}
@@ -977,7 +1002,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 with self.subTest(label=label):
                     state = mock.Mock()
                     state.project_root = fixture.root
-                    state.selected = {("e001", "selected"): owner}
+                    state.selected = {("e001", "selected-command", "selected"): owner}
                     state.blocked = set()
                     state.admitted_batches = set()
                     state.excluded_batches = {}
@@ -1151,7 +1176,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 document.read_text(encoding="utf-8")
                 + "\n## Produce bundle\n\n`Background:`\n\nFixture command.\n\n"
                 "`Steps:`\n\n```bash\n"
-                "./pyrun scripts/produce.py --input-data '<raw>' "
+                "./pyrun --cid produce -- scripts/produce.py --input-data '<raw>' "
                 "--output-data '<bundle>'\n```\n\n`Results:`\n\nRecorded.\n",
                 encoding="utf-8",
             )
@@ -1168,7 +1193,7 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             self.assertEqual(
                 plan.executions[1]["depends_on"],
-                [f"{entry.id}:{producer[0]}"],
+                [f"{entry.id}:produce:{producer[0]}"],
             )
 
     def test_entry_target_uses_generated_cross_entry_input_as_boundary(self) -> None:
@@ -1367,7 +1392,9 @@ class ReproductionPlanningTests(unittest.TestCase):
             self.assertFalse(rechecked_commands[current[0]]["queued"])
             accounting = project_command_selection(recheck, None)
             self.assertEqual(accounting.not_automatic, 1)
-            self.assertEqual(accounting.run_keys, {(entry.id, upstream[0])})
+            self.assertEqual(
+                accounting.run_keys, {(entry.id, "produce-raw", upstream[0])}
+            )
             self.assertEqual(accounting.total, 2)
 
     def test_cycle_fails_its_outputs_but_independent_execution_remains(self) -> None:
@@ -1699,6 +1726,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                             "regenerated": _fingerprint(final).as_dict(),
                         },
                         "entry": entry.id,
+                        "cid": "analyze",
                         "execution_id": execution[0],
                         "outcome": "matched",
                         "reason": None,
@@ -1769,6 +1797,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                 {
                     "disposition": "succeeded",
                     "entry": entry.id,
+                    "cid": "analyze",
                     "execution_id": execution[0],
                     "recorded_at": "2026-09-06T00:01:00Z",
                     "run_id": "reproduce-20260906t000000z-current",
@@ -1817,6 +1846,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                         ArtifactResult(
                             cast(str, item["entry"]),
                             cast(str, item["artifact"]),
+                            cast(str | None, item["cid"]),
                             cast(str | None, item["execution_id"]),
                             cast(str, item["outcome"]),
                             cast(str | None, item["reason"]),
@@ -1831,6 +1861,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                     command_rows = tuple(
                         CommandResult(
                             cast(str, item["entry"]),
+                            cast(str, item["cid"]),
                             cast(str, item["execution_id"]),
                             cast(str, item["disposition"]),
                             cast(str, item["source_digest"]),
@@ -1847,7 +1878,7 @@ class ReproductionPlanningTests(unittest.TestCase):
                             artifacts,
                             command_rows,
                             tuple(
-                                (item.entry, item.execution_id)
+                                (item.entry, item.cid, item.execution_id)
                                 for item in command_rows
                             ),
                             tuple(
@@ -1902,11 +1933,11 @@ class ReproductionPlanningTests(unittest.TestCase):
             )
             self.assertEqual(
                 projection.output_executions[(entry.id, "data/final.txt")],
-                execution[0],
+                (entry.id, "analyze", execution[0]),
             )
             self.assertEqual(
                 projection.reachable_commands,
-                frozenset({(entry.id, execution[0])}),
+                frozenset({(entry.id, "analyze", execution[0])}),
             )
 
     def test_incremental_command_closure_invalidates_only_affected_work(self) -> None:

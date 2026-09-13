@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 import subprocess
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from research_log_data import (
     FingerprintObservation,
@@ -16,6 +18,20 @@ from research_log_data import (
     observe_fingerprint,
 )
 from research_log_validation_test_support import mock, unittest, write
+from validation.pyrun_state import (
+    PYRUN_ENVIRONMENT_PROFILE,
+    PYRUN_EXECUTION_CONTRACT,
+    PYRUN_FILENAME,
+    PYRUN_RUNNER,
+    ObservedExecution,
+    PyrunCommand,
+    PyrunExecution,
+    PyrunFile,
+    compare_command,
+    execution_id,
+    pending_execution,
+    recipe_from_invocation,
+)
 
 COMMAND = importlib.import_module("validation.commands")
 
@@ -43,7 +59,20 @@ def _context(root: Path, inputs: tuple[InputResource, ...] = ()) -> object:
     )
 
 
+def _with_cids(body: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        token = match.group("token")
+        separator = "" if token.startswith("--") else "-- "
+        return f"./pyrun --cid test-command {separator}{token}"
+
+    return re.sub(r"\./pyrun (?P<token>\S+)", replace, body)
+
+
 def _discover(body: str, context: object) -> object:
+    return COMMAND.discover_commands(_with_cids(f"```bash\n{body}\n```\n"), context)
+
+
+def _discover_exact(body: str, context: object) -> object:
     return COMMAND.discover_commands(f"```bash\n{body}\n```\n", context)
 
 
@@ -99,7 +128,7 @@ class CommandRoleTests(unittest.TestCase):
                     side_effect=AssertionError("indexing must not type-check outputs"),
                 ),
             ):
-                indexed = COMMAND.index_commands(text, declaration_context)
+                indexed = COMMAND.index_commands(_with_cids(text), declaration_context)
 
             self.assertFalse(indexed.failures)
             self.assertEqual(len(indexed.declarations), 1)
@@ -132,8 +161,10 @@ class CommandRoleTests(unittest.TestCase):
                 context.require_experimental_context,
             )
             indexed = COMMAND.index_commands(
-                "```bash\n./pyrun scripts/run.py --output-file '<file>'\n```\n"
-                "```bash\n./pyrun scripts/run.py --output-dir '<bundle>'\n```\n",
+                _with_cids(
+                    "```bash\n./pyrun scripts/run.py --output-file '<file>'\n```\n"
+                    "```bash\n./pyrun scripts/run.py --output-dir '<bundle>'\n```\n"
+                ),
                 declaration_context,
             )
             self.assertEqual(
@@ -164,11 +195,16 @@ class CommandRoleTests(unittest.TestCase):
                 context.require_experimental_context,
             )
 
+            with_cids = _with_cids(text)
             staged = COMMAND.observe_commands(
-                COMMAND.index_commands(text, declaration_context), text, context
+                COMMAND.index_commands(with_cids, declaration_context),
+                with_cids,
+                context,
             )
 
-            self.assertEqual(staged, COMMAND._legacy_discover_commands(text, context))
+            self.assertEqual(
+                staged, COMMAND._legacy_discover_commands(with_cids, context)
+            )
 
     def test_natural_and_explicit_roles_form_relationships(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -297,8 +333,10 @@ class CommandRoleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))
             result = COMMAND.discover_commands(
-                "```bash\n./pyrun scripts/run.py --target result\n```\n"
-                "<!-- historical note -->\n",
+                _with_cids(
+                    "```bash\n./pyrun scripts/run.py --target result\n```\n"
+                    "<!-- historical note -->\n"
+                ),
                 context,
             )
 
@@ -360,15 +398,195 @@ class CommandRoleTests(unittest.TestCase):
 
 
 class ClosedShellGrammarTests(unittest.TestCase):
-    def test_multiple_direct_pyrun_calls_are_allowed(self) -> None:
+    def test_two_independent_commands_in_one_fence_fail_structure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            result = _discover(
-                "./pyrun scripts/run.py --label first\n"
-                "./pyrun scripts/run.py --label second",
+            result = _discover_exact(
+                "./pyrun --cid first -- scripts/run.py --label first\n"
+                "./pyrun --cid second -- scripts/run.py --label second",
                 _context(Path(directory)),
             )
             self.assertFalse(result.failures)
             self.assertEqual(len(result.invocations), 2)
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.fence.multiple_commands"
+            ):
+                COMMAND.validate_command_structure(result.invocations)
+
+    def test_one_command_and_one_loop_have_stable_cids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            command = _discover("./pyrun scripts/run.py --label fixed", context)
+            loop = _discover(
+                "for value in alpha beta; do\n"
+                '  ./pyrun scripts/run.py --label "$value"\n'
+                "done",
+                context,
+            )
+
+            COMMAND.validate_command_structure(command.invocations)
+            COMMAND.validate_command_structure(loop.invocations)
+            self.assertEqual(
+                {item.cid for item in command.invocations}, {"test-command"}
+            )
+            self.assertEqual({item.cid for item in loop.invocations}, {"test-command"})
+
+    def test_missing_and_malformed_cids_fail_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            for label, body in (
+                ("missing", "./pyrun scripts/run.py"),
+                ("malformed", "./pyrun --cid 'not valid' -- scripts/run.py"),
+            ):
+                with self.subTest(label=label):
+                    result = _discover_exact(body, context)
+                    self.assertFalse(result.invocations)
+                    self.assertIn("cid", str(result.failures[0].error).lower())
+
+    def test_duplicate_cid_across_documents_fails_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            first = _discover_exact(
+                "./pyrun --cid build -- scripts/run.py --label first", context
+            )
+            second = _discover_exact(
+                "./pyrun --cid build -- scripts/run.py --label second",
+                replace(context, document="entries/entry/other.md"),
+            )
+
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.cid.duplicate"
+            ):
+                COMMAND.validate_command_structure(
+                    (*first.invocations, *second.invocations)
+                )
+
+    def test_loop_cid_must_be_stable_and_parameters_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = _context(Path(directory))
+            unstable = _discover_exact(
+                "for value in alpha beta; do\n"
+                '  ./pyrun --cid "$value" -- scripts/run.py --label "$value"\n'
+                "done",
+                context,
+            )
+            collision = _discover_exact(
+                "for value in alpha alpha; do\n"
+                '  ./pyrun --cid build -- scripts/run.py --label "$value"\n'
+                "done",
+                context,
+            )
+
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.cid.unstable"
+            ):
+                COMMAND.validate_command_structure(unstable.invocations)
+            with self.assertRaisesRegex(
+                COMMAND.CommandV2Error, "invocation.cid.parameter_collision"
+            ):
+                COMMAND.validate_command_structure(collision.invocations)
+
+
+class CommandComparisonTests(unittest.TestCase):
+    @staticmethod
+    def _stored(invocation: Any, root: Path, entry_root: Path) -> PyrunExecution:
+        recipe = recipe_from_invocation(
+            invocation, entry_root=entry_root, project_root=root
+        )
+        return PyrunExecution(
+            True,
+            invocation.auto_reproduce,
+            None,
+            PYRUN_RUNNER,
+            PYRUN_ENVIRONMENT_PROFILE,
+            PYRUN_EXECUTION_CONTRACT,
+            recipe,
+            ObservedExecution(None, (), (), ()),
+            invocation.exclusive,
+        )
+
+    def test_comparison_categories_are_disjoint_and_parameter_first(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            entry_root = context.entry_root
+            current = _discover(
+                'for value in J K; do\n  ./pyrun scripts/run.py --value "$value"\ndone',
+                context,
+            ).invocations
+            recorded = _discover(
+                'for value in H J; do\n  ./pyrun scripts/run.py --value "$value"\ndone',
+                context,
+            ).invocations
+            executions = {
+                execution_id(value.recipe): value
+                for invocation in recorded
+                for value in (self._stored(invocation, root, entry_root),)
+            }
+            state = PyrunFile(
+                entry_root / PYRUN_FILENAME,
+                entry_root,
+                {"test-command": PyrunCommand(executions)},
+            )
+
+            comparison = compare_command(
+                state, "test-command", current, project_root=root
+            )
+
+            self.assertEqual(
+                [member.invocation.parameters[-1] for member in comparison.missing],
+                ["K"],
+            )
+            self.assertEqual(
+                [member.execution.recipe.parameters[-1] for member in comparison.stale],
+                ["H"],
+            )
+            self.assertEqual(
+                [
+                    member.execution.recipe.parameters[-1]
+                    for member in comparison.unchanged
+                ],
+                ["J"],
+            )
+            self.assertFalse(comparison.recipe_changed)
+            self.assertFalse(comparison.policy_changed)
+            pending = pending_execution(comparison.missing[0])
+            self.assertTrue(pending.requires_reproduction)
+            self.assertIsNone(pending.last_run_at)
+            self.assertEqual(pending.observed, ObservedExecution(None, (), (), ()))
+
+    def test_comparison_separates_recipe_and_policy_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            entry_root = context.entry_root
+            recorded_invocation = _discover(
+                "./pyrun scripts/run.py --value J", context
+            ).invocations[0]
+            stored = self._stored(recorded_invocation, root, entry_root)
+            identity = execution_id(stored.recipe)
+            state = PyrunFile(
+                entry_root / PYRUN_FILENAME,
+                entry_root,
+                {"test-command": PyrunCommand({identity: stored})},
+            )
+            write(entry_root / "scripts/alternate.py", "# alternate\n")
+            changed_recipe = _discover(
+                "./pyrun scripts/alternate.py --value J", context
+            ).invocations[0]
+            changed_policy = replace(recorded_invocation, auto_reproduce=False)
+
+            recipe_comparison = compare_command(
+                state, "test-command", (changed_recipe,), project_root=root
+            )
+            policy_comparison = compare_command(
+                state, "test-command", (changed_policy,), project_root=root
+            )
+
+            self.assertEqual(len(recipe_comparison.recipe_changed), 1)
+            self.assertFalse(recipe_comparison.policy_changed)
+            self.assertEqual(len(policy_comparison.policy_changed), 1)
+            self.assertFalse(policy_comparison.recipe_changed)
 
     def test_non_pyrun_and_mixed_fences_fail_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -396,7 +614,7 @@ class ClosedShellGrammarTests(unittest.TestCase):
                 "## Experiment\n\n`Steps:`\n\n`Results:`\n\n"
                 "```bash\n./pyrun scripts/run.py --label retained\n```\n"
             )
-            result = COMMAND.discover_commands(text, context)
+            result = COMMAND.discover_commands(_with_cids(text), context)
             self.assertFalse(result.failures)
             self.assertEqual(len(result.invocations), 1)
             self.assertIn("retained", result.invocations[0].tokens)

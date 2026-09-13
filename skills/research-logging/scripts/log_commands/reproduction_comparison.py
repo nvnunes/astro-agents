@@ -32,6 +32,7 @@ from validation.evidence_comparison import (
 )
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
+    PyrunCommand,
     PyrunFile,
     load_pyrun_state,
     validated_pyrun_serialization,
@@ -160,6 +161,7 @@ class ExecutionComparison:
     """Every artifact result and its retained run-local output root."""
 
     entry: str
+    cid: str
     execution_id: str
     artifacts: tuple[ArtifactComparison, ...]
     staging: str | None
@@ -180,7 +182,6 @@ class CurrentRequirementContext:
     plan: ReproductionPlan
     run_root: Path
     project_root: Path
-
 
 
 def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
@@ -248,9 +249,13 @@ def compare_current_execution_outputs(
     )
 
     source_entry = resolve_entry(log, attempt.entry)
-    accepted = accepted_invocation(plan, attempt.entry, attempt.execution_id)
+    accepted = accepted_invocation(
+        plan, attempt.entry, attempt.cid, attempt.execution_id
+    )
     execution = accepted.execution
-    private_project = _attempt_root(workspace, attempt.entry, attempt.execution_id)
+    private_project = _attempt_root(
+        workspace, attempt.entry, attempt.cid, attempt.execution_id
+    )
     private_entry = private_project / source_entry.root.resolve().relative_to(
         workspace.source_project.resolve()
     )
@@ -267,7 +272,7 @@ def compare_current_execution_outputs(
             project_root=workspace.source_project,
         )
         comparison = accepted_typed_comparison(
-            plan, attempt.entry, attempt.execution_id, artifact
+            plan, attempt.entry, attempt.cid, attempt.execution_id, artifact
         )
         definitions[artifact] = _accepted_definition(comparison, accepted, expected)
         definition_identity = (
@@ -276,11 +281,8 @@ def compare_current_execution_outputs(
             else None
         )
         accepted_definitions[artifact] = cast(str | None, definition_identity)
-        if (
-            isinstance(definition_identity, str)
-            and not _evidence_only_context_matches(
-                plan, attempt.entry, definition_identity
-            )
+        if isinstance(definition_identity, str) and not _evidence_only_context_matches(
+            plan, attempt.entry, definition_identity
         ):
             unavailable.add(artifact)
     compared = compare_execution_artifacts(
@@ -353,6 +355,7 @@ def compare_current_execution_outputs(
         workspace.run_root,
         ExecutionComparisonWrite(
             attempt.entry,
+            attempt.cid,
             attempt.execution_id,
             compared.complete,
             retained_bytes,
@@ -364,6 +367,7 @@ def compare_current_execution_outputs(
     )
     return ExecutionComparison(
         attempt.entry,
+        attempt.cid,
         attempt.execution_id,
         compared.artifacts,
         workspace.work_project.relative_to(workspace.run_root).as_posix(),
@@ -387,8 +391,9 @@ def record_current_dependency_skip(
     )
 
     entry = str(planned.get("entry"))
+    cid = str(planned.get("cid"))
     execution_id = str(planned.get("execution_id"))
-    accepted = accepted_invocation(plan, entry, execution_id)
+    accepted = accepted_invocation(plan, entry, cid, execution_id)
     baselines = dict(accepted.execution.observed.outputs)
     artifacts = []
     projected = []
@@ -399,7 +404,7 @@ def record_current_dependency_skip(
                 "reproduction.comparison.invalid",
                 f"accepted output baseline is missing: {artifact}",
             )
-        comparison = accepted_typed_comparison(plan, entry, execution_id, artifact)
+        comparison = accepted_typed_comparison(plan, entry, cid, execution_id, artifact)
         accepted_definition = (
             cast(str, comparison.definition["definition_identity"])
             if comparison is not None
@@ -436,6 +441,7 @@ def record_current_dependency_skip(
         run_root,
         ExecutionComparisonWrite(
             entry,
+            cid,
             execution_id,
             False,
             0,
@@ -446,7 +452,7 @@ def record_current_dependency_skip(
         ),
     )
     return ExecutionComparison(
-        entry, execution_id, tuple(projected), workspace_path, False
+        entry, cid, execution_id, tuple(projected), workspace_path, False
     )
 
 
@@ -526,6 +532,7 @@ def project_current_recorded_comparisons(
         results.append(
             ExecutionComparison(
                 comparison.entry,
+                comparison.cid,
                 comparison.execution_id,
                 tuple(artifacts),
                 comparison.workspace_path,
@@ -575,7 +582,7 @@ def clear_current_reproduction_requirement(
         open_locked_job,
     )
 
-    identity = ExecutionIdentity(result.entry, result.execution_id)
+    identity = ExecutionIdentity(result.entry, result.cid, result.execution_id)
     entry = resolve_entry(context.log, result.entry)
     with open_locked_job(context.run_root) as store:
         effect = store.load_requirement_effect(identity)
@@ -590,14 +597,14 @@ def clear_current_reproduction_requirement(
             return False
         with entry_lock(entry):
             accepted = accepted_invocation(
-                context.plan, result.entry, result.execution_id
+                context.plan, result.entry, result.cid, result.execution_id
             )
             state = load_pyrun_state(
                 entry.root / "pyrun.json",
                 entry_root=entry.root,
                 project_root=context.project_root,
             )
-            current = state.executions.get(result.execution_id)
+            current = state.execution(result.cid, result.execution_id)
             if current is None:
                 raise ActionError(
                     "reproduction.requirement.execution_missing", result.execution_id
@@ -611,11 +618,19 @@ def clear_current_reproduction_requirement(
                     "current execution no longer matches the accepted execution",
                 )
             if current.requires_reproduction:
-                executions = dict(state.executions)
+                command = state.commands.get(result.cid)
+                if command is None:
+                    raise ActionError(
+                        "reproduction.requirement.execution_missing",
+                        f"{result.cid}:{result.execution_id}",
+                    )
+                executions = dict(command.executions)
                 executions[result.execution_id] = replace(
                     current, requires_reproduction=False
                 )
-                candidate = PyrunFile(state.path, state.entry_root, executions)
+                commands = dict(state.commands)
+                commands[result.cid] = PyrunCommand(executions)
+                candidate = PyrunFile(state.path, state.entry_root, commands)
                 atomic_write_text(
                     state.path,
                     validated_pyrun_serialization(
@@ -623,7 +638,9 @@ def clear_current_reproduction_requirement(
                     ),
                 )
             store.record_requirement_effect(
-                RequirementEffect(result.entry, result.execution_id, recorded_at)
+                RequirementEffect(
+                    result.entry, result.cid, result.execution_id, recorded_at
+                )
             )
     return True
 
@@ -686,6 +703,7 @@ def compare_execution_artifacts(  # noqa: PLR0913
         )
     return ExecutionComparison(
         attempt.entry,
+        attempt.cid,
         attempt.execution_id,
         tuple(results),
         None,
@@ -925,6 +943,8 @@ def _compare_evidence_change(
         definition.identity,
         evidence_result.records,
     )
+
+
 def _profile(expected: Path, regenerated: Path) -> str:
     left = _path_kind(expected)
     right = _path_kind(regenerated)

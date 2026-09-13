@@ -40,9 +40,7 @@ def run_log(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_log_process(
-    cwd: Path, *arguments: str
-) -> subprocess.CompletedProcess[str]:
+def run_log_process(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     """Run the executable when process startup or environment is under test."""
 
     environment = os.environ.copy()
@@ -69,8 +67,12 @@ def run_pyrun_process(
     environment.pop("PYTHONHOME", None)
     if environment_updates is not None:
         environment.update(environment_updates)
+    selected = arguments
+    if "--cid" not in selected:
+        separator = () if selected and selected[0].startswith("--") else ("--",)
+        selected = ("--cid", "test-command", *separator, *selected)
     return subprocess.run(
-        ["/bin/sh", str(cwd / "pyrun"), *arguments],
+        ["/bin/sh", str(cwd / "pyrun"), *selected],
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -111,6 +113,7 @@ def replace_fixture_recipe(recipe, **changes):
 
     updated = replace(recipe, **changes)
     from validation.pyrun_state import ExecutionRecipe
+
     if isinstance(updated, ExecutionRecipe) and "parameter_roles" not in changes:
         updated = replace(
             updated,

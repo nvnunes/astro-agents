@@ -10,7 +10,9 @@ from validation.commands import (
     Invocation,
     discover_commands,
     order_invocations,
+    validate_command_structure,
 )
+from validation.errors import MechanicalContractError
 from validation.evidence import index_entry_documents
 
 from .context import EntryContext, parse_entry_document_name
@@ -70,7 +72,12 @@ def entry_invocations(
                 f"{failure.error}",
             )
         invocations_by_document.append(discovered.invocations)
-    return order_invocations(invocations_by_document)
+    result = order_invocations(invocations_by_document)
+    try:
+        validate_command_structure(result)
+    except MechanicalContractError as error:
+        raise ActionError("pyrun.command.invalid", str(error)) from error
+    return result
 
 
 def _load_data(entry_root: Path) -> DataFile | None:

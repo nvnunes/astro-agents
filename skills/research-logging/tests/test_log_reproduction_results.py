@@ -43,7 +43,8 @@ class ReproductionResultContractTests(unittest.TestCase):
             results.runs[0],
             target={
                 "entry": "e003",
-                "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                "cid": "fixture",
+                "execution_id": "pyrun-exec/v2:" + "1" * 64,
                 "kind": "execution",
             },
         )
@@ -51,7 +52,7 @@ class ReproductionResultContractTests(unittest.TestCase):
 
         self.assertEqual(decoded.runs[0].target, run.target)
         self.assertIn(
-            "execution e003 pyrun-exec/v1:",
+            "execution e003 pyrun-exec/v2:",
             compose_reproduction_report(decoded, context=_context()),
         )
 
@@ -61,7 +62,8 @@ class ReproductionResultContractTests(unittest.TestCase):
             results.runs[0],
             target={
                 "entry": "e003",
-                "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                "cid": "fixture",
+                "execution_id": "pyrun-exec/v2:" + "1" * 64,
                 "kind": "execution",
             },
         )
@@ -75,7 +77,6 @@ class ReproductionResultContractTests(unittest.TestCase):
         self.assertEqual(rendered.artifacts, current.artifacts)
         self.assertEqual(rendered.commands, current.commands)
         self.assertEqual(rendered_currentness, currentness)
-
 
     def test_current_result_exposes_current_command_query_records(self) -> None:
         results = _complete_results()
@@ -124,7 +125,8 @@ class ReproductionResultContractTests(unittest.TestCase):
         artifact = ArtifactResult(
             "e003",
             "data/outside-queue.txt",
-            "pyrun-exec/v1:" + "6" * 64,
+            "fixture",
+            "pyrun-exec/v2:" + "6" * 64,
             "skipped",
             "outside_queue",
             "2030-01-01T00:05:00Z",
@@ -169,7 +171,8 @@ class ReproductionResultContractTests(unittest.TestCase):
         artifact = ArtifactResult(
             "e001",
             "data/result.json",
-            "pyrun-exec/v1:" + "1" * 64,
+            "fixture",
+            "pyrun-exec/v2:" + "1" * 64,
             "matched",
             None,
             "2030-01-01T00:00:00Z",
@@ -192,6 +195,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             "e001",
             "data/result.csv",
             None,
+            None,
             "failed",
             "graph_limit",
             "2030-01-01T00:00:00Z",
@@ -211,6 +215,7 @@ class ReproductionResultContractTests(unittest.TestCase):
         artifact = ArtifactResult(
             "e001",
             "/Volumes/Data/fixture/build.log",
+            None,
             None,
             "failed",
             "cross_log_generated_input",
@@ -232,6 +237,7 @@ class ReproductionResultContractTests(unittest.TestCase):
             ArtifactResult(
                 "e001",
                 "/Volumes/Data/fixture/../build.log",
+                None,
                 None,
                 "failed",
                 "cross_log_generated_input",
@@ -299,8 +305,20 @@ class ReproductionResultContractTests(unittest.TestCase):
         )
         state = ReproductionStateProjection(
             frozenset({(matched.entry, matched.artifact)}),
-            {(matched.entry, matched.artifact): matched.execution_id},
-            {(matched.entry, matched.execution_id): "2030-01-01T00:06:00Z"},
+            {
+                (matched.entry, matched.artifact): (
+                    matched.entry,
+                    matched.cid,
+                    matched.execution_id,
+                )
+            },
+            {
+                (
+                    matched.entry,
+                    matched.cid,
+                    matched.execution_id,
+                ): "2030-01-01T00:06:00Z"
+            },
         )
 
         projected, currentness = project_current_results(current, state)
@@ -319,8 +337,8 @@ class ReproductionResultContractTests(unittest.TestCase):
         key = (matched.entry, matched.artifact)
         state = ReproductionStateProjection(
             frozenset({key}),
-            {key: matched.execution_id},
-            {(matched.entry, matched.execution_id): None},
+            {key: (matched.entry, matched.cid, matched.execution_id)},
+            {(matched.entry, matched.cid, matched.execution_id): None},
             {key: "f" * 64},
         )
 
@@ -449,7 +467,8 @@ class ReproductionReportTests(unittest.TestCase):
         skipped = ArtifactResult(
             "e003",
             "data/manual.txt",
-            "pyrun-exec/v1:" + "6" * 64,
+            "fixture",
+            "pyrun-exec/v2:" + "6" * 64,
             "skipped",
             "non_automatic",
             "2030-01-01T00:05:00Z",
@@ -477,10 +496,11 @@ class ReproductionReportTests(unittest.TestCase):
 
     def test_planning_block_is_not_reported_as_command_failure(self) -> None:
         run_id = "reproduce-20300101t000000z-planning-block"
-        execution_id = "pyrun-exec/v1:" + "7" * 64
+        execution_id = "pyrun-exec/v2:" + "7" * 64
         artifact = ArtifactResult(
             "e003",
             "data/blocked.txt",
+            "fixture",
             execution_id,
             "failed",
             "validation_blocked",
@@ -490,6 +510,7 @@ class ReproductionReportTests(unittest.TestCase):
         )
         command = CommandResult(
             "e003",
+            "fixture",
             execution_id,
             "blocked",
             "a" * 64,
@@ -579,7 +600,8 @@ class ReproductionReportTests(unittest.TestCase):
             ArtifactResult(
                 "e001",
                 f"data/result-{number:03d}.csv",
-                "pyrun-exec/v1:" + f"{number:064x}",
+                "fixture",
+                "pyrun-exec/v2:" + f"{number:064x}",
                 "matched",
                 None,
                 "2030-01-01T00:00:00Z",
@@ -657,7 +679,8 @@ def _complete_results() -> ReproductionResults:
         ArtifactResult(
             "e003",
             artifact,
-            "pyrun-exec/v1:" + digit * 64,
+            "fixture",
+            "pyrun-exec/v2:" + digit * 64,
             outcome,
             reason,
             recorded_at,
@@ -754,7 +777,8 @@ def _command_record(
         "cwd": "docs/research/entries/2030-01-01-e001-example",
         "details": [],
         "entry": "e001",
-        "execution_id": "pyrun-exec/v1:" + "1" * 64,
+        "cid": "fixture",
+        "execution_id": "pyrun-exec/v2:" + "1" * 64,
         "exclusive": False,
         "prior_disposition": None,
         "queued": queued,

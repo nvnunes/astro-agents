@@ -134,6 +134,7 @@ class ExecutionCheckpoint:
     """Durable state for one execution attempt in its unchanged run path."""
 
     entry: str
+    cid: str
     execution_id: str
     state: str
     path: str
@@ -149,6 +150,7 @@ class ExecutionCheckpoint:
             "completed_at": self.completed_at,
             "elapsed_seconds": self.elapsed_seconds,
             "entry": self.entry,
+            "cid": self.cid,
             "execution_id": self.execution_id,
             "finished_at": self.finished_at,
             "failure": dict(self.failure) if self.failure is not None else None,
@@ -164,6 +166,7 @@ class ExecutionAttempt:
     """The complete internal result of one bounded recipe attempt."""
 
     entry: str
+    cid: str
     execution_id: str
     returncode: int | None
     stopped: bool
@@ -243,6 +246,7 @@ class ReproductionControlPlaneError(ActionError):
 @dataclass(frozen=True)
 class _PreparedExecution:
     entry: str
+    cid: str
     execution_id: str
     execution: PyrunExecution
     run_root: Path
@@ -262,18 +266,18 @@ class _ExecutionSource:
     """One entry and its immutable accepted invocations for a reproduction pass."""
 
     entry: EntryContext
-    invocations: Mapping[str, AcceptedInvocation]
+    invocations: Mapping[tuple[str, str], AcceptedInvocation]
 
-    def invocation(self, execution_id: str) -> AcceptedInvocation:
+    def invocation(self, cid: str, execution_id: str) -> AcceptedInvocation:
         """Return the sole execution admitted for this fixed run."""
 
         try:
-            return self.invocations[execution_id]
+            return self.invocations[(cid, execution_id)]
         except KeyError as error:
             raise ActionError(
                 "reproduction.execution.missing",
                 "execution is absent from the accepted plan: "
-                f"{self.entry.id}:{execution_id}",
+                f"{self.entry.id}:{cid}:{execution_id}",
             ) from error
 
 
@@ -522,9 +526,7 @@ def execute_current_planned_recipe(
 
     current = _prepare_current_invocation(log, plan, planned, workspace, control)
     result = _run_current_invocation(current, plan, workspace, control)
-    return _finish_current_invocation(
-        current, result, planned, workspace, control
-    )
+    return _finish_current_invocation(current, result, planned, workspace, control)
 
 
 def _prepare_current_invocation(
@@ -542,8 +544,9 @@ def _prepare_current_invocation(
     )
 
     entry_id = _required_string(planned, "entry")
+    cid = _required_string(planned, "cid")
     execution_id = _required_string(planned, "execution_id")
-    identity = ExecutionIdentity(entry_id, execution_id)
+    identity = ExecutionIdentity(entry_id, cid, execution_id)
     prior = load_execution_checkpoint(workspace.run_root, identity)
     if prior is None or prior.state != "active" or prior.permit_id != control.permit_id:
         raise ReproductionControlPlaneError(
@@ -555,7 +558,7 @@ def _prepare_current_invocation(
     sources: dict[str, _ExecutionSource] = {}
     generated = _generated_output_paths(log, plan, workspace, sources=sources)
     source = _execution_source(log, plan, workspace, entry_id, sources)
-    accepted = source.invocation(execution_id)
+    accepted = source.invocation(cid, execution_id)
     prepared = _prepare_execution(
         log,
         planned,
@@ -602,6 +605,7 @@ def _run_current_invocation(
             workspace.run_root,
             ExecutionStart(
                 current.identity.entry,
+                current.identity.cid,
                 current.identity.execution_id,
                 control.permit_id,
                 _utc_now(),
@@ -681,6 +685,7 @@ def _finish_current_invocation(
     elapsed = current.prior.elapsed_seconds + result.active_elapsed
     checkpoint = ExecutionCheckpoint(
         current.identity.entry,
+        current.identity.cid,
         current.identity.execution_id,
         state,
         "state.sqlite",
@@ -704,9 +709,7 @@ def _finish_current_invocation(
             _verify_accepted_source_observations(
                 prepared, current.source.entry.root, workspace
             )
-            _verify_accepted_input_observations(
-                current.accepted, current.generated
-            )
+            _verify_accepted_input_observations(current.accepted, current.generated)
             _materialize_outputs(prepared, workspace, current.source)
         except (OSError, ValueError, ActionError) as error:
             failure_code = cast(
@@ -730,6 +733,7 @@ def _finish_current_invocation(
         workspace.run_root,
         ExecutionTerminal(
             current.identity.entry,
+            current.identity.cid,
             current.identity.execution_id,
             control.permit_id,
             cast(Literal["succeeded", "failed", "stopped"], checkpoint.state),
@@ -763,6 +767,7 @@ def _finish_current_invocation(
         workspace.source_project,
         workspace.run_id,
         current.identity.entry,
+        current.identity.cid,
         current.identity.execution_id,
         _execution_order(planned),
     )
@@ -783,11 +788,10 @@ def _finish_current_invocation(
         cast(Literal["succeeded", "failed", "stopped"], checkpoint.state),
         _utc_now(),
     )
-    clear_execution_scratch(
-        workspace.run_root, current.identity, str(result.scratch)
-    )
+    clear_execution_scratch(workspace.run_root, current.identity, str(result.scratch))
     return ExecutionAttempt(
         current.identity.entry,
+        current.identity.cid,
         current.identity.execution_id,
         result.outcome.returncode,
         result.outcome.stopped,
@@ -872,14 +876,15 @@ def _recover_current_planned_execution(
     from .reproduction_job_storage import load_execution_checkpoint
 
     entry = _required_string(planned, "entry")
+    cid = _required_string(planned, "cid")
     execution_id = _required_string(planned, "execution_id")
     source = _execution_source(
         context.log, context.plan, context.workspace, entry, context.sources
     )
     checkpoint = load_execution_checkpoint(
-        context.workspace.run_root, StoredExecutionIdentity(entry, execution_id)
+        context.workspace.run_root, StoredExecutionIdentity(entry, cid, execution_id)
     )
-    reference = _execution_reference(entry, execution_id)
+    reference = _execution_reference(entry, cid, execution_id)
     if checkpoint is None:
         return
     if checkpoint.state == "stopped":
@@ -890,7 +895,7 @@ def _recover_current_planned_execution(
                     "fresh execution cannot reuse a stopped checkpoint",
                 )
             )
-        _reset_current_stopped_workspace(context.workspace, entry, execution_id)
+        _reset_current_stopped_workspace(context.workspace, entry, cid, execution_id)
         return
     if checkpoint.state == "active" and checkpoint.started_at is None:
         return
@@ -904,7 +909,7 @@ def _recover_current_planned_execution(
     if checkpoint.state == "succeeded":
         local = _runtime_checkpoint(checkpoint)
         if not _checkpoint_outputs_current(
-            local, source, context.workspace, execution_id
+            local, source, context.workspace, cid, execution_id
         ):
             raise ReproductionControlPlaneError(
                 ActionError(
@@ -938,9 +943,7 @@ def _run_current_schedule(
         while schedule.pending or schedule.running:
             if _current_stop_requested(context):
                 schedule.stopped = True
-            progress = _resolve_current_pending(
-                schedule, context.workspace.run_root
-            )
+            progress = _resolve_current_pending(schedule, context.workspace.run_root)
             if not schedule.stopped:
                 progress = (
                     _launch_current_ready(
@@ -983,6 +986,7 @@ def _current_execution_batch(
         for reference in (
             _execution_reference(
                 _required_string(item, "entry"),
+                _required_string(item, "cid"),
                 _required_string(item, "execution_id"),
             )
             for item in ordered
@@ -1010,16 +1014,17 @@ def current_execution_attempts(
     sources: dict[str, _ExecutionSource] = {}
     for planned in sorted(plan.executions, key=_execution_order):
         entry = _required_string(planned, "entry")
+        cid = _required_string(planned, "cid")
         execution_id = _required_string(planned, "execution_id")
         checkpoint = load_execution_checkpoint(
-            workspace.run_root, ExecutionIdentity(entry, execution_id)
+            workspace.run_root, ExecutionIdentity(entry, cid, execution_id)
         )
         if checkpoint is None or checkpoint.state not in {"succeeded", "failed"}:
             continue
         runtime = _runtime_checkpoint(checkpoint)
         source = _execution_source(log, plan, workspace, entry, sources)
         if checkpoint.state == "succeeded" and not _checkpoint_outputs_current(
-            runtime, source, workspace, execution_id
+            runtime, source, workspace, cid, execution_id
         ):
             raise ActionError(
                 "reproduction.checkpoint.changed",
@@ -1028,6 +1033,7 @@ def current_execution_attempts(
         results.append(
             ExecutionAttempt(
                 entry,
+                cid,
                 execution_id,
                 0 if checkpoint.state == "succeeded" else None,
                 False,
@@ -1062,6 +1068,7 @@ def _runtime_checkpoint(checkpoint: object) -> ExecutionCheckpoint:
     )
     return ExecutionCheckpoint(
         checkpoint.entry,
+        checkpoint.cid,
         checkpoint.execution_id,
         checkpoint.state,
         "state.sqlite",
@@ -1078,13 +1085,13 @@ def _runtime_checkpoint(checkpoint: object) -> ExecutionCheckpoint:
 
 
 def _reset_current_stopped_workspace(
-    workspace: ReproductionWorkspace, entry: str, execution_id: str
+    workspace: ReproductionWorkspace, entry: str, cid: str, execution_id: str
 ) -> None:
     """Discard only the stopped identity's private, non-authoritative bytes."""
 
     for path in (
-        _attempt_root(workspace, entry, execution_id),
-        _attempt_runtime_root(workspace, entry, execution_id),
+        _attempt_root(workspace, entry, cid, execution_id),
+        _attempt_runtime_root(workspace, entry, cid, execution_id),
     ):
         if path.is_symlink():
             raise ReproductionControlPlaneError(
@@ -1103,23 +1110,25 @@ def _resolve_current_pending(
     progress = False
     for planned in tuple(schedule.pending):
         entry = _required_string(planned, "entry")
+        cid = _required_string(planned, "cid")
         execution_id = _required_string(planned, "execution_id")
         readiness = load_execution_readiness(
-            run_root, ExecutionIdentity(entry, execution_id)
+            run_root, ExecutionIdentity(entry, cid, execution_id)
         )
         if readiness.disposition != "dependency_failed":
             continue
         dependencies = tuple(
             sorted(
-                _execution_reference(item.entry, item.execution_id)
+                _execution_reference(item.entry, item.cid, item.execution_id)
                 for item in readiness.failed_dependencies
             )
         )
-        reference = _execution_reference(entry, execution_id)
+        reference = _execution_reference(entry, cid, execution_id)
         schedule.skips.append(
             {
                 "depends_on": list(dependencies),
                 "entry": entry,
+                "cid": cid,
                 "execution_id": execution_id,
                 "reason": "dependency_failed",
             }
@@ -1147,6 +1156,7 @@ def _launch_current_ready(
     for planned in schedule.pending:
         identity = ExecutionIdentity(
             _required_string(planned, "entry"),
+            _required_string(planned, "cid"),
             _required_string(planned, "execution_id"),
         )
         if load_execution_readiness(run_root, identity).disposition == "ready":
@@ -1186,8 +1196,9 @@ def _execute_current_scheduled_recipe(
     )
 
     entry = _required_string(planned, "entry")
+    cid = _required_string(planned, "cid")
     execution_id = _required_string(planned, "execution_id")
-    identity = ExecutionIdentity(entry, execution_id)
+    identity = ExecutionIdentity(entry, cid, execution_id)
     workspace = context.workspace
     control = context.control
     accepted = load_accepted_scheduling(workspace.run_root, identity)
@@ -1195,6 +1206,7 @@ def _execute_current_scheduled_recipe(
         workspace.source_project,
         workspace.run_id,
         entry,
+        cid,
         execution_id,
         accepted.plan_order,
     )
@@ -1220,9 +1232,7 @@ def _execute_current_scheduled_recipe(
                 workspace.source_project,
             )
         ),
-        _resolve_claim(
-            accepted.run_path, workspace.run_root, workspace.source_project
-        ),
+        _resolve_claim(accepted.run_path, workspace.run_root, workspace.source_project),
         tuple(
             _resolve_claims(
                 list(accepted.writable_paths),
@@ -1282,7 +1292,9 @@ def _collect_current_finished(schedule: _BatchSchedule) -> None:
         if attempt is None:
             schedule.stopped = True
             continue
-        reference = _execution_reference(attempt.entry, attempt.execution_id)
+        reference = _execution_reference(
+            attempt.entry, attempt.cid, attempt.execution_id
+        )
         schedule.attempts[reference] = attempt
         schedule.complete.add(reference)
         if attempt.stopped:
@@ -1316,10 +1328,16 @@ def execute_isolated_invocation(  # noqa: PLR0913
     diagnostics = workspace.diagnostics_root
     for path in (output, runtime, diagnostics):
         path.mkdir(parents=True, exist_ok=True)
-    source = _ExecutionSource(entry, {invocation.execution_id: invocation})
+    source = _ExecutionSource(
+        entry, {(invocation.cid, invocation.execution_id): invocation}
+    )
     prepared = _prepare_execution(
         entry.log,
-        {"entry": entry.id, "execution_id": invocation.execution_id},
+        {
+            "entry": entry.id,
+            "cid": invocation.cid,
+            "execution_id": invocation.execution_id,
+        },
         workspace,
         {},
         _PreparationOptions(source),
@@ -1373,6 +1391,7 @@ def execute_isolated_invocation(  # noqa: PLR0913
     finished = None if outcome.stopped or started_at is None else _utc_now()
     attempt = ExecutionAttempt(
         entry.id,
+        invocation.cid,
         invocation.execution_id,
         outcome.returncode,
         outcome.stopped,
@@ -1380,6 +1399,7 @@ def execute_isolated_invocation(  # noqa: PLR0913
         message,
         ExecutionCheckpoint(
             entry.id,
+            invocation.cid,
             invocation.execution_id,
             state,
             "",
@@ -1420,7 +1440,9 @@ def preflight_isolated_invocation(
     invocation = _isolated_current_invocation(invocation, input_observations)
     execution = invocation.execution
     relative_entry = entry.root.resolve().relative_to(workspace.source_project)
-    attempt_root = _attempt_root(workspace, entry.id, invocation.execution_id)
+    attempt_root = _attempt_root(
+        workspace, entry.id, invocation.cid, invocation.execution_id
+    )
     output_paths = _output_paths(
         execution,
         entry_root=attempt_root / relative_entry,
@@ -1535,6 +1557,7 @@ def _prepare_execution(
     options: _PreparationOptions = _PreparationOptions(),
 ) -> _PreparedExecution:
     entry_id = _required_string(planned, "entry")
+    cid = _required_string(planned, "cid")
     execution_id = _required_string(planned, "execution_id")
     if options.source is None:
         raise ActionError(
@@ -1543,12 +1566,12 @@ def _prepare_execution(
         )
     loaded = options.source
     source_entry = loaded.entry
-    accepted = loaded.invocation(execution_id)
+    accepted = loaded.invocation(cid, execution_id)
     execution = accepted.execution
-    attempt_root = _attempt_root(workspace, entry_id, execution_id)
-    runtime_root = _attempt_runtime_root(workspace, entry_id, execution_id)
+    attempt_root = _attempt_root(workspace, entry_id, cid, execution_id)
+    runtime_root = _attempt_runtime_root(workspace, entry_id, cid, execution_id)
     diagnostics_root = (
-        workspace.diagnostics_root / entry_id / execution_id.rsplit(":", 1)[-1]
+        workspace.diagnostics_root / entry_id / cid / execution_id.rsplit(":", 1)[-1]
     )
     relative_entry = source_entry.root.resolve().relative_to(
         workspace.source_project.resolve()
@@ -1573,9 +1596,10 @@ def _prepare_execution(
             dict(execution.observed.inputs),
         ),
     )
-    stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, execution_id)
+    stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, cid, execution_id)
     return _PreparedExecution(
         entry_id,
+        cid,
         execution_id,
         execution,
         attempt_root,
@@ -1584,7 +1608,7 @@ def _prepare_execution(
         work_entry,
         output_paths,
         tuple(command),
-        _execution_environment(execution, workspace, entry_id, execution_id),
+        _execution_environment(execution, workspace, entry_id, cid, execution_id),
         captures,
         stdout_path,
         stderr_path,
@@ -1899,6 +1923,7 @@ def _require_execution_order(ordered: Sequence[Mapping[str, object]]) -> None:
     references = [
         _execution_reference(
             _required_string(value, "entry"),
+            _required_string(value, "cid"),
             _required_string(value, "execution_id"),
         )
         for value in ordered
@@ -1923,22 +1948,23 @@ def _dependency_references(planned: Mapping[str, object]) -> tuple[str, ...]:
     return result
 
 
-def _execution_reference(entry: str, execution_id: str) -> str:
-    return f"{entry}:{execution_id}"
+def _execution_reference(entry: str, cid: str, execution_id: str) -> str:
+    return f"{entry}:{cid}:{execution_id}"
 
 
 def _checkpoint_outputs_current(
     checkpoint: ExecutionCheckpoint,
     source: _ExecutionSource,
     workspace: ReproductionWorkspace,
+    cid: str,
     execution_id: str,
 ) -> bool:
     entry = source.entry
     try:
-        execution = source.invocation(execution_id).execution
+        execution = source.invocation(cid, execution_id).execution
     except ActionError:
         return False
-    project_root = _attempt_root(workspace, entry.id, execution_id)
+    project_root = _attempt_root(workspace, entry.id, cid, execution_id)
     paths = _output_paths(
         execution,
         entry_root=project_root
@@ -2032,8 +2058,14 @@ def _execution_source(
         return source
     entry = resolve_entry(log, entry_id)
     invocations = {
-        _required_string(command, "execution_id"): accepted_invocation(
-            plan, entry_id, _required_string(command, "execution_id")
+        (
+            _required_string(command, "cid"),
+            _required_string(command, "execution_id"),
+        ): accepted_invocation(
+            plan,
+            entry_id,
+            _required_string(command, "cid"),
+            _required_string(command, "execution_id"),
         )
         for command in plan.commands
         if command.get("entry") == entry_id
@@ -2059,7 +2091,7 @@ def _generated_output_paths(
         source = _execution_source(log, plan, workspace, entry_id, loaded_sources)
         entry = source.entry
         execution = source.invocation(
-            _required_string(planned, "execution_id")
+            _required_string(planned, "cid"), _required_string(planned, "execution_id")
         ).execution
         work_entry = workspace.map_source(entry.root)
         for identity, kind in execution.recipe.outputs:
@@ -2203,11 +2235,12 @@ def _execution_environment(
     execution: PyrunExecution,
     workspace: ReproductionWorkspace,
     entry: str,
+    cid: str,
     execution_id_value: str,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(dict(execution.recipe.environment))
-    execution_root = _attempt_runtime_root(workspace, entry, execution_id_value)
+    execution_root = _attempt_runtime_root(workspace, entry, cid, execution_id_value)
     execution_root.mkdir(parents=True, exist_ok=True)
     roots = {
         "MPLCONFIGDIR": execution_root / "matplotlib",
@@ -2218,7 +2251,7 @@ def _execution_environment(
         path.mkdir(exist_ok=True)
     environment.update({name: str(path) for name, path in roots.items()})
     identity = execution_id_value.rsplit(":", 1)[-1]
-    environment[RUNNER_MARKER] = f"{workspace.run_id}:{entry}:{identity}"
+    environment[RUNNER_MARKER] = f"{workspace.run_id}:{entry}:{cid}:{identity}"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
 
@@ -2504,9 +2537,10 @@ def _is_zombie(state: str) -> bool:
 def _diagnostic_paths(
     workspace: ReproductionWorkspace,
     entry: str,
+    cid: str,
     execution_id: str,
 ) -> tuple[Path, Path]:
-    stdout, stderr = _diagnostic_relative_paths(workspace, entry, execution_id)
+    stdout, stderr = _diagnostic_relative_paths(workspace, entry, cid, execution_id)
     stdout.parent.mkdir(parents=True, exist_ok=True)
     return stdout, stderr
 
@@ -2514,26 +2548,30 @@ def _diagnostic_paths(
 def _diagnostic_relative_paths(
     workspace: ReproductionWorkspace,
     entry: str,
+    cid: str,
     execution_id: str,
 ) -> tuple[Path, Path]:
     root = (
-        workspace.diagnostics_root / entry / execution_id.removeprefix("pyrun-exec/v1:")
+        workspace.diagnostics_root
+        / entry
+        / cid
+        / execution_id.removeprefix("pyrun-exec/v2:")
     )
     return root / "stdout.log", root / "stderr.log"
 
 
 def _attempt_root(
-    workspace: ReproductionWorkspace, entry: str, execution_id: str
+    workspace: ReproductionWorkspace, entry: str, cid: str, execution_id: str
 ) -> Path:
     """Return the accepted attempt-private mirrored-project root."""
 
-    return workspace.staging_root / entry / execution_id.rsplit(":", 1)[-1]
+    return workspace.staging_root / entry / cid / execution_id.rsplit(":", 1)[-1]
 
 
 def _attempt_runtime_root(
-    workspace: ReproductionWorkspace, entry: str, execution_id: str
+    workspace: ReproductionWorkspace, entry: str, cid: str, execution_id: str
 ) -> Path:
-    return workspace.runtime_root / entry / execution_id.rsplit(":", 1)[-1]
+    return workspace.runtime_root / entry / cid / execution_id.rsplit(":", 1)[-1]
 
 
 def _materialize_outputs(

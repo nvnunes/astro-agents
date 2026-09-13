@@ -111,8 +111,7 @@ def _job_fixture(
         for index in range(executions):
             selected = dict(
                 output_items[
-                    index * outputs_per_execution : (index + 1)
-                    * outputs_per_execution
+                    index * outputs_per_execution : (index + 1) * outputs_per_execution
                 ]
             )
             execution_records.append(
@@ -141,6 +140,7 @@ def _start_and_finish(
 ) -> tuple[str, str, dict]:
     execution = plan.executions[index]
     entry = str(execution["entry"])
+    cid = str(execution["cid"])
     execution_id = str(execution["execution_id"])
     record = next(
         item
@@ -158,6 +158,7 @@ def _start_and_finish(
         run_root,
         ExecutionPermitAttachment(
             entry,
+            cid,
             execution_id,
             f"permit-{index}",
             f"2030-01-01T00:00:{index * 2 + 1:02d}Z",
@@ -167,6 +168,7 @@ def _start_and_finish(
         run_root,
         ExecutionStart(
             entry,
+            cid,
             execution_id,
             f"permit-{index}",
             f"2030-01-01T00:00:{index * 2 + 1:02d}Z",
@@ -178,6 +180,7 @@ def _start_and_finish(
         run_root,
         ExecutionTerminal(
             entry,
+            cid,
             execution_id,
             f"permit-{index}",
             "succeeded",
@@ -197,7 +200,7 @@ def _start_and_finish(
             ),
         ),
     )
-    identity = ExecutionIdentity(entry, execution_id)
+    identity = ExecutionIdentity(entry, cid, execution_id)
     clear_execution_permit(
         run_root,
         identity,
@@ -211,6 +214,18 @@ def _start_and_finish(
     return entry, execution_id, output_fingerprints[artifact]
 
 
+def _cid(plan: ReproductionPlan, entry: str, execution_id: str) -> str:
+    """Return the CID for one fixture execution."""
+
+    return str(
+        next(
+            execution["cid"]
+            for execution in plan.executions
+            if execution["entry"] == entry and execution["execution_id"] == execution_id
+        )
+    )
+
+
 def _comparison(
     plan: ReproductionPlan,
     index: int,
@@ -222,6 +237,7 @@ def _comparison(
 ) -> ExecutionComparisonWrite:
     execution = plan.executions[index]
     entry = str(execution["entry"])
+    cid = str(execution["cid"])
     execution_id = str(execution["execution_id"])
     record = next(
         item
@@ -239,6 +255,7 @@ def _comparison(
     assert isinstance(baseline, dict)
     return ExecutionComparisonWrite(
         entry,
+        cid,
         execution_id,
         True,
         10,
@@ -266,18 +283,20 @@ def _comparison(
 def _start_and_fail(run_root: Path, plan: ReproductionPlan, index: int) -> None:
     execution = plan.executions[index]
     entry = str(execution["entry"])
+    cid = str(execution["cid"])
     execution_id = str(execution["execution_id"])
     permit_id = f"permit-failed-{index}"
     attach_execution_permit(
         run_root,
         ExecutionPermitAttachment(
-            entry, execution_id, permit_id, "2030-01-01T00:00:01Z"
+            entry, cid, execution_id, permit_id, "2030-01-01T00:00:01Z"
         ),
     )
     record_execution_start(
         run_root,
         ExecutionStart(
             entry,
+            cid,
             execution_id,
             permit_id,
             "2030-01-01T00:00:01Z",
@@ -289,6 +308,7 @@ def _start_and_fail(run_root: Path, plan: ReproductionPlan, index: int) -> None:
         run_root,
         ExecutionTerminal(
             entry,
+            cid,
             execution_id,
             permit_id,
             "failed",
@@ -300,7 +320,7 @@ def _start_and_fail(run_root: Path, plan: ReproductionPlan, index: int) -> None:
             failure_recorded_at="2030-01-01T00:00:02Z",
         ),
     )
-    identity = ExecutionIdentity(entry, execution_id)
+    identity = ExecutionIdentity(entry, cid, execution_id)
     clear_execution_permit(
         run_root,
         identity,
@@ -398,6 +418,7 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
                 run_root,
                 ExecutionIdentity(
                     str(first_execution["entry"]),
+                    str(first_execution["cid"]),
                     str(first_execution["execution_id"]),
                 ),
             )
@@ -407,7 +428,8 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
             self.assertEqual(
                 scheduling.read_paths, tuple(first_execution["read_paths"])
             )
-            self.assertEqual(scheduling.write_paths, tuple(first_execution["write_paths"])
+            self.assertEqual(
+                scheduling.write_paths, tuple(first_execution["write_paths"])
             )
             self.assertEqual(scheduling.run_path, first_execution["run_path"])
             self.assertEqual(
@@ -429,6 +451,7 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
             )
 
             planned = plan.executions[0]
+            cid = str(planned["cid"])
             execution_id = str(planned["execution_id"])
             record = next(
                 item for item in plan.commands if item["execution_id"] == execution_id
@@ -445,6 +468,7 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
                 run_root,
                 ExecutionPermitAttachment(
                     entry.id,
+                    cid,
                     execution_id,
                     "permit-foundation-1",
                     "2030-01-01T00:00:01Z",
@@ -454,6 +478,7 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry.id,
+                    cid,
                     execution_id,
                     "permit-foundation-1",
                     "2030-01-01T00:00:01Z",
@@ -467,6 +492,7 @@ class ReproductionJobStorageMilestoneTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     entry.id,
+                    cid,
                     execution_id,
                     "permit-foundation-1",
                     "succeeded",
@@ -518,10 +544,10 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
     def test_schema_has_exact_normalized_authority_shape(self) -> None:
         expected = {
             "runs": "run_id summary target_kind target_entry include_all jobs execution_timeout_seconds accepted_at run_path workspace_path diagnostics_path",
-            "run_state": "run_id status phase stop_requested_at started_at resumed_at stopped_at finished_at updated_at completed_executions matched changed failed comparison_failed skipped latest_execution_entry latest_execution_id latest_execution_code latest_execution_message latest_execution_recorded_at operational_code operational_message operational_recorded_at",
+            "run_state": "run_id status phase stop_requested_at started_at resumed_at stopped_at finished_at updated_at completed_executions matched changed failed comparison_failed skipped latest_execution_entry latest_execution_cid latest_execution_id latest_execution_code latest_execution_message latest_execution_recorded_at operational_code operational_message operational_recorded_at",
             "accepted_admission": "run_id validation_id validation_result_id rules_version evaluated_at",
             "accepted_admission_groups": "run_id disposition position entry group_id decision_json",
-            "accepted_commands": "run_id command_pk entry execution_id selection auto_reproduce exclusive queued accepted_requires_reproduction prior_disposition source_digest entry_root project_root cwd script last_run_at runner environment_profile execution_contract details_json data_declaration_json",
+            "accepted_commands": "run_id command_pk entry cid execution_id selection auto_reproduce exclusive queued accepted_requires_reproduction prior_disposition source_digest entry_root project_root cwd script last_run_at runner environment_profile execution_contract details_json data_declaration_json",
             "accepted_recipe_parameters": "run_id command_pk position value",
             "accepted_parameter_roles": "run_id command_pk selector role",
             "accepted_recipe_environment": "run_id command_pk name value",
@@ -762,10 +788,8 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
             "publication_state": run_fk,
         }
         unique_keys = {
-            "accepted_commands": {("run_id", "entry", "execution_id")},
-            "accepted_materials": {
-                ("run_id", "role", "identity", "fingerprint_json")
-            },
+            "accepted_commands": {("run_id", "entry", "cid", "execution_id")},
+            "accepted_materials": {("run_id", "role", "identity", "fingerprint_json")},
             "accepted_executions": {("run_id", "plan_order")},
             "accepted_execution_outputs": {("run_id", "command_pk", "artifact")},
             "accepted_execution_claims": {
@@ -823,7 +847,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
                 "check(comparison_failed >= 0)",
                 "check(skipped >= 0)",
                 "check((status is null and phase is not null) or (status is not null and phase is null))",
-                "check((latest_execution_entry is null and latest_execution_id is null and latest_execution_code is null and latest_execution_message is null and latest_execution_recorded_at is null) or (latest_execution_entry is not null and latest_execution_id is not null and latest_execution_code is not null and latest_execution_message is not null and latest_execution_recorded_at is not null))",
+                "check((latest_execution_entry is null and latest_execution_cid is null and latest_execution_id is null and latest_execution_code is null and latest_execution_message is null and latest_execution_recorded_at is null) or (latest_execution_entry is not null and latest_execution_cid is not null and latest_execution_id is not null and latest_execution_code is not null and latest_execution_message is not null and latest_execution_recorded_at is not null))",
                 "check((operational_code is null and operational_message is null and operational_recorded_at is null) or (operational_code is not null and operational_message is not null and operational_recorded_at is not null))",
             ),
             "accepted_admission_groups": (
@@ -907,7 +931,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
         named_indexes = {
             "accepted_commands_identity": (
                 "accepted_commands",
-                ("run_id", "entry", "execution_id"),
+                ("run_id", "entry", "cid", "execution_id"),
             ),
             "accepted_executions_order": (
                 "accepted_executions",
@@ -926,7 +950,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
         with _job_fixture() as (*_unused, run_root):
             database = run_root / "state.sqlite"
             with sqlite3.connect(database) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 1)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
                 self.assertEqual(
                     db.execute("PRAGMA journal_mode").fetchone()[0], "delete"
                 )
@@ -984,9 +1008,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
                     observed_unique = {
                         tuple(
                             item[2]
-                            for item in db.execute(
-                                f'PRAGMA index_info("{index[1]}")'
-                            )
+                            for item in db.execute(f'PRAGMA index_info("{index[1]}")')
                         )
                         for index in db.execute(f'PRAGMA index_list("{table}")')
                         if index[2] and index[3] == "u"
@@ -1038,8 +1060,8 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()
-            fixture, entry, _output, _execution_id, plan = (
-                _evidence_scoped_fixture(project)
+            fixture, entry, _output, _execution_id, plan = _evidence_scoped_fixture(
+                project
             )
             assert isinstance(entry, EntryContext)
             assert isinstance(plan, ReproductionPlan)
@@ -1083,6 +1105,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
         ):
             execution = plan.executions[0]
             entry = str(execution["entry"])
+            cid = str(execution["cid"])
             execution_id = str(execution["execution_id"])
             record = plan.commands[0]["execution_state"]
             assert isinstance(record, dict)
@@ -1098,6 +1121,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionPermitAttachment(
                     entry,
+                    cid,
                     execution_id,
                     "permit-outputs",
                     "2030-01-01T00:00:01Z",
@@ -1107,6 +1131,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry,
+                    cid,
                     execution_id,
                     "permit-outputs",
                     "2030-01-01T00:00:01Z",
@@ -1116,6 +1141,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             )
             terminal = ExecutionTerminal(
                 entry,
+                cid,
                 execution_id,
                 "permit-outputs",
                 "succeeded",
@@ -1154,12 +1180,15 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
         with _job_fixture(executions=1) as (*_unused, plan, _accepted, run_root):
             execution = plan.executions[0]
             identity = ExecutionIdentity(
-                str(execution["entry"]), str(execution["execution_id"])
+                str(execution["entry"]),
+                str(execution["cid"]),
+                str(execution["execution_id"]),
             )
             attach_execution_permit(
                 run_root,
                 ExecutionPermitAttachment(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     "permit-cycle",
                     "2030-01-01T00:00:01Z",
@@ -1169,6 +1198,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     "permit-cycle",
                     "2030-01-01T00:00:01Z",
@@ -1214,11 +1244,13 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
         with _job_fixture(executions=1) as (*_unused, plan, _accepted, run_root):
             execution = plan.executions[0]
             entry = str(execution["entry"])
+            cid = str(execution["cid"])
             execution_id = str(execution["execution_id"])
             attach_execution_permit(
                 run_root,
                 ExecutionPermitAttachment(
                     entry,
+                    cid,
                     execution_id,
                     "permit-failure",
                     "2030-01-01T00:00:01Z",
@@ -1236,13 +1268,16 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     run_root,
                     ExecutionPermitAttachment(
                         entry,
+                        cid,
                         execution_id,
                         "permit-failure",
                         "2030-01-01T00:00:03Z",
                     ),
                 )
             with self.assertRaises(JobStoreTransitionError):
-                request_run_failure(run_root, replace(failure, code="different_failure"))
+                request_run_failure(
+                    run_root, replace(failure, code="different_failure")
+                )
             request_run_stop(run_root, RunStopRequest("2030-01-01T00:00:04Z"))
             self.assertIsNone(load_run_status(run_root).stop_requested_at)
             with self.assertRaises(JobStoreTransitionError):
@@ -1250,6 +1285,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     run_root,
                     ExecutionStart(
                         entry,
+                        cid,
                         execution_id,
                         "permit-failure",
                         "2030-01-01T00:00:04Z",
@@ -1261,6 +1297,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     entry,
+                    cid,
                     execution_id,
                     "permit-failure",
                     "stopped",
@@ -1274,7 +1311,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             )
             clear_execution_permit(
                 run_root,
-                ExecutionIdentity(entry, execution_id),
+                ExecutionIdentity(entry, cid, execution_id),
                 "permit-failure",
                 "stopped",
                 "2030-01-01T00:00:04Z",
@@ -1297,16 +1334,25 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             failed = load_run_status(run_root).latest_execution_diagnostic
             self.assertIsNotNone(failed)
             _start_and_finish(run_root, plan, 1)
-            self.assertEqual(load_run_status(run_root).latest_execution_diagnostic, failed)
+            self.assertEqual(
+                load_run_status(run_root).latest_execution_diagnostic, failed
+            )
 
-    def test_stopping_run_rejects_comparison_and_publication_phase_changes(self) -> None:
+    def test_stopping_run_rejects_comparison_and_publication_phase_changes(
+        self,
+    ) -> None:
         with _job_fixture(executions=1) as (*_unused, plan, _accepted, run_root):
             entry, execution_id, _baseline = _start_and_finish(run_root, plan, 0)
             comparison = _comparison(plan, 0)
             record_execution_comparison(run_root, comparison)
             record_requirement_effect(
                 run_root,
-                RequirementEffect(entry, execution_id, "2030-01-01T00:01:01Z"),
+                RequirementEffect(
+                    entry,
+                    _cid(plan, entry, execution_id),
+                    execution_id,
+                    "2030-01-01T00:01:01Z",
+                ),
             )
             request_run_stop(run_root, RunStopRequest("2030-01-01T00:01:02Z"))
             before = load_publication_projection(run_root)
@@ -1327,6 +1373,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             pending = plan.executions[1]
             attachment = ExecutionPermitAttachment(
                 str(pending["entry"]),
+                str(pending["cid"]),
                 str(pending["execution_id"]),
                 "permit-publishing",
                 "2030-01-01T00:00:03Z",
@@ -1341,6 +1388,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     run_root,
                     ExecutionStart(
                         attachment.entry,
+                        attachment.cid,
                         attachment.execution_id,
                         attachment.permit_id,
                         "2030-01-01T00:00:04Z",
@@ -1358,10 +1406,12 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
         with _job_fixture(executions=1) as (*_unused, plan, _accepted, run_root):
             execution = plan.executions[0]
             entry = str(execution["entry"])
+            cid = str(execution["cid"])
             execution_id = str(execution["execution_id"])
-            identity = ExecutionIdentity(entry, execution_id)
+            identity = ExecutionIdentity(entry, cid, execution_id)
             attachment = ExecutionPermitAttachment(
                 entry,
+                cid,
                 execution_id,
                 "permit-stop",
                 "2030-01-01T00:00:01Z",
@@ -1378,6 +1428,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry,
+                    cid,
                     execution_id,
                     "permit-stop",
                     "2030-01-01T00:00:02Z",
@@ -1447,12 +1498,8 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                         ),
                     ),
                 )
-            request_run_stop(
-                run_root, RunStopRequest("2030-01-01T00:00:04Z")
-            )
-            request_run_stop(
-                run_root, RunStopRequest("2030-01-01T00:00:05Z")
-            )
+            request_run_stop(run_root, RunStopRequest("2030-01-01T00:00:04Z"))
+            request_run_stop(run_root, RunStopRequest("2030-01-01T00:00:05Z"))
             self.assertEqual(
                 load_run_status(run_root).stop_requested_at,
                 "2030-01-01T00:00:04Z",
@@ -1461,6 +1508,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     entry,
+                    cid,
                     execution_id,
                     "permit-stop",
                     "stopped",
@@ -1540,6 +1588,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionPermitAttachment(
                     entry,
+                    cid,
                     execution_id,
                     "permit-resume",
                     "2030-01-01T00:00:09Z",
@@ -1555,6 +1604,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     run_root,
                     ExecutionTerminal(
                         entry,
+                        cid,
                         execution_id,
                         "permit-stop",
                         "stopped",
@@ -1572,6 +1622,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     run_root,
                     ExecutionTerminal(
                         entry,
+                        cid,
                         execution_id,
                         "permit-resume",
                         "succeeded",
@@ -1584,6 +1635,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry,
+                    cid,
                     execution_id,
                     "permit-resume",
                     "2030-01-01T00:00:10Z",
@@ -1601,6 +1653,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                         run_root,
                         ExecutionTerminal(
                             entry,
+                            cid,
                             execution_id,
                             "permit-resume",
                             "succeeded",
@@ -1624,11 +1677,13 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             plan = accepted.plan
             execution = plan.executions[0]
             entry = str(execution["entry"])
+            cid = str(execution["cid"])
             execution_id = str(execution["execution_id"])
             attach_execution_permit(
                 run_root,
                 ExecutionPermitAttachment(
                     entry,
+                    cid,
                     execution_id,
                     "permit-interrupted",
                     "2030-01-01T00:00:01Z",
@@ -1638,6 +1693,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry,
+                    cid,
                     execution_id,
                     "permit-interrupted",
                     "2030-01-01T00:00:01Z",
@@ -1660,6 +1716,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                         run_root,
                         ExecutionTerminal(
                             entry,
+                            cid,
                             execution_id,
                             "permit-interrupted",
                             "succeeded",
@@ -1704,7 +1761,12 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                     record_execution_comparison(run_root, replacement)
             self.assertEqual(load_publication_projection(run_root), before)
 
-            effect = RequirementEffect(entry, execution_id, "2030-01-01T00:01:02Z")
+            effect = RequirementEffect(
+                entry,
+                _cid(plan, entry, execution_id),
+                execution_id,
+                "2030-01-01T00:01:02Z",
+            )
             with mock.patch.object(
                 job_storage,
                 "_before_commit",
@@ -1788,7 +1850,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -1841,16 +1903,12 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 ),
             )
             with self.assertRaises(JobStoreTransitionError):
-                record_execution_comparison(
-                    run_root, replace(skipped, artifacts=())
-                )
+                record_execution_comparison(run_root, replace(skipped, artifacts=()))
             record_execution_comparison(run_root, skipped)
             status = load_run_status(run_root)
             self.assertEqual(status.completed_executions, 2)
             self.assertEqual(status.artifact_outcomes["skipped"], 1)
-            prepare_publication(
-                run_root, "e" * 64, updated_at="2030-01-01T00:02:00Z"
-            )
+            prepare_publication(run_root, "e" * 64, updated_at="2030-01-01T00:02:00Z")
             self.assertEqual(audit_job_state(run_root).integrity_check, "ok")
 
     def test_owner_workers_and_publication_compare_and_set(self) -> None:
@@ -1871,7 +1929,12 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             record_execution_comparison(run_root, _comparison(plan, 0))
             record_requirement_effect(
                 run_root,
-                RequirementEffect(entry, execution_id, "2030-01-01T00:01:01Z"),
+                RequirementEffect(
+                    entry,
+                    _cid(plan, entry, execution_id),
+                    execution_id,
+                    "2030-01-01T00:01:01Z",
+                ),
             )
             identity = "b" * 64
             prepare_publication(run_root, identity, updated_at="2030-01-01T00:01:02Z")
@@ -1956,12 +2019,15 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             _start_and_finish(run_root, plan, 0)
             execution = plan.executions[1]
             identity = ExecutionIdentity(
-                str(execution["entry"]), str(execution["execution_id"])
+                str(execution["entry"]),
+                str(execution["cid"]),
+                str(execution["execution_id"]),
             )
             attach_execution_permit(
                 run_root,
                 ExecutionPermitAttachment(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     "permit-live",
                     "2030-01-01T00:00:03Z",
@@ -1971,6 +2037,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     "permit-live",
                     "2030-01-01T00:00:03Z",
@@ -2028,8 +2095,7 @@ class ReproductionJobStorageTransactionTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    "permit_id is not null" in statement.lower()
-                    for statement in traces
+                    "permit_id is not null" in statement.lower() for statement in traces
                 )
             )
             self.assertFalse(
@@ -2053,7 +2119,9 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
         with _job_fixture(executions=2) as (*_unused, plan, _accepted, run_root):
             entry, execution_id, _baseline = _start_and_finish(run_root, plan, 0)
             record_execution_comparison(run_root, _comparison(plan, 0))
-            identity = ExecutionIdentity(entry, execution_id)
+            identity = ExecutionIdentity(
+                entry, _cid(plan, entry, execution_id), execution_id
+            )
             checkpoint = load_execution_checkpoint(run_root, identity)
             control = load_run_control(run_root)
             effect = load_requirement_effect(run_root, identity)
@@ -2062,9 +2130,7 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
             self.assertIsNotNone(effect.comparison_recorded_at)
             traces: list[str] = []
             with open_locked_job(run_root, trace=traces.append) as store:
-                self.assertEqual(
-                    store.load_execution_checkpoint(identity), checkpoint
-                )
+                self.assertEqual(store.load_execution_checkpoint(identity), checkpoint)
                 self.assertEqual(store.load_run_control(), control)
                 self.assertEqual(store.load_requirement_effect(identity), effect)
             statements = "\n".join(traces).lower()
@@ -2080,6 +2146,7 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
                     run_root,
                     ExecutionPermitAttachment(
                         str(execution["entry"]),
+                        str(execution["cid"]),
                         str(execution["execution_id"]),
                         f"permit-{index}",
                         f"2030-01-01T00:00:{index + 1:02d}Z",
@@ -2089,6 +2156,7 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
                     run_root,
                     ExecutionStart(
                         str(execution["entry"]),
+                        str(execution["cid"]),
                         str(execution["execution_id"]),
                         f"permit-{index}",
                         f"2030-01-01T00:00:{index + 1:02d}Z",
@@ -2113,6 +2181,7 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
                 store.record_execution_terminal(
                     ExecutionTerminal(
                         str(target["entry"]),
+                        str(target["cid"]),
                         str(target["execution_id"]),
                         "permit-3",
                         "failed",
@@ -2259,9 +2328,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
                 / "reproduce-copied-reproduce-20300101t000000z-copied"
             )
             copied_root.mkdir(parents=True)
-            shutil.copy2(
-                run_root / "state.sqlite", copied_root / "state.sqlite"
-            )
+            shutil.copy2(run_root / "state.sqlite", copied_root / "state.sqlite")
             with self.assertRaises(JobStoreInvariantError):
                 load_run_status(copied_root)
 
@@ -2321,7 +2388,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
 
     def test_status_rejects_selected_lifecycle_and_identity_corruption(self) -> None:
         job_storage._require_execution_identity(
-            "e1000", "pyrun-exec/v1:" + "a" * 64
+            "e1000", "fixture", "pyrun-exec/v2:" + "a" * 64
         )
         with _job_fixture() as (*_unused, run_root):
             with sqlite3.connect(run_root / "state.sqlite") as db:
@@ -2333,9 +2400,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
                 load_run_status(run_root)
         with _job_fixture() as (*_unused, run_root):
             with sqlite3.connect(run_root / "state.sqlite") as db:
-                db.execute(
-                    "UPDATE runs SET target_kind='entry', target_entry='e12'"
-                )
+                db.execute("UPDATE runs SET target_kind='entry', target_entry='e12'")
             with self.assertRaises(JobStoreInvariantError):
                 load_run_status(run_root)
         with _job_fixture() as (*_unused, plan, _accepted, run_root):
@@ -2344,6 +2409,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
                 run_root,
                 ExecutionPermitAttachment(
                     str(execution["entry"]),
+                    str(execution["cid"]),
                     str(execution["execution_id"]),
                     "permit-corrupt",
                     "2030-01-01T00:00:01Z",
@@ -2356,11 +2422,13 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
         with _job_fixture() as (*_unused, plan, _accepted, run_root):
             execution = plan.executions[0]
             entry = str(execution["entry"])
+            cid = str(execution["cid"])
             execution_id = str(execution["execution_id"])
             attach_execution_permit(
                 run_root,
                 ExecutionPermitAttachment(
                     entry,
+                    cid,
                     execution_id,
                     "permit-terminal-corrupt",
                     "2030-01-01T00:00:01Z",
@@ -2370,6 +2438,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     entry,
+                    cid,
                     execution_id,
                     "permit-terminal-corrupt",
                     "stopped",
@@ -2410,7 +2479,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
             unsupported = root / "unsupported"
             unsupported.mkdir()
             with sqlite3.connect(unsupported / "state.sqlite") as db:
-                db.execute("PRAGMA user_version=2")
+                db.execute("PRAGMA user_version=999")
             with self.assertRaises(JobStoreUnsupportedError):
                 load_run_status(unsupported)
 
@@ -2433,6 +2502,7 @@ class ReproductionJobStorageErrorTests(unittest.TestCase):
                     run_root,
                     ExecutionTerminal(
                         str(execution["entry"]),
+                        str(execution["cid"]),
                         str(execution["execution_id"]),
                         "missing-permit",
                         "succeeded",

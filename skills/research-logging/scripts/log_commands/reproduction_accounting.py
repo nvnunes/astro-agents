@@ -18,7 +18,7 @@ class CommandAccountingError(ValueError):
 class CommandSelectionAccounting:
     """Exhaustive target counts fixed before command execution."""
 
-    run_keys: frozenset[tuple[str, str]]
+    run_keys: frozenset[tuple[str, str, str]]
     not_automatic: int
     reproduction_not_needed: int
     unchanged_failed: int
@@ -33,20 +33,22 @@ def project_command_selection(
 ) -> CommandSelectionAccounting:
     """Reconcile one plan's run, no-work, block, and policy selections."""
 
-    planned: dict[tuple[str, str], bool] = {}
+    planned: dict[tuple[str, str, str], bool] = {}
     for item in plan.executions:
         entry = item.get("entry")
+        cid = item.get("cid")
         execution_id = item.get("execution_id")
         automatic = item.get("auto_reproduce")
-        key = (entry, execution_id)
+        key = (entry, cid, execution_id)
         if (
             not isinstance(entry, str)
+            or not isinstance(cid, str)
             or not isinstance(execution_id, str)
             or not isinstance(automatic, bool)
             or key in planned
         ):
             raise CommandAccountingError("planned command accounting is invalid")
-        planned[(entry, execution_id)] = automatic
+        planned[(entry, cid, execution_id)] = automatic
 
     snapshots = command_snapshot_index(plan)
     del inventory
@@ -91,19 +93,21 @@ def project_command_selection(
 
 def command_snapshot_index(
     plan: ReproductionPlan,
-) -> dict[tuple[str, str], Mapping[str, object]]:
+) -> dict[tuple[str, str, str], Mapping[str, object]]:
     """Decode the immutable per-command source closures in one plan."""
 
     raw = plan.commands
-    snapshots: dict[tuple[str, str], Mapping[str, object]] = {}
+    snapshots: dict[tuple[str, str, str], Mapping[str, object]] = {}
     for value in raw:
         if not isinstance(value, Mapping):
             raise CommandAccountingError("command snapshot is invalid")
         entry = value.get("entry")
+        cid = value.get("cid")
         execution_id = value.get("execution_id")
         source_digest = value.get("source_digest")
         if (
             not isinstance(entry, str)
+            or not isinstance(cid, str)
             or not isinstance(execution_id, str)
             or not isinstance(value.get("auto_reproduce"), bool)
             or value.get("selection")
@@ -125,7 +129,7 @@ def command_snapshot_index(
             raise CommandAccountingError("command snapshot is invalid")
         if selection not in {"not_needed", "policy"} and source_digest is None:
             raise CommandAccountingError("command snapshot is invalid")
-        key = (entry, execution_id)
+        key = (entry, cid, execution_id)
         if key in snapshots:
             raise CommandAccountingError("command snapshot is duplicated")
         snapshots[key] = value

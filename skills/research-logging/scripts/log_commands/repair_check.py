@@ -65,6 +65,7 @@ from .storage import log_lock, reproduction_log_reservation
 @dataclass(frozen=True)
 class RepairCheckRequest:
     entry: str
+    cid: str
     execution_id: str
     execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
@@ -73,6 +74,7 @@ class RepairCheckRequest:
 class RepairCheckResult:
     summary: str
     entry: str
+    cid: str
     execution_id: str
     status: str
     exit_status: int
@@ -88,6 +90,7 @@ class RepairCheckResult:
             "schema": "research-log-repair-check-result/1",
             "summary": self.summary,
             "entry": self.entry,
+            "cid": self.cid,
             "execution_id": self.execution_id,
             "status": self.status,
             "exit_status": self.exit_status,
@@ -123,7 +126,7 @@ def run_repair_check(log: LogContext, request: RepairCheckRequest) -> RepairChec
     if PYRUN_EXECUTION_RE.fullmatch(request.execution_id) is None:
         raise ActionError(
             "repair_check.execution.invalid",
-            "--execution-id requires a full pyrun-exec/v1 ID",
+            "--execution-id requires a full pyrun-exec/v2 ID",
         )
     try:
         return _run_repair_check(log, request)
@@ -156,7 +159,7 @@ def _run_repair_check(
     if PYRUN_EXECUTION_RE.fullmatch(request.execution_id) is None:
         raise ActionError(
             "repair_check.execution.invalid",
-            "--execution-id requires a full pyrun-exec/v1 ID",
+            "--execution-id requires a full pyrun-exec/v2 ID",
         )
     with reproduction_log_reservation(log):
         with log_lock(log):
@@ -284,7 +287,7 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
     state = load_pyrun_state(
         entry.root / "pyrun.json", entry_root=entry.root, project_root=project
     )
-    execution = state.executions.get(request.execution_id)
+    execution = state.execution(request.cid, request.execution_id)
     if execution is None:
         raise ActionError(
             "repair_check.execution.unknown",
@@ -293,7 +296,8 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
     candidates = [
         item
         for item in entry_invocations(entry, project_root=project)
-        if execution_id(
+        if item.cid == request.cid
+        and execution_id(
             recipe_from_invocation(item, entry_root=entry.root, project_root=project)
         )
         == request.execution_id
@@ -334,7 +338,9 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
             for artifact, _kind in execution.recipe.outputs
         }
     )
-    invocation = AcceptedInvocation(entry.id, request.execution_id, execution, data, {})
+    invocation = AcceptedInvocation(
+        entry.id, request.cid, request.execution_id, execution, data, {}
+    )
     inputs, sources, snapshot = _snapshot(entry, project, invocation, definitions)
     return _RepairAuthority(
         entry, project, invocation, tuple(definitions), snapshot, inputs, sources
@@ -503,10 +509,16 @@ def _source_records(
     from validation.pyrun_outputs import code_target_path
     from validation.pyrun_state import script_target_path
 
+    script = invocation.execution.observed.script
+    if script is None:
+        raise ActionError(
+            "repair_check.baseline.missing",
+            "selected execution has no retained script observation",
+        )
     return (
         (
             "script",
-            invocation.execution.observed.script,
+            script,
             script_target_path(
                 invocation.execution.recipe.script,
                 entry_root=entry.root,
@@ -572,6 +584,7 @@ def _result(  # noqa: PLR0913
     return RepairCheckResult(
         log.summary.as_posix(),
         invocation.entry,
+        invocation.cid,
         invocation.execution_id,
         status,
         exit_status,
@@ -667,6 +680,7 @@ def _unavailable_result(  # noqa: PLR0913
     return RepairCheckResult(
         log.summary.as_posix(),
         request.entry,
+        request.cid,
         request.execution_id,
         status,
         143 if received and received[0] == signal.SIGTERM else 130 if received else 3,

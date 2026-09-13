@@ -16,6 +16,7 @@ from validation.pyrun_state import (
     PYRUN_SCHEMA,
     ExecutionRecipe,
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     PyrunFile,
     PyrunStateError,
@@ -87,6 +88,18 @@ def _entry(root: Path) -> Path:
     return entry
 
 
+def _state(entry: Path, *executions: PyrunExecution) -> PyrunFile:
+    return PyrunFile(
+        entry / PYRUN_FILENAME,
+        entry,
+        {
+            "build": PyrunCommand(
+                {execution_id(item.recipe): item for item in executions}
+            )
+        },
+    )
+
+
 class PyrunStateContractTests(unittest.TestCase):
     def test_script_identity_accepts_canonical_entry_and_log_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -154,7 +167,7 @@ class PyrunStateContractTests(unittest.TestCase):
             entry = _entry(root)
             execution = _execution()
             identity = execution_id(execution.recipe)
-            state = PyrunFile(entry / PYRUN_FILENAME, entry, {identity: execution})
+            state = _state(entry, execution)
             (entry / PYRUN_FILENAME).write_text(state.serialized(), encoding="utf-8")
 
             loaded = load_pyrun_state(
@@ -164,17 +177,17 @@ class PyrunStateContractTests(unittest.TestCase):
             self.assertEqual(loaded, state)
             self.assertEqual(
                 identity,
-                "pyrun-exec/v1:0ccaf0b36bd900c1c655ff7b6dcff7a68a5f5ce1840a8ffc4016cedd108d2349",
+                "pyrun-exec/v2:1d479c1f3a502958b2e4e2cf7014b16cb5feea9f2ae6e91657774da83b645771",
             )
             self.assertTrue((entry / PYRUN_FILENAME).read_bytes().endswith(b"\n"))
 
-    def test_roles_are_required_complete_and_part_of_identity(self) -> None:
+    def test_roles_are_required_complete_but_excluded_from_identity(self) -> None:
         recipe = _recipe()
         ordinary_output = replace(
             recipe,
             parameter_roles=(("input-data", "input"), ("output-data", "ordinary")),
         )
-        self.assertNotEqual(execution_id(recipe), execution_id(ordinary_output))
+        self.assertEqual(execution_id(recipe), execution_id(ordinary_output))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             entry = _entry(root)
@@ -195,7 +208,11 @@ class PyrunStateContractTests(unittest.TestCase):
                         json.dumps(
                             {
                                 "schema": PYRUN_SCHEMA,
-                                "executions": {execution_id(recipe): value},
+                                "commands": {
+                                    "build": {
+                                        "executions": {execution_id(recipe): value}
+                                    }
+                                },
                             },
                             sort_keys=True,
                             indent=2,
@@ -231,7 +248,104 @@ class PyrunStateContractTests(unittest.TestCase):
 
         self.assertEqual(execution_id(first.recipe), execution_id(second.recipe))
         changed = _recipe(environment=(("MODE", "alternate"),))
-        self.assertNotEqual(execution_id(recipe), execution_id(changed))
+        self.assertEqual(execution_id(recipe), execution_id(changed))
+
+    def test_parameter_identity_has_independent_fixed_vectors(self) -> None:
+        vectors = {
+            (): "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            ("",): "055539df4a0b804c58caf46c0cd2941af10d64c1395ddd8e50b5f55d945841e6",
+            (
+                "J",
+                "H",
+            ): "d436f945d7046214dd7283481408b4626370b27ff636c0a5857bb10be301d307",
+            (
+                "H",
+                "J",
+            ): "2ae82b118e2bebe6959f0843205b5ded413150def5c86a04ba918b44eb8f2a54",
+            (
+                "--mode",
+                "",
+                "--mode",
+                "exact",
+            ): "d4cd22e2de10cb509abcb3d0d586e5c5f8ad130e65620a112a8312fe408358db",
+            (
+                "--output-alias",
+                "result",
+            ): "d1e694807fba501e85c39f265198b5ddd4cc90f0fa4325c001d553ced60aabcf",
+        }
+        for parameters, digest in vectors.items():
+            with self.subTest(parameters=parameters):
+                self.assertEqual(execution_id(parameters), f"pyrun-exec/v2:{digest}")
+
+    def test_identity_excludes_full_recipe_declarations_and_runner_prefix(self) -> None:
+        base = _recipe()
+        changed = ExecutionRecipe(
+            "scripts/alternate.py",
+            ("--capture-stdout", "data/run.log", "--", *base.parameters),
+            (("MODE", "alternate"),),
+            ("alternate-input",),
+            (("data/alternate.csv", "file"),),
+            (("input-data", "ordinary"), ("output-data", "ordinary")),
+        )
+
+        self.assertEqual(execution_id(base), execution_id(changed))
+
+    def test_equal_parameter_ids_are_scoped_by_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            recipe = ExecutionRecipe(
+                "scripts/build.py",
+                ("--mode", "exact"),
+                (),
+                (),
+                (),
+                (("mode", "ordinary"),),
+            )
+            execution = _execution(recipe)
+            identity = execution_id(execution.recipe)
+            state = PyrunFile(
+                entry / PYRUN_FILENAME,
+                entry,
+                {
+                    "first": PyrunCommand({identity: execution}),
+                    "second": PyrunCommand(
+                        {identity: replace(execution, exclusive=True)}
+                    ),
+                },
+            )
+            (entry / PYRUN_FILENAME).write_text(state.serialized(), encoding="utf-8")
+
+            loaded = load_pyrun_state(
+                entry / PYRUN_FILENAME, entry_root=entry, project_root=root
+            )
+
+            first = loaded.execution("first", identity)
+            second = loaded.execution("second", identity)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            assert first is not None and second is not None
+            self.assertFalse(first.exclusive)
+            self.assertTrue(second.exclusive)
+
+    def test_partial_observation_round_trip_preserves_unavailable_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            pending = replace(
+                _execution(),
+                requires_reproduction=True,
+                last_run_at=None,
+                observed=ObservedExecution(None, (), (), ()),
+            )
+            state = _state(entry, pending)
+            (entry / PYRUN_FILENAME).write_text(state.serialized(), encoding="utf-8")
+
+            loaded = load_pyrun_state(
+                entry / PYRUN_FILENAME, entry_root=entry, project_root=root
+            )
+
+            self.assertEqual(loaded, state)
 
     def test_retained_migration_fixture_and_legacy_rejection(self) -> None:
         fixtures = Path(__file__).parent / "fixtures"
@@ -286,7 +400,7 @@ class PyrunStateContractTests(unittest.TestCase):
             entry = _entry(root)
             execution = _execution()
             identity = execution_id(execution.recipe)
-            state = PyrunFile(entry / PYRUN_FILENAME, entry, {identity: execution})
+            state = _state(entry, execution)
             path = entry / PYRUN_FILENAME
             canonical = state.serialized()
             cases: list[tuple[str, str]] = []
@@ -309,7 +423,7 @@ class PyrunStateContractTests(unittest.TestCase):
                 )
             )
             cases.append(
-                (canonical.replace(identity, "pyrun-exec/v1:" + "0" * 64), "id")
+                (canonical.replace(identity, "pyrun-exec/v2:" + "0" * 64), "id")
             )
             cases.append(
                 (
@@ -326,8 +440,8 @@ class PyrunStateContractTests(unittest.TestCase):
                         load_pyrun_state(path, entry_root=entry, project_root=root)
 
             path.write_text(
-                '{"executions":{},"schema":"research-log-pyrun/v5",'
-                '"schema":"research-log-pyrun/v5"}\n',
+                '{"commands":{},"schema":"research-log-pyrun/v6",'
+                '"schema":"research-log-pyrun/v6"}\n',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(PyrunStateError, "duplicate JSON key"):
@@ -341,20 +455,17 @@ class PyrunStateContractTests(unittest.TestCase):
             second_recipe = _recipe(output="data/bundle/member.csv")
             second = _execution(second_recipe)
             first_id = execution_id(first.recipe)
-            second_id = execution_id(second.recipe)
-            state = PyrunFile(
-                entry / PYRUN_FILENAME,
-                entry,
-                {first_id: first, second_id: second},
-            )
+            state = _state(entry, first, second)
             path = entry / PYRUN_FILENAME
             path.write_text(state.serialized(), encoding="utf-8")
 
             with self.assertRaisesRegex(PyrunStateError, "output_ownership_overlap"):
                 load_pyrun_state(path, entry_root=entry, project_root=root)
 
-            value = json.loads(PyrunFile(path, entry, {first_id: first}).serialized())
-            value["executions"][first_id]["observed"]["outputs"] = {}
+            value = json.loads(_state(entry, first).serialized())
+            value["commands"]["build"]["executions"][first_id]["observed"][
+                "outputs"
+            ] = {}
             path.write_text(
                 json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -397,13 +508,13 @@ class PyrunStateContractTests(unittest.TestCase):
             ):
                 with self.subTest(recipe=recipe), self.assertRaises(PyrunStateError):
                     publish_execution_locked(
-                        entry, _execution(recipe), project_root=root
+                        entry, "build", _execution(recipe), project_root=root
                     )
                 self.assertFalse((entry / PYRUN_FILENAME).exists())
 
 
 class PyrunStateLifecycleTests(unittest.TestCase):
-    def test_publication_replaces_every_overlapping_execution_in_full(self) -> None:
+    def test_publication_rejects_overlap_owned_by_another_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             entry = _entry(root)
@@ -418,7 +529,7 @@ class PyrunStateLifecycleTests(unittest.TestCase):
                 ),
             )
             first = _execution(first_recipe)
-            publish_execution_locked(entry, first, project_root=root)
+            publish_execution_locked(entry, "build", first, project_root=root)
             second_recipe = ExecutionRecipe(
                 "scripts/build.py",
                 ("--mode", "new"),
@@ -433,10 +544,10 @@ class PyrunStateLifecycleTests(unittest.TestCase):
             )
             second = _execution(second_recipe)
 
-            result = publish_execution_locked(entry, second, project_root=root)
-
-            self.assertEqual(set(result.executions), {execution_id(second_recipe)})
-            self.assertNotIn("data/first.csv", result.serialized())
+            before = (entry / PYRUN_FILENAME).read_bytes()
+            with self.assertRaisesRegex(PyrunStateError, "output_ownership_overlap"):
+                publish_execution_locked(entry, "build", second, project_root=root)
+            self.assertEqual((entry / PYRUN_FILENAME).read_bytes(), before)
 
     def test_policy_requirement_and_retirement_preserve_owned_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -444,14 +555,22 @@ class PyrunStateLifecycleTests(unittest.TestCase):
             entry = _entry(root)
             initial = _execution(requires_reproduction=True, last_run_at=None)
             identity = execution_id(initial.recipe)
-            publish_execution_locked(entry, initial, project_root=root)
-            before = load_pyrun_state(
-                entry / PYRUN_FILENAME, entry_root=entry, project_root=root
-            ).executions[identity]
+            publish_execution_locked(entry, "build", initial, project_root=root)
+            before = (
+                load_pyrun_state(
+                    entry / PYRUN_FILENAME, entry_root=entry, project_root=root
+                )
+                .commands["build"]
+                .executions[identity]
+            )
 
-            changed = update_auto_reproduce_locked(
-                entry, (identity,), auto_reproduce=False, project_root=root
-            ).executions[identity]
+            changed = (
+                update_auto_reproduce_locked(
+                    entry, "build", (identity,), auto_reproduce=False, project_root=root
+                )
+                .commands["build"]
+                .executions[identity]
+            )
             self.assertFalse(changed.auto_reproduce)
             self.assertEqual(
                 changed,
@@ -467,15 +586,21 @@ class PyrunStateLifecycleTests(unittest.TestCase):
                 ),
             )
 
-            updated = clear_reproduction_requirement_locked(
-                entry, identity, project_root=root
-            ).executions[identity]
+            updated = (
+                clear_reproduction_requirement_locked(
+                    entry, "build", identity, project_root=root
+                )
+                .commands["build"]
+                .executions[identity]
+            )
             self.assertFalse(updated.requires_reproduction)
             self.assertIsNone(updated.last_run_at)
             self.assertFalse(updated.auto_reproduce)
 
-            retired = retire_execution_locked(entry, identity, project_root=root)
-            self.assertEqual(retired.executions, {})
+            retired = retire_execution_locked(
+                entry, "build", identity, project_root=root
+            )
+            self.assertEqual(retired.commands, {})
             self.assertFalse((entry / PYRUN_FILENAME).exists())
 
 

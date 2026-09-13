@@ -29,7 +29,7 @@ class ReproductionQueryTests(unittest.TestCase):
         value = accepted_plan().as_dict()
         value["target"] = {
             "entry": "e001",
-            "execution_id": "pyrun-exec/v1:" + "1" * 64,
+            "execution_id": "pyrun-exec/v2:" + "1" * 64,
             "kind": "execution",
         }
         with self.assertRaises(ValueError):
@@ -99,7 +99,7 @@ class ReproductionQueryTests(unittest.TestCase):
         for option in ("--execution-id", "--verify-repair"):
             arguments = ["reproduce", "--path", "log", option]
             if option == "--execution-id":
-                arguments.append("pyrun-exec/v1:" + "1" * 64)
+                arguments.append("pyrun-exec/v2:" + "1" * 64)
             with self.subTest(option=option), self.assertRaises(SystemExit):
                 main(arguments)
 

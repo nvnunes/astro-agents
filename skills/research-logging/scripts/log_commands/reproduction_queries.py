@@ -252,9 +252,11 @@ def _artifact_currentness(
         if execution_id is None:
             result[(entry, path)] = "current"
             continue
-        if state.output_executions.get((entry, path)) not in {None, execution_id}:
+        assert artifact.cid is not None
+        execution_key = (entry, artifact.cid, execution_id)
+        if state.output_executions.get((entry, path)) not in {None, execution_key}:
             result[(entry, path)] = "execution_changed"
-        elif (entry, execution_id) not in state.last_runs:
+        elif execution_key not in state.last_runs:
             result[(entry, path)] = "execution_unavailable"
         elif (
             artifact.comparison is None
@@ -266,7 +268,7 @@ def _artifact_currentness(
         ):
             result[(entry, path)] = "comparison_changed"
         elif (
-            last_run := state.last_runs.get((entry, execution_id))
+            last_run := state.last_runs.get(execution_key)
         ) is not None and last_run > artifact.recorded_at:
             result[(entry, path)] = "execution_reran"
         else:
@@ -575,6 +577,7 @@ def list_reproduction_commands(
     *,
     bucket: str | None,
     entry: str | None,
+    cid: str | None,
     reason: str | None,
     run_id: str | None,
 ) -> dict[str, object]:
@@ -586,7 +589,7 @@ def list_reproduction_commands(
             f"unsupported command bucket: {bucket}",
         )
     summary, selected_run, matched, returned = _command_projection(
-        log, _CommandProjectionRequest(run_id, bucket, entry, reason, 50)
+        log, _CommandProjectionRequest(run_id, bucket, entry, reason, 50, cid)
     )
     load_run = lru_cache(maxsize=1)(lambda: _retained_command_run(log, selected_run))
     rows = []
@@ -602,7 +605,7 @@ def list_reproduction_commands(
             error = _failure_summary(diagnostics)
         rows.append({**_command_list_record(record), "error": error})
     return {
-        "filters": {"bucket": bucket, "entry": entry, "reason": reason},
+        "filters": {"bucket": bucket, "cid": cid, "entry": entry, "reason": reason},
         "matched": matched,
         "omitted": matched - len(returned),
         "records": rows,
@@ -617,23 +620,25 @@ def show_reproduction_command(
     log: LogContext,
     *,
     entry: str,
+    cid: str,
     execution_id: str,
     run_id: str | None,
 ) -> dict[str, object]:
     """Return one complete command record from completed-run accounting."""
 
     summary, selected_run, matched, selected = _command_projection(
-        log, _CommandProjectionRequest(run_id, None, entry, None, 2, execution_id)
+        log,
+        _CommandProjectionRequest(run_id, None, entry, None, 2, cid, execution_id),
     )
     if matched == 0:
         raise ActionError(
             "reproduction.command.unknown",
-            f"reproduction run contains no {entry}:{execution_id}",
+            f"reproduction run contains no {entry}:{cid}:{execution_id}",
         )
     if matched != 1:
         raise ActionError(
             "reproduction.command.ambiguous",
-            f"reproduction run contains ambiguous {entry}:{execution_id}",
+            f"reproduction run contains ambiguous {entry}:{cid}:{execution_id}",
         )
     return {
         "command": dict(selected[0]),
@@ -815,6 +820,7 @@ def _command_diagnostics(
     """Project bounded retained diagnostics for one exact launched command."""
 
     entry = cast(str, command["entry"])
+    cid = cast(str, command["cid"])
     execution_id = cast(str, command["execution_id"])
     unavailable = (
         "command_not_launched"
@@ -830,7 +836,7 @@ def _command_diagnostics(
     if isinstance(retained, str):
         return _unavailable_command_diagnostics(retained)
     run_root, record = retained
-    located = _locate_command_checkpoint(run_root, entry, execution_id)
+    located = _locate_command_checkpoint(run_root, entry, cid, execution_id)
     if located is None:
         return _unavailable_command_diagnostics("checkpoint_unavailable")
     checkpoint = {
@@ -931,7 +937,7 @@ def _compact_error(kind: str, message: str, source: str) -> dict[str, object]:
 
 
 def _locate_command_checkpoint(
-    run_root: Path, entry: str, execution_id: str
+    run_root: Path, entry: str, cid: str, execution_id: str
 ) -> Mapping[str, object] | None:
     """Find the one fixed-plan checkpoint for a compound command identity."""
 
@@ -943,7 +949,7 @@ def _locate_command_checkpoint(
 
     try:
         checkpoint = load_execution_checkpoint(
-            run_root, ExecutionIdentity(entry, execution_id)
+            run_root, ExecutionIdentity(entry, cid, execution_id)
         )
     except JobStoreError:
         return None
@@ -957,6 +963,7 @@ def _locate_command_checkpoint(
         ),
         "elapsed_seconds": checkpoint.elapsed_seconds,
         "entry": checkpoint.entry,
+        "cid": checkpoint.cid,
         "execution_id": checkpoint.execution_id,
         "failure": (
             None
@@ -1075,6 +1082,7 @@ class _CommandProjectionRequest:
     entry: str | None
     reason: str | None
     limit: int
+    cid: str | None = None
     execution_id: str | None = None
 
 
@@ -1096,6 +1104,7 @@ def _command_projection(
                 request.bucket,
                 request.entry,
                 request.reason,
+                request.cid,
                 request.execution_id,
                 request.limit,
             ),

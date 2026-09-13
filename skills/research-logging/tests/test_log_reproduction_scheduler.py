@@ -60,7 +60,8 @@ from validation.operation_state import operation_directory
 def _planned(order: int, *, exclusive: bool, leaf: str) -> dict[str, object]:
     return {
         "entry": f"e{order:03d}",
-        "execution_id": "pyrun-exec/v1:" + f"{order:x}" * 64,
+        "cid": f"build-{order}",
+        "execution_id": "pyrun-exec/v2:" + f"{order:x}" * 64,
         "order": order,
         "exclusive": exclusive,
         "read_paths": [f"<project>/origins/{leaf}.csv"],
@@ -83,6 +84,7 @@ def _typed_request(
         project,
         run_id,
         str(planned["entry"]),
+        str(planned["cid"]),
         str(planned["execution_id"]),
         int(planned["order"]),
     )
@@ -304,9 +306,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 stale_permit = cast(
                     str,
-                    db.execute(
-                        "SELECT permit_id FROM scheduler_permits"
-                    ).fetchone()[0],
+                    db.execute("SELECT permit_id FROM scheduler_permits").fetchone()[0],
                 )
             historical = dead_root / "run.json"
             historical.write_bytes(b"{not-json")
@@ -320,9 +320,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     "2030-01-01T00:00:04Z",
                 ),
             )
-            finish_run_stop(
-                dead_root, RunStopCompletion("2030-01-01T00:00:04Z")
-            )
+            finish_run_stop(dead_root, RunStopCompletion("2030-01-01T00:00:04Z"))
             live_root, live_request = _create_scheduler_run(
                 project, fixture, entry, plan, suffix="terminal-live"
             )
@@ -352,12 +350,15 @@ class ReproductionSchedulerTests(unittest.TestCase):
             granted = _poll(dead_root, dead_request)
             assert granted.permit is not None
             identity = ExecutionIdentity(
-                dead_request.identity.entry, dead_request.identity.execution_id
+                dead_request.identity.entry,
+                dead_request.identity.cid,
+                dead_request.identity.execution_id,
             )
             record_execution_start(
                 dead_root,
                 ExecutionStart(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     granted.permit.permit_id,
                     "2030-01-01T00:00:03Z",
@@ -409,15 +410,9 @@ class ReproductionSchedulerTests(unittest.TestCase):
             assert first_grant.permit is not None
             assert second_grant.permit is not None
             with self.assertRaises(ActionError):
-                release_permit(
-                    first.identity, second_grant.permit.permit_id
-                )
-            self.assertEqual(
-                _poll(first_root, first).permit, first_grant.permit
-            )
-            released = release_permit(
-                first.identity, first_grant.permit.permit_id
-            )
+                release_permit(first.identity, second_grant.permit.permit_id)
+            self.assertEqual(_poll(first_root, first).permit, first_grant.permit)
+            released = release_permit(first.identity, first_grant.permit.permit_id)
             self.assertEqual(
                 released.removed_permit_ids, (first_grant.permit.permit_id,)
             )
@@ -425,9 +420,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 release_permit(first.identity, first_grant.permit.permit_id)
             )
             with self.assertRaises(ActionError):
-                release_permit(
-                    first.identity, second_grant.permit.permit_id
-                )
+                release_permit(first.identity, second_grant.permit.permit_id)
 
     def test_sqlite_failed_dependency_is_not_launch_ready(self) -> None:
         with _job_fixture(executions=2, create=False) as (
@@ -442,7 +435,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -465,15 +458,20 @@ class ReproductionSchedulerTests(unittest.TestCase):
             grant = _poll(run_root, request)
             assert grant.permit is not None
             producer = ExecutionIdentity(
-                request.identity.entry, request.identity.execution_id
+                request.identity.entry,
+                request.identity.cid,
+                request.identity.execution_id,
             )
             dependent = ExecutionIdentity(
-                str(executions[1]["entry"]), str(executions[1]["execution_id"])
+                str(executions[1]["entry"]),
+                str(executions[1]["cid"]),
+                str(executions[1]["execution_id"]),
             )
             record_execution_start(
                 run_root,
                 ExecutionStart(
                     producer.entry,
+                    producer.cid,
                     producer.execution_id,
                     grant.permit.permit_id,
                     "2030-01-01T00:00:03Z",
@@ -485,6 +483,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     producer.entry,
+                    producer.cid,
                     producer.execution_id,
                     grant.permit.permit_id,
                     "failed",
@@ -571,9 +570,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             )
             finish_run_stop(run_root, RunStopCompletion("2030-01-01T00:00:03Z"))
             self.assertEqual(load_run_status(run_root).status, "stopped")
-            release_permit(
-                blocker.identity, blocker_grant.permit.permit_id
-            )
+            release_permit(blocker.identity, blocker_grant.permit.permit_id)
 
     def test_sqlite_claim_conflicts_and_dead_waiter_cleanup_are_typed(self) -> None:
         with _job_fixture(executions=1, create=False) as (
@@ -627,9 +624,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             release_permit(shared.identity, shared_grant.permit.permit_id)
             after_cleanup = _poll(conflict_root, conflict)
             self.assertEqual(after_cleanup.disposition, "granted")
-            self.assertEqual(
-                after_cleanup.delta.removed_waiter_tickets, (dead_ticket,)
-            )
+            self.assertEqual(after_cleanup.delta.removed_waiter_tickets, (dead_ticket,))
 
     def test_sqlite_scheduler_schema_is_exact_and_persists_when_empty(self) -> None:
         with _job_fixture(executions=1, create=False) as (
@@ -657,6 +652,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     "ticket",
                     "run_id",
                     "entry",
+                    "cid",
                     "execution_id",
                     "plan_order",
                     "supervisor_pid",
@@ -667,6 +663,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     "kind",
                     "run_id",
                     "entry",
+                    "cid",
                     "execution_id",
                     "plan_order",
                     "supervisor_pid",
@@ -708,9 +705,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     unique_columns[table] = {
                         tuple(
                             row[2]
-                            for row in db.execute(
-                                f"PRAGMA index_info({index[1]})"
-                            )
+                            for row in db.execute(f"PRAGMA index_info({index[1]})")
                         )
                         for index in indexes
                         if index[2]
@@ -720,11 +715,11 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     {
                         "scheduler_state": set(),
                         "scheduler_waiters": {
-                            ("run_id", "entry", "execution_id"),
+                            ("run_id", "entry", "cid", "execution_id"),
                         },
                         "scheduler_permits": {
                             ("permit_id",),
-                            ("run_id", "entry", "execution_id"),
+                            ("run_id", "entry", "cid", "execution_id"),
                         },
                         "scheduler_claims": {
                             ("permit_id", "claim_kind", "position"),
@@ -734,8 +729,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 )
                 explicit_indexes = {
                     row[0]: tuple(
-                        item[2]
-                        for item in db.execute(f"PRAGMA index_info({row[0]})")
+                        item[2] for item in db.execute(f"PRAGMA index_info({row[0]})")
                     )
                     for row in db.execute(
                         "SELECT name FROM sqlite_schema "
@@ -774,8 +768,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 table_sql = " ".join(
                     row[0].lower().replace("\n", " ")
                     for row in db.execute(
-                        "SELECT sql FROM sqlite_schema "
-                        "WHERE type='table' ORDER BY name"
+                        "SELECT sql FROM sqlite_schema WHERE type='table' ORDER BY name"
                     )
                 )
                 for expression in (
@@ -806,9 +799,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             run_root,
         ):
             planned = dict(plan.executions[0])
-            request = _typed_request(
-                project, run_root, accepted.run_id, planned
-            )
+            request = _typed_request(project, run_root, accepted.run_id, planned)
             replace_run_owner(
                 run_root,
                 RunOwner(
@@ -821,12 +812,15 @@ class ReproductionSchedulerTests(unittest.TestCase):
             first = _poll(run_root, request)
             assert first.permit is not None
             identity = ExecutionIdentity(
-                request.identity.entry, request.identity.execution_id
+                request.identity.entry,
+                request.identity.cid,
+                request.identity.execution_id,
             )
             record_execution_start(
                 run_root,
                 ExecutionStart(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     first.permit.permit_id,
                     "2030-01-01T00:00:03Z",
@@ -839,6 +833,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     first.permit.permit_id,
                     "stopped",
@@ -850,12 +845,8 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     failure_recorded_at="2030-01-01T00:00:05Z",
                 ),
             )
-            release = reconcile_permit(
-                request.identity, load_scheduler_owner(run_root)
-            )
-            self.assertEqual(
-                release.clear_run_permit_id, first.permit.permit_id
-            )
+            release = reconcile_permit(request.identity, load_scheduler_owner(run_root))
+            self.assertEqual(release.clear_run_permit_id, first.permit.permit_id)
             clear_execution_permit(
                 run_root,
                 identity,
@@ -888,9 +879,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                     "2030-01-01T00:00:09Z",
                 ),
             )
-            resumed_request = replace(
-                request, polled_at="2030-01-01T00:00:09Z"
-            )
+            resumed_request = replace(request, polled_at="2030-01-01T00:00:09Z")
             resumed = _poll(
                 run_root,
                 resumed_request,
@@ -902,6 +891,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     resumed.permit.permit_id,
                     "2030-01-01T00:00:11Z",
@@ -922,6 +912,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     resumed.permit.permit_id,
                     "succeeded",
@@ -977,9 +968,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 interrupted_permit = cast(
                     str,
-                    db.execute(
-                        "SELECT permit_id FROM scheduler_permits"
-                    ).fetchone()[0],
+                    db.execute("SELECT permit_id FROM scheduler_permits").fetchone()[0],
                 )
             unrelated_root, unrelated = _create_scheduler_run(
                 project, fixture, entry, plan, suffix="unrelated"
@@ -1032,9 +1021,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             self.assertIsNone(surviving.delta)
             release_permit(live_request.identity, durable.permit.permit_id)
             with self.assertRaises(ActionError) as raised:
-                reconcile_permit(
-                    live_request.identity, load_scheduler_owner(run_root)
-                )
+                reconcile_permit(live_request.identity, load_scheduler_owner(run_root))
             self.assertEqual(
                 raised.exception.code,
                 "reproduction.scheduler.reconciliation_required",
@@ -1080,9 +1067,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 scheduler,
                 "_before_scheduler_commit",
                 side_effect=lambda operation, _db: (
-                    (_ for _ in ()).throw(
-                        RuntimeError("interrupted scheduler release")
-                    )
+                    (_ for _ in ()).throw(RuntimeError("interrupted scheduler release"))
                     if operation == "permit_release"
                     else None
                 ),
@@ -1090,9 +1075,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     RuntimeError, "interrupted scheduler release"
                 ):
-                    release_permit(
-                        request.identity, durable.permit.permit_id
-                    )
+                    release_permit(request.identity, durable.permit.permit_id)
             reopened = _poll(run_root, request)
             self.assertEqual(reopened.permit, durable.permit)
             self.assertIsNone(reopened.delta)
@@ -1139,22 +1122,16 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 _poll(second_root, second_exclusive).disposition, "waiting"
             )
             assert first_grant.permit is not None
-            release_permit(
-                first_exclusive.identity, first_grant.permit.permit_id
-            )
+            release_permit(first_exclusive.identity, first_grant.permit.permit_id)
             second_grant = _poll(second_root, second_exclusive)
             self.assertEqual(second_grant.disposition, "granted")
             assert second_grant.permit is not None
-            release_permit(
-                second_exclusive.identity, second_grant.permit.permit_id
-            )
+            release_permit(second_exclusive.identity, second_grant.permit.permit_id)
 
             database = operation_directory(project) / SCHEDULER_DATABASE_NAME
             with sqlite3.connect(database) as db:
                 self.assertEqual(
-                    db.execute(
-                        "SELECT next_ticket FROM scheduler_state"
-                    ).fetchone()[0],
+                    db.execute("SELECT next_ticket FROM scheduler_state").fetchone()[0],
                     2,
                 )
                 self.assertEqual(
@@ -1218,9 +1195,9 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 self.assertEqual(total_changes, [0, 0, 0, 0])
                 self.assertFalse(
                     any(
-                        statement.lstrip().upper().startswith(
-                            ("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE")
-                        )
+                        statement.lstrip()
+                        .upper()
+                        .startswith(("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE"))
                         for statement in statements
                     ),
                     statements,
@@ -1251,7 +1228,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
             dependent = dict(
                 dependent,
                 depends_on=[
-                    f"{producer['entry']}:{producer['execution_id']}"
+                    f"{producer['entry']}:{producer['cid']}:{producer['execution_id']}"
                 ],
             )
             executions[1] = dependent
@@ -1259,15 +1236,20 @@ class ReproductionSchedulerTests(unittest.TestCase):
             create_job(run_root, replace(accepted, plan=plan))
 
             producer_run_identity = ExecutionIdentity(
-                str(producer["entry"]), str(producer["execution_id"])
+                str(producer["entry"]),
+                str(producer["cid"]),
+                str(producer["execution_id"]),
             )
             dependent_run_identity = ExecutionIdentity(
-                str(dependent["entry"]), str(dependent["execution_id"])
+                str(dependent["entry"]),
+                str(dependent["cid"]),
+                str(dependent["execution_id"]),
             )
             scheduler_identity = SchedulerIdentity(
                 project,
                 accepted.run_id,
                 producer_run_identity.entry,
+                producer_run_identity.cid,
                 producer_run_identity.execution_id,
                 int(producer["order"]),
             )
@@ -1278,9 +1260,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 tuple(_resolve_claims(producer["read_paths"], run_root, project)),
                 tuple(_resolve_claims(producer["write_paths"], run_root, project)),
                 _resolve_claim(str(producer["run_path"]), run_root, project),
-                tuple(
-                    _resolve_claims(producer["writable_paths"], run_root, project)
-                ),
+                tuple(_resolve_claims(producer["writable_paths"], run_root, project)),
                 "2030-01-01T00:00:01Z",
             )
 
@@ -1302,13 +1282,12 @@ class ReproductionSchedulerTests(unittest.TestCase):
             self.assertEqual(decision.delta.inserted_permit_id, permit.permit_id)
             waiting = load_execution_readiness(run_root, dependent_run_identity)
             self.assertEqual(waiting.disposition, "waiting")
-            self.assertEqual(
-                waiting.pending_dependencies, (producer_run_identity,)
-            )
+            self.assertEqual(waiting.pending_dependencies, (producer_run_identity,))
             record_execution_start(
                 run_root,
                 ExecutionStart(
                     producer_run_identity.entry,
+                    producer_run_identity.cid,
                     producer_run_identity.execution_id,
                     permit.permit_id,
                     "2030-01-01T00:00:03Z",
@@ -1339,6 +1318,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 run_root,
                 ExecutionTerminal(
                     producer_run_identity.entry,
+                    producer_run_identity.cid,
                     producer_run_identity.execution_id,
                     permit.permit_id,
                     "succeeded",
@@ -1379,11 +1359,9 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 permit.permit_id,
             )
 
-            scheduler_path = (
-                operation_directory(project) / SCHEDULER_DATABASE_NAME
-            )
+            scheduler_path = operation_directory(project) / SCHEDULER_DATABASE_NAME
             with sqlite3.connect(scheduler_path) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 1)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
                 tables = {
                     row[0]
                     for row in db.execute(
@@ -1417,6 +1395,7 @@ class ReproductionSchedulerTests(unittest.TestCase):
                 "legacy-run-cutover-compatibility",
             },
         )
+
 
 if __name__ == "__main__":
     unittest.main()

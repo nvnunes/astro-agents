@@ -19,7 +19,7 @@ from typing import Iterator
 from research_log_paths import RESULTS_STORE
 from validation.operation_state import operation_lock
 
-STORE_VERSION = 14
+STORE_VERSION = 15
 _COMPANIONS = ("-journal", "-wal", "-shm")
 
 # The v14 layout keeps public identifiers at the API boundary while compact
@@ -364,6 +364,7 @@ CREATE TABLE reproduction_runs (
     run_id TEXT UNIQUE NOT NULL,
     target_kind TEXT NOT NULL,
     target_entry TEXT,
+    target_cid TEXT,
     target_execution_id TEXT,
     include_all INTEGER NOT NULL CHECK(include_all IN (0, 1)),
     status TEXT NOT NULL,
@@ -387,6 +388,7 @@ CREATE TABLE reproduction_runs (
 CREATE TABLE reproduction_run_commands (
     run_pk INTEGER NOT NULL,
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     plan_order INTEGER NOT NULL CHECK(plan_order >= 0),
     bucket TEXT NOT NULL,
@@ -402,32 +404,35 @@ CREATE TABLE reproduction_run_commands (
     run_selection TEXT,
     details_json TEXT NOT NULL,
     recipe_json TEXT,
-    PRIMARY KEY(run_pk, entry, execution_id),
+    PRIMARY KEY(run_pk, entry, cid, execution_id),
     FOREIGN KEY(run_pk) REFERENCES reproduction_runs(run_pk) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE reproduction_run_executions (
     run_pk INTEGER NOT NULL,
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     position INTEGER NOT NULL CHECK(position >= 0),
     started_at TEXT,
     finished_at TEXT,
     elapsed_seconds REAL,
-    PRIMARY KEY(run_pk, entry, execution_id),
+    PRIMARY KEY(run_pk, entry, cid, execution_id),
     FOREIGN KEY(run_pk) REFERENCES reproduction_runs(run_pk) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE reproduction_execution_results (
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     disposition TEXT NOT NULL,
     source_digest TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     producing_run_id TEXT NOT NULL,
-    PRIMARY KEY(entry, execution_id)
+    PRIMARY KEY(entry, cid, execution_id)
 ) WITHOUT ROWID;
 CREATE TABLE reproduction_artifact_results (
     entry TEXT NOT NULL,
     artifact TEXT NOT NULL,
+    cid TEXT,
     execution_id TEXT,
     outcome TEXT NOT NULL,
     reason TEXT,
@@ -583,7 +588,11 @@ def _sqlite_error_code(error: sqlite3.OperationalError) -> str:
     """Classify SQLite contention without recasting corrupt stores as busy."""
 
     text = str(error).lower()
-    return "results.store.busy" if "locked" in text or "busy" in text else "results.store.malformed"
+    return (
+        "results.store.busy"
+        if "locked" in text or "busy" in text
+        else "results.store.malformed"
+    )
 
 
 def _initialize_schema(db: sqlite3.Connection) -> None:
@@ -730,7 +739,9 @@ def clear_reproduction_results(log_root: Path) -> None:
         with result_transaction(log_root) as db:
             tables = {
                 row[0]
-                for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
             }
             for table in (
                 "reproduction_comparison_evidence",

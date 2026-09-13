@@ -42,9 +42,9 @@ from validation.presentation import (
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PYRUN_FILENAME,
+    PyrunCommand,
     PyrunFile,
     load_pyrun_state,
-    without_executions,
 )
 from validation.retention import (
     MAX_RETENTION_FILE_BYTES,
@@ -376,9 +376,7 @@ def _mapped_token(value: str, names: Mapping[str, str]) -> str:
     name, projection, member = parts
     mapped = names.get(name, name)
     suffix = f":{projection}" if projection is not None else ""
-    return f"<{mapped}>{suffix}" + (
-        f"/{member}" if member is not None else ""
-    )
+    return f"<{mapped}>{suffix}" + (f"/{member}" if member is not None else "")
 
 
 def _verify_markdown(
@@ -539,9 +537,7 @@ def _retired_support(
     )
 
 
-def _selected_transfer_paths(
-    state: _SourceState, plan: _TransferPlan
-) -> set[str]:
+def _selected_transfer_paths(state: _SourceState, plan: _TransferPlan) -> set[str]:
     """Return every selected entry-relative material target."""
 
     selected = set(plan.maps["path"])
@@ -569,12 +565,10 @@ def _retired_execution_state(
 ) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
     """Retire only complete executions whose full output set was transferred."""
 
-    state = load_pyrun_state(
-        path, entry_root=source.root, project_root=project_root
-    )
-    selected: list[str] = []
+    state = load_pyrun_state(path, entry_root=source.root, project_root=project_root)
+    selected: dict[str, list[str]] = {}
     reruns: list[dict[str, object]] = []
-    for identity, execution in state.executions.items():
+    for cid, identity, execution in state.execution_items():
         outputs = set(dict(execution.recipe.outputs))
         if not outputs & selected_paths:
             continue
@@ -591,10 +585,11 @@ def _retired_execution_state(
                 authored=True,
             ).exists():
                 raise ActionError("reorganize.transfer.support_still_current", output)
-        selected.append(identity)
+        selected.setdefault(cid, []).append(identity)
         reruns.append(
             {
                 "entry": destination.id,
+                "cid": cid,
                 "execution_id": identity,
                 "parameters": list(execution.recipe.parameters),
                 "script": execution.recipe.script,
@@ -602,11 +597,21 @@ def _retired_execution_state(
         )
     if not selected:
         return None, ()
-    result: PyrunFile = without_executions(
-        source.root, tuple(selected), project_root=project_root
-    )
+    result = state
+    for cid, identities in selected.items():
+        executions = {
+            key: value
+            for key, value in result.commands[cid].executions.items()
+            if key not in identities
+        }
+        commands = dict(result.commands)
+        if executions:
+            commands[cid] = PyrunCommand(executions)
+        else:
+            del commands[cid]
+        result = PyrunFile(result.path, result.entry_root, commands)
     return (
-        _SupportUpdate(result.path, result.serialized() if result.executions else None),
+        _SupportUpdate(result.path, result.serialized() if result.commands else None),
         tuple(reruns),
     )
 

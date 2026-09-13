@@ -123,7 +123,12 @@ from research_log_result_store import (
     result_transaction,
 )
 from test_log_reproduction_planning import _Fixture
-from test_reproduction_job_storage import _comparison, _job_fixture, _start_and_finish
+from test_reproduction_job_storage import (
+    _cid,
+    _comparison,
+    _job_fixture,
+    _start_and_finish,
+)
 from validation.fingerprint_cache import (
     CACHE_COMPANION_SUFFIXES as FINGERPRINT_COMPANIONS,
 )
@@ -363,11 +368,13 @@ class ReproductionJobTests(unittest.TestCase):
                 )
                 planned = plan.executions[0]
                 entry = str(planned["entry"])
+                cid = str(planned["cid"])
                 execution_id = str(planned["execution_id"])
                 scheduler_identity = SchedulerIdentity(
                     project,
                     accepted.run_id,
                     entry,
+                    cid,
                     execution_id,
                     int(planned["order"]),
                 )
@@ -393,7 +400,9 @@ class ReproductionJobTests(unittest.TestCase):
                 if decision.permit is None:
                     self.fail("fixture permit was not granted")
                 permit_id = decision.permit.permit_id
-                identity = ExecutionIdentity(entry, execution_id)
+                identity = ExecutionIdentity(
+                    entry, _cid(plan, entry, execution_id), execution_id
+                )
                 scratch = Path(
                     tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp")
                 )
@@ -401,6 +410,7 @@ class ReproductionJobTests(unittest.TestCase):
                     run_root,
                     ExecutionStart(
                         entry,
+                        cid,
                         execution_id,
                         permit_id,
                         "2030-01-01T00:00:03Z",
@@ -426,6 +436,7 @@ class ReproductionJobTests(unittest.TestCase):
                         run_root,
                         ExecutionTerminal(
                             entry,
+                            cid,
                             execution_id,
                             permit_id,
                             "succeeded",
@@ -505,6 +516,7 @@ class ReproductionJobTests(unittest.TestCase):
                     project,
                     accepted.run_id,
                     str(first["entry"]),
+                    str(first["cid"]),
                     str(first["execution_id"]),
                     int(first["order"]),
                 ),
@@ -531,11 +543,12 @@ class ReproductionJobTests(unittest.TestCase):
             database = operation_directory(project) / SCHEDULER_DATABASE_NAME
             with sqlite3.connect(database) as db:
                 db.execute(
-                    "INSERT INTO scheduler_waiters VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO scheduler_waiters VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         0,
                         accepted.run_id,
                         str(second["entry"]),
+                        str(second["cid"]),
                         str(second["execution_id"]),
                         int(second["order"]),
                         dead_pid,
@@ -588,6 +601,7 @@ class ReproductionJobTests(unittest.TestCase):
                 project,
                 accepted.run_id,
                 str(planned["entry"]),
+                str(planned["cid"]),
                 str(planned["execution_id"]),
                 int(planned["order"]),
             )
@@ -640,7 +654,7 @@ class ReproductionJobTests(unittest.TestCase):
                 )
             stopped = load_execution_checkpoint(
                 run_root,
-                ExecutionIdentity(identity.entry, identity.execution_id),
+                ExecutionIdentity(identity.entry, identity.cid, identity.execution_id),
             )
             self.assertIsNotNone(stopped)
             if stopped is None:
@@ -710,7 +724,7 @@ class ReproductionJobTests(unittest.TestCase):
                 )
             completed = load_execution_checkpoint(
                 run_root,
-                ExecutionIdentity(identity.entry, identity.execution_id),
+                ExecutionIdentity(identity.entry, identity.cid, identity.execution_id),
             )
             self.assertIsNotNone(completed)
             if completed is None:
@@ -738,11 +752,13 @@ class ReproductionJobTests(unittest.TestCase):
             )
             planned = plan.executions[0]
             entry = str(planned["entry"])
+            cid = str(planned["cid"])
             execution_id = str(planned["execution_id"])
             scheduler_identity = SchedulerIdentity(
                 project,
                 accepted.run_id,
                 entry,
+                cid,
                 execution_id,
                 int(planned["order"]),
             )
@@ -779,6 +795,7 @@ class ReproductionJobTests(unittest.TestCase):
                 run_root,
                 ExecutionStart(
                     entry,
+                    cid,
                     execution_id,
                     permit_id,
                     "2030-01-01T00:00:03Z",
@@ -812,7 +829,10 @@ class ReproductionJobTests(unittest.TestCase):
                 self.assertTrue(scratch.is_symlink())
                 self.assertEqual(sentinel.read_text(encoding="utf-8"), "retained\n")
                 checkpoint = load_execution_checkpoint(
-                    run_root, ExecutionIdentity(entry, execution_id)
+                    run_root,
+                    ExecutionIdentity(
+                        entry, _cid(plan, entry, execution_id), execution_id
+                    ),
                 )
                 self.assertIsNotNone(checkpoint)
                 if checkpoint is None:
@@ -852,6 +872,7 @@ class ReproductionJobTests(unittest.TestCase):
                 run_root,
                 RequirementEffect(
                     comparison.entry,
+                    comparison.cid,
                     comparison.execution_id,
                     "2030-01-01T00:00:03Z",
                 ),
@@ -939,6 +960,7 @@ class ReproductionJobTests(unittest.TestCase):
                 run_root,
                 RequirementEffect(
                     comparison.entry,
+                    comparison.cid,
                     comparison.execution_id,
                     "2030-01-01T00:01:00Z",
                 ),
@@ -1283,7 +1305,7 @@ class ReproductionJobTests(unittest.TestCase):
                         "worker-999999",
                         None,
                         999999,
-                        "pyrun-exec/v1:" + "0" * 64,
+                        "pyrun-exec/v2:" + "0" * 64,
                         "running",
                         "2030-01-01T00:00:01Z",
                         "2030-01-01T00:00:02Z",
@@ -1301,7 +1323,7 @@ class ReproductionJobTests(unittest.TestCase):
                         "worker-999998",
                         None,
                         999998,
-                        "pyrun-exec/v1:" + "0" * 64,
+                        "pyrun-exec/v2:" + "0" * 64,
                         "exited",
                         "2030-01-01T00:00:01Z",
                         "2030-01-01T00:00:02Z",
@@ -1478,9 +1500,7 @@ class ReproductionJobTests(unittest.TestCase):
                 if boundary_checked:
                     return
                 boundary_checked = True
-                with self.assertRaisesRegex(
-                    ActionError, "orphaned worker cleanup"
-                ):
+                with self.assertRaisesRegex(ActionError, "orphaned worker cleanup"):
                     _acquire_scope_locks(fixture.log, None)
 
             with (
@@ -1584,7 +1604,12 @@ class ReproductionJobTests(unittest.TestCase):
                 entry_id, execution_id, _baseline = _start_and_finish(run_root, plan, 0)
                 record_execution_comparison(run_root, _comparison(plan, 0))
                 result = ExecutionComparison(
-                    entry_id, execution_id, (), "workspace", True
+                    entry_id,
+                    _cid(plan, entry_id, execution_id),
+                    execution_id,
+                    (),
+                    "workspace",
+                    True,
                 )
                 if failure_side == "before_file":
                     target = "log_commands.reproduction_comparison.atomic_write_text"
@@ -1603,7 +1628,10 @@ class ReproductionJobTests(unittest.TestCase):
                             recorded_at="2030-01-01T00:01:01Z",
                         )
                 effect = load_requirement_effect(
-                    run_root, ExecutionIdentity(entry_id, execution_id)
+                    run_root,
+                    ExecutionIdentity(
+                        entry_id, _cid(plan, entry_id, execution_id), execution_id
+                    ),
                 )
                 self.assertIsNone(effect.requirement_cleared_at)
                 state = load_pyrun_state(
@@ -1611,9 +1639,13 @@ class ReproductionJobTests(unittest.TestCase):
                     entry_root=entry.root,
                     project_root=project,
                 )
+                updated = state.execution(
+                    _cid(plan, entry_id, execution_id), execution_id
+                )
+                self.assertIsNotNone(updated)
+                assert updated is not None
                 self.assertEqual(
-                    state.executions[execution_id].requires_reproduction,
-                    failure_side == "before_file",
+                    updated.requires_reproduction, failure_side == "before_file"
                 )
                 with mock.patch(
                     "log_commands.reproduction_comparison.atomic_write_text",
@@ -1632,7 +1664,10 @@ class ReproductionJobTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     load_requirement_effect(
-                        run_root, ExecutionIdentity(entry_id, execution_id)
+                        run_root,
+                        ExecutionIdentity(
+                            entry_id, _cid(plan, entry_id, execution_id), execution_id
+                        ),
                     ).requirement_cleared_at,
                     "2030-01-01T00:01:02Z",
                 )
@@ -1650,7 +1685,7 @@ class ReproductionJobTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -1758,7 +1793,7 @@ class ReproductionJobTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -1825,7 +1860,8 @@ class ReproductionJobTests(unittest.TestCase):
             )
             self.assertTrue(
                 all(
-                    not item.requires_reproduction for item in state.executions.values()
+                    not item.requires_reproduction
+                    for _cid_value, _identity, item in state.execution_items()
                 )
             )
             self.assertFalse(
@@ -1851,7 +1887,7 @@ class ReproductionJobTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -1896,10 +1932,10 @@ class ReproductionJobTests(unittest.TestCase):
             first = executions[0]
             second = executions[1]
             first_identity = ExecutionIdentity(
-                str(first["entry"]), str(first["execution_id"])
+                str(first["entry"]), str(first["cid"]), str(first["execution_id"])
             )
             second_identity = ExecutionIdentity(
-                str(second["entry"]), str(second["execution_id"])
+                str(second["entry"]), str(second["cid"]), str(second["execution_id"])
             )
 
             def permit(expected_state: Literal["absent", "stopped"], second: int):
@@ -1908,6 +1944,7 @@ class ReproductionJobTests(unittest.TestCase):
                         project,
                         accepted.run_id,
                         first_identity.entry,
+                        first_identity.cid,
                         first_identity.execution_id,
                         int(first["order"]),
                     ),
@@ -2088,7 +2125,9 @@ class ReproductionJobTests(unittest.TestCase):
             )
             planned = plan.executions[0]
             identity = ExecutionIdentity(
-                str(planned["entry"]), str(planned["execution_id"])
+                str(planned["entry"]),
+                str(planned["cid"]),
+                str(planned["execution_id"]),
             )
             decision = poll_permit(
                 run_root,
@@ -2097,6 +2136,7 @@ class ReproductionJobTests(unittest.TestCase):
                         project,
                         accepted.run_id,
                         identity.entry,
+                        identity.cid,
                         identity.execution_id,
                         int(planned["order"]),
                     ),
@@ -2168,7 +2208,9 @@ class ReproductionJobTests(unittest.TestCase):
                 load_execution_checkpoint(
                     run_root,
                     ExecutionIdentity(
-                        str(sibling["entry"]), str(sibling["execution_id"])
+                        str(sibling["entry"]),
+                        str(sibling["cid"]),
+                        str(sibling["execution_id"]),
                     ),
                 )
             )
@@ -2249,7 +2291,7 @@ class ReproductionJobTests(unittest.TestCase):
             executions[1] = dict(
                 executions[1],
                 depends_on=[
-                    f"{executions[0]['entry']}:{executions[0]['execution_id']}"
+                    f"{executions[0]['entry']}:{executions[0]['cid']}:{executions[0]['execution_id']}"
                 ],
             )
             plan = replace(plan, executions=tuple(executions))
@@ -2273,6 +2315,7 @@ class ReproductionJobTests(unittest.TestCase):
                     project,
                     accepted.run_id,
                     str(planned["entry"]),
+                    str(planned["cid"]),
                     str(planned["execution_id"]),
                     int(planned["order"]),
                 )
@@ -2323,13 +2366,16 @@ class ReproductionJobTests(unittest.TestCase):
                 assert decision.permit is not None
                 permit_id = decision.permit.permit_id
                 identity = ExecutionIdentity(
-                    request.identity.entry, request.identity.execution_id
+                    request.identity.entry,
+                    request.identity.cid,
+                    request.identity.execution_id,
                 )
                 scratch = f"/private/tmp/current-supervisor-{index}"
                 record_execution_start(
                     run_root,
                     ExecutionStart(
                         identity.entry,
+                        identity.cid,
                         identity.execution_id,
                         permit_id,
                         f"2030-01-01T00:00:{timestamp + 2:02d}Z",
@@ -2346,6 +2392,7 @@ class ReproductionJobTests(unittest.TestCase):
                     run_root,
                     ExecutionTerminal(
                         identity.entry,
+                        identity.cid,
                         identity.execution_id,
                         permit_id,
                         "succeeded",
@@ -2383,13 +2430,16 @@ class ReproductionJobTests(unittest.TestCase):
                 assert decision.permit is not None
                 permit_id = decision.permit.permit_id
                 identity = ExecutionIdentity(
-                    request.identity.entry, request.identity.execution_id
+                    request.identity.entry,
+                    request.identity.cid,
+                    request.identity.execution_id,
                 )
                 scratch = "/private/tmp/current-supervisor-stopped"
                 record_execution_start(
                     run_root,
                     ExecutionStart(
                         identity.entry,
+                        identity.cid,
                         identity.execution_id,
                         permit_id,
                         "2030-01-01T00:00:08Z",
@@ -2402,6 +2452,7 @@ class ReproductionJobTests(unittest.TestCase):
                     run_root,
                     ExecutionTerminal(
                         identity.entry,
+                        identity.cid,
                         identity.execution_id,
                         permit_id,
                         "stopped",
@@ -2582,6 +2633,7 @@ class ReproductionJobTests(unittest.TestCase):
                             run_root,
                             RequirementEffect(
                                 comparison.entry,
+                                comparison.cid,
                                 comparison.execution_id,
                                 f"2030-01-01T00:00:{20 + index:02d}Z",
                             ),
@@ -2891,7 +2943,7 @@ class ReproductionJobTests(unittest.TestCase):
                     "schema": "research-log-reproduction-comparison-context/1",
                     "comparisons": [],
                     "materials": materials,
-                    "result_schema": "research-log-reproduction-result/10",
+                    "result_schema": "research-log-reproduction-result/11",
                 },
             )
             _verify_accepted_materials(plan)
@@ -3240,7 +3292,7 @@ class ReproductionJobTests(unittest.TestCase):
                 "stop": lambda: stop_reproduction(log, run_id),
                 "resume": lambda: resume_reproduction(log, run_id),
                 "promotion": lambda: promote_execution(
-                    log, run_id=run_id, execution_id="missing"
+                    log, run_id=run_id, cid="missing", execution_id="missing"
                 ),
                 "publication": lambda: supervise_reproduction(
                     log, root, mode="publication", inherited_locks=()

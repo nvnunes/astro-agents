@@ -343,14 +343,14 @@ class ResultStoreTests(unittest.TestCase):
                     0,
                 )
 
-    def test_v14_schema_uses_compact_keys_and_exact_secondary_indexes(self) -> None:
+    def test_v15_schema_uses_compact_keys_and_exact_secondary_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "study"
             root.mkdir()
             with result_transaction(root):
                 pass
             with result_snapshot(root) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 14)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 15)
                 table_sql = {
                     row[0]: row[1]
                     for row in db.execute(
@@ -508,9 +508,23 @@ class ResultStoreTests(unittest.TestCase):
                     ),
                     "reproduction_metadata": ("singleton",),
                     "reproduction_runs": ("run_pk",),
-                    "reproduction_run_commands": ("run_pk", "entry", "execution_id"),
-                    "reproduction_run_executions": ("run_pk", "entry", "execution_id"),
-                    "reproduction_execution_results": ("entry", "execution_id"),
+                    "reproduction_run_commands": (
+                        "run_pk",
+                        "entry",
+                        "cid",
+                        "execution_id",
+                    ),
+                    "reproduction_run_executions": (
+                        "run_pk",
+                        "entry",
+                        "cid",
+                        "execution_id",
+                    ),
+                    "reproduction_execution_results": (
+                        "entry",
+                        "cid",
+                        "execution_id",
+                    ),
                     "reproduction_artifact_results": ("entry", "artifact"),
                     "reproduction_comparison_evidence": (
                         "entry",
@@ -1141,14 +1155,16 @@ class ResultStoreTests(unittest.TestCase):
                     {
                         "elapsed_seconds": 12.86837249994278,
                         "entry": "e002",
-                        "execution_id": "pyrun-exec/v1:" + "2" * 64,
+                        "cid": "build",
+                        "execution_id": "pyrun-exec/v2:" + "2" * 64,
                         "finished_at": "2030-01-01T00:01:00Z",
                         "started_at": "2030-01-01T00:00:00Z",
                     },
                     {
                         "elapsed_seconds": 1.5302276252768934,
                         "entry": "e001",
-                        "execution_id": "pyrun-exec/v1:" + "1" * 64,
+                        "cid": "build",
+                        "execution_id": "pyrun-exec/v2:" + "1" * 64,
                         "finished_at": "2030-01-01T00:02:00Z",
                         "started_at": "2030-01-01T00:01:00Z",
                     },
@@ -1209,8 +1225,8 @@ class ResultStoreTests(unittest.TestCase):
             root = Path(directory) / "study"
             root.mkdir()
             path = result_store_path(root)
-            x = ("e001", "pyrun-exec/v1:" + "1" * 64)
-            y = ("e002", "pyrun-exec/v1:" + "2" * 64)
+            x = ("e001", "build", "pyrun-exec/v2:" + "1" * 64)
+            y = ("e002", "build", "pyrun-exec/v2:" + "2" * 64)
             r1 = _run("run-1")
             publish_reproduction_results(
                 path,
@@ -1218,9 +1234,9 @@ class ResultStoreTests(unittest.TestCase):
                     "study.md",
                     r1,
                     (
-                        _artifact("e001", "data/x-current", x[1], r1.run_id),
-                        _artifact("e001", "data/x-stale", x[1], r1.run_id),
-                        _artifact("e002", "data/y", y[1], r1.run_id),
+                        _artifact("e001", "data/x-current", x[2], r1.run_id),
+                        _artifact("e001", "data/x-stale", x[2], r1.run_id),
+                        _artifact("e002", "data/y", y[2], r1.run_id),
                         _artifact("e001", "data/pre", None, r1.run_id),
                     ),
                     (_command(*x, r1.run_id), _command(*y, r1.run_id)),
@@ -1235,7 +1251,7 @@ class ResultStoreTests(unittest.TestCase):
                     "study.md",
                     r2,
                     (
-                        _artifact("e001", "data/x-current", x[1], r2.run_id),
+                        _artifact("e001", "data/x-current", x[2], r2.run_id),
                         _artifact("e001", "data/pre", None, r2.run_id),
                     ),
                     (_command(*x, r2.run_id),),
@@ -1246,7 +1262,8 @@ class ResultStoreTests(unittest.TestCase):
             stored = export_reproduction_results(path)
             artifacts = {(item.entry, item.artifact): item for item in stored.artifacts}
             commands = {
-                (item.entry, item.execution_id): item for item in stored.commands
+                (item.entry, item.cid, item.execution_id): item
+                for item in stored.commands
             }
             self.assertNotIn(("e001", "data/x-stale"), artifacts)
             self.assertEqual(artifacts[("e001", "data/x-current")].run_id, r2.run_id)
@@ -1264,15 +1281,15 @@ class ResultStoreTests(unittest.TestCase):
             root = Path(directory) / "study"
             root.mkdir()
             path = result_store_path(root)
-            x = ("e001", "pyrun-exec/v1:" + "1" * 64)
-            y = ("e002", "pyrun-exec/v1:" + "2" * 64)
+            x = ("e001", "build", "pyrun-exec/v2:" + "1" * 64)
+            y = ("e002", "build", "pyrun-exec/v2:" + "2" * 64)
             r1 = _run_with_detail("r1", MAX_RESULT_BYTES - 128 * 1024)
             request = ReproductionPublicationRequest(
                 "study.md",
                 r1,
                 (
-                    _artifact("e001", "data/x", x[1], r1.run_id),
-                    _artifact("e002", "data/y", y[1], r1.run_id),
+                    _artifact("e001", "data/x", x[2], r1.run_id),
+                    _artifact("e002", "data/y", y[2], r1.run_id),
                 ),
                 (_command(*x, r1.run_id), _command(*y, r1.run_id)),
                 (x, y),
@@ -1304,7 +1321,7 @@ class ResultStoreTests(unittest.TestCase):
                     ReproductionPublicationRequest(
                         "study.md",
                         r2,
-                        (_artifact("e001", "data/x", x[1], r2.run_id),),
+                        (_artifact("e001", "data/x", x[2], r2.run_id),),
                         (_command(*x, r2.run_id),),
                         (x,),
                         (),
@@ -1364,7 +1381,7 @@ class ResultStoreTests(unittest.TestCase):
             root.mkdir()
             path = result_store_path(root)
             run = _run("projection")
-            execution = "pyrun-exec/v1:" + "1" * 64
+            execution = "pyrun-exec/v2:" + "1" * 64
             publish_reproduction_results(
                 path,
                 ReproductionPublicationRequest(
@@ -1374,8 +1391,8 @@ class ResultStoreTests(unittest.TestCase):
                         _artifact("e001", "data/matched", execution, run.run_id),
                         _artifact("e002", "data/other", None, run.run_id),
                     ),
-                    (_command("e001", execution, run.run_id),),
-                    (("e001", execution),),
+                    (_command("e001", "build", execution, run.run_id),),
+                    (("e001", "build", execution),),
                     (("e002", "data/other"),),
                 ),
             )
@@ -1395,15 +1412,15 @@ class ResultStoreTests(unittest.TestCase):
             root.mkdir()
             path = result_store_path(root)
             run = _run("commands")
-            execution = "pyrun-exec/v1:" + "1" * 64
+            execution = "pyrun-exec/v2:" + "1" * 64
             publish_reproduction_results(
                 path,
                 ReproductionPublicationRequest(
                     "study.md",
                     run,
                     (),
-                    (_command("e001", execution, run.run_id),),
-                    (("e001", execution),),
+                    (_command("e001", "build", execution, run.run_id),),
+                    (("e001", "build", execution),),
                     (),
                 ),
             )
@@ -1414,10 +1431,11 @@ class ResultStoreTests(unittest.TestCase):
                 ).fetchone()[0]
                 db.execute(
                     "INSERT INTO reproduction_run_commands "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         run_pk,
                         "e001",
+                        "build",
                         execution,
                         0,
                         "succeeded",
@@ -1437,11 +1455,12 @@ class ResultStoreTests(unittest.TestCase):
                 )
                 db.execute(
                     "INSERT INTO reproduction_run_commands "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         run_pk,
                         "e999",
-                        "pyrun-exec/v1:" + "9" * 64,
+                        "build",
+                        "pyrun-exec/v2:" + "9" * 64,
                         99,
                         "failed",
                         "failed",
@@ -1513,8 +1532,8 @@ class ResultStoreTests(unittest.TestCase):
             root.mkdir()
             path = result_store_path(root)
             run = _run("run-1")
-            execution = "pyrun-exec/v1:" + "1" * 64
-            command = _command("e001", execution, run.run_id)
+            execution = "pyrun-exec/v2:" + "1" * 64
+            command = _command("e001", "build", execution, run.run_id)
             artifact = _artifact("e001", "data/x", execution, run.run_id)
             publish_reproduction_results(
                 path,
@@ -1523,7 +1542,7 @@ class ResultStoreTests(unittest.TestCase):
                     run,
                     (artifact,),
                     (command,),
-                    ((command.entry, command.execution_id),),
+                    ((command.entry, command.cid, command.execution_id),),
                     (),
                 ),
             )
@@ -1537,7 +1556,7 @@ class ResultStoreTests(unittest.TestCase):
                         "study.md",
                         _run("run-2"),
                         (_artifact("e001", "data/x", execution, "reproduce-run-2"),),
-                        (_command("e001", execution, "reproduce-run-2"),),
+                        (_command("e001", "build", execution, "reproduce-run-2"),),
                         (),
                         (),
                     ),
@@ -1570,7 +1589,8 @@ def _run_with_detail(run_id: str, detail_bytes: int) -> RunResult:
         "cwd": "docs/research/entries/2030-01-01-e001-example",
         "details": ["x" * detail_bytes],
         "entry": "e001",
-        "execution_id": "pyrun-exec/v1:" + "1" * 64,
+        "cid": "build",
+        "execution_id": "pyrun-exec/v2:" + "1" * 64,
         "exclusive": False,
         "prior_disposition": None,
         "queued": True,
@@ -1604,9 +1624,15 @@ def _run_with_detail(run_id: str, detail_bytes: int) -> RunResult:
     )
 
 
-def _command(entry: str, execution_id: str, run_id: str) -> CommandResult:
+def _command(entry: str, cid: str, execution_id: str, run_id: str) -> CommandResult:
     return CommandResult(
-        entry, execution_id, "succeeded", "d" * 64, "2030-01-01T00:00:00Z", run_id
+        entry,
+        cid,
+        execution_id,
+        "succeeded",
+        "d" * 64,
+        "2030-01-01T00:00:00Z",
+        run_id,
     )
 
 
@@ -1616,6 +1642,7 @@ def _artifact(
     return ArtifactResult(
         entry,
         artifact,
+        "build" if execution_id is not None else None,
         execution_id,
         "skipped",
         "dependency_failed",

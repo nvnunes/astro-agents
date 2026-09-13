@@ -20,7 +20,9 @@ from test_log_reproduction_planning import _Fixture, _plan
 class ReproductionExecutionTests(unittest.TestCase):
     def test_execution_requires_an_accepted_command(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
-            accepted_command(accepted_plan(), "e001", "pyrun-exec/v1:" + "0" * 64)
+            accepted_command(
+                accepted_plan(), "e001", "fixture", "pyrun-exec/v2:" + "0" * 64
+            )
 
     def test_plan_never_carries_attempt_lineage(self) -> None:
         self.assertNotIn("attempt", accepted_plan().serialized())
@@ -56,5 +58,5 @@ class ReproductionExecutionTests(unittest.TestCase):
                 side_effect=AssertionError("must not reload pyrun"),
                 create=True,
             ):
-                accepted = accepted_invocation(plan, entry.id, identity)
+                accepted = accepted_invocation(plan, entry.id, "build", identity)
             self.assertEqual(accepted.execution_id, identity)

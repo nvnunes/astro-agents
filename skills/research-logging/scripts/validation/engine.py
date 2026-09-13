@@ -38,6 +38,7 @@ from .commands import (
     observe_commands,
     order_invocations,
     output_arguments,
+    validate_command_structure,
 )
 from .entry_materials import (
     EntryMaterialPathError,
@@ -142,10 +143,9 @@ from .pyrun_state import (
     OutputOwnerIndex,
     PyrunFile,
     associate_execution,
-    execution_id,
+    compare_command,
     execution_output_owners,
     load_pyrun_state,
-    recipe_from_invocation,
     resolve_execution_output,
 )
 from .retention import RetentionFile, load_retention_file
@@ -1896,7 +1896,14 @@ def _discover_invocations(
                     error,
                 )
             )
-    return order_invocations(documents)
+    result = order_invocations(documents)
+    try:
+        validate_command_structure(result)
+    except MechanicalContractError as error:
+        state.checks.append(
+            _error_check("commands:structure", CheckScope.CONFORMANCE, error)
+        )
+    return result
 
 
 def _command_candidate_dependency(candidate: str, entry: _Entry) -> str:
@@ -2136,64 +2143,87 @@ def _validate_execution_bindings(
             "sha256": state.output_file_observations.get(record_path),
         }
     }
-    authored_policy: dict[str, tuple[bool, bool]] = {}
+    current_by_cid: dict[str, list[Invocation]] = {}
     for invocation in state.invocations:
-        if invocation.material_owner != owner:
-            continue
-        try:
-            recipe = recipe_from_invocation(
-                invocation,
-                entry_root=execution_state.entry_root,
-                project_root=state.project_root,
-            )
-        except MechanicalContractError:
-            continue
-        authored_policy[execution_id(recipe)] = (
-            invocation.auto_reproduce,
-            invocation.exclusive,
+        if invocation.material_owner == owner:
+            current_by_cid.setdefault(invocation.cid, []).append(invocation)
+    for cid in sorted(set(current_by_cid) | set(execution_state.commands)):
+        comparison = compare_command(
+            execution_state,
+            cid,
+            tuple(current_by_cid.get(cid, ())),
+            project_root=state.project_root,
         )
-    for identity, execution in sorted(execution_state.executions.items()):
-        subject = f"{execution_state.path}:executions[{identity!r}]"
-        expected_policy = authored_policy.get(identity)
-        if (
-            expected_policy is not None
-            and expected_policy[0] != execution.auto_reproduce
-        ):
-            state.checks.append(
-                _error_check(
-                    f"conformance:{entry_id}:pyrun-policy:{identity}",
-                    CheckScope.CONFORMANCE,
-                    EngineV2Error(
-                        "pyrun.policy.mismatch",
-                        subject,
-                        {
-                            "entry": entry_id,
-                            "markdown_auto_reproduce": expected_policy[0],
-                            "recorded_auto_reproduce": execution.auto_reproduce,
-                        },
-                        "Pyrun Execution Policy",
-                    ),
-                    dependencies=(dependency,),
+        categorized = (
+            ("missing", tuple(member.identity for member in comparison.missing)),
+            ("stale", tuple(member.identity for member in comparison.stale)),
+            (
+                "recipe_changed",
+                tuple(member.current.identity for member in comparison.recipe_changed),
+            ),
+        )
+        for label, identities in categorized:
+            for identity in identities:
+                state.checks.append(
+                    _error_check(
+                        f"conformance:{entry_id}:pyrun:{cid}:{identity}",
+                        CheckScope.CONFORMANCE,
+                        EngineV2Error(
+                            f"pyrun.command.{label}",
+                            str(execution_state.path),
+                            {"cid": cid, "entry": entry_id, "execution_id": identity},
+                            "Pyrun Command State",
+                        ),
+                        dependencies=(dependency,),
+                    )
                 )
+        for change in comparison.policy_changed:
+            identity = change.current.identity
+            execution = change.stored
+            invocation = change.current.invocation
+            subject = (
+                f"{execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
             )
-        if expected_policy is not None and expected_policy[1] != execution.exclusive:
-            state.checks.append(
-                _error_check(
-                    f"conformance:{entry_id}:pyrun-exclusive:{identity}",
-                    CheckScope.CONFORMANCE,
-                    EngineV2Error(
-                        "pyrun.exclusive.mismatch",
-                        subject,
-                        {
-                            "entry": entry_id,
-                            "markdown_exclusive": expected_policy[1],
-                            "recorded_exclusive": execution.exclusive,
-                        },
-                        "Pyrun Execution Policy",
-                    ),
-                    dependencies=(dependency,),
+            if invocation.auto_reproduce != execution.auto_reproduce:
+                state.checks.append(
+                    _error_check(
+                        f"conformance:{entry_id}:pyrun-policy:{identity}",
+                        CheckScope.CONFORMANCE,
+                        EngineV2Error(
+                            "pyrun.policy.mismatch",
+                            subject,
+                            {
+                                "entry": entry_id,
+                                "cid": cid,
+                                "markdown_auto_reproduce": invocation.auto_reproduce,
+                                "recorded_auto_reproduce": execution.auto_reproduce,
+                            },
+                            "Pyrun Execution Policy",
+                        ),
+                        dependencies=(dependency,),
+                    )
                 )
-            )
+            if invocation.exclusive != execution.exclusive:
+                state.checks.append(
+                    _error_check(
+                        f"conformance:{entry_id}:pyrun-exclusive:{identity}",
+                        CheckScope.CONFORMANCE,
+                        EngineV2Error(
+                            "pyrun.exclusive.mismatch",
+                            subject,
+                            {
+                                "entry": entry_id,
+                                "cid": cid,
+                                "markdown_exclusive": invocation.exclusive,
+                                "recorded_exclusive": execution.exclusive,
+                            },
+                            "Pyrun Execution Policy",
+                        ),
+                        dependencies=(dependency,),
+                    )
+                )
+    for cid, identity, execution in execution_state.execution_items():
+        subject = f"{execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
         try:
             projection = project_output_bindings(
                 execution.recipe.parameters,

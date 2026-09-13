@@ -15,10 +15,10 @@ from research_log_data import (
     resolve_input_token,
 )
 from validation.evidence import EvidenceRecord
-from validation.pyrun_state import PyrunExecution
+from validation.pyrun_state import NAME_RE, PyrunExecution
 
-PLAN_SCHEMA = "research-log-reproduction-plan/9"
-REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/10"
+PLAN_SCHEMA = "research-log-reproduction-plan/10"
+REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/11"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 5 * 60
@@ -54,12 +54,15 @@ def valid_historical_reproduction_target(value: object) -> bool:
     if not isinstance(value, Mapping):
         return False
     entry = value.get("entry")
+    cid = value.get("cid")
     identity = value.get("execution_id")
     return (
-        set(value) == {"kind", "entry", "execution_id"}
+        set(value) == {"kind", "entry", "cid", "execution_id"}
         and value.get("kind") == "execution"
         and isinstance(entry, str)
         and ENTRY_ID_RE.fullmatch(entry) is not None
+        and isinstance(cid, str)
+        and NAME_RE.fullmatch(cid) is not None
         and isinstance(identity, str)
         and PYRUN_EXECUTION_RE.fullmatch(identity) is not None
     )
@@ -193,6 +196,7 @@ class AcceptedInvocation:
     """One decoded accepted command and its frozen planning declarations."""
 
     entry: str
+    cid: str
     execution_id: str
     execution: "PyrunExecution"
     data: DataFile | None
@@ -204,6 +208,7 @@ class AcceptedComparison:
     """One typed frozen comparison definition and its evidence selections."""
 
     entry: str
+    cid: str
     execution_id: str
     output: str
     records: tuple[EvidenceRecord, ...]
@@ -266,10 +271,11 @@ def _validate_plan_members(
 ) -> None:
     """Require bounded identity and reference closure before lifecycle use."""
 
-    keys: set[tuple[str, str]] = set()
+    keys: set[tuple[str, str, str]] = set()
     for command in commands:
         if set(command) != {
             "entry",
+            "cid",
             "execution_id",
             "execution_state",
             "entry_root",
@@ -288,8 +294,11 @@ def _validate_plan_members(
             raise ValueError("accepted reproduction plan command is incomplete")
         key = (
             _string(command["entry"], "command entry"),
+            _string(command["cid"], "command cid"),
             _string(command["execution_id"], "command execution"),
         )
+        if NAME_RE.fullmatch(key[1]) is None:
+            raise ValueError("accepted reproduction plan command CID is invalid")
         if key in keys or not isinstance(command["execution_state"], dict):
             raise ValueError("accepted reproduction plan command is invalid")
         keys.add(key)
@@ -302,17 +311,18 @@ def _validate_plan_members(
 
 
 def _validate_execution_members(
-    executions: Sequence[Mapping[str, object]], keys: set[tuple[str, str]]
+    executions: Sequence[Mapping[str, object]], keys: set[tuple[str, str, str]]
 ) -> None:
     """Validate ordered scheduler records and their accepted command closure."""
 
-    execution_keys: set[tuple[str, str]] = set()
+    execution_keys: set[tuple[str, str, str]] = set()
     orders: list[int] = []
     runnable_order: dict[str, int] = {}
     for execution in executions:
         if set(execution) != {
             "depends_on",
             "entry",
+            "cid",
             "execution_id",
             "order",
             "outputs",
@@ -326,6 +336,7 @@ def _validate_execution_members(
             raise ValueError("accepted reproduction plan execution fields are invalid")
         key = (
             _string(execution.get("entry"), "execution entry"),
+            _string(execution.get("cid"), "execution cid"),
             _string(execution.get("execution_id"), "execution id"),
         )
         if key not in keys or key in execution_keys:
@@ -333,7 +344,7 @@ def _validate_execution_members(
         execution_keys.add(key)
         order = _positive_int(execution.get("order"), "execution order")
         orders.append(order)
-        runnable_order[f"{key[0]}:{key[1]}"] = order
+        runnable_order[f"{key[0]}:{key[1]}:{key[2]}"] = order
         dependencies = execution.get("depends_on")
         if not isinstance(dependencies, list) or not all(
             isinstance(item, str) for item in dependencies
@@ -370,11 +381,15 @@ def _validate_nested_plan(plan: ReproductionPlan) -> None:
     ):
         raise ValueError("accepted reproduction plan admission is invalid")
     command_keys = {
-        (str(command["entry"]), str(command["execution_id"]))
+        (
+            str(command["entry"]),
+            str(command["cid"]),
+            str(command["execution_id"]),
+        )
         for command in plan.commands
     }
-    for entry, execution_id in sorted(command_keys):
-        accepted_invocation(plan, entry, execution_id)
+    for entry, cid, execution_id in sorted(command_keys):
+        accepted_invocation(plan, entry, cid, execution_id)
     _validate_plan_collections(plan)
     _validate_comparison_context(plan, command_keys)
 
@@ -398,13 +413,27 @@ def _validate_plan_collections(plan: ReproductionPlan) -> None:
 
 def _validate_cases(cases: Sequence[Mapping[str, object]]) -> None:
     for case in cases:
-        if set(case) != {"artifact", "disposition", "entry", "execution_id", "reason"}:
+        if set(case) != {
+            "artifact",
+            "cid",
+            "disposition",
+            "entry",
+            "execution_id",
+            "reason",
+        }:
             raise ValueError("accepted reproduction case is invalid")
         if not all(
             isinstance(case.get(name), str)
             for name in ("artifact", "disposition", "entry")
         ):
             raise ValueError("accepted reproduction case is invalid")
+        cid = case.get("cid")
+        execution_id = case.get("execution_id")
+        if not (
+            (cid is None and execution_id is None)
+            or (isinstance(cid, str) and isinstance(execution_id, str))
+        ):
+            raise ValueError("accepted reproduction case identity is invalid")
 
 
 def _validate_boundaries(boundaries: Sequence[Mapping[str, object]]) -> None:
@@ -425,7 +454,7 @@ def _validate_failures(failures: Sequence[Mapping[str, object]]) -> None:
 
 
 def _validate_comparison_context(
-    plan: ReproductionPlan, command_keys: set[tuple[str, str]]
+    plan: ReproductionPlan, command_keys: set[tuple[str, str, str]]
 ) -> None:
     """Validate every retained comparison definition and auxiliary selection."""
 
@@ -438,10 +467,11 @@ def _validate_comparison_context(
         or not isinstance(evidence_only, list)
     ):
         raise ValueError("accepted reproduction comparison context is invalid")
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for value in comparisons:
         if not isinstance(value, dict) or set(value) != {
             "entry",
+            "cid",
             "execution_id",
             "output",
             "evidence_records",
@@ -449,21 +479,33 @@ def _validate_comparison_context(
         }:
             raise ValueError("accepted reproduction comparison definition is invalid")
         comparison_entry = value.get("entry")
+        comparison_cid = value.get("cid")
         comparison_execution_id = value.get("execution_id")
         comparison_output = value.get("output")
-        values = (comparison_entry, comparison_execution_id, comparison_output)
+        values = (
+            comparison_entry,
+            comparison_cid,
+            comparison_execution_id,
+            comparison_output,
+        )
         if not all(isinstance(item, str) for item in values):
             raise ValueError("accepted reproduction comparison definition is invalid")
         assert isinstance(comparison_entry, str)
+        assert isinstance(comparison_cid, str)
         assert isinstance(comparison_execution_id, str)
         assert isinstance(comparison_output, str)
-        key = (comparison_entry, comparison_execution_id, comparison_output)
+        key = (
+            comparison_entry,
+            comparison_cid,
+            comparison_execution_id,
+            comparison_output,
+        )
         if key in seen:
             raise ValueError("accepted reproduction comparison definition is invalid")
-        if (key[0], key[1]) not in command_keys:
+        if (key[0], key[1], key[2]) not in command_keys:
             raise ValueError("accepted reproduction comparison is unbound")
         seen.add(key)
-        accepted_typed_comparison(plan, key[0], key[1], key[2])
+        accepted_typed_comparison(plan, key[0], key[1], key[2], key[3])
     _validate_materials(materials)
     _validate_evidence_only(plan, evidence_only, comparisons, command_keys)
 
@@ -502,7 +544,7 @@ def _validate_evidence_only(
     plan: ReproductionPlan,
     evidence_only: Sequence[object],
     comparisons: Sequence[object],
-    command_keys: set[tuple[str, str]],
+    command_keys: set[tuple[str, str, str]],
 ) -> None:
     """Require every auxiliary observation to close over its frozen evidence."""
 
@@ -521,7 +563,7 @@ def _validate_evidence_only(
                 "accepted reproduction evidence-only selection is duplicated"
             )
         seen.add(key)
-        if not any(command_entry == row.entry for command_entry, _ in command_keys):
+        if not any(command_entry == row.entry for command_entry, _, _ in command_keys):
             raise ValueError("accepted reproduction evidence-only entry is unbound")
         for identity in row.comparisons:
             comparison = definitions.get(identity)
@@ -600,14 +642,21 @@ def _comparison_consumes_resource(
     """Return whether a retained record actually selects the auxiliary input."""
 
     entry = comparison.get("entry")
+    cid = comparison.get("cid")
     execution_id = comparison.get("execution_id")
     output = comparison.get("output")
-    if not all(isinstance(item, str) for item in (entry, execution_id, output)):
+    if not all(isinstance(item, str) for item in (entry, cid, execution_id, output)):
         return False
     typed = accepted_typed_comparison(
-        plan, cast(str, entry), cast(str, execution_id), cast(str, output)
+        plan,
+        cast(str, entry),
+        cast(str, cid),
+        cast(str, execution_id),
+        cast(str, output),
     )
-    invocation = accepted_invocation(plan, cast(str, entry), cast(str, execution_id))
+    invocation = accepted_invocation(
+        plan, cast(str, entry), cast(str, cid), cast(str, execution_id)
+    )
     if typed is None or invocation.data is None:
         return False
     for record in typed.records:
@@ -625,14 +674,16 @@ def _comparison_consumes_resource(
 
 
 def accepted_command(
-    plan: ReproductionPlan, entry: str, execution_id: str
+    plan: ReproductionPlan, entry: str, cid: str, execution_id: str
 ) -> Mapping[str, object]:
     """Return one uniquely accepted command record by compound identity."""
 
     matches = [
         command
         for command in plan.commands
-        if command.get("entry") == entry and command.get("execution_id") == execution_id
+        if command.get("entry") == entry
+        and command.get("cid") == cid
+        and command.get("execution_id") == execution_id
     ]
     if len(matches) != 1:
         raise ValueError("accepted reproduction plan command is missing or ambiguous")
@@ -640,11 +691,11 @@ def accepted_command(
 
 
 def accepted_invocation(
-    plan: ReproductionPlan, entry: str, execution_id: str
+    plan: ReproductionPlan, entry: str, cid: str, execution_id: str
 ) -> AcceptedInvocation:
     """Return one typed immutable invocation without consulting current files."""
 
-    command = accepted_command(plan, entry, execution_id)
+    command = accepted_command(plan, entry, cid, execution_id)
     from validation.pyrun_state import parse_pyrun_execution
 
     execution_raw = _mapping(command.get("execution_state"), "execution state")
@@ -668,11 +719,11 @@ def accepted_invocation(
         if declaration is not None
         else None
     )
-    return AcceptedInvocation(entry, execution_id, execution, data, command)
+    return AcceptedInvocation(entry, cid, execution_id, execution, data, command)
 
 
 def accepted_comparison(
-    plan: ReproductionPlan, entry: str, execution_id: str, output: str
+    plan: ReproductionPlan, entry: str, cid: str, execution_id: str, output: str
 ) -> Mapping[str, object] | None:
     """Return one frozen output comparison definition, if the plan has one."""
 
@@ -684,6 +735,7 @@ def accepted_comparison(
         for item in raw
         if isinstance(item, dict)
         and item.get("entry") == entry
+        and item.get("cid") == cid
         and item.get("execution_id") == execution_id
         and item.get("output") == output
     ]
@@ -695,11 +747,15 @@ def accepted_comparison(
 
 
 def accepted_typed_comparison(
-    plan: ReproductionPlan, entry: str, execution_id: str, output: str
+    plan: ReproductionPlan,
+    entry: str,
+    cid: str,
+    execution_id: str,
+    output: str,
 ) -> AcceptedComparison | None:
     """Decode frozen evidence records without reopening current evidence files."""
 
-    definition = accepted_comparison(plan, entry, execution_id, output)
+    definition = accepted_comparison(plan, entry, cid, execution_id, output)
     if definition is None:
         return None
     from validation.evidence import evidence_record_from_fields
@@ -707,7 +763,7 @@ def accepted_typed_comparison(
     raw_records = definition.get("evidence_records")
     if not isinstance(raw_records, list):
         raise ValueError("accepted reproduction comparison records are invalid")
-    invocation = accepted_invocation(plan, entry, execution_id)
+    invocation = accepted_invocation(plan, entry, cid, execution_id)
     root = (
         invocation.data.entry_root
         if invocation.data is not None
@@ -723,7 +779,7 @@ def accepted_typed_comparison(
         )
         for index, record in enumerate(raw_records)
     )
-    return AcceptedComparison(entry, execution_id, output, records, definition)
+    return AcceptedComparison(entry, cid, execution_id, output, records, definition)
 
 
 def format_reproduction_plan_summary(plan: ReproductionPlan, *, recheck: bool) -> str:

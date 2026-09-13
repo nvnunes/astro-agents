@@ -331,16 +331,21 @@ def execution_output_support_dict(
     """
 
     fingerprint = dict(execution.observed.outputs)[output]
+    script = execution.observed.script
+    if script is None:
+        _fail(
+            "provenance.output.signature_mismatch",
+            output,
+            {"fields": ["script_fingerprint"], "producer": invocation.identity},
+        )
     return {
         "code": {name: value.as_dict() for name, value in execution.observed.code},
         "confirmed": not execution.requires_reproduction,
         "fingerprint": fingerprint.as_dict(),
-        "inputs": {
-            name: value.as_dict() for name, value in execution.observed.inputs
-        },
+        "inputs": {name: value.as_dict() for name, value in execution.observed.inputs},
         "parameters": list(invocation.parameters),
         "script": {
-            "fingerprint": execution.observed.script.as_dict(),
+            "fingerprint": script.as_dict(),
             "path": execution.recipe.script,
         },
     }

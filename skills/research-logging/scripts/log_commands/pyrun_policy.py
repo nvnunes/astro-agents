@@ -105,7 +105,7 @@ def _update_policy(
                     f"edit only the Markdown {field} policy before updating state",
                 )
             identity = execution_id(recipe)
-            recorded = state.executions.get(identity)
+            recorded = state.execution(current.cid, identity)
             if recorded is None or recorded.recipe != recipe:
                 raise ActionError(
                     "pyrun.policy.recipe_disagreement",
@@ -114,13 +114,15 @@ def _update_policy(
             if identity not in selected_ids:
                 selected_ids.append(identity)
         changed = any(
-            getattr(state.executions[key], field) != requested for key in selected_ids
+            getattr(state.execution(invocation.cid, key), field) != requested
+            for key in selected_ids
         )
         if changed:
             try:
                 if field == "auto_reproduce":
                     update_auto_reproduce_locked(
                         entry.root,
+                        invocation.cid,
                         tuple(selected_ids),
                         auto_reproduce=requested,
                         project_root=project_root,
@@ -128,6 +130,7 @@ def _update_policy(
                 else:
                     update_exclusive_locked(
                         entry.root,
+                        invocation.cid,
                         tuple(selected_ids),
                         exclusive=requested,
                         project_root=project_root,

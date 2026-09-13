@@ -225,7 +225,7 @@ def _result_publication_request(
         run,
         artifacts,
         commands,
-        tuple((item.entry, item.execution_id) for item in commands),
+        tuple((item.entry, item.cid, item.execution_id) for item in commands),
         tuple(
             (item.entry, item.artifact)
             for item in artifacts
@@ -404,7 +404,7 @@ def _artifact_results(
     compared = _comparison_index(request.comparisons)
     skipped = _dependency_skip_index(request.dependency_skips)
     results: list[ArtifactResult] = []
-    consumed: set[tuple[str, str, str]] = set()
+    consumed: set[tuple[str, str, str, str]] = set()
     for case in request.plan.cases:
         result, comparison_key = _artifact_result_for_case(
             case, compared, skipped, request
@@ -425,11 +425,11 @@ def _artifact_results(
 
 def _comparison_index(
     comparisons: Sequence[ExecutionComparison],
-) -> dict[tuple[str, str, str], ArtifactComparison]:
-    compared: dict[tuple[str, str, str], ArtifactComparison] = {}
+) -> dict[tuple[str, str, str, str], ArtifactComparison]:
+    compared: dict[tuple[str, str, str, str], ArtifactComparison] = {}
     for result in comparisons:
         for artifact in result.artifacts:
-            key = (result.entry, result.execution_id, artifact.artifact)
+            key = (result.entry, result.cid, result.execution_id, artifact.artifact)
             if key in compared:
                 raise ActionError(
                     "reproduction.publication.invalid", "duplicate artifact comparison"
@@ -440,11 +440,16 @@ def _comparison_index(
 
 def _dependency_skip_index(
     skips: Sequence[Mapping[str, object]],
-) -> set[tuple[str, str]]:
+) -> set[tuple[str, str, str]]:
     return {
-        (cast(str, value.get("entry")), cast(str, value.get("execution_id")))
+        (
+            cast(str, value.get("entry")),
+            cast(str, value.get("cid")),
+            cast(str, value.get("execution_id")),
+        )
         for value in skips
         if isinstance(value.get("entry"), str)
+        and isinstance(value.get("cid"), str)
         and isinstance(value.get("execution_id"), str)
         and value.get("reason") == "dependency_failed"
     }
@@ -457,7 +462,9 @@ def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]
         snapshots = command_snapshot_index(request.plan)
     except CommandAccountingError as error:
         raise ActionError("reproduction.publication.invalid", str(error)) from error
-    compared = {(item.entry, item.execution_id): item for item in request.comparisons}
+    compared = {
+        (item.entry, item.cid, item.execution_id): item for item in request.comparisons
+    }
     if len(compared) != len(request.comparisons):
         raise ActionError(
             "reproduction.publication.invalid", "execution comparison is duplicated"
@@ -482,6 +489,7 @@ def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]
             CommandResult(
                 key[0],
                 key[1],
+                key[2],
                 disposition,
                 cast(str, snapshot["source_digest"]),
                 request.finished_at,
@@ -493,30 +501,38 @@ def _command_results(request: CompletedPublication) -> tuple[CommandResult, ...]
 
 def _artifact_result_for_case(
     case: Mapping[str, object],
-    compared: Mapping[tuple[str, str, str], ArtifactComparison],
-    skipped: set[tuple[str, str]],
+    compared: Mapping[tuple[str, str, str, str], ArtifactComparison],
+    skipped: set[tuple[str, str, str]],
     request: CompletedPublication,
-) -> tuple[ArtifactResult | None, tuple[str, str, str] | None]:
+) -> tuple[ArtifactResult | None, tuple[str, str, str, str] | None]:
     disposition = case.get("disposition")
     if disposition == "current":
         return None, None
     entry = _required(case, "entry")
     artifact = _required(case, "artifact")
     execution = case.get("execution_id")
+    cid = case.get("cid")
     if execution is not None and not isinstance(execution, str):
         raise ActionError(
             "reproduction.publication.invalid", "invalid case execution ID"
         )
+    if (execution is None) != (cid is None) or (
+        cid is not None and not isinstance(cid, str)
+    ):
+        raise ActionError(
+            "reproduction.publication.invalid", "invalid case command identity"
+        )
     case_reason = case.get("reason")
     if case_reason is not None and not isinstance(case_reason, str):
         raise ActionError("reproduction.publication.invalid", "invalid artifact reason")
-    comparison_key = (entry, cast(str, execution), artifact)
+    comparison_key = (entry, cast(str, cid), cast(str, execution), artifact)
     comparison = compared.get(comparison_key)
     outcome, reason, details = _case_outcome(case, execution, comparison, skipped)
     return (
         ArtifactResult(
             entry,
             artifact,
+            cid,
             execution,
             outcome,
             reason,
@@ -532,7 +548,7 @@ def _case_outcome(
     case: Mapping[str, object],
     execution: str | None,
     comparison: ArtifactComparison | None,
-    skipped: set[tuple[str, str]],
+    skipped: set[tuple[str, str, str]],
 ) -> tuple[str, str | None, ComparisonRecord | None]:
     disposition = case.get("disposition")
     case_reason = cast(str | None, case.get("reason"))
@@ -540,7 +556,8 @@ def _case_outcome(
     artifact = _required(case, "artifact")
     if comparison is not None:
         return comparison.outcome, comparison.reason, _comparison_record(comparison)
-    if execution is not None and (entry, execution) in skipped:
+    cid = case.get("cid")
+    if execution is not None and (entry, cast(str, cid), execution) in skipped:
         return "skipped", "dependency_failed", None
     if disposition in {"failed", "skipped"}:
         return cast(str, disposition), case_reason, None
@@ -609,7 +626,9 @@ def _command_records(
         raise ActionError("reproduction.publication.invalid", str(error)) from error
     if not snapshots:
         return None
-    compared = {(item.entry, item.execution_id): item for item in request.comparisons}
+    compared = {
+        (item.entry, item.cid, item.execution_id): item for item in request.comparisons
+    }
     skipped = _dependency_skip_index(request.dependency_skips)
     records: list[Mapping[str, object]] = []
     for key, snapshot in sorted(snapshots.items()):
@@ -650,6 +669,7 @@ def _command_records(
                 "cwd": snapshot["cwd"],
                 "details": details,
                 "entry": snapshot["entry"],
+                "cid": snapshot["cid"],
                 "execution_id": snapshot["execution_id"],
                 "exclusive": snapshot["exclusive"],
                 "prior_disposition": prior,
@@ -676,9 +696,9 @@ def _command_outcomes(
         selection = project_command_selection(plan, inventory)
     except CommandAccountingError as error:
         raise ActionError("reproduction.publication.invalid", str(error)) from error
-    compared: dict[tuple[str, str], ExecutionComparison] = {}
+    compared: dict[tuple[str, str, str], ExecutionComparison] = {}
     for comparison in request.comparisons:
-        key = (comparison.entry, comparison.execution_id)
+        key = (comparison.entry, comparison.cid, comparison.execution_id)
         if key in compared:
             raise ActionError(
                 "reproduction.publication.invalid",

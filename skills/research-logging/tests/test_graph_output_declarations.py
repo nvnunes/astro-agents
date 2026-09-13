@@ -47,8 +47,9 @@ class DirectoryOwnershipTests(unittest.TestCase):
             )
             context = _context(root, resources)
             discovery = discover_commands(
-                '```bash\n./pyrun scripts/build.py --output-dir "<parent>"\n'
-                './pyrun scripts/final.py --input-dir "<child>" '
+                "```bash\n"
+                './pyrun --cid parent -- scripts/build.py --output-dir "<parent>"\n'
+                './pyrun --cid final -- scripts/final.py --input-dir "<child>" '
                 "--output data/final.csv\n```",
                 context,
             )
@@ -142,7 +143,7 @@ class OutputArgumentTests(unittest.TestCase):
                     recipes = []
                     for index in (0, 1):
                         text = (
-                            "```bash\n./pyrun scripts/build.py "
+                            "```bash\n./pyrun --cid build -- scripts/build.py "
                             + " ".join(pair[index] for pair in ordered)
                             + "\n```"
                         )
@@ -166,7 +167,8 @@ class OutputArgumentTests(unittest.TestCase):
             root = Path(temporary).resolve()
             _, entry, data, _ = _bundle_surface(root)
             discovery = discover_commands(
-                '```bash\n./pyrun scripts/build.py --input-data "<source>" '
+                "```bash\n"
+                './pyrun --cid build -- scripts/build.py --input-data "<source>" '
                 '--output-dir "<bundle>"\n```',
                 _context(root, data.inputs),
             )
@@ -184,7 +186,10 @@ class OutputArgumentTests(unittest.TestCase):
                 "capture", "file", "data/run.txt", entry_root=entry, origin=False
             )
             context = _context(root, (capture,))
-            template = "```bash\n./pyrun --capture-stdout {} -- scripts/build.py\n```"
+            template = (
+                "```bash\n./pyrun --cid build --capture-stdout {} -- "
+                "scripts/build.py\n```"
+            )
             raw = discover_commands(template.format("data/run.txt"), context)
             named = discover_commands(template.format('"<capture>"'), context)
             self.assertFalse(named.failures)
@@ -218,7 +223,7 @@ class OutputArgumentTests(unittest.TestCase):
             context = _context(root, (bundle,))
             for value, missing in (("data/bundle", 4), ('"<bundle>"', 3)):
                 discovery = discover_commands(
-                    "```bash\n./pyrun --capture-stdout data/run.txt -- "
+                    "```bash\n./pyrun --cid build --capture-stdout data/run.txt -- "
                     "scripts/build.py "
                     f"--output-dir {value} --output-csv data/one.csv "
                     "--output-csv data/two.csv\n```",
@@ -244,7 +249,8 @@ class OutputArgumentTests(unittest.TestCase):
                 for name in ("one", "two")
             )
             named = discover_commands(
-                "```bash\n./pyrun --capture-stdout data/run.txt -- scripts/build.py "
+                "```bash\n./pyrun --cid build --capture-stdout data/run.txt -- "
+                "scripts/build.py "
                 '--output-dir "<bundle>" --output-csv "<one>" '
                 '--output-csv "<two>"\n```',
                 _context(root, (bundle, *files)),

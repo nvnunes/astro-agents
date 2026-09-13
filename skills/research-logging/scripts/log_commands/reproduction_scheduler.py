@@ -32,7 +32,7 @@ from .reproduction_job_storage import (
     open_locked_job,
 )
 
-SCHEDULER_STORE_VERSION = 1
+SCHEDULER_STORE_VERSION = 2
 SCHEDULER_DATABASE_NAME = "reproduction-scheduler.sqlite"
 POLL_SECONDS = 0.1
 MAX_WAITERS = 10_000
@@ -42,7 +42,8 @@ MAX_SCHEDULER_BYTES = 64 * 1024 * 1024
 MAX_RUN_PATH_ANCESTORS = 8
 _THREAD_LOCK = threading.Lock()
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
-EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
+CID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+EXECUTION_ID_RE = re.compile(r"pyrun-exec/v2:[0-9a-f]{64}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 
 _SCHEDULER_DDL = """
@@ -54,23 +55,25 @@ CREATE TABLE scheduler_waiters (
     ticket INTEGER PRIMARY KEY CHECK(ticket >= 0),
     run_id TEXT NOT NULL,
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     plan_order INTEGER NOT NULL CHECK(plan_order >= 1),
     supervisor_pid INTEGER NOT NULL CHECK(supervisor_pid >= 1),
     registered_at TEXT NOT NULL,
-    UNIQUE(run_id, entry, execution_id)
+    UNIQUE(run_id, entry, cid, execution_id)
 );
 CREATE TABLE scheduler_permits (
     permit_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK(kind IN ('ordinary', 'exclusive')),
     run_id TEXT NOT NULL,
     entry TEXT NOT NULL,
+    cid TEXT NOT NULL,
     execution_id TEXT NOT NULL,
     plan_order INTEGER NOT NULL CHECK(plan_order >= 1),
     supervisor_pid INTEGER NOT NULL CHECK(supervisor_pid >= 1),
     run_path TEXT NOT NULL,
     granted_at TEXT NOT NULL,
-    UNIQUE(run_id, entry, execution_id)
+    UNIQUE(run_id, entry, cid, execution_id)
 );
 CREATE TABLE scheduler_claims (
     permit_id TEXT NOT NULL REFERENCES scheduler_permits(permit_id) ON DELETE CASCADE,
@@ -92,6 +95,7 @@ class SchedulerIdentity:
     project_root: Path
     run_id: str
     entry: str
+    cid: str
     execution_id: str
     plan_order: int
 
@@ -194,6 +198,7 @@ def poll_permit(
                 store.attach_execution_permit(
                     ExecutionPermitAttachment(
                         request.identity.entry,
+                        request.identity.cid,
                         request.identity.execution_id,
                         decision.permit.permit_id,
                         checkpointed_at,
@@ -234,7 +239,11 @@ def _validate_accepted_request(
     store: LockedJobStore, run_root: Path, request: SchedulerPermitRequest
 ) -> None:
     accepted = store.load_accepted_scheduling(
-        ExecutionIdentity(request.identity.entry, request.identity.execution_id)
+        ExecutionIdentity(
+            request.identity.entry,
+            request.identity.cid,
+            request.identity.execution_id,
+        )
     )
     owner = store.load_scheduler_owner()
     expected = _accepted_scheduler_claims(
@@ -243,6 +252,7 @@ def _validate_accepted_request(
     if (
         accepted.run_id != request.identity.run_id
         or accepted.identity.entry != request.identity.entry
+        or accepted.identity.cid != request.identity.cid
         or accepted.identity.execution_id != request.identity.execution_id
         or accepted.plan_order != request.identity.plan_order
         or accepted.kind != request.kind
@@ -465,11 +475,12 @@ def _apply_waiter_insertion(
     if state_changed != 1:
         raise ActionError("reproduction.scheduler.invalid", "waiter ticket changed")
     db.execute(
-        "INSERT INTO scheduler_waiters VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO scheduler_waiters VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             ticket,
             request.identity.run_id,
             request.identity.entry,
+            request.identity.cid,
             request.identity.execution_id,
             request.identity.plan_order,
             request.supervisor_pid,
@@ -498,12 +509,13 @@ def _apply_permit_insertion(
     if permit_id is None:
         return
     db.execute(
-        "INSERT INTO scheduler_permits VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO scheduler_permits VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             permit_id,
             request.kind,
             request.identity.run_id,
             request.identity.entry,
+            request.identity.cid,
             request.identity.execution_id,
             request.identity.plan_order,
             request.supervisor_pid,
@@ -544,11 +556,12 @@ def release_permit(
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
                 "DELETE FROM scheduler_permits WHERE permit_id=? AND run_id=? "
-                "AND entry=? AND execution_id=? AND plan_order=?",
+                "AND entry=? AND cid=? AND execution_id=? AND plan_order=?",
                 (
                     permit_id,
                     identity.run_id,
                     identity.entry,
+                    identity.cid,
                     identity.execution_id,
                     identity.plan_order,
                 ),
@@ -608,9 +621,9 @@ def reconcile_run_admission(
             with _open_scheduler_database(project_root) as db:
                 _audit_scheduler_state(db, project_root)
                 rows = db.execute(
-                    "SELECT entry, execution_id, plan_order "
+                    "SELECT entry, cid, execution_id, plan_order "
                     "FROM scheduler_waiters WHERE run_id=? "
-                    "UNION SELECT entry, execution_id, plan_order "
+                    "UNION SELECT entry, cid, execution_id, plan_order "
                     "FROM scheduler_permits WHERE run_id=? "
                     "ORDER BY plan_order, entry, execution_id LIMIT ?",
                     (owner.run_id, owner.run_id, MAX_WAITERS + MAX_PERMITS + 1),
@@ -625,13 +638,18 @@ def reconcile_run_admission(
                         project_root,
                         owner.run_id,
                         cast(str, row["entry"]),
+                        cast(str, row["cid"]),
                         cast(str, row["execution_id"]),
                         int(row["plan_order"]),
                     )
                     _validate_scheduler_identity(identity)
                     try:
                         accepted = store.load_accepted_scheduling(
-                            ExecutionIdentity(identity.entry, identity.execution_id)
+                            ExecutionIdentity(
+                                identity.entry,
+                                identity.cid,
+                                identity.execution_id,
+                            )
                         )
                     except JobStoreError as error:
                         raise ActionError(
@@ -666,14 +684,16 @@ def reconcile_run_admission(
                         (
                             item
                             for item in owner.checkpoints
-                            if (item.entry, item.execution_id)
-                            == (identity.entry, identity.execution_id)
+                            if (item.entry, item.cid, item.execution_id)
+                            == (identity.entry, identity.cid, identity.execution_id)
                         ),
                         None,
                     )
                     has_running_worker = any(
                         worker_identity
-                        == ExecutionIdentity(identity.entry, identity.execution_id)
+                        == ExecutionIdentity(
+                            identity.entry, identity.cid, identity.execution_id
+                        )
                         for worker_identity, _worker in owner.running_workers
                     )
                     reconciliation = _reconcile_scheduler_state(
@@ -711,8 +731,8 @@ def reconcile_permit(
     checkpoints = [
         checkpoint
         for checkpoint in owner_projection.checkpoints
-        if (checkpoint.entry, checkpoint.execution_id)
-        == (identity.entry, identity.execution_id)
+        if (checkpoint.entry, checkpoint.cid, checkpoint.execution_id)
+        == (identity.entry, identity.cid, identity.execution_id)
     ]
     if len(checkpoints) > 1:
         raise ActionError(
@@ -721,8 +741,8 @@ def reconcile_permit(
         )
     has_running_worker = any(
         worker_identity is not None
-        and (worker_identity.entry, worker_identity.execution_id)
-        == (identity.entry, identity.execution_id)
+        and (worker_identity.entry, worker_identity.cid, worker_identity.execution_id)
+        == (identity.entry, identity.cid, identity.execution_id)
         for worker_identity, _worker in owner_projection.running_workers
     )
     checkpoint = checkpoints[0] if checkpoints else None
@@ -869,11 +889,12 @@ def _delete_scheduler_permit(
     db.execute("BEGIN IMMEDIATE")
     changed = db.execute(
         "DELETE FROM scheduler_permits WHERE permit_id=? AND run_id=? "
-        "AND entry=? AND execution_id=? AND plan_order=?",
+        "AND entry=? AND cid=? AND execution_id=? AND plan_order=?",
         (
             permit_id,
             identity.run_id,
             identity.entry,
+            identity.cid,
             identity.execution_id,
             identity.plan_order,
         ),
@@ -893,11 +914,13 @@ def _permit_for_identity(
 ) -> SchedulerPermitProjection | None:
     row = db.execute(
         "SELECT permit_id, kind, supervisor_pid, run_path, granted_at "
-        "FROM scheduler_permits WHERE run_id=? AND entry=? AND execution_id=? "
+        "FROM scheduler_permits "
+        "WHERE run_id=? AND entry=? AND cid=? AND execution_id=? "
         "AND plan_order=?",
         (
             identity.run_id,
             identity.entry,
+            identity.cid,
             identity.execution_id,
             identity.plan_order,
         ),
@@ -990,8 +1013,9 @@ def _waiter_for_identity(
 ) -> sqlite3.Row | None:
     row = db.execute(
         "SELECT ticket, plan_order, supervisor_pid, registered_at "
-        "FROM scheduler_waiters WHERE run_id=? AND entry=? AND execution_id=?",
-        (identity.run_id, identity.entry, identity.execution_id),
+        "FROM scheduler_waiters "
+        "WHERE run_id=? AND entry=? AND cid=? AND execution_id=?",
+        (identity.run_id, identity.entry, identity.cid, identity.execution_id),
     ).fetchone()
     if row is not None and int(row["plan_order"]) != identity.plan_order:
         raise ActionError("reproduction.scheduler.invalid", "waiter plan order changed")
@@ -1094,7 +1118,7 @@ def _dead_permits(
     db: sqlite3.Connection, project_root: Path
 ) -> tuple[SchedulerPermitProjection, ...]:
     rows = db.execute(
-        "SELECT run_id, entry, execution_id, plan_order, supervisor_pid "
+        "SELECT run_id, entry, cid, execution_id, plan_order, supervisor_pid "
         "FROM scheduler_permits ORDER BY permit_id LIMIT ?",
         (MAX_PERMITS + 1,),
     ).fetchall()
@@ -1113,6 +1137,7 @@ def _dead_permits(
                     project_root,
                     cast(str, row["run_id"]),
                     cast(str, row["entry"]),
+                    cast(str, row["cid"]),
                     cast(str, row["execution_id"]),
                     int(row["plan_order"]),
                 ),
@@ -1175,8 +1200,8 @@ def _require_recoverable_dead_permit(
     matching_checkpoints = tuple(
         checkpoint
         for checkpoint in owner.checkpoints
-        if (checkpoint.entry, checkpoint.execution_id)
-        == (identity.entry, identity.execution_id)
+        if (checkpoint.entry, checkpoint.cid, checkpoint.execution_id)
+        == (identity.entry, identity.cid, identity.execution_id)
     )
     durable_owner = owner.owner
     if (
@@ -1222,7 +1247,7 @@ def _ordinary_request_is_blocked(
     if any(int(row["ticket"]) not in ignored for row in waiters):
         return True
     rows = db.execute(
-        "SELECT run_id, entry, execution_id, plan_order FROM scheduler_permits "
+        "SELECT run_id, entry, cid, execution_id, plan_order FROM scheduler_permits "
         "ORDER BY run_id, plan_order, entry, execution_id LIMIT ?",
         (MAX_PERMITS + 1,),
     ).fetchall()
@@ -1238,6 +1263,7 @@ def _ordinary_request_is_blocked(
                 request.identity.project_root,
                 cast(str, row["run_id"]),
                 cast(str, row["entry"]),
+                cast(str, row["cid"]),
                 cast(str, row["execution_id"]),
                 int(row["plan_order"]),
             ),
@@ -1306,6 +1332,7 @@ def _validate_scheduler_identity(identity: SchedulerIdentity) -> None:
         or not (project_root / ".git").exists()
         or RUN_ID_RE.fullmatch(identity.run_id) is None
         or ENTRY_ID_RE.fullmatch(identity.entry) is None
+        or CID_RE.fullmatch(identity.cid) is None
         or EXECUTION_ID_RE.fullmatch(identity.execution_id) is None
         or not _positive_int(identity.plan_order)
     ):
@@ -1340,13 +1367,13 @@ def _audit_scheduler_state(db: sqlite3.Connection, project_root: Path) -> None:
             "reproduction.scheduler.invalid", "scheduler state is invalid"
         )
     waiter_rows = db.execute(
-        "SELECT ticket, run_id, entry, execution_id, plan_order, "
+        "SELECT ticket, run_id, entry, cid, execution_id, plan_order, "
         "supervisor_pid, registered_at FROM scheduler_waiters "
         "ORDER BY ticket LIMIT ?",
         (MAX_WAITERS + 1,),
     ).fetchall()
     permit_rows = db.execute(
-        "SELECT run_id, entry, execution_id, plan_order FROM scheduler_permits "
+        "SELECT run_id, entry, cid, execution_id, plan_order FROM scheduler_permits "
         "ORDER BY run_id, entry, execution_id LIMIT ?",
         (MAX_PERMITS + 1,),
     ).fetchall()
@@ -1360,6 +1387,7 @@ def _audit_scheduler_state(db: sqlite3.Connection, project_root: Path) -> None:
             project_root,
             cast(str, row["run_id"]),
             cast(str, row["entry"]),
+            cast(str, row["cid"]),
             cast(str, row["execution_id"]),
             int(row["plan_order"]),
         )
@@ -1383,6 +1411,7 @@ def _audit_scheduler_state(db: sqlite3.Connection, project_root: Path) -> None:
                     project_root,
                     cast(str, row["run_id"]),
                     cast(str, row["entry"]),
+                    cast(str, row["cid"]),
                     cast(str, row["execution_id"]),
                     int(row["plan_order"]),
                 ),
@@ -1391,10 +1420,12 @@ def _audit_scheduler_state(db: sqlite3.Connection, project_root: Path) -> None:
         is not None
     )
     waiter_identities = {
-        (row["run_id"], row["entry"], row["execution_id"]) for row in waiter_rows
+        (row["run_id"], row["entry"], row["cid"], row["execution_id"])
+        for row in waiter_rows
     }
     permit_identities = {
-        (row["run_id"], row["entry"], row["execution_id"]) for row in permit_rows
+        (row["run_id"], row["entry"], row["cid"], row["execution_id"])
+        for row in permit_rows
     }
     if (
         waiter_identities & permit_identities

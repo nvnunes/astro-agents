@@ -35,6 +35,7 @@ from .pyrun_contract import (
     automatic_option_role,
     effective_parameter_roles,
     parse_pyrun_arguments,
+    recipe_script_parameters,
     split_argument_values,
 )
 from .pyrun_outputs import portable_output_path
@@ -152,18 +153,23 @@ def index_commands(
         if parse_failures:
             recovered = _recover_rejected_outputs(body, context)
             rejected_outputs.extend(recovered)
-            failures.append(CommandDiscoveryFailure(
-                fence_number, 1,
-                CommandV2Error("invocation.command.unsupported",
-                    f"{context.document}:fence-{fence_number}",
-                    {
-                        "reason": parse_failures[0],
-                        "rejected_command": _structural_rejected_command(
-                            context, fence_number, recovered
-                        ),
-                    },
-                    "Recorded-Command Provenance And Material Graph"),
-            ))
+            failures.append(
+                CommandDiscoveryFailure(
+                    fence_number,
+                    1,
+                    CommandV2Error(
+                        "invocation.command.unsupported",
+                        f"{context.document}:fence-{fence_number}",
+                        {
+                            "reason": parse_failures[0],
+                            "rejected_command": _structural_rejected_command(
+                                context, fence_number, recovered
+                            ),
+                        },
+                        "Recorded-Command Provenance And Material Graph",
+                    ),
+                )
+            )
             continue
         if context.require_experimental_context and not eligible:
             continue
@@ -178,9 +184,8 @@ def index_commands(
             values.extend(
                 item.value
                 for item in command.options
-                if command.runner_roles.get(
-                    item.name, automatic_option_role(item.name)
-                ) == "output"
+                if command.runner_roles.get(item.name, automatic_option_role(item.name))
+                == "output"
             )
             values.extend(
                 value
@@ -192,10 +197,16 @@ def index_commands(
                 candidate = _declaration_output(value, context)
                 if candidate is not None:
                     outputs.append(candidate)
-            declarations.append(CommandDeclaration(
-                fence_number, ordinal, command.tokens,
-                _declaration_owner(context), tuple(sorted(set(outputs))), command,
-            ))
+            declarations.append(
+                CommandDeclaration(
+                    fence_number,
+                    ordinal,
+                    command.tokens,
+                    _declaration_owner(context),
+                    tuple(sorted(set(outputs))),
+                    command,
+                )
+            )
     return CommandDeclarationResult(
         tuple(declarations), tuple(failures), tuple(sorted(set(rejected_outputs)))
     )
@@ -214,10 +225,17 @@ def observe_commands(
 
     del text
     context = CommandContext(
-        context.log_id, context.entry, context.document, context.entry_root.resolve(),
-        context.log_root.resolve(), context.project_root.resolve(), context.data_file,
-        context.require_experimental_context, context.input_fingerprint_verifier,
-        context.script_identity_cache, context.script_identity_observer,
+        context.log_id,
+        context.entry,
+        context.document,
+        context.entry_root.resolve(),
+        context.log_root.resolve(),
+        context.project_root.resolve(),
+        context.data_file,
+        context.require_experimental_context,
+        context.input_fingerprint_verifier,
+        context.script_identity_cache,
+        context.script_identity_observer,
     )
     invocations: list[Invocation] = []
     failures = list(declarations.failures)
@@ -231,14 +249,16 @@ def observe_commands(
         duplicate = duplicates.get(canonical, 0)
         try:
             invocation = _build_invocation(
-                command, context,
-                _InvocationPosition(declaration.fence, declaration.ordinal,
-                                    len(invocations), duplicate),
+                command,
+                context,
+                _InvocationPosition(
+                    declaration.fence, declaration.ordinal, len(invocations), duplicate
+                ),
             )
         except CommandV2Error as error:
-            failures.append(CommandDiscoveryFailure(
-                declaration.fence, declaration.ordinal, error
-            ))
+            failures.append(
+                CommandDiscoveryFailure(declaration.fence, declaration.ordinal, error)
+            )
             continue
         duplicates[canonical] = duplicate + 1
         invocations.append(invocation)
@@ -246,9 +266,9 @@ def observe_commands(
 
 
 def _declaration_owner(context: CommandDeclarationContext) -> str:
-    return context.entry_root.resolve().relative_to(
-        context.log_root.resolve()
-    ).as_posix()
+    return (
+        context.entry_root.resolve().relative_to(context.log_root.resolve()).as_posix()
+    )
 
 
 def _declaration_output(
@@ -275,8 +295,12 @@ def _declaration_output(
     if re.search(r"<[A-Za-z0-9_-]+>", expanded):
         return None
     path = Path(expanded)
-    return ((path if path.is_absolute() else context.entry_root / path)
-            .absolute().as_posix(), "unknown")
+    return (
+        (path if path.is_absolute() else context.entry_root / path)
+        .absolute()
+        .as_posix(),
+        "unknown",
+    )
 
 
 def _recover_rejected_outputs(
@@ -288,9 +312,7 @@ def _recover_rejected_outputs(
     values already recognizable as output roles, never expands shell syntax.
     """
 
-    values = re.findall(
-        r"(--[A-Za-z0-9-]+)(?:=|\s+)([^\s]+)", body
-    )
+    values = re.findall(r"(--[A-Za-z0-9-]+)(?:=|\s+)([^\s]+)", body)
     return tuple(
         candidate
         for option, value in values
@@ -324,9 +346,7 @@ def _structural_rejected_command(
         "status": "rejected",
         "code": "invocation.command.unsupported",
         "arguments": [],
-        "declared_outputs": [
-            {"path": path, "kind": kind} for path, kind in outputs
-        ],
+        "declared_outputs": [{"path": path, "kind": kind} for path, kind in outputs],
         "script": None,
     }
 
@@ -378,6 +398,7 @@ class Invocation:
     """One supported top-level invocation and its visible relationships."""
 
     identity: str
+    cid: str
     document: str
     entry: str
     fence: int
@@ -422,6 +443,7 @@ class CommandDiscoveryFailure:
 @dataclass(frozen=True)
 class _ParsedCommand:
     tokens: tuple[str, ...]
+    cid: str
     executable_index: int
     script_index: int | None
     parameters: tuple[str, ...]
@@ -499,6 +521,54 @@ def discover_commands(
         ),
     )
     return observe_commands(declaration, text, context)
+
+
+def validate_command_structure(invocations: Sequence[Invocation]) -> None:
+    """Require one entry-unique CID owner per fence and unique parameters."""
+
+    owners_by_fence: dict[tuple[str, int], set[tuple[str, ...]]] = {}
+    owner_by_cid: dict[tuple[str, str], tuple[str, int, tuple[str, ...]]] = {}
+    cid_by_owner: dict[tuple[str, int, tuple[str, ...]], str] = {}
+    parameters_by_cid: dict[tuple[str, str], set[tuple[str, ...]]] = {}
+    for invocation in invocations:
+        fence = (invocation.document, invocation.fence)
+        owner = invocation.authored_group
+        owners_by_fence.setdefault(fence, set()).add(owner)
+        owner_key = (invocation.document, invocation.fence, owner)
+        prior_cid = cid_by_owner.setdefault(owner_key, invocation.cid)
+        if prior_cid != invocation.cid:
+            _fail(
+                "invocation.cid.unstable",
+                invocation.document,
+                {
+                    "cids": sorted({prior_cid, invocation.cid}),
+                    "fence": invocation.fence,
+                },
+            )
+        complete_cid = (invocation.entry, invocation.cid)
+        prior = owner_by_cid.setdefault(complete_cid, owner_key)
+        if prior != owner_key:
+            _fail(
+                "invocation.cid.duplicate",
+                invocation.document,
+                {"cid": invocation.cid, "owners": [prior, owner_key]},
+            )
+        parameters = recipe_script_parameters(invocation.recipe_parameters)
+        prior_parameters = parameters_by_cid.setdefault(complete_cid, set())
+        if parameters in prior_parameters:
+            _fail(
+                "invocation.cid.parameter_collision",
+                invocation.document,
+                {"cid": invocation.cid, "parameters": list(parameters)},
+            )
+        prior_parameters.add(parameters)
+    for (document, fence_number), owners in owners_by_fence.items():
+        if len(owners) > 1:
+            _fail(
+                "invocation.fence.multiple_commands",
+                document,
+                {"fence": fence_number, "commands": len(owners)},
+            )
 
 
 def _legacy_discover_commands(
@@ -830,6 +900,7 @@ def _parse_command(
         raise ValueError("shell commands must invoke pyrun directly")
     ordinary = list(tokens)
     (
+        cid,
         script_index,
         parameters,
         capture_outputs,
@@ -843,6 +914,7 @@ def _parse_command(
     options, positionals = split_argument_values(ordinary[argument_start:])
     return _ParsedCommand(
         tokens,
+        cid,
         executable_index,
         script_index,
         parameters,
@@ -862,6 +934,7 @@ def _parse_command(
 def _pyrun_layout(
     tokens: Sequence[str], executable_index: int
 ) -> tuple[
+    str,
     int,
     tuple[str, ...],
     tuple[tuple[str, str], ...],
@@ -878,6 +951,7 @@ def _pyrun_layout(
         (option.removeprefix("--"), target) for option, target in layout.captures
     )
     return (
+        layout.cid,
         executable_index + 1 + layout.script_index,
         layout.parameters,
         captures,
@@ -945,6 +1019,7 @@ def _build_invocation(
     identity = hashlib.sha256(canonical_json(identity_payload).encode()).hexdigest()
     return Invocation(
         identity,
+        command.cid,
         context.document,
         context.entry,
         position.fence,

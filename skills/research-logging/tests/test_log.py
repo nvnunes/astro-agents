@@ -859,6 +859,54 @@ class LogEvidenceTests(unittest.TestCase):
             self.assertEqual(listed.returncode, 0, listed.stderr)
             self.assertEqual(len(json.loads(listed.stdout)["records"]), 3)
 
+    def test_common_authoring_prepares_each_evidence_input_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry = fixture(Path(directory))
+            from validation import presentation
+
+            observed = {
+                name: mock.patch.object(
+                    presentation,
+                    name,
+                    wraps=getattr(presentation, name),
+                )
+                for name in (
+                    "find_entry_presentation",
+                    "load_data_file",
+                    "resolve_input_token",
+                    "observe_fingerprint",
+                    "observe_source",
+                    "evaluate_observed_locator",
+                )
+            }
+            with (
+                observed["find_entry_presentation"] as find,
+                observed["load_data_file"] as load_data,
+                observed["resolve_input_token"] as resolve,
+                observed["observe_fingerprint"] as fingerprint,
+                observed["observe_source"] as source,
+                observed["evaluate_observed_locator"] as select,
+            ):
+                result = run(
+                    entry,
+                    "evidence",
+                    "add",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--id",
+                    "success-rate",
+                    "--source",
+                    "results",
+                    "--select",
+                    "/rate",
+                    "--as-percentage",
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for operation in (find, load_data, resolve, fingerprint, source, select):
+                self.assertEqual(operation.call_count, 1)
+
     def test_dry_run_and_conflict_leave_registry_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = fixture(Path(directory))

@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from research_log_data import (
+    DataFile,
     Fingerprint,
+    FingerprintObservation,
+    InputResource,
     load_data_file,
     observe_file_content,
     observe_fingerprint,
@@ -20,13 +23,14 @@ from .evidence import (
     MAX_PRESENTATION_BYTES,
     SECTION_CLASSIFIER_VERSION,
     EvidenceRecord,
+    EvidenceSource,
     PresentedItem,
     evidence_record_from_fields,
     index_entry_presentations,
 )
 from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import canonical_json
-from .locator import evaluate_locator
+from .locator import SourceObservation, evaluate_observed_locator, observe_source
 from .mechanical_values import SelectionResult
 from .transformation import compare_presentation, evaluate_transformation
 
@@ -53,6 +57,29 @@ class CandidateEvaluation:
     record: EvidenceRecord
     presentation: PresentedItem
     selections: tuple[SelectionResult, ...]
+    artifact_observation: PreparedArtifactObservation | None = None
+
+
+@dataclass(frozen=True)
+class PreparedEvidenceSource:
+    """One resolved and observed source reused throughout authoring."""
+
+    source: str
+    resource: InputResource
+    path: Path
+    fingerprint: FingerprintObservation
+    observation: SourceObservation | None
+    selection: SelectionResult | None
+    locator: Mapping[str, object] | None
+
+
+@dataclass(frozen=True)
+class PreparedEvidenceContext:
+    """Operation-local presentation and source state for one candidate."""
+
+    presentation: PresentedItem
+    data: DataFile
+    sources: tuple[PreparedEvidenceSource, ...]
     artifact_observation: PreparedArtifactObservation | None = None
 
 
@@ -119,7 +146,141 @@ def evaluate_candidate_record(
     """
 
     presentation = find_entry_presentation(entry_root, log_root, record_id)
-    record = evidence_record_from_fields(
+    record = _candidate_record(
+        presentation,
+        entry_root=entry_root,
+        log_root=log_root,
+        record_id=record_id,
+        definition=definition,
+    )
+    data = load_data_file(entry_root / "data.json", entry_root=entry_root)
+    prepared = _prepare_context(
+        presentation,
+        data,
+        record.sources,
+        log_root=log_root,
+    )
+    return _evaluate_prepared_record(
+        prepared,
+        record,
+        capture_artifact_fingerprint=capture_artifact_fingerprint,
+    )
+
+
+def prepare_common_evidence_context(
+    *,
+    entry_root: Path,
+    log_root: Path,
+    record_id: str,
+    source: str,
+) -> PreparedEvidenceContext:
+    """Prepare one common-mode source before locator inference."""
+
+    presentation = find_entry_presentation(entry_root, log_root, record_id)
+    data = load_data_file(entry_root / "data.json", entry_root=entry_root)
+    return _prepare_context(
+        presentation,
+        data,
+        (source,),
+        log_root=log_root,
+    )
+
+
+def select_prepared_source(
+    context: PreparedEvidenceContext,
+    locator: Mapping[str, object],
+    *,
+    source_index: int = 0,
+) -> PreparedEvidenceContext:
+    """Evaluate one locator once against an already observed source."""
+
+    source = context.sources[source_index]
+    if source.observation is None:
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            source.source,
+            {"reason": "locator_source_unavailable"},
+            "Evidence Presentation Authoring",
+        )
+    selected = replace(
+        source,
+        locator=locator,
+        selection=evaluate_observed_locator(source.observation, locator),
+    )
+    sources = tuple(
+        selected if index == source_index else item
+        for index, item in enumerate(context.sources)
+    )
+    return replace(context, sources=sources)
+
+
+def bind_prepared_locator(
+    context: PreparedEvidenceContext,
+    locator: Mapping[str, object],
+    *,
+    source_index: int = 0,
+) -> PreparedEvidenceContext:
+    """Attach inferred expectations without reevaluating a prepared selection."""
+
+    source = context.sources[source_index]
+    if source.selection is None:
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            source.source,
+            {"reason": "locator_selection_missing"},
+            "Evidence Presentation Authoring",
+        )
+    updated = replace(source, locator=locator)
+    sources = tuple(
+        updated if index == source_index else item
+        for index, item in enumerate(context.sources)
+    )
+    return replace(context, sources=sources)
+
+
+def evaluate_prepared_definition(
+    context: PreparedEvidenceContext,
+    *,
+    entry_root: Path,
+    log_root: Path,
+    record_id: str,
+    definition: Mapping[str, object],
+    capture_artifact_fingerprint: bool,
+) -> CandidateEvaluation:
+    """Decode and compare a definition using only prepared operation state."""
+
+    record = _candidate_record(
+        context.presentation,
+        entry_root=entry_root,
+        log_root=log_root,
+        record_id=record_id,
+        definition=definition,
+    )
+    expected = tuple((item.source, item.locator) for item in context.sources)
+    actual = tuple((item.source, item.locator) for item in record.sources)
+    if actual != expected:
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            record_id,
+            {"reason": "prepared_source_mismatch"},
+            "Evidence Presentation Authoring",
+        )
+    return _evaluate_prepared_record(
+        context,
+        record,
+        capture_artifact_fingerprint=capture_artifact_fingerprint,
+    )
+
+
+def _candidate_record(
+    presentation: PresentedItem,
+    *,
+    entry_root: Path,
+    log_root: Path,
+    record_id: str,
+    definition: Mapping[str, object],
+) -> EvidenceRecord:
+    return evidence_record_from_fields(
         subject=f"evidence definition for {record_id!r}",
         log_root=log_root,
         entry_root=entry_root,
@@ -142,14 +303,29 @@ def evaluate_candidate_record(
             ),
         },
     )
-    data = load_data_file(entry_root / "data.json", entry_root=entry_root)
-    selections = []
-    for source in record.sources:
-        resolved = resolve_input_token(source.source, data)
+
+
+def _prepare_context(
+    presentation: PresentedItem,
+    data: DataFile,
+    sources: Sequence[EvidenceSource | str],
+    *,
+    log_root: Path,
+) -> PreparedEvidenceContext:
+    prepared: list[PreparedEvidenceSource] = []
+    artifact_observation = None
+    for source_value in sources:
+        if isinstance(source_value, str):
+            source_name = source_value
+            locator = None
+        else:
+            source_name = source_value.source
+            locator = source_value.locator
+        resolved = resolve_input_token(source_name, data)
         if resolved.member is None and resolved.resource.kind != "file":
             raise PresentationEvaluationError(
                 "evidence.declaration.invalid",
-                source.source,
+                source_name,
                 {"reason": "file_source_required"},
                 "Evidence Presentation Authoring",
             )
@@ -158,33 +334,67 @@ def evaluate_candidate_record(
             require_artifact_source_association(
                 presentation, source_path=source_path, log_root=log_root
             )
-        observe_fingerprint(resolved.resource)
+        fingerprint = observe_fingerprint(resolved.resource)
+        observation = None
+        selection = None
         if presentation.kind != "artifact":
-            assert source.locator is not None
-            selections.append(evaluate_locator(source_path, source.locator))
+            observation = observe_source(source_path)
+            if locator is not None:
+                selection = evaluate_observed_locator(observation, locator)
+        prepared.append(
+            PreparedEvidenceSource(
+                source_name,
+                resolved.resource,
+                source_path.resolve(),
+                fingerprint,
+                observation,
+                selection,
+                locator,
+            )
+        )
     if presentation.kind == "artifact":
-        digest, file_identity = observe_file_content(Path(resolved.path))
-        observation = Fingerprint("sha256", digest)
+        source = prepared[0]
+        digest, file_identity = observe_file_content(source.path)
+        artifact_observation = PreparedArtifactObservation(
+            Fingerprint("sha256", digest), source.path, file_identity
+        )
+    return PreparedEvidenceContext(
+        presentation, data, tuple(prepared), artifact_observation
+    )
+
+
+def _evaluate_prepared_record(
+    context: PreparedEvidenceContext,
+    record: EvidenceRecord,
+    *,
+    capture_artifact_fingerprint: bool,
+) -> CandidateEvaluation:
+    presentation = context.presentation
+    if presentation.kind == "artifact":
+        observation = context.artifact_observation
+        assert observation is not None
         if (
             presentation.presentation_form in {"image", "link"}
             and capture_artifact_fingerprint
         ):
-            record = replace(record, artifact_fingerprint=observation)
-        return CandidateEvaluation(
-            record,
-            presentation,
-            (),
-            PreparedArtifactObservation(
-                observation, Path(resolved.path).resolve(), file_identity
-            ),
+            record = replace(record, artifact_fingerprint=observation.fingerprint)
+        return CandidateEvaluation(record, presentation, (), observation)
+    selections = tuple(item.selection for item in context.sources)
+    if any(item is None for item in selections):
+        raise PresentationEvaluationError(
+            "evidence.declaration.invalid",
+            record.id,
+            {"reason": "locator_selection_missing"},
+            "Evidence Presentation Authoring",
         )
+    complete = tuple(item for item in selections if item is not None)
     result = evaluate_transformation(
-        record.transformation, selections, presentation_kind=record.kind
+        record.transformation, complete, presentation_kind=record.kind
     )
     compare_presentation(
         result, presented_kind=presentation.kind, presented=presentation.value
     )
-    return CandidateEvaluation(record, presentation, tuple(selections))
+    return CandidateEvaluation(record, presentation, complete)
 
 
 def require_artifact_source_association(

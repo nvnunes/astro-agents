@@ -62,7 +62,7 @@ class PyrunStateError(MechanicalContractError):
 
 @dataclass(frozen=True)
 class ExecutionRecipe:
-    """The normalized structural recipe that determines an execution ID."""
+    """The normalized structural recipe compared separately from parameter ID."""
 
     script: str
     parameters: tuple[str, ...]

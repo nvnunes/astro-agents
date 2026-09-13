@@ -67,6 +67,12 @@ recognizes:
 Data tokens occupy the complete input argument. Quote arguments that contain
 angle tokens. Do not embed a token in `label=<name>` or another opaque value.
 
+Every recorded invocation supplies one stable `--cid CID` before the required
+`--` separator. Use an ASCII alphanumeric name followed only by ASCII
+alphanumerics, `_`, or `-`. A CID owns one command or bounded loop, is unique
+across the entry's split documents, and is reused by every loop expansion.
+Keep exactly one independent command or loop in each fence.
+
 `pyrun` automatically gives each execution isolated temporary
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable
 `--env NAME=value` runner options only for additional result-affecting
@@ -123,6 +129,7 @@ without leading hyphens and positional selectors as one-based `@N` values:
 
 ```bash
 ./pyrun \
+  --cid run-study \
   --other-inputs catalog \
   --other-outputs results,@2 \
   -- \
@@ -174,7 +181,7 @@ options for comparisons and sweeps when practical.
 Example:
 
 ```bash
-./pyrun scripts/run_study.py \
+./pyrun --cid run-study -- scripts/run_study.py \
   --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
@@ -195,16 +202,16 @@ outputs, even when the script lives in the parent entry's `scripts/`.
 When stdout or stderr supports presented evidence, capture it through `pyrun`
 so it receives a current execution-state output observation. Use `--capture-stdout <path>` and
 `--capture-stderr <path>` separately, or use
-`--capture-stdout-stderr <path>` for a merged stream. With one runner option,
-keep that option and `--` on the `./pyrun` line:
+`--capture-stdout-stderr <path>` for a merged stream. Keep the required CID,
+one capture option, and `--` on the `./pyrun` line:
 
 ```bash
-./pyrun --capture-stdout-stderr "<run-log>" -- \
+./pyrun --cid run-study --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
 
-With several runner options, put `./pyrun`, each option-value pair, and `--` on
+With several runner options, put `./pyrun`, the CID, each option-value pair, and `--` on
 separate lines as in the role-declaration example above.
 
 Raw shell redirection and `tee` do not establish execution-linked Provenance.
@@ -253,7 +260,7 @@ across execution; do not edit that file by hand. Add
 comparable commands that should not run during automatic reproduction:
 
 ```bash
-./pyrun --auto-reproduce=false -- scripts/run_simulation.py --output-data data/result.json
+./pyrun --cid run-simulation --auto-reproduce=false -- scripts/run_simulation.py --output-data data/result.json
 ```
 
 Add `--exclusive` before `--` when managed reproduction must run the command
@@ -263,11 +270,11 @@ This is scheduling metadata only: direct `pyrun` execution is unchanged, and
 the option does not alter the execution ID or reserve unrelated host work.
 
 ```bash
-./pyrun --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
+./pyrun --cid run-parallel-model --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
 ```
 
 For later changes, use [Synchronize A Recorded Command](#synchronize-a-recorded-command).
-Execution state must use `research-log-pyrun/v5`;
+Execution state must use `research-log-pyrun/v6`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the

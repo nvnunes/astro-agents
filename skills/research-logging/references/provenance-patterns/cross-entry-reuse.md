@@ -20,7 +20,7 @@ Required tooling:
 Research command from `e001`:
 
 ```bash
-./pyrun scripts/run_simulation.py \
+./pyrun --cid run-simulation -- scripts/run_simulation.py \
   --input-config "<simulation-config>" \
   --output-results-root "<simulation-results>"
 ```
@@ -28,7 +28,7 @@ Research command from `e001`:
 Research command from `e002`:
 
 ```bash
-./pyrun scripts/analyze_results.py \
+./pyrun --cid analyze-results -- scripts/analyze_results.py \
   --input-results-root "<simulation-results>" \
   --output-summary "<followup-summary>"
 ```

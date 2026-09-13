@@ -19,11 +19,14 @@ Required tooling:
 Research commands:
 
 ```bash
-./pyrun scripts/summarize_measurements.py \
+./pyrun --cid summarize-measurements -- scripts/summarize_measurements.py \
   --input-measurements "<measurements>" --output-summary "<summary>"
-./pyrun scripts/plot_summary.py \
+```
+
+```bash
+./pyrun --cid plot-summary -- scripts/plot_summary.py \
   --input-summary "<summary>" --output-figure "<summary-plot>"
 ```
 
-A raw output path in a recorded command is a Structure finding. Legacy state
-remains readable for diagnosis and repair but is not steady-state guidance.
+A raw output path in a recorded command is a Structure finding. Current state
+uses CID-scoped v6 records; earlier schemas are unsupported.

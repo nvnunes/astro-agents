@@ -422,8 +422,8 @@ class ReproductionJobTests(unittest.TestCase):
                     command = next(
                         item
                         for item in plan.commands
-                        if (item["entry"], item["execution_id"])
-                        == (entry, execution_id)
+                        if (item["entry"], item["cid"], item["execution_id"])
+                        == (entry, cid, execution_id)
                     )
                     state = command["execution_state"]
                     assert isinstance(state, dict)

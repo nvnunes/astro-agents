@@ -20,10 +20,13 @@ Required tooling:
 Research commands:
 
 ```bash
-./pyrun scripts/run_simulation.py \
+./pyrun --cid run-simulation -- scripts/run_simulation.py \
   --input-config "<simulation-config>" \
   --output-results-root "<simulation-results>"
-./pyrun scripts/build_table.py \
+```
+
+```bash
+./pyrun --cid build-table -- scripts/build_table.py \
   --input-summary "<simulation-results>/summary.csv" \
   --output-table "<results-table>"
 ```

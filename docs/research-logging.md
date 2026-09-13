@@ -416,7 +416,7 @@ Compare the retained baseline with the proposed correction.
 
 `Steps:`
 ```bash
-./pyrun scripts/compare.py --input "<test_set>" --output-csv data/comparison.csv
+./pyrun --cid compare-candidates -- scripts/compare.py --input "<test_set>" --output-csv data/comparison.csv
 ```
 
 `Results:`
@@ -539,6 +539,10 @@ also expands these path tokens:
 Data tokens occupy the complete input argument. Quote arguments containing
 angle tokens.
 
+Every recorded invocation supplies one stable entry-unique `--cid CID` before
+the required `--` separator. A CID owns exactly one command or bounded loop,
+every loop expansion reuses it, and each fence contains one such owner.
+
 For an active Python workflow, the entry uses a symbolic link named `pyrun`
 that points to the installed launcher; do not copy the launcher into the log.
 If the declared project environment or symbolic links are unavailable,
@@ -552,7 +556,7 @@ material and `<name>` for indexed inputs. Put one option per line for a
 nontrivial command:
 
 ```bash
-./pyrun scripts/run_study.py \
+./pyrun --cid run-study -- scripts/run_study.py \
   --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
@@ -571,25 +575,26 @@ should not have to reshape a natural command merely to satisfy validation.
 
 Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results.
-`pyrun` records one stable execution identity for the exact recipe and its
-complete output set, current script, parameters, inputs, and bytes. It also
+Within the CID, `pyrun` derives one stable execution ID from the expanded
+child-parameter vector and records the complete recipe and its output set,
+current script, parameters, inputs, and bytes separately. It also
 records log-local Python source files loaded by the command or by an ordinary
 Python child invocation. A logical path through an intentional log symlink
 remains log-local. Changing a recorded helper makes the dependent execution
 support stale; a later successful run refreshes the observed dependency set.
-Use `./pyrun --auto-reproduce=false -- ...` for simulation, model training,
+Use `./pyrun --cid CID --auto-reproduce=false -- ...` for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
-Use `./pyrun --exclusive -- ...` when managed reproduction must run the command
+Use `./pyrun --cid CID --exclusive -- ...` when managed reproduction must run the command
 alone across all active reproduction runs in the project. Exclusivity is a
 scheduling policy, not part of the recipe identity, and it does not change
 ordinary direct execution or reserve unrelated host processes. For a later
 policy-only change, edit Markdown first and run `log command sync` with
 `--path`, `--entry`, and `--cid`. Current
-execution state must use `research-log-pyrun/v5`; earlier schemas are
+execution state must use `research-log-pyrun/v6`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
-`./pyrun --capture-stdout ... --`, `--capture-stderr ... --`, or
-`--capture-stdout-stderr ... --`; raw `tee` or redirection cannot create that
+`./pyrun --cid CID --capture-stdout ... --`, `--capture-stderr ... --`, or
+`--capture-stdout-stderr ... --`; every form retains the CID, and raw `tee` or redirection cannot create that
 current output record. Output available only in an agent's temporary context
 is not evidence. This is original research execution, not validation or
 reproduction; do not rerun an unchanged command solely to test reproducibility
@@ -993,7 +998,7 @@ domain requires an explicit `--recheck`; an ordinary incremental launch may
 correctly select no execution and leave the result domain absent.
 
 For one current repaired invocation, use `log repair-check --path LOG --entry
-ENTRY --execution-id ID`. It is isolated and synchronous; automatic policy and
+ENTRY --cid CID --execution-id ID`. It is isolated and synchronous; automatic policy and
 reproduction admission do not apply, and it neither resumes nor publishes. Its
 workspace and diagnostics are retained for inspection once the workspace has
 been created; an unavailable prerequisite or preflight failure before creation
@@ -1004,7 +1009,7 @@ repair check. For example:
 
 ```bash
 <skill>/scripts/log repair-check --path <log> --entry <entry-id> \
-  --execution-id <full-id>
+  --cid <cid> --execution-id <full-id>
 ```
 
 The check snapshots current source bytes
@@ -1031,7 +1036,7 @@ applies independently to each command and is retained across resume. A command
 that exceeds it fails with `execution_timeout`, its process tree is terminated,
 and independent commands continue.
 
-Entry-local execution state must use `research-log-pyrun/v5`; earlier schemas
+Entry-local execution state must use `research-log-pyrun/v6`; earlier schemas
 are rejected before planning and are not assigned guessed scheduling policy.
 
 Executions recorded with `auto_reproduce: false` are excluded by default.
@@ -1220,7 +1225,7 @@ and which must be evaluated again.
 
 ## Repair Checks
 
-Use `log repair-check --path LOG --entry ENTRY --execution-id ID` to test one
+Use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID` to test one
 current repaired invocation. It is isolated and synchronous: it writes only its
 temporary repair-check workspace and lock state, never a reproduction run,
 result, report, requirement flag, or promoted artifact. Bare `log reproduce`

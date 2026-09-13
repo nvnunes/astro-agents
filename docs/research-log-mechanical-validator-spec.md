@@ -59,7 +59,7 @@ or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v5` |
-| `pyrun` execution state | `research-log-pyrun/v5`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v6`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -72,7 +72,7 @@ or evolution requires it.
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
 | Published validation export | `research-log-published-validation/2` (explicit export only) |
-| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; this specification owns the physical shared schema, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/10` |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; this specification owns the physical shared schema, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/11` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Entry validation CLI result | `research-log-entry-validation-cli-result/1` |
 | Cached result and view | Store projections; JSON is explicit export only |
@@ -2981,7 +2981,7 @@ the orphan rules. A script may still accept but ignore a valid output argument;
 static binding validation makes no claim about that runtime behavior.
 
 For every current Markdown command whose structural recipe resolves to a
-recorded execution ID, validation also requires exact automatic-reproduction
+recorded CID and parameter execution ID, validation also requires exact automatic-reproduction
 and exclusive-scheduling policy agreement. The exact authored
 `--auto-reproduce=false` option must map to `auto_reproduce: false`; omission
 must map to true. The authored `--exclusive` flag must map to `exclusive: true`;
@@ -3015,20 +3015,31 @@ owned descendant directories retain ordinary material behavior.
 
 ### `pyrun` Output-Support Records
 
-Current execution state is entry-root `pyrun.json`, with one record per exact
-recipe and its complete output set. The
+Current execution state is entry-root `pyrun.json`, with one CID bucket per
+authored command or bounded loop and one record per expanded parameter identity.
+Every fence has exactly one owner, and every CID is stable and unique across an
+entry's split documents. The
 [reproduction specification](research-log-reproduction-spec.md#pyrunjson)
 owns its schema, execution identity, reproduction requirement, and publication
 lifecycle.
 Mechanical validation and Repair read execution state directly without
 execution or mutation. They associate each current invocation with its exact
-execution identity, then use an output-to-execution-owner index for output and
+`(CID, execution ID)` identity, compare the complete recipe and policies
+independently, then use an output-to-execution-owner index for output and
 directory-member resolution. An invocation or output that has no exact current
 association fails as `provenance.output.execution_unassociated`; validation
 does not fabricate a legacy parameter vector. There is no projection from
 current execution state to a legacy output model.
 
-Validation accepts only strict `research-log-pyrun/v5` state. An earlier schema
+Validation reports missing, stale, recipe-changed, and policy-changed members
+without mutation. The parameter-only ID excludes CID, script, environment,
+roles, declarations, captures, policies, fingerprints, and observations;
+recipe equality is therefore a separate requirement. A pending v6 record may
+retain only applicable observation subsets while `requires_reproduction` is
+true. A record with that flag false requires a script observation and exact
+input/output observation keys.
+
+Validation accepts only strict `research-log-pyrun/v6` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
@@ -3195,32 +3206,33 @@ Ordinary output parameters use the existing mechanical input/output role
 rules. Retained process streams use one of these forms:
 
 ```bash
-./pyrun --capture-stdout "<stdout-log>" -- \
+./pyrun --cid run-study --capture-stdout "<stdout-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --capture-stderr "<stderr-log>" -- \
+./pyrun --cid run-study --capture-stderr "<stderr-log>" -- \
   scripts/run_study.py \
   --parameter value
 
-./pyrun --capture-stdout-stderr "<run-log>" -- \
+./pyrun --cid run-study --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
 
 `--capture-stdout` and `--capture-stderr` may be combined with distinct
-targets. `--capture-stdout-stderr` is mutually exclusive with both. With one
-runner option, that option and `--` stay on the `./pyrun` line. With several,
-put `./pyrun`, each option-value pair, and `--` on separate lines. Line wrapping
+targets. `--capture-stdout-stderr` is mutually exclusive with both. The
+required CID, one additional runner option, and `--` may stay on the `./pyrun`
+line. With several options, put `./pyrun`, the CID, each option-value pair, and
+`--` on separate lines. Line wrapping
 does not change parsing. Captured bytes are mirrored to the corresponding
 terminal stream. Raw shell redirection and `tee` are outside the
 recorded-command grammar.
 
 An existing record may contain `requires_reproduction: true`. Such a record
-marks execution support that still requires successful reproduction, including
-historically reconstructed or explicitly repaired state. It does not validate
-Provenance. The next
-successful `pyrun` execution replaces it with current observations and
+marks a current declared invocation that still requires successful execution.
+It may carry only the still-applicable historical observation subset; absent
+observations are unavailable history, not successful execution evidence. It
+does not validate Provenance. The next successful `pyrun` execution replaces it with complete current observations and
 `requires_reproduction: false`. Historical workflows with no record participate
 in structural graph and Hygiene evaluation, but a reached generated output
 cannot pass Provenance while its record still requires reproduction.
@@ -3814,6 +3826,11 @@ The input-registry operations are:
   [--dry-run]
 <skill>/scripts/log data remove --path LOG --entry ENTRY NAME [--dry-run]
 <skill>/scripts/log data list --path LOG --entry ENTRY
+
+<skill>/scripts/log command sync --path LOG --entry ENTRY --cid CID
+  [--add-origin NAME=PATH]... [--add-generated NAME=PATH]...
+  [--rename OLD=NEW]... [--remove NAME]... [--retire EXECUTION_ID]...
+  [--dry-run]
 ```
 
 These actions normalize canonical location and use the declaration-identity
@@ -3847,6 +3864,19 @@ mutation holds the shared log lock and the selected entry lock and leaves
 generated validation state unchanged. A multi-file rename uses entry-keyed
 recognized transaction residue until publication or complete rollback, and
 cross-entry declaration disagreement remains a validation finding.
+
+`command sync` is the sole recipe and execution-policy editing route. The
+agent edits the selected Markdown owner first, then sync compares every current
+expansion with the selected CID bucket by parameter ID and complete recipe.
+Missing invocations become observation-empty records requiring reproduction;
+recipe changes retain only still-applicable observations and require
+reproduction; policy-only changes preserve observations and the requirement.
+Stale records require an exact acknowledgement for every reported execution
+ID. Sync may add simple declarations or apply safe local renames/removals in
+the same candidate, but it never samples current bytes, edits Markdown, or
+changes evidence-owned artifact baselines. It validates and atomically
+publishes the complete `data.json` and `pyrun.json` candidates; `--dry-run`
+returns both deterministic diffs and writes no registry or cache state.
 
 Entry-scoped `log evidence` and `log retention` actions read and validate the
 complete current registry, build candidate state through the production
@@ -4722,7 +4752,7 @@ The same experimental section records one command that names
 
 ````markdown
 ```bash
-./pyrun scripts/run_study.py --input-dataset "<development-set>" --output-summary-csv data/results.csv
+./pyrun --cid run-study -- scripts/run_study.py --input-dataset "<development-set>" --output-summary-csv data/results.csv
 ```
 ````
 
@@ -4752,7 +4782,7 @@ executable interface unchanged is not a valid repair.
   recipe. Every local source used by the table must independently resolve to
   exactly one producing invocation unless it reaches an explicit origin.
 - A marked output block may select a retained command log. Declare the generated
-  log and use `./pyrun --capture-stdout-stderr "<run-log>" -- ...` so it has
+  log and use `./pyrun --cid CID --capture-stdout-stderr "<run-log>" -- ...` so it has
   both a graph relationship and current execution support; raw redirection or
   `tee` does not provide that support. The marked fence payload must still
   match the selected retained text exactly.
@@ -4776,7 +4806,7 @@ Suppose an entry records:
 
 ````markdown
 ```bash
-./pyrun --other-outputs output-dir -- \
+./pyrun --cid run-trials --other-outputs output-dir -- \
   scripts/run_trials.py \
   --reference "<reference-grid>" \
   --cases 1:40 \
@@ -4909,7 +4939,8 @@ here and must not contradict this specification.
 
 ## Isolated Repair Checks
 
-`log repair-check` is not validation or reproduction. It resolves one current
-invocation, compares isolated regenerated outputs to retained baselines, and
+`log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID` is not
+validation or reproduction. It resolves one current invocation, compares
+isolated regenerated outputs to retained baselines, and
 does not publish or alter validator state. Entry/full validation remains the
 only clearance path.

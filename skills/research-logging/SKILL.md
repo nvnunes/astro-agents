@@ -135,6 +135,6 @@ state does not start Repair without an explicit correction request.
 ## Repair Checks
 
 Use `log repair-check` only for a synchronous isolated check of one explicit
-current execution. Do not use reproduction execution selectors or
+current `(entry, CID, execution ID)`. Do not use reproduction execution selectors or
 the removed repair reproduction mode: reproduction plans log- or entry-scoped
 work only.

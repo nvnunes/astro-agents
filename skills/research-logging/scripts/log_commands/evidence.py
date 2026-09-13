@@ -11,7 +11,6 @@ from research_log_data import (
     Fingerprint,
     load_data_file,
     observe_file_content,
-    observe_fingerprint,
     resolve_input_token,
 )
 from validation.evidence import (
@@ -21,20 +20,19 @@ from validation.evidence import (
     index_summary_references,
     load_evidence_file,
 )
-from validation.locator import (
-    evaluate_locator,
-    evaluate_observed_locator,
-    observe_source,
-)
 from validation.mechanical_values import CanonicalValue, SelectionResult
 from validation.presentation import (
     CandidateEvaluation,
     PreparedArtifactObservation,
+    PreparedEvidenceContext,
+    bind_prepared_locator,
     evaluate_candidate_record,
-    find_entry_presentation,
+    evaluate_prepared_definition,
     index_entry_presentations_all,
+    prepare_common_evidence_context,
     require_artifact_baseline_form,
     require_artifact_fingerprint,
+    select_prepared_source,
 )
 from validation.transformation import parse_markdown_table
 
@@ -81,9 +79,13 @@ def add_or_update_common(
 
     with entry_lock(entry):
         current = load_current(entry)
-        presentation = find_entry_presentation(
-            entry.root, entry.log.root, arguments.record_id
+        prepared = prepare_common_evidence_context(
+            entry_root=entry.root,
+            log_root=entry.log.root,
+            record_id=arguments.record_id,
+            source=_token(arguments.source),
         )
+        presentation = prepared.presentation
         if presentation.kind == "artifact":
             if (
                 arguments.select
@@ -97,7 +99,8 @@ def add_or_update_common(
                     "evidence.common.unsupported",
                     "artifact evidence accepts only one whole-artifact source",
                 )
-            evaluated = evaluate_candidate_record(
+            evaluated = evaluate_prepared_definition(
+                prepared,
                 entry_root=entry.root,
                 log_root=entry.log.root,
                 record_id=arguments.record_id,
@@ -117,9 +120,10 @@ def add_or_update_common(
                 current=current,
                 dry_run=arguments.dry_run,
             )
-        locator = _common_locator(entry, arguments)
-        transformation = _common_transformation(entry, arguments, locator)
-        evaluated = evaluate_candidate_record(
+        prepared, locator = _common_locator(prepared, arguments)
+        transformation = _common_transformation(prepared, arguments)
+        evaluated = evaluate_prepared_definition(
+            prepared,
             entry_root=entry.root,
             log_root=entry.log.root,
             record_id=arguments.record_id,
@@ -289,11 +293,9 @@ def remove(entry: EntryContext, record_id: str, *, dry_run: bool) -> ActionResul
 
 
 def _common_locator(
-    entry: EntryContext, arguments: EvidenceCommonArguments
-) -> Mapping[str, Any]:
-    presentation = find_entry_presentation(
-        entry.root, entry.log.root, arguments.record_id
-    )
+    prepared: PreparedEvidenceContext, arguments: EvidenceCommonArguments
+) -> tuple[PreparedEvidenceContext, Mapping[str, Any]]:
+    presentation = prepared.presentation
     if (
         presentation.kind == "output"
         and not arguments.select
@@ -321,13 +323,13 @@ def _common_locator(
                 }
                 for pointer, kind, value in arguments.where
             ]
-    data = load_data_file(entry.root / "data.json", entry_root=entry.root)
-    resolved = resolve_input_token(_token(arguments.source), data)
-    observe_fingerprint(resolved.resource)
-    observation = observe_source(Path(resolved.path))
+    observation = prepared.sources[0].observation
+    assert observation is not None
     if observation.profile in {"hdf5", "json", "npz"} and "text" not in base:
         base["path"] = []
-    selection = evaluate_observed_locator(observation, base)
+    prepared = select_prepared_source(prepared, base)
+    selection = prepared.sources[0].selection
+    assert selection is not None
     expect: dict[str, Any] = {
         "items": len(selection.items),
         "matches": selection.matches,
@@ -339,18 +341,17 @@ def _common_locator(
         ]
     if selection.shape is not None:
         expect["shape"] = list(selection.shape)
-    return {**base, "expect": expect}
+    locator = {**base, "expect": expect}
+    return bind_prepared_locator(prepared, locator), locator
 
 
 def _common_transformation(
-    entry: EntryContext,
+    prepared: PreparedEvidenceContext,
     arguments: EvidenceCommonArguments,
-    locator: Mapping[str, Any],
 ) -> Mapping[str, Any] | None:
-    presentation = find_entry_presentation(
-        entry.root, entry.log.root, arguments.record_id
-    )
-    selection = _selection(entry, arguments.source, locator)
+    presentation = prepared.presentation
+    selection = prepared.sources[0].selection
+    assert selection is not None
     if arguments.as_percentage:
         if presentation.kind == "table":
             raise ActionError(
@@ -423,14 +424,6 @@ def _scale_transformation(
     if "unit" in descriptor:
         result["unit"] = descriptor["unit"]
     return result
-
-
-def _selection(
-    entry: EntryContext, source: str, locator: Mapping[str, Any]
-) -> SelectionResult:
-    data = load_data_file(entry.root / "data.json", entry_root=entry.root)
-    resolved = resolve_input_token(_token(source), data)
-    return evaluate_locator(Path(resolved.path), locator)
 
 
 def _number_presentation(value: str) -> re.Match[str]:
@@ -674,8 +667,8 @@ def _build(entry: EntryContext, records: tuple[EvidenceRecord, ...]) -> Evidence
 
 
 def _recheck_prepared_artifact(
-    entry: EntryContext,
-    candidate: EvidenceRecord,
+    _entry: EntryContext,
+    _candidate: EvidenceRecord,
     *,
     prepared_artifact_observation: PreparedArtifactObservation | None,
 ) -> None:
@@ -683,15 +676,13 @@ def _recheck_prepared_artifact(
 
     if prepared_artifact_observation is None:
         return
-    current_path = _artifact_source_path(entry, candidate)
-    if current_path != prepared_artifact_observation.path:
-        raise ActionError("evidence.artifact.source_changed", candidate.id)
+    current_path = prepared_artifact_observation.path
     digest, current_identity = observe_file_content(current_path)
     if (
         Fingerprint("sha256", digest) != prepared_artifact_observation.fingerprint
         or current_identity != prepared_artifact_observation.identity
     ):
-        raise ActionError("evidence.artifact.source_changed", candidate.id)
+        raise ActionError("evidence.artifact.source_changed", _candidate.id)
 
 
 def _artifact_source_path(entry: EntryContext, record: EvidenceRecord) -> Path:

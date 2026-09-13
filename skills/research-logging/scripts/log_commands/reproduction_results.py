@@ -228,7 +228,7 @@ class ArtifactResult:
 
 @dataclass(frozen=True)
 class CommandResult:
-    """One reusable terminal result for an entry-qualified command."""
+    """One reusable terminal result for an entry/CID-qualified command."""
 
     entry: str
     cid: str

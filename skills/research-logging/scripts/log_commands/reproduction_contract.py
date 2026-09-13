@@ -112,7 +112,7 @@ class ReproductionPlan:
     execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
     def as_dict(self) -> dict[str, object]:
-        """Return the closed accepted-plan/9 field set."""
+        """Return the closed accepted-plan/10 field set."""
 
         return {
             "boundaries": [dict(value) for value in self.boundaries],
@@ -142,7 +142,7 @@ class ReproductionPlan:
 
     @classmethod
     def from_json(cls, raw: bytes) -> "ReproductionPlan":
-        """Load one bounded, closed accepted-plan/9 JSON document."""
+        """Load one bounded, closed accepted-plan/10 JSON document."""
 
         if len(raw) > MAX_PLAN_BYTES:
             raise ValueError("accepted reproduction plan crossed its byte bound")

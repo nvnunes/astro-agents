@@ -74,7 +74,7 @@ projection without consulting current `pyrun.json`.
 Repair checks do not create command details or accepted runs. They preserve all
 recorded observations and reproduction requirements and cannot be promoted.
 
-Each evidence-relevant command has one current record keyed by entry and
+Each evidence-relevant command has one current record keyed by entry, CID, and
 execution ID. It stores a `succeeded`, `failed`, or `blocked` terminal
 disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning
@@ -117,7 +117,7 @@ be proved, and otherwise reports unknown availability.
 
 New runs use run-local `state.sqlite` as durable job authority. It retains one
 immutable accepted plan, the logical queue and `jobs` cap, active
-entry-qualified execution state, worker state, checkpoints, comparison context,
+entry/CID-qualified execution state, worker state, checkpoints, comparison context,
 and publication-retry state. It has no attempt lineage. A
 scheduling permit is released only after terminal checkpoint publication and
 worker exit. Older job files remain untouched but are unsupported: Reproduce

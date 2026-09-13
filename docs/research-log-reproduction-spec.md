@@ -67,17 +67,17 @@ The initial implementation must use these versions:
 
 | Surface | Version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v5` |
-| Execution identity | `pyrun-exec/v1:<sha256>` |
+| Execution-state file | `research-log-pyrun/v6` |
+| Execution identity | `pyrun-exec/v2:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
 | Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-results) |
-| Reproduction result projection | `research-log-reproduction-result/10` |
+| Reproduction result projection | `research-log-reproduction-result/11` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
 | Durable run store | run-local `state.sqlite`, SQLite `user_version=1` |
 | Run status projection | `research-log-reproduction-status/7` |
-| Accepted plan | `research-log-reproduction-plan/9` |
+| Accepted plan | `research-log-reproduction-plan/10` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=1` |
@@ -201,7 +201,10 @@ discarding available run history or current artifact state.
 - **Execution recipe:** the normalized structural information required to
   invoke one child process and associate its direct inputs and complete output
   set.
-- **Execution ID:** the stable `pyrun-exec/v1:<digest>` identity of one recipe.
+- **Command ID (CID):** the stable entry-unique owner authored with
+  `pyrun --cid CID -- ...`; every expansion of one command or loop shares it.
+- **Execution ID:** the stable `pyrun-exec/v2:<digest>` identity of one expanded
+  child-parameter vector within a CID.
 - **Reproduction run:** one durable entry- or log-target reproduction job.
 - **Run ID:** the opaque, filesystem-safe identity of one reproduction run. It
   is distinct from every execution ID and is preserved by resume.
@@ -219,8 +222,9 @@ discarding available run history or current artifact state.
   selected entry or log throughout an active run.
 - **Publication mutex:** the brief log-local lock used to serialize shared
   reproduction-result and report writes.
-- **Execution reference:** the compound `{entry, execution_id}` identity of one
-  planned execution. An execution ID alone is not unique across entries.
+- **Execution reference:** the compound `{entry, cid, execution_id}` identity
+  of one planned execution. An execution ID alone is not unique across CIDs or
+  entries.
 - **Scheduling permit:** one project-coordinated ordinary or exclusive grant
   held from immediately before worker launch until terminal attempt state is
   durable and no worker from that attempt survives.
@@ -314,57 +318,49 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v5",
-  "executions": {
-    "pyrun-exec/v1:0123456789abcdef...": {
-      "auto_reproduce": true,
-      "exclusive": false,
-      "last_run_at": "2030-01-01T00:00:00Z",
-      "requires_reproduction": false,
-      "runner": "research-log-pyrun-runner/1",
-      "environment_profile": "pyrun-standard/v1",
-      "execution_contract": "research-log-pyrun-execution/2",
-      "recipe": {
-        "script": "scripts/run_study.py",
-        "parameters": [
-          "--input-data",
-          "<catalog>",
-          "--output-csv",
-          "data/results.csv"
-        ],
-        "parameter_roles": {"input-data": "input", "output-csv": "output"},
-        "environment": {},
-        "inputs": ["catalog"],
-        "outputs": {
-          "data/results.csv": "file",
-          "images/results.png": "file"
-        }
-      },
-      "observed": {
-        "script": {
-          "algorithm": "sha256",
-          "digest": "..."
-        },
-        "inputs": {
-          "catalog": {
-            "algorithm": "sha256",
-            "digest": "..."
-          }
-        },
-        "code": {
-          "scripts/helpers.py": {
-            "algorithm": "sha256",
-            "digest": "..."
-          }
-        },
-        "outputs": {
-          "data/results.csv": {
-            "algorithm": "sha256",
-            "digest": "..."
+  "schema": "research-log-pyrun/v6",
+  "commands": {
+    "build-results": {
+      "executions": {
+        "pyrun-exec/v2:0123456789abcdef...": {
+          "auto_reproduce": true,
+          "exclusive": false,
+          "last_run_at": "2030-01-01T00:00:00Z",
+          "requires_reproduction": false,
+          "runner": "research-log-pyrun-runner/1",
+          "environment_profile": "pyrun-standard/v1",
+          "execution_contract": "research-log-pyrun-execution/2",
+          "recipe": {
+            "script": "scripts/run_study.py",
+            "parameters": [
+              "--input-data",
+              "<catalog>",
+              "--output-csv",
+              "data/results.csv"
+            ],
+            "parameter_roles": {
+              "input-data": "input",
+              "output-csv": "output"
+            },
+            "environment": {},
+            "inputs": ["catalog"],
+            "outputs": {
+              "data/results.csv": "file",
+              "images/results.png": "file"
+            }
           },
-          "images/results.png": {
-            "algorithm": "sha256",
-            "digest": "..."
+          "observed": {
+            "script": {"algorithm": "sha256", "digest": "..."},
+            "inputs": {
+              "catalog": {"algorithm": "sha256", "digest": "..."}
+            },
+            "code": {
+              "scripts/helpers.py": {"algorithm": "sha256", "digest": "..."}
+            },
+            "outputs": {
+              "data/results.csv": {"algorithm": "sha256", "digest": "..."},
+              "images/results.png": {"algorithm": "sha256", "digest": "..."}
+            }
           }
         }
       }
@@ -373,8 +369,9 @@ exactly:
 }
 ```
 
-Top-level keys are exactly `schema` and `executions`. Execution-map keys are
-unique execution IDs. Every execution value has exactly `auto_reproduce`,
+Top-level keys are exactly `schema` and `commands`. Command-map keys are stable
+entry-unique CIDs, and each command has exactly one `executions` map whose keys
+are unique parameter execution IDs. Every execution value has exactly `auto_reproduce`,
 `exclusive`, `requires_reproduction`, `last_run_at`, `runner`, `environment_profile`,
 `execution_contract`, `recipe`, and `observed`.
 
@@ -453,10 +450,14 @@ input is still the data name, and its observed value uses the inherited exact
 repository-and-commit fingerprint form. Reproduction resolves and verifies the
 recorded commit; it must not substitute the current checkout or a branch tip.
 
-The recipe and observed input key sets must agree exactly. The recipe and
-observed output key sets must agree exactly. Every fingerprint uses the closed
-fingerprint forms owned by the mechanical validator specification. `data.json`
-remains the sole owner of input paths, classifications, and identity selection;
+For a confirmed execution whose `requires_reproduction` is false, the recipe
+and observed input/output key sets agree exactly and `script` is present. A
+record requiring reproduction may contain a subset of still-applicable input
+and output observations and may set `script` to null; code observations require
+a retained script observation. Missing historical observations are unavailable
+history, never current evidence or a match. Every fingerprint uses the closed
+forms owned by the mechanical validator specification. `data.json` remains the
+sole owner of input paths, classifications, and identity selection;
 `pyrun.json` owns the historical observations that reproduction compares.
 
 The fixed file, execution, parameter, string, input, output, environment, and
@@ -465,46 +466,33 @@ Exceeding a bound is invalid state; readers must not truncate it.
 
 ### Execution Identity
 
-An execution ID has the form `pyrun-exec/v1:<digest>`, where `<digest>` is the
-lowercase hexadecimal SHA-256 digest of the canonical identity projection.
-
-The identity projection contains exactly:
+An execution ID has the form `pyrun-exec/v2:<digest>`, where `<digest>` is the
+lowercase hexadecimal SHA-256 digest of the canonical expanded child-parameter
+vector. For example, the empty parameter vector projects as:
 
 ```json
-{
-  "environment": {},
-  "inputs": [],
-  "outputs": {},
-  "parameters": [],
-  "script": "scripts/run_study.py"
-}
+[]
 ```
 
-It uses canonical UTF-8 JSON with lexicographically sorted object keys, compact
-separators, no ASCII escaping, and no trailing newline. Array order is retained
-for `parameters`; `inputs` is sorted before serialization; environment and
-output map keys are sorted by canonical JSON serialization.
-
-The projection includes the normalized script, ordered replay parameters,
-effective parameter roles, explicit environment variables, direct input names, and complete output paths
-and kinds. The replay parameters make each runner-owned stream capture and its
-output identity explicit. It excludes observations, the reproduction requirement,
-automatic-reproduction and exclusivity policy,
-timestamps, Markdown location, standard-environment profile, schema version,
-runner version, and execution-contract version.
+It uses compact UTF-8 JSON with no ASCII escaping or trailing newline and
+retains every token boundary and array position. The vector contains only the
+expanded child-script parameters after the script. It excludes CID, script,
+runner options and captures, environment, parameter roles, declarations,
+observations, policies, timestamps, locations, and version fields.
 
 Changing script bytes or direct-input bytes makes observed state stale without
-changing the execution ID. Changing the script path, parameters, explicit
-environment, effective parameter roles, direct input names, or output membership creates a different ID.
-The same normalized recipe, including each concrete expansion of a static
-loop, always reuses its ID. A Markdown command or loop has no separate shared
-execution ID.
+changing the execution ID. Changing the expanded parameter vector changes the
+ID. Changing script path, environment, roles, declarations, captures, or policy
+preserves the parameter ID but is detected by full-recipe or policy comparison.
+Equal parameter IDs under different CIDs remain distinct complete keys.
 
 ### Eligible Invocation
 
-Only `pyrun` may establish reproduction-eligible execution state. One authored
-command block may contain one or more `pyrun` invocations and bounded static
-shell loops whose concrete expansions are independent invocations.
+Only `pyrun` may establish reproduction-eligible execution state. Each eligible
+fence contains exactly one authored command or bounded static loop. It supplies
+one stable `--cid CID` before `--`; every concrete loop expansion uses that CID.
+The CID is unique within the entry across split documents and never reaches the
+child process.
 
 Production command blocks must not use direct non-`pyrun` executables,
 pipelines, redirection, `tee`, shell environment prefixes, command or process
@@ -531,7 +519,8 @@ receive equivalent runner-owned preference locations where required. Concrete
 temporary paths are not serialized.
 
 Repeatable `--env NAME=value` options are normalized into `recipe.environment`
-and participate in identity. A missing project environment or required
+and participate in complete-recipe comparison, but not the parameter-only
+execution ID. A missing project environment or required
 executable prevents reproduction. Environment drift that still executes and
 changes output is reported through artifact comparison rather than diagnosed
 by inference.
@@ -553,8 +542,8 @@ Ordinary `pyrun` publishes only after:
    checks.
 
 A successful identical recipe atomically replaces its observed state. A
-successful new recipe whose output set overlaps existing recipes atomically
-removes every overlapping recipe in full and installs the new execution.
+successful new recipe whose output set overlaps another execution owner is
+rejected without deleting or reassigning existing state.
 Failed or incomplete execution, capture, observation, or publication changes
 no `pyrun.json` state.
 
@@ -637,7 +626,7 @@ complete unified diffs without writing registries, diagnostics, or caches.
 
 ### Execution-Metadata Schema
 
-Entry-local execution state accepts only strict `research-log-pyrun/v5`.
+Entry-local execution state accepts only strict `research-log-pyrun/v6`.
 Current command records require the complete `parameter_roles` map. Their
 execution IDs and source digests support fresh incremental selection only; they
 are not execution authority for current state. Resume reloads the immutable
@@ -662,7 +651,7 @@ tests cover only the current data/evidence contracts; historical conversion
 fixtures, if needed, belong only to that disposable conversion work.
 
 This cutover does not remove the separate execution-state compatibility
-contract. Current `pyrun.json` requires `research-log-pyrun/v5`; mechanical
+contract. Current `pyrun.json` requires `research-log-pyrun/v6`; mechanical
 validation retains the read-only
 [Legacy Output Records](research-log-mechanical-validator-spec.md#legacy-output-records)
 path for `pyrun-outputs.json` when no current file exists. That reader grants no
@@ -701,7 +690,7 @@ consume it. Status and resume retain the accepted limit and do not accept an
 override.
 
 Log and entry targets retain their existing evidence and command selection.
-Use `log repair-check --path LOG --entry ENTRY --execution-id ID` for one
+Use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID` for one
 current repaired invocation. It is isolated and synchronous, does not create a
 run, does not apply automatic-policy admission, cannot resume or publish, and
 never changes execution metadata, validation, results, or promotion state.
@@ -910,7 +899,7 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/9` projection with exactly
+deterministic `research-log-reproduction-plan/10` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `admission`, `commands`, `comparison_context`,
 `cases`, `executions`, `boundaries`, and `failures`.
@@ -926,16 +915,16 @@ limited to the first 20 stable entry IDs and reports the number omitted.
 Complete JSON remains available without `--summary`. The summary is
 presentation only; it applies the same complete planning and final source
 recheck and does not alter the deterministic plan contract. Historical
-result/10 execution rows are not dry-run summaries and supply neither plan nor
+result/11 execution rows are not dry-run summaries and supply neither plan nor
 boundary semantics.
 
 `target` follows the target grammar below. Cases are sorted by canonical log
-entry order and artifact path. Each case has exactly `entry`, `artifact`,
+entry order and artifact path. Each case has exactly `entry`, `artifact`, `cid`,
 `execution_id`, `disposition`, and `reason`; `disposition` is `run`, `current`,
 or `failed`, and `reason` is null only when no qualification is needed.
 
 Executions are in deterministic run order and each has exactly `order`,
-`entry`, `execution_id`, `depends_on`, `outputs`, `auto_reproduce`, `exclusive`,
+`entry`, `cid`, `execution_id`, `depends_on`, `outputs`, `auto_reproduce`, `exclusive`,
 `read_paths`, `write_paths`, `run_path`, and `writable_paths`. The four path
 claim fields are the immutable normalized scheduling projection; path arrays
 are sorted and unique. Before a run ID exists, run-local claims use the
@@ -943,16 +932,17 @@ are sorted and unique. Before a run ID exists, run-local claims use the
 resolves them beneath the chosen canonical run and project roots without
 changing their identity or creating dry-run state. `depends_on` and `outputs`
 are sorted unique identity arrays. A dependency reference is the
-entry-qualified string `<entry>:<execution_id>` because the same stable recipe
-identity may legitimately occur in more than one entry; `execution_id` itself
-remains exactly the ID recorded in that entry's `pyrun.json`. Boundaries are
+fully qualified string `<entry>:<cid>:<execution_id>` because a parameter
+identity may legitimately occur under more than one CID or entry;
+`execution_id` itself remains exactly the ID recorded in that CID's
+`pyrun.json` bucket. Boundaries are
 sorted and each has
 exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
 `origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
 used when an in-scope plan treats a producer as a retained boundary. Fields
 inapplicable to a boundary kind are null rather than omitted. Historical
-result/10 execution targets are passive rows with exactly `kind`, `entry`, and
-`execution_id`; they have no current planning or boundary semantics. Failures
+result/11 execution targets are passive rows with exactly `kind`, `entry`,
+`cid`, and `execution_id`; they have no current planning or boundary semantics. Failures
 are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
@@ -960,7 +950,7 @@ are sorted artifact projections with exactly
 date, and each admitted or excluded chain decision. It explains acceptance; it
 is not a live freshness token and names no published validation file. `commands`
 is the immutable selection and accounting inventory. Each compound `{entry,
-execution_id}` record retains its recipe, policy, selection reason, working
+cid, execution_id}` record retains its recipe, policy, selection reason, working
 directory, and accepted execution observations. `executions` references those
 command records and owns topological order, dependency references, complete
 output membership, and scheduling claims.
@@ -1049,7 +1039,7 @@ membership. Resume cannot add commands or change any accepted setting; current
 runs have no one-execution target.
 
 The `runs` row owns immutable run metadata and paths. The normalized
-`accepted_*` rows are the single accepted plan/9 authority: admission,
+`accepted_*` rows are the single accepted plan/10 authority: admission,
 commands, recipes, materials, dependencies, outputs, claims, cases,
 boundaries, failures, and comparison definitions. They are inserted once and
 are not lifecycle history.
@@ -1129,7 +1119,7 @@ case; it is not attempt lineage or a selector for replanning.
 `active_workers` contains every current worker record associated with those
 references and is empty when no execution is active.
 `execution_timings` contains only launched executions, in stable plan order,
-with exactly `entry`, `execution_id`, `state`, `started_at`, `finished_at`,
+with exactly `entry`, `cid`, `execution_id`, `state`, `started_at`, `finished_at`,
 `elapsed_seconds`, and `failure`. These fields are the checkpoint timing,
 terminal-state, and diagnostic projection. Planned-but-queued executions are absent, so status does not
 misrepresent queue time as execution time.
@@ -1204,7 +1194,7 @@ and require a new current-format run.
 
 ### One-Attempt Rule
 
-Within one immutable run, each compound `(entry, execution_id)` launches at
+Within one immutable run, each compound `(entry, cid, execution_id)` launches at
 most once after it has a durable terminal outcome. Multiple artifact cases and
 dependent branches reuse that result. A failed execution remains failed, its
 dependents are skipped with `dependency_failed`, and independent executions
@@ -1553,14 +1543,14 @@ canonical log entry order, then artifact path. The pair `(entry, artifact)` is
 unique. `runs` is sorted by descending accepted time, then run ID, and has one
 record per retained or availability-unknown run.
 
-`commands` is sorted by canonical log entry order, then execution ID. The pair
-`(entry, execution_id)` is unique. Each record stores the most recently
+`commands` is sorted by canonical log entry order, CID, then execution ID. The
+triple `(entry, cid, execution_id)` is unique. Each record stores the most recently
 published terminal `succeeded`, `failed`, or `blocked` disposition, the exact
 source-closure digest to which it applies, publication time, and publishing run
 ID. A changed artifact still belongs to a `succeeded` command because command
 completion and artifact matching are separate facts.
 
-Every artifact record has exactly `entry`, `artifact`, `execution_id`,
+Every artifact record has exactly `entry`, `artifact`, `cid`, `execution_id`,
 `outcome`, `reason`, `recorded_at`, `run_id`, and `comparison`. `reason` is null
 for `matched`; it is a required code for every other outcome. `comparison` is
 null when comparison was not attempted. Otherwise it has exactly `contract`,
@@ -1739,10 +1729,10 @@ researcher may delete material directly from `<project>/tmp/reproduction`.
 Promotion is explicit and separate from reproduction:
 
 ```text
-log reproduce promote --path LOG --run-id RUN_ID --execution-id EXECUTION_ID
+log reproduce promote --path LOG --run-id RUN_ID --cid CID --execution-id EXECUTION_ID
 ```
 
-The execution ID selects the complete indivisible output set recorded in
+The CID and execution ID select the complete indivisible output set recorded in
 `pyrun.json`; individual artifact paths are not promotion selectors. Promotion
 requires every output in the staged execution, verifies the accepted invocation
 and frozen comparison evidence, recipe equality, output membership, staged
@@ -1979,7 +1969,7 @@ asks for artifact or run detail.
 The removed single-execution presentation route previously accepted a run ID.
 Aggregate report routes operate only on log or entry state; they do not inspect
 run IDs. Ordinary `status --run-id` remains the current lifecycle inspection
-route for an accepted aggregate run. Historical result/10 rows may retain prior
+route for an accepted aggregate run. Historical result/11 rows may retain prior
 one-command observations for read-only rendering, but they are not current
 reports or lifecycle state.
 
@@ -2084,7 +2074,7 @@ Agents inspect the command units behind compact command counts through:
 
 ```text
 log reproduce commands list --path LOG [--bucket BUCKET] [--entry ENTRY] [--reason REASON] [--run-id RUN_ID] [--format text|json]
-log reproduce commands show --path LOG --entry ENTRY --execution-id EXECUTION_ID [--run-id RUN_ID] [--format text|json]
+log reproduce commands show --path LOG --entry ENTRY --cid CID --execution-id EXECUTION_ID [--run-id RUN_ID] [--format text|json]
 ```
 
 Without `--run-id`, both commands select the latest completed run. `list`
@@ -2092,7 +2082,7 @@ returns at most 50 deterministic records and always reports exact matched,
 returned, and omitted counts. Its public buckets are
 `reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
 `blocked`; entry, bucket, and exact reason filters are combinable. `show`
-returns one exact entry-qualified execution, including its recorded recipe,
+returns one exact entry/CID-qualified execution, including its recorded recipe,
 working directory, automatic-reproduction policy, run selection, accounting
 reason, declared inputs and outputs, and any available planning detail. The
 list includes an `error` object for failed and unchanged-failed commands:
@@ -2150,9 +2140,9 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling uses `research-log-pyrun/v5`. A current reproduction job
+Parallel scheduling uses `research-log-pyrun/v6`. A current reproduction job
 uses run-local SQLite `user_version=1`, one accepted
-`research-log-reproduction-plan/9`, and the public
+`research-log-reproduction-plan/10`, and the public
 `research-log-reproduction-status/7` projection. JSON
 `research-log-reproduction-run/7` and every earlier accepted reproduction job
 format are unsupported immutable history: no current consumer decodes them
@@ -2202,7 +2192,7 @@ implicit extension.
 
 ## Current Implementation Boundary
 
-Command-oriented version 5 execution state, parallel planning and scheduling,
+Command-oriented version 6 execution state, parallel planning and scheduling,
 safety, run-local execution, exact and evidence-scoped artifact comparison,
 durable comparison records, immediate requirement clearing, independent result
 publication, current projection, bounded read-only queries, durable job
@@ -2220,18 +2210,18 @@ status fixtures remain the compatibility boundary.
 ## Part 3.C Current Repair Boundary
 
 The current isolated repair operation is `log repair-check --path LOG --entry
-ENTRY --execution-id ID`. It uses current declarations and retained output
+ENTRY --cid CID --execution-id ID`. It uses current declarations and retained output
 baselines in an isolated synchronous workspace. It never creates a run or
 changes generated results, reports, validation, promotion, or execution
 metadata. Bare reproduction targets are only log or entry. Current accepted
-plans are plan/9, their mutable lifecycle lives in run-local SQLite
+plans are plan/10, their mutable lifecycle lives in run-local SQLite
 `user_version=1`, and status/7 is a derived public projection. JSON run/7 is
 unsupported historical job state, not a current mutable record. Earlier plans
-are rejected without migration. Result/10 retains passive read-only rendering
+are rejected without migration. Result/11 retains passive read-only rendering
 of historical one-command rows.
 
-`repair-check` requires one exact stable entry and one complete lowercase
-`pyrun-exec/v1:<64 hexadecimal digits>` identity. It resolves exactly one
+`repair-check` requires one exact stable entry, one stable CID, and one complete
+lowercase `pyrun-exec/v2:<64 hexadecimal digits>` identity. It resolves exactly one
 current Markdown invocation whose recorded recipe remains identical. Unknown,
 malformed, absent, ambiguous, or changed-recipe selections fail before a
 workspace exists. The operation has no dry run, planning, admission, automatic
@@ -2269,7 +2259,7 @@ retained research inputs, baselines, `pyrun.json`, reproduction cache,
 generated report, validation cache, requirement flags, or promotion state.
 
 Its only machine result is one `research-log-repair-check-result/1` object.
-It has exactly `schema`, `summary`, `entry`, `execution_id`, `status`,
+It has exactly `schema`, `summary`, `entry`, `cid`, `execution_id`, `status`,
 `exit_status`, `published:false`, nullable `workspace`, `execution`, `inputs`,
 `outputs`, `diagnostics`, and `limitations`. `execution` reports return code,
 checkpoint state, failure, recorded policy fields, and current source records;

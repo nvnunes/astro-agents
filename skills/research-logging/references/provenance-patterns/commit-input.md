@@ -18,7 +18,7 @@ Required tooling:
 Research command:
 
 ```bash
-./pyrun scripts/run_model_revision.py \
+./pyrun --cid run-model-revision -- scripts/run_model_revision.py \
   --input-repository "<model-source>" \
   --source-commit "<model-source:commit>" \
   --input-config "<simulation-config>" \

@@ -67,7 +67,7 @@ remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
 
 For explicitly requested verification after a script or recorded local-code
-repair, use `log repair-check --path LOG --entry ENTRY --execution-id ID`.
+repair, use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID`.
 It is synchronous and isolated, retains private outputs and diagnostics, and
 preserves `pyrun.json` and all generated records. It has no admission,
 automatic-policy, run, resume, report, validation, publication, or promotion
@@ -80,7 +80,7 @@ immutable per-run concurrency cap: dependency readiness, conflicting path
 claims, and project-wide exclusivity may keep actual concurrency lower. Before
 a parallel launch, use the dry-run summary to verify the cap, runnable and
 exclusive counts, and complete path claims. Entry-local execution state must
-use `research-log-pyrun/v5`; earlier schemas are unsupported.
+use `research-log-pyrun/v6`; earlier schemas are unsupported.
 
 Each command defaults to a 300-second wall-clock runtime limit. Use
 `--execution-timeout-seconds` on launch or dry run to accept a different limit;
@@ -223,7 +223,7 @@ opening generated JSON:
 <skill>/scripts/log reproduce artifacts list --path <log> [--entry <entry>] [--outcome <outcome>] [--artifact <path>]
 <skill>/scripts/log reproduce artifacts show --path <log> --entry <entry> --artifact <path>
 <skill>/scripts/log reproduce commands list --path <log> [--bucket <bucket>] [--entry <entry>] [--reason <reason>] [--run-id <run-id>] [--format text|json]
-<skill>/scripts/log reproduce commands show --path <log> --entry <entry> --execution-id <execution-id> [--run-id <run-id>] [--format text|json]
+<skill>/scripts/log reproduce commands show --path <log> --entry <entry> --cid <cid> --execution-id <execution-id> [--run-id <run-id>] [--format text|json]
 ```
 
 Use the command routes whenever the researcher asks which commands make up a
@@ -250,7 +250,7 @@ researcher direction may inspect the retained complete execution output set
 and then copy it into the log through:
 
 ```bash
-<skill>/scripts/log reproduce promote --path <log> --run-id <run-id> --execution-id <execution-id>
+<skill>/scripts/log reproduce promote --path <log> --run-id <run-id> --cid <cid> --execution-id <execution-id>
 ```
 
 Promotion copies every related output together and retains the run-local source.
@@ -260,9 +260,9 @@ It does not move or discard the run folder.
 
 `log reproduce` accepts only whole-log or stable-entry targets. It has no
 one-command repair mode, and run-ID single-execution presentation is removed.
-Each current run stores one immutable plan/9 and mutable checkpoint
+Each current run stores one immutable plan/10 and mutable checkpoint
 state in its run-local `state.sqlite`; stopped work resumes only that accepted
-plan. Use `log repair-check` for one current invocation. Historical result/10
+plan. Use `log repair-check` for one current invocation. Historical result/11
 execution rows remain read-only. Canonical historical JSON jobs without
 `state.sqlite` are unsupported and left unchanged; start a new run instead of
 asking Reproduce to migrate or repair one.

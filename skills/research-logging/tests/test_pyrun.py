@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.machinery
 import importlib.util
-import io
 import json
 import os
 import signal
@@ -17,6 +16,7 @@ from pathlib import Path
 from research_log_cli_test_support import (
     PROCESS_TIMEOUT_SECONDS,
     run_pyrun_process,
+    run_pyrun_with_closed_stdout,
 )
 
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
@@ -2041,62 +2041,21 @@ open(a.input_data, 'wb').write(b'value\\n2\\n')
                 f"import sys\nsys.stdout.buffer.write(b'x' * {byte_count})\n",
                 encoding="utf-8",
             )
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(PYRUN),
-                    "--cid",
-                    "test-command",
-                    "--capture-stdout",
-                    "data/run.log",
-                    "--",
-                    "scripts/large_stdout.py",
-                ],
-                cwd=entry,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            install_entry_runner(entry)
+            result = run_pyrun_with_closed_stdout(
+                entry,
+                "--cid",
+                "test-command",
+                "--capture-stdout",
+                "data/run.log",
+                "--",
+                "scripts/large_stdout.py",
             )
-            assert process.stdout is not None
-            assert process.stderr is not None
-            process.stdout.read(1)
-            process.stdout.close()
-            try:
-                returncode = process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                self.fail("pyrun deadlocked after its mirror pipe closed")
-            stderr = process.stderr.read().decode()
-            process.stderr.close()
 
-            self.assertNotEqual(returncode, 0)
-            self.assertIn("stream mirror failed", stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("stream mirror unavailable", result.stderr)
             self.assertEqual((entry / "data/run.log").stat().st_size, byte_count)
-            self.assertFalse((entry / "pyrun.json").exists())
-
-    def test_capture_write_failure_still_drains_the_source(self) -> None:
-        class FailingCapture(io.BytesIO):
-            def write(self, value: bytes) -> int:
-                raise OSError("capture unavailable")
-
-        content = b"x" * (2 * 1024 * 1024)
-        source = io.BytesIO(content)
-        capture_failed = PYRUN_MODULE.threading.Event()
-        errors: list[BaseException] = []
-
-        PYRUN_MODULE._pump_captured_stream(
-            source,
-            FailingCapture(),
-            io.BytesIO(),
-            capture_failed,
-            errors,
-            [],
-            PYRUN_MODULE.threading.Lock(),
-        )
-
-        self.assertTrue(capture_failed.is_set())
-        self.assertEqual(source.tell(), len(content))
-        self.assertEqual(str(errors[0]), "capture unavailable")
+            self.assertTrue((entry / "pyrun.json").exists())
 
     def test_malformed_json_blocks_execution_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

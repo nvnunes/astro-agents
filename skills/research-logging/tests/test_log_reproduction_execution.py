@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import io
 import json
 import tempfile
 import unittest
@@ -14,10 +16,32 @@ from log_commands.reproduction_contract import (
     accepted_invocation,
 )
 from reproduction_fixed_plan_test_support import accepted_plan
+from stream_capture import StreamCapture, StreamDestination
 from test_log_reproduction_planning import _Fixture, _plan
+
+EXECUTION = importlib.import_module("log_commands.reproduction_execution")
 
 
 class ReproductionExecutionTests(unittest.TestCase):
+    def test_required_capture_failure_is_a_reproduction_failure(self) -> None:
+        class FailingDestination(io.BytesIO):
+            def write(self, value: bytes) -> int:
+                raise OSError("capture unavailable")
+
+        capture = StreamCapture()
+        capture.start(
+            io.BytesIO(b"complete diagnostics"),
+            (StreamDestination("diagnostics", FailingDestination(), True),),
+        )
+        launched = EXECUTION._LaunchedProcess(mock.Mock(), capture)
+
+        failure_code, failure_message = EXECUTION._finish_streams(
+            launched, None, None
+        )
+
+        self.assertEqual(failure_code, "capture_failed")
+        self.assertIn("capture unavailable", failure_message or "")
+
     def test_execution_requires_an_accepted_command(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
             accepted_command(

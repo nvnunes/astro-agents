@@ -46,11 +46,11 @@ import re
 import subprocess
 import sys
 import tempfile
-import threading
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterable, Mapping
+from threading import Event
+from typing import Mapping
 
 from log_commands.context import (
     EntryContext,
@@ -76,6 +76,7 @@ from research_log_data import (
     require_git_repository_token_pairs,
     resolve_input_token,
 )
+from stream_capture import StreamCapture, StreamDestination
 from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.operation_state import (
@@ -494,11 +495,8 @@ def _run_with_captures(
         try:
             return process.wait(), process.pid
         finally:
-            _finish_process(process, ())
-    capture_errors: list[BaseException] = []
-    mirror_errors: list[BaseException] = []
-    capture_failed = threading.Event()
-    error_lock = threading.Lock()
+            _finish_process(process, None)
+    capture = StreamCapture()
     combined = captures.get("--capture-stdout-stderr")
     with ExitStack() as stack:
         handles = {
@@ -520,8 +518,7 @@ def _run_with_captures(
                 else None
             ),
         )
-        pumps: list[threading.Thread] = []
-        stack.callback(_finish_process, process, pumps)
+        stack.callback(_finish_process, process, capture)
 
         if process.stdout is not None:
             option = (
@@ -529,57 +526,72 @@ def _run_with_captures(
                 if combined is not None
                 else "--capture-stdout"
             )
-            thread = threading.Thread(
-                target=_pump_captured_stream,
-                args=(
-                    process.stdout,
-                    handles[option],
-                    sys.stdout.buffer,
-                    capture_failed,
-                    capture_errors,
-                    mirror_errors,
-                    error_lock,
+            capture.start(
+                process.stdout,
+                (
+                    StreamDestination(option, handles[option], True, durable=True),
+                    StreamDestination(
+                        "stdout mirror",
+                        sys.stdout.buffer,
+                        False,
+                        flush_each_chunk=True,
+                    ),
                 ),
-                daemon=True,
             )
-            pumps.append(thread)
-            thread.start()
         if process.stderr is not None:
-            thread = threading.Thread(
-                target=_pump_captured_stream,
-                args=(
-                    process.stderr,
-                    handles["--capture-stderr"],
-                    sys.stderr.buffer,
-                    capture_failed,
-                    capture_errors,
-                    mirror_errors,
-                    error_lock,
+            capture.start(
+                process.stderr,
+                (
+                    StreamDestination(
+                        "--capture-stderr",
+                        handles["--capture-stderr"],
+                        True,
+                        durable=True,
+                    ),
+                    StreamDestination(
+                        "stderr mirror",
+                        sys.stderr.buffer,
+                        False,
+                        flush_each_chunk=True,
+                    ),
                 ),
-                daemon=True,
             )
-            pumps.append(thread)
-            thread.start()
-        returncode = _wait_for_captured_process(process, capture_failed)
-        for thread in pumps:
-            thread.join()
-        _flush_capture_handles(handles.values(), capture_errors, error_lock)
-        if capture_errors:
-            raise SystemExit(f"pyrun: capture failed: {capture_errors[0]}")
-        if mirror_errors:
-            raise SystemExit(f"pyrun: stream mirror failed: {mirror_errors[0]}")
+        returncode = _wait_for_captured_process(process, capture.required_failed)
+        failures = capture.finish(CAPTURE_TERMINATION_SECONDS)
+        required = [failure for failure in failures if failure.required]
+        if required:
+            raise SystemExit(f"pyrun: capture failed: {required[0].error}")
+        for failure in failures:
+            if failure.name == "stdout mirror":
+                _discard_failed_mirror(sys.stdout.fileno())
+            elif failure.name == "stderr mirror":
+                _discard_failed_mirror(sys.stderr.fileno())
+            print(
+                f"pyrun: stream mirror unavailable: {failure.error}",
+                file=sys.stderr,
+            )
         return returncode, process.pid
 
 
+def _discard_failed_mirror(descriptor: int) -> None:
+    """Make interpreter shutdown harmless after a terminal pipe closes."""
+
+    replacement = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(replacement, descriptor)
+    finally:
+        os.close(replacement)
+
+
 def _finish_process(
-    process: subprocess.Popen[bytes], pumps: Iterable[threading.Thread]
+    process: subprocess.Popen[bytes], capture: StreamCapture | None
 ) -> None:
     """Stop and reap a live child before closing captures or removing scratch."""
 
     if process.poll() is None:
         _terminate_process(process)
-    for thread in pumps:
-        thread.join()
+    if capture is not None:
+        capture.finish(CAPTURE_TERMINATION_SECONDS)
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> int:
@@ -599,43 +611,8 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> int:
         return process.wait()
 
 
-def _pump_captured_stream(
-    source: BinaryIO,
-    destination: BinaryIO,
-    mirror: BinaryIO,
-    capture_failed: threading.Event,
-    capture_errors: list[BaseException],
-    mirror_errors: list[BaseException],
-    error_lock: threading.Lock,
-) -> None:
-    """Capture one pipe completely, disabling only a failed destination."""
-
-    capture_enabled = True
-    mirror_enabled = True
-    try:
-        while chunk := source.read(1024 * 1024):
-            if capture_enabled:
-                try:
-                    destination.write(chunk)
-                    destination.flush()
-                except BaseException as error:  # pragma: no cover - OS failure
-                    _record_stream_error(capture_errors, error, error_lock)
-                    capture_failed.set()
-                    capture_enabled = False
-            if mirror_enabled:
-                try:
-                    mirror.write(chunk)
-                    mirror.flush()
-                except BaseException as error:  # pragma: no cover - OS failure
-                    _record_stream_error(mirror_errors, error, error_lock)
-                    mirror_enabled = False
-    except BaseException as error:  # pragma: no cover - OS pipe failure
-        _record_stream_error(capture_errors, error, error_lock)
-        capture_failed.set()
-
-
 def _wait_for_captured_process(
-    process: subprocess.Popen[bytes], capture_failed: threading.Event
+    process: subprocess.Popen[bytes], capture_failed: Event
 ) -> int:
     """Wait normally, but terminate a child whose capture destination failed."""
 
@@ -644,29 +621,6 @@ def _wait_for_captured_process(
             continue
         return _terminate_process(process)
     return process.wait()
-
-
-def _flush_capture_handles(
-    handles: Iterable[BinaryIO],
-    errors: list[BaseException],
-    error_lock: threading.Lock,
-) -> None:
-    for handle in handles:
-        try:
-            handle.flush()
-            os.fsync(handle.fileno())
-        except BaseException as error:  # pragma: no cover - OS failure
-            _record_stream_error(errors, error, error_lock)
-
-
-def _record_stream_error(
-    errors: list[BaseException],
-    error: BaseException,
-    lock: threading.Lock,
-) -> None:
-    with lock:
-        if not errors:
-            errors.append(error)
 
 
 def _observe_output(

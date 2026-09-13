@@ -82,6 +82,37 @@ def run_pyrun_process(
     )
 
 
+def run_pyrun_with_closed_stdout(
+    cwd: Path, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    """Run an entry launcher after closing its terminal-mirror stdout pipe."""
+
+    environment = os.environ.copy()
+    environment.pop("PYTHONHOME", None)
+    process = subprocess.Popen(
+        ["/bin/sh", str(cwd / "pyrun"), *arguments],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    process.stdout.read(1)
+    process.stdout.close()
+    try:
+        returncode = process.wait(timeout=PROCESS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        raise
+    stderr = process.stderr.read().decode()
+    process.stderr.close()
+    return subprocess.CompletedProcess(
+        [str(cwd / "pyrun"), *arguments], returncode, "", stderr
+    )
+
+
 def fixture_parameter_roles(parameters, inputs=(), outputs=()):
     """Build explicit v5 roles for synthetic fixtures with known material sets."""
     from research_log_data import input_token_parts

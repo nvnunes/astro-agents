@@ -10,7 +10,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
@@ -42,6 +41,7 @@ from research_log_data import (
     observe_fingerprint,
     resolve_input_token,
 )
+from stream_capture import StreamCapture, StreamDestination
 from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
@@ -321,8 +321,7 @@ class _ProcessOutcome:
 @dataclass(frozen=True)
 class _LaunchedProcess:
     process: subprocess.Popen[bytes]
-    pumps: tuple[threading.Thread, ...]
-    stream_errors: list[BaseException]
+    capture: StreamCapture
 
 
 @dataclass(frozen=True)
@@ -1661,7 +1660,7 @@ def _run_prepared(
                 callbacks.on_workers, _control_plane_call(registry.records)
             )
             outcome = _monitor_process(
-                launched.process,
+                launched,
                 registry,
                 callbacks,
                 deadline,
@@ -1749,15 +1748,16 @@ def _launch_process(
         ),
         start_new_session=True,
     )
-    errors: list[BaseException] = []
-    pumps = _start_stream_pumps(
+    capture = StreamCapture()
+    _start_stream_pumps(
         process,
         stdout,
         stderr,
         capture_handles,
-        errors,
+        capture,
     )
-    return _LaunchedProcess(process, pumps, errors)
+    stack.callback(capture.finish, FORCED_STOP_SECONDS)
+    return _LaunchedProcess(process, capture)
 
 
 def _start_stream_pumps(
@@ -1765,40 +1765,59 @@ def _start_stream_pumps(
     stdout: BinaryIO,
     stderr: BinaryIO,
     captures: Mapping[str, BinaryIO],
-    errors: list[BaseException],
-) -> tuple[threading.Thread, ...]:
+    capture: StreamCapture,
+) -> None:
     combined = captures.get("--capture-stdout-stderr")
     stdout_capture = captures.get("--capture-stdout")
     stderr_capture = captures.get("--capture-stderr")
-    pumps: list[threading.Thread] = []
     for source, destinations in (
         (process.stdout, (stdout, combined or stdout_capture)),
         (process.stderr, (stderr, stderr_capture)),
     ):
         if source is None:
             continue
-        thread = threading.Thread(
-            target=_pump_stream,
-            args=(source, destinations, errors),
-            daemon=True,
+        capture.start(
+            source,
+            tuple(
+                StreamDestination(
+                    "stdout diagnostics" if destination is stdout else
+                    "stderr diagnostics" if destination is stderr else
+                    "declared capture",
+                    destination,
+                    True,
+                    durable=True,
+                )
+                for destination in destinations
+                if destination is not None
+            ),
         )
-        pumps.append(thread)
-        thread.start()
-    return tuple(pumps)
 
 
 def _monitor_process(
-    process: subprocess.Popen[bytes],
+    launched: _LaunchedProcess,
     registry: _WorkerRegistry,
     callbacks: _RunCallbacks,
     deadline: float,
 ) -> _ProcessOutcome:
+    process = launched.process
     stopped = False
     failure_code: str | None = None
     failure_message: str | None = None
     while process.poll() is None:
         _control_plane_call(registry.refresh)
         _control_plane_call(callbacks.on_workers, _control_plane_call(registry.records))
+        if launched.capture.required_failed.is_set():
+            survivors = _control_plane_call(registry.stop_all)
+            failure_code = (
+                "worker_cleanup_incomplete" if survivors else "capture_failed"
+            )
+            failure_message = (
+                _survivor_message(survivors)
+                if survivors
+                else "could not retain captured output"
+            )
+            stopped = bool(survivors)
+            break
         if callbacks.stop_requested():
             stopped = True
             survivors = _control_plane_call(registry.stop_all)
@@ -1850,34 +1869,14 @@ def _finish_streams(
     failure_code: str | None,
     failure_message: str | None,
 ) -> tuple[str | None, str | None]:
-    for thread in launched.pumps:
-        thread.join(timeout=FORCED_STOP_SECONDS)
-    if any(thread.is_alive() for thread in launched.pumps):
-        launched.stream_errors.append(RuntimeError("capture stream did not close"))
-    if launched.stream_errors and failure_code is None:
+    failures = launched.capture.finish(FORCED_STOP_SECONDS)
+    required = [failure for failure in failures if failure.required]
+    if required and failure_code is None:
         return (
             "capture_failed",
-            f"could not retain captured output: {launched.stream_errors[0]}",
+            f"could not retain captured output: {required[0].error}",
         )
     return failure_code, failure_message
-
-
-def _pump_stream(
-    source: BinaryIO,
-    destinations: Sequence[BinaryIO | None],
-    errors: list[BaseException],
-) -> None:
-    """Copy one captured child stream to its diagnostics and declared output."""
-
-    try:
-        while chunk := source.read(64 * 1024):
-            for destination in destinations:
-                if destination is not None:
-                    destination.write(chunk)
-    except BaseException as error:
-        errors.append(error)
-    finally:
-        source.close()
 
 
 def _attempt_state(

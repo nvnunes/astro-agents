@@ -114,7 +114,13 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
             fingerprint,
             (),
             (),
-            tuple((output, fingerprint) for output in outputs),
+            tuple(
+                (
+                    output,
+                    Fingerprint("sha256", digest=sha256(entry / output)),
+                )
+                for output in outputs
+            ),
         ),
     )
     identity = execution_id(recipe)
@@ -324,6 +330,54 @@ class ReorganizeIdentityTests(unittest.TestCase):
             payload = json.loads((consumer / "data.json").read_text())
             self.assertIn("e001-renamed", payload["inputs"][0]["location"])
 
+    def test_update_entry_does_not_observe_unrelated_changed_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 1)
+            entry = entries[0]
+            target = entry / "data" / "source.txt"
+            target.parent.mkdir()
+            target.write_text("before\n", encoding="utf-8")
+            registered = run(
+                root,
+                "data",
+                "add-origin",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "source",
+                "data/source.txt",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            write_execution_state(entry, ("data/source.txt",))
+            execution_before = (entry / "pyrun.json").read_bytes()
+            target.write_text("after\n", encoding="utf-8")
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text(encoding="utf-8").replace("trial-1", "renamed"),
+                encoding="utf-8",
+            )
+
+            changed = run(
+                root,
+                "reorganize",
+                "update-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--slug",
+                "renamed",
+            )
+
+            destination = logical / "entries" / "2026-09-01-e001-renamed"
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.assertEqual(
+                (destination / "pyrun.json").read_bytes(), execution_before
+            )
+            self.assertEqual((destination / "data/source.txt").read_text(), "after\n")
+
     def test_reorder_applies_a_complete_simultaneous_permutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -450,6 +504,71 @@ class ReorganizeIdentityTests(unittest.TestCase):
                 evidence["records"][0]["document"],
                 "entries/2026-09-02-e001-trial-2/e001.md",
             )
+
+    def test_reorder_updates_an_incoming_data_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            producer, consumer = entries
+            output = producer / "data" / "result.txt"
+            output.parent.mkdir()
+            output.write_text("result\n", encoding="utf-8")
+            (producer / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "result",
+                                "kind": "file",
+                                "location": "data/result.txt",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (consumer / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [{"from_entry": "e001", "name": "result"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = logical.with_suffix(".md")
+            text = summary.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.startswith("- `")]
+            swapped = [
+                lines[1].replace("e002", "e001"),
+                lines[0].replace("e001", "e002"),
+            ]
+            start = text.index(lines[0])
+            end = text.index(lines[-1]) + len(lines[-1])
+            summary.write_text(
+                text[:start] + "\n".join(swapped) + text[end:], encoding="utf-8"
+            )
+
+            changed = run(
+                root,
+                "reorganize",
+                "reorder",
+                "--path",
+                str(logical),
+                "--entries",
+                "e002,e001",
+            )
+
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            moved_consumer = logical / "entries" / "2026-09-02-e001-trial-2"
+            data = json.loads((moved_consumer / "data.json").read_text())
+            self.assertEqual(
+                data["inputs"], [{"from_entry": "e002", "name": "result"}]
+            )
+            self.assertFalse(consumer.exists())
 
     def test_relocate_moves_the_complete_pair(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -648,6 +767,180 @@ class ReorganizeIdentityTests(unittest.TestCase):
 
 
 class ReorganizeTransferTests(unittest.TestCase):
+    def test_transfer_reuses_selected_generated_output_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            output = source / "data" / "result.txt"
+            output.parent.mkdir()
+            output.write_text("result\n", encoding="utf-8")
+            (source / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "result",
+                                "kind": "file",
+                                "location": "data/result.txt",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            script = source / "scripts" / "make.py"
+            script.parent.mkdir()
+            script.write_text("print('result')\n", encoding="utf-8")
+            write_execution_state(source, ("data/result.txt",))
+            moved = destination / "data" / "result.txt"
+            moved.parent.mkdir()
+            output.rename(moved)
+            arguments = TransferArguments(
+                "e001",
+                "e002",
+                (),
+                ("result",),
+                (),
+                False,
+                (),
+                (("data/result.txt", "data/result.txt"),),
+                (),
+                (),
+                (),
+                False,
+            )
+
+            with mock.patch.object(
+                reorganize_transfer,
+                "observe_fingerprint",
+                wraps=reorganize_transfer.observe_fingerprint,
+            ) as observe:
+                changed = reorganize.transfer(resolve_log(logical), arguments)
+
+            self.assertTrue(changed.changed)
+            self.assertEqual(observe.call_count, 1)
+            self.assertFalse((source / "pyrun.json").exists())
+
+    def test_transfer_rejects_changed_selected_generated_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            output = source / "data" / "result.txt"
+            output.parent.mkdir()
+            output.write_text("recorded\n", encoding="utf-8")
+            (source / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v5",
+                        "inputs": [
+                            {
+                                "name": "result",
+                                "kind": "file",
+                                "location": "data/result.txt",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            script = source / "scripts" / "make.py"
+            script.parent.mkdir()
+            script.write_text("print('result')\n", encoding="utf-8")
+            write_execution_state(source, ("data/result.txt",))
+            state_before = (source / "pyrun.json").read_bytes()
+            registry_before = (source / "data.json").read_bytes()
+            output.write_text("changed\n", encoding="utf-8")
+            moved = destination / "data" / "result.txt"
+            moved.parent.mkdir()
+            output.rename(moved)
+
+            completed = run(
+                root,
+                "reorganize",
+                "transfer",
+                "--path",
+                str(logical),
+                "--from-entry",
+                "e001",
+                "--to-entry",
+                "e002",
+                "--data",
+                "result",
+                "--path-map",
+                "data/result.txt",
+                "data/result.txt",
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("data.fingerprint.mismatch", completed.stderr)
+            self.assertEqual((source / "pyrun.json").read_bytes(), state_before)
+            self.assertEqual((source / "data.json").read_bytes(), registry_before)
+            self.assertFalse((destination / "data.json").exists())
+
+    def test_transfer_does_not_observe_unrelated_declared_material(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, destination = entries
+            data = source / "data"
+            data.mkdir()
+            for name in ("moved", "unrelated"):
+                target = data / f"{name}.txt"
+                target.write_text(name + "\n", encoding="utf-8")
+                declared = run(
+                    root,
+                    "data",
+                    "add-origin",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    name,
+                    target.relative_to(source).as_posix(),
+                )
+                self.assertEqual(declared.returncode, 0, declared.stderr)
+            destination_data = destination / "data"
+            destination_data.mkdir()
+            (data / "moved.txt").rename(destination_data / "moved.txt")
+            arguments = TransferArguments(
+                "e001",
+                "e002",
+                (),
+                ("moved",),
+                (),
+                False,
+                (),
+                (("data/moved.txt", "data/moved.txt"),),
+                (),
+                (),
+                (),
+                False,
+            )
+            real_observe = reorganize_transfer.observe_fingerprint
+
+            def reject_unrelated(resource: object) -> object:
+                if getattr(resource, "name", None) == "unrelated":
+                    raise AssertionError("unrelated material was observed")
+                return real_observe(resource)  # type: ignore[arg-type]
+
+            with mock.patch.object(
+                reorganize_transfer,
+                "observe_fingerprint",
+                side_effect=reject_unrelated,
+            ):
+                changed = reorganize.transfer(resolve_log(logical), arguments)
+
+            self.assertTrue(changed.changed)
+            remaining = json.loads((source / "data.json").read_text())
+            self.assertEqual(remaining["inputs"][0]["name"], "unrelated")
+
     def test_transfer_retires_only_one_complete_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -789,9 +1082,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             source_image.rename(destination_image)
             old_document = source.relative_to(logical).as_posix() + "/e001.md"
             new_document = destination.relative_to(logical).as_posix() + "/e002.md"
-
-            transferred = run(
-                root,
+            transfer_arguments = (
                 "reorganize",
                 "transfer",
                 "--path",
@@ -811,6 +1102,15 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "images/map.png",
                 "images/moved.png",
             )
+            destination_image.write_bytes(b"replacement")
+            mismatch = run(root, *transfer_arguments, "--dry-run")
+            self.assertEqual(mismatch.returncode, 2)
+            self.assertIn(
+                "association.artifact.fingerprint_mismatch", mismatch.stderr
+            )
+            destination_image.write_bytes(b"map bytes")
+
+            transferred = run(root, *transfer_arguments)
 
             self.assertEqual(transferred.returncode, 0, transferred.stderr)
             record = json.loads((destination / "evidence.json").read_text())[

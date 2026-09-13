@@ -433,7 +433,10 @@ def require_artifact_source_association(
 
 
 def require_artifact_fingerprint(
-    record: EvidenceRecord, *, source_path: Path
+    record: EvidenceRecord,
+    *,
+    source_path: Path,
+    observed: Fingerprint | None = None,
 ) -> Fingerprint:
     """Require an artifact's current exact file bytes to match evidence state."""
 
@@ -444,8 +447,9 @@ def require_artifact_fingerprint(
             {"path": source_path.as_posix()},
             "Artifact Evidence Baseline",
         )
-    digest, _ = observe_file_content(source_path)
-    observed = Fingerprint("sha256", digest)
+    if observed is None:
+        digest, _ = observe_file_content(source_path)
+        observed = Fingerprint("sha256", digest)
     if observed != record.artifact_fingerprint:
         raise PresentationEvaluationError(
             "association.artifact.fingerprint_mismatch",

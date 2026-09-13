@@ -224,6 +224,14 @@ changes after verifying that work. Split an entry only when distinct topics
 impair retrieval; length alone is not a reason. Split documents stay in the
 same entry folder and use suffixes such as `e002a.md` and `e002b.md`.
 
+Identity changes inspect only declarations and references whose coordinates may
+change; they do not make unrelated research bytes a mutation prerequisite and
+they preserve recorded execution observations. Cross-entry transfer verifies
+selected material and moved presentations, including exact artifact baselines
+and recorded producer observations for selected generated data. It does not
+reinterpret an unchanged-content locator move as proof of the locator used by a
+historical run.
+
 Approve renames, splits, and merges before they change document boundaries.
 Keep shared entry material in the parent entry folder and update affected
 summary links, citations, commands, evidence records, and presentation markers

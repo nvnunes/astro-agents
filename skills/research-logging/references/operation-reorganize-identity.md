@@ -17,8 +17,10 @@ edits and owns only the closed identity or registry mutation.
 4. Stop on stale Markdown, an unsupported reference, a collision, or Repair
    residue. A title-only result is mechanically unchanged because the agent's
    Markdown edit is the complete change.
-5. Confirm the requested identity and links. Do not run Validate unless it was
-   separately requested.
+5. Confirm the requested identity, links, and unchanged `pyrun.json` state. The
+   identity command checks declarations and references it must remap, not
+   unrelated material bytes. Do not run Validate unless it was separately
+   requested.
 
 ## Reorder Stable Entries
 
@@ -30,7 +32,9 @@ edits and owns only the closed identity or registry mutation.
 3. Read only `log reorganize reorder --help`. Pass the old IDs once in desired
    order to `--entries`; dry-run, then apply.
 4. Stop if any current ID is omitted or repeated, Markdown is incomplete, or a
-   destination collides. Confirm entries appear in numeric order afterward.
+   destination collides. Confirm entries appear in numeric order, incoming
+   `from_entry` references use the new IDs, and `pyrun.json` observations remain
+   unchanged afterward.
 
 ## Relocate Or Rename The Complete Log
 
@@ -41,7 +45,10 @@ edits and owns only the closed identity or registry mutation.
    path yourself or search-and-rewrite arbitrary project files.
 3. Read only `log reorganize relocate-log --help`; dry-run, then apply once.
 4. Stop on a partial pair, collision, unsupported filesystem boundary, stale
-   maintained link, or Repair residue. Confirm the pair at the destination.
+   maintained link, or Repair residue. Confirm the pair at the destination and
+   unchanged execution observations. Relocation inspects only data declarations
+   whose relative locators may change; unrelated material health belongs to a
+   separately requested Validate operation.
 
 ## Rename One Registry Identifier Without Moving Content
 
@@ -65,4 +72,3 @@ item yourself, read only `log reorganize remove-empty-entry --help`, dry-run,
 then apply. Stop if any content, registry, artifact, script, support path, or
 reference remains. The command never removes a nonempty entry or edits the
 summary.
-

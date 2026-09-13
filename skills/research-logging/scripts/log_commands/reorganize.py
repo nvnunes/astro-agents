@@ -14,7 +14,6 @@ from research_log_data import (
     InputResource,
     data_file_from_inputs,
     load_data_file,
-    observe_fingerprint,
     validate_log_consistency,
 )
 from validation.evidence import (
@@ -25,12 +24,12 @@ from validation.evidence import (
     load_evidence_file,
 )
 from validation.operation_state import begin_reorganization, finish_guarded_publication
-from validation.retention import load_retention_file
 
 from .context import (
     EntryContext,
     LogContext,
     LogCreationContext,
+    parse_entry_directory_name,
     parse_entry_document_name,
     resolve_entry,
 )
@@ -252,7 +251,7 @@ def _publish_identity(
 
 
 def _publish_relocation(log: LogContext, summary: Path, root: Path) -> None:
-    data, _ = _load_identity_registries(log)
+    data = _load_data_registries(log)
     residue = begin_reorganization(log.root)
     completed: list[tuple[Path, Path]] = []
     try:
@@ -286,16 +285,22 @@ def _load_identity_registries(
         evidence_path = entry.root / "evidence.json"
         if data_path.exists() or data_path.is_symlink():
             data[entry.root] = load_data_file(data_path, entry_root=entry.root)
-            for item in data[entry.root].inputs:
-                observe_fingerprint(item)
         if evidence_path.exists() or evidence_path.is_symlink():
             evidence[entry.root] = load_evidence_file(
                 evidence_path, log_root=log.root, entry_root=entry.root
             )
-        retention = entry.root / "retention.json"
-        if retention.exists() or retention.is_symlink():
-            load_retention_file(retention, entry_root=entry.root)
     return data, evidence
+
+
+def _load_data_registries(log: LogContext) -> dict[Path, DataFile]:
+    """Load only declarations needed to preserve locators during relocation."""
+
+    data: dict[Path, DataFile] = {}
+    for entry in observe_physical_entries(log):
+        path = entry.root / "data.json"
+        if path.exists() or path.is_symlink():
+            data[entry.root] = load_data_file(path, entry_root=entry.root)
+    return data
 
 
 def _identity_registry_updates(
@@ -307,17 +312,25 @@ def _identity_registry_updates(
 ) -> dict[Path, str]:
     updates: dict[Path, str] = {}
     data_candidates: list[DataFile] = []
+    entry_ids = {
+        source_identity.id: destination_identity.id
+        for source, destination in roots.items()
+        if (source_identity := parse_entry_directory_name(source.name)) is not None
+        and (destination_identity := parse_entry_directory_name(destination.name))
+        is not None
+    }
     for owner, current_data in data.items():
         new_owner = roots.get(owner, owner)
         items = tuple(
-            _mapped_input(item, new_owner, roots) for item in current_data.inputs
+            _mapped_input(item, new_owner, roots, entry_ids)
+            for item in current_data.inputs
         )
         data_candidate = data_file_from_inputs(
             new_owner / "data.json", entry_root=new_owner, inputs=items
         )
         data_candidates.append(data_candidate)
-        if tuple(item.location for item in items) != tuple(
-            item.location for item in current_data.inputs
+        if tuple(item.as_dict() for item in items) != tuple(
+            item.as_dict() for item in current_data.inputs
         ):
             updates[data_candidate.path] = data_candidate.canonical_json()
     validate_log_consistency(tuple(data_candidates))
@@ -368,7 +381,15 @@ def _mapped_input(
     item: InputResource,
     new_owner: Path,
     roots: Mapping[Path, Path],
+    entry_ids: Mapping[str, str],
 ) -> InputResource:
+    if item.reference_entry is not None:
+        return replace(
+            item,
+            reference_entry=entry_ids.get(
+                item.reference_entry, item.reference_entry
+            ),
+        )
     if Path(item.location).is_absolute():
         if _map_path(Path(item.canonical_target), roots) != Path(item.canonical_target):
             raise ActionError(

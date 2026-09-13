@@ -8,10 +8,13 @@ from typing import Mapping
 
 from research_log_data import (
     DataFile,
+    Fingerprint,
+    FingerprintObservation,
     InputResource,
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
+    observe_file_content,
     observe_fingerprint,
     resolve_input_token,
     validate_log_consistency,
@@ -32,6 +35,8 @@ from validation.operation_state import begin_reorganization, finish_guarded_publ
 from validation.presentation import (
     find_entry_presentation,
     index_entry_presentations_all,
+    require_artifact_baseline_form,
+    require_artifact_fingerprint,
     require_artifact_source_association,
 )
 from validation.pyrun_outputs import output_target_path
@@ -78,6 +83,30 @@ class _SupportUpdate:
     text: str | None
 
 
+@dataclass
+class _MaterialObservations:
+    """Operation-local observations of only transfer-affected material."""
+
+    resources: dict[InputResource, FingerprintObservation]
+    artifacts: dict[Path, Fingerprint]
+
+    def observe_resource(self, resource: InputResource) -> FingerprintObservation:
+        observation = self.resources.get(resource)
+        if observation is None:
+            observation = observe_fingerprint(resource)
+            self.resources[resource] = observation
+        return observation
+
+    def observe_artifact(self, path: Path) -> Fingerprint:
+        target = path.resolve()
+        observation = self.artifacts.get(target)
+        if observation is None:
+            digest, _ = observe_file_content(target)
+            observation = Fingerprint("sha256", digest)
+            self.artifacts[target] = observation
+        return observation
+
+
 def transfer_registries(
     source: EntryContext,
     destination: EntryContext,
@@ -98,7 +127,10 @@ def transfer_registries(
         maps, selections, state.data, state.evidence, state.retention
     )
     plan = _TransferPlan(selections, maps)
-    candidates = _build_candidates(source, destination, state, plan)
+    observations = _MaterialObservations({}, {})
+    candidates = _build_candidates(
+        source, destination, state, plan, observations
+    )
     _require_source_detached(source, candidates, plan)
     _verify_markdown(source, destination, candidates.moved_evidence, state, plan)
     _validate_log_data(
@@ -184,6 +216,7 @@ def _build_candidates(
     destination: EntryContext,
     state: _SourceState,
     plan: _TransferPlan,
+    observations: _MaterialObservations,
 ) -> _Candidates:
     selections = plan.selections
     maps = plan.maps
@@ -196,9 +229,17 @@ def _build_candidates(
     )
 
     moved_data = tuple(
-        _move_input(item, destination, maps)
+        _move_input(item, destination, maps, observations)
         for item in (state.data.inputs if state.data else ())
         if item.name in selections["data"]
+    )
+    source_data = tuple(
+        item
+        for item in (state.data.inputs if state.data else ())
+        if item.name in selections["data"]
+    )
+    _require_selected_generated_observations(
+        source, source_data, moved_data, observations
     )
     remaining_data = tuple(
         item
@@ -223,11 +264,16 @@ def _build_candidates(
     )
 
     if source == destination:
-        return _same_entry_candidates(
-            source,
-            remaining_data + moved_data,
-            remaining_evidence + moved_evidence,
-            remaining_retention + moved_retention,
+        data_file = _build_data(source, remaining_data + moved_data)
+        _require_evidence_inputs(moved_evidence, data_file)
+        _verify_evidence_values(source, moved_evidence, data_file, observations)
+        return _Candidates(
+            data_file,
+            None,
+            _build_evidence(source, remaining_evidence + moved_evidence),
+            None,
+            _build_retention(source, remaining_retention + moved_retention),
+            None,
             moved_evidence,
         )
     source_data_file = _build_data(source, remaining_data)
@@ -236,7 +282,9 @@ def _build_candidates(
         (*(destination_data.inputs if destination_data else ()), *moved_data),
     )
     _require_evidence_inputs(moved_evidence, destination_data_file)
-    _verify_evidence_values(destination, moved_evidence, destination_data_file)
+    _verify_evidence_values(
+        destination, moved_evidence, destination_data_file, observations
+    )
     return _Candidates(
         source_data_file,
         destination_data_file,
@@ -256,27 +304,6 @@ def _build_candidates(
                 *moved_retention,
             ),
         ),
-        moved_evidence,
-    )
-
-
-def _same_entry_candidates(
-    entry: EntryContext,
-    data: tuple[InputResource, ...],
-    evidence: tuple[EvidenceRecord, ...],
-    retention: tuple[RetentionRecord, ...],
-    moved_evidence: tuple[EvidenceRecord, ...],
-) -> _Candidates:
-    data_file = _build_data(entry, data)
-    _require_evidence_inputs(moved_evidence, data_file)
-    _verify_evidence_values(entry, moved_evidence, data_file)
-    return _Candidates(
-        data_file,
-        None,
-        _build_evidence(entry, evidence),
-        None,
-        _build_retention(entry, retention),
-        None,
         moved_evidence,
     )
 
@@ -318,6 +345,7 @@ def _move_input(
     item: InputResource,
     destination: EntryContext,
     maps: Mapping[str, Mapping[str, str]],
+    observations: _MaterialObservations,
 ) -> InputResource:
     name = maps["data"].get(item.name, item.name)
     location = maps["path"].get(item.location, item.location)
@@ -330,7 +358,7 @@ def _move_input(
         location=location,
         canonical_target=lexical.resolve().as_posix(),
     )
-    observe_fingerprint(candidate)
+    observations.observe_resource(candidate)
     return candidate
 
 
@@ -454,6 +482,7 @@ def _verify_evidence_values(
     entry: EntryContext,
     records: tuple[EvidenceRecord, ...],
     data: DataFile | None,
+    observations: _MaterialObservations,
 ) -> None:
     for record in records:
         presentation = find_entry_presentation(entry.root, entry.log.root, record.id)
@@ -467,11 +496,25 @@ def _verify_evidence_values(
                     source_path=source_path,
                     log_root=entry.log.root,
                 )
-            observe_fingerprint(resolved.resource)
+            resource_observation = observations.observe_resource(resolved.resource)
             if presentation.kind != "artifact":
                 assert source.locator is not None
                 selections.append(evaluate_locator(source_path, source.locator))
         if presentation.kind == "artifact":
+            require_artifact_baseline_form(record, presentation)
+            if presentation.presentation_form in {"image", "link"}:
+                observed = (
+                    resource_observation.fingerprint
+                    if resolved.resource.kind == "file"
+                    and source_path.resolve()
+                    == Path(resolved.resource.canonical_target).resolve()
+                    else observations.observe_artifact(source_path)
+                )
+                require_artifact_fingerprint(
+                    record,
+                    source_path=source_path,
+                    observed=observed,
+                )
             continue
         transformed = evaluate_transformation(
             record.transformation,
@@ -483,6 +526,49 @@ def _verify_evidence_values(
             presented_kind=presentation.kind,
             presented=presentation.value,
         )
+
+
+def _require_selected_generated_observations(
+    source: EntryContext,
+    originals: tuple[InputResource, ...],
+    candidates: tuple[InputResource, ...],
+    observations: _MaterialObservations,
+) -> None:
+    """Match selected generated material to its direct source observation."""
+
+    selected = tuple(
+        (original, candidate)
+        for original, candidate in zip(originals, candidates, strict=True)
+        if not original.origin
+    )
+    if not selected:
+        return
+    path = source.root / PYRUN_FILENAME
+    if not path.exists() and not path.is_symlink():
+        raise ActionError("data.fingerprint.unobserved", selected[0][0].name)
+    project_root = resolve_project_root(source.log.root)
+    state = load_pyrun_state(
+        path, entry_root=source.root, project_root=project_root
+    )
+    for original, candidate in selected:
+        target = Path(original.canonical_target).resolve()
+        matches = [
+            dict(execution.observed.outputs).get(output)
+            for _, _, execution in state.execution_items()
+            for output, _ in execution.recipe.outputs
+            if output_target_path(
+                output,
+                entry_root=source.root,
+                project_root=project_root,
+                authored=True,
+            ).resolve()
+            == target
+        ]
+        if len(matches) != 1 or matches[0] is None:
+            raise ActionError("data.fingerprint.unobserved", original.name)
+        current = observations.observe_resource(candidate).fingerprint
+        if current != matches[0]:
+            raise ActionError("data.fingerprint.mismatch", original.name)
 
 
 def _validate_log_data(
@@ -503,8 +589,6 @@ def _validate_log_data(
                 load_data_file(path, entry_root=entry.root) if path.exists() else None
             )
         if candidate is not None:
-            for item in candidate.inputs:
-                observe_fingerprint(item)
             candidates.append(candidate)
     validate_log_consistency(tuple(candidates))
 

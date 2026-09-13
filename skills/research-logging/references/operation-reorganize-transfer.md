@@ -32,10 +32,18 @@ Never inspect or edit those registries directly.
    and only their required mapping pairs. Use `--all` only when every authored
    registry record moves to another stable entry. Dry-run, then apply once.
 6. Stop on an unresolved dependency, shared output support, stale source use,
-   missing destination, collision, or candidate validation failure. Do not fix
-   it by editing JSON.
+   missing destination, collision, affected evidence or artifact-baseline
+   mismatch, selected generated-output observation mismatch, or candidate
+   validation failure. Do not fix it by editing JSON. The command does not hash
+   unrelated declarations; use separately requested Validate work for unrelated
+   material health.
 7. Run every destination command in the returned rerun list through that
    entry's `pyrun`. The workflow is incomplete until those reruns succeed.
+
+A selected resource whose new locator resolves to the same recorded content can
+remain current, but that equivalence does not claim the historical execution
+used the destination locator. Transfer never rewrites source observations into
+destination execution history.
 
 ## Move A Section Between Stable Entries
 

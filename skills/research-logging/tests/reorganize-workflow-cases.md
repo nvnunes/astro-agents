@@ -5,7 +5,8 @@ These cases exercise the selected CLI-driven Reorganize references.
 - A date, slug, or title change edits the heading and summary first, then uses
   `update-entry`; a title-only change expects no filesystem mutation.
 - A reorder supplies every old ID once in desired order and applies one
-  simultaneous mapping after all Markdown references are edited.
+  simultaneous mapping after all Markdown references are edited; incoming data
+  references use the new producer ID while execution observations stay exact.
 - A complete-log relocation updates known links first and moves only the
   maintained summary/root pair; an entry never moves to another log.
 - A no-move evidence, data, or retention rename uses its owning family command,
@@ -24,4 +25,7 @@ These cases exercise the selected CLI-driven Reorganize references.
   source summary item, and separately removes the empty scaffold.
 - Ambiguous selection, unresolved dependencies, stale source use, and failed
   transfer stop without direct registry edits.
+- A moved artifact retains its exact evidence baseline, selected generated data
+  matches its recorded source output observation, and unrelated declarations are
+  not observed merely to permit a transfer.
 - A nonempty source after merge stops before empty-entry removal.

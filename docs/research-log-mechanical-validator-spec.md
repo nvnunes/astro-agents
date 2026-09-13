@@ -3950,19 +3950,39 @@ move, and registry-record selection first. These commands verify that state and
 then own only closed entry/log identity changes or coordinated authored-JSON
 updates. They neither rewrite Markdown nor infer selections or destinations.
 `reorder` receives every current entry ID once and applies the new sequential
-IDs simultaneously. `relocate-log` moves the maintained summary/root pair only
-within one filesystem. `remove-empty-entry` requires the summary item to be
-absent and the remaining scaffold to be mechanically empty.
+IDs simultaneously, including incoming `from_entry` declaration references.
+Entry update and reorder inspect the data and evidence declarations needed for
+that coordinated mapping but do not hash unrelated registered material.
+`relocate-log` moves the maintained summary/root pair only within one filesystem
+and inspects only data declarations whose relative locators may need rewriting.
+These identity operations preserve retained `pyrun.json` recipes and observations
+byte-for-byte. `remove-empty-entry` requires the summary item to be absent and
+the remaining scaffold to be mechanically empty.
 
-`transfer` permits its bounded decoder to delay current source document and
-path checks only for explicitly selected records. It then applies every mapping
-and validates the complete source and destination candidates through the
-production registry, material, evidence-transformation, presentation, and
-same-log consistency contracts before publication. Empty authored registries
-are removed. Legacy `pyrun-outputs.json` is never relocated or rewritten to describe a
-new execution. The `pyrun`-owned service may retire only exact source support
-made stale by the selected transfer, and the result reports the destination
-reruns needed to create new support.
+Evidence and retention structural decoders own their complete declaration
+grammar separately from current document and target context. `transfer` uses
+those shared decoders and may defer current source context only for its exact
+selected record IDs. Unselected records pass their old context before mapping;
+the complete mapped source and destination candidates pass ordinary strict
+context before publication.
+
+Transfer observes only selected data material and sources reached by moved
+evidence. It reuses an affected resource observation within the operation,
+compares non-artifact selections with their destination presentation, and
+compares path-based artifacts with the preserved evidence-owned exact-file
+baseline. Selected generated data must match its exact recorded source execution
+output observation. Same-log consistency compares declarations rather than
+current hashes, so an unrelated external byte change is left for explicit
+validation. A locator change resolving to the same selected content remains
+content-equivalent for execution currentness but does not assert that a
+historical execution used the new locator.
+
+Empty authored registries are removed. Legacy `pyrun-outputs.json` is never
+relocated or rewritten to describe a new execution. The `pyrun`-owned service
+may retire only exact source support made stale by the selected transfer, and
+the result reports the destination reruns needed to create new support. It never
+rewrites a retained observation as if it ran under a destination entry, name, or
+locator.
 
 All Reorganize mutations take the log lock before affected entry locks, publish
 authored registry changes atomically, and leave generated validation artifacts

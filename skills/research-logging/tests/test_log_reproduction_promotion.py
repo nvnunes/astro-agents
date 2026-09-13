@@ -2,26 +2,181 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from typing import Callable, Iterator, Literal, Mapping
 from unittest import mock
 
 from log_commands.model import ActionError
 from log_commands.reproduction_execution import _fingerprint
+from log_commands.reproduction_job_storage import (
+    RequirementEffect,
+    record_execution_comparison,
+    record_requirement_effect,
+)
+from log_commands.reproduction_jobs import (
+    _CurrentSupervisorContext,
+    _publish_current_stage,
+)
 from log_commands.reproduction_promotion import (
+    _begin_promotion,
     _install_outputs,
-    _load_bundle,
+    _load_current_bundle,
     _overlapping_paths,
     _PromotedOutput,
     _safe_run_path,
+    promote_execution,
 )
-from reproduction_fixed_plan_test_support import accepted_plan
+from log_commands.reproduction_queries import show_reproduction_command
+from reproduction_fixed_plan_test_support import accepted_plan, publication_run
+from research_log_result_store import ResultStoreError, result_snapshot
+from test_reproduction_job_storage import _comparison, _job_fixture, _start_and_finish
+from validation.operation_state import operation_lock
 
 
 class ReproductionPromotionTests(unittest.TestCase):
+    def test_promotion_reads_run_state_before_publication_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / ".git").mkdir()
+            log, _run_root = publication_run(project)
+            held_operation_locks: list[str] = []
+
+            @contextmanager
+            def tracked_operation_lock(
+                root: Path,
+                name: str,
+                *,
+                mode: Literal["shared", "exclusive"] = "exclusive",
+                owner_factory: Callable[[], Mapping[str, object]] | None = None,
+            ) -> Iterator[None]:
+                with operation_lock(
+                    root,
+                    name,
+                    mode=mode,
+                    owner_factory=owner_factory,
+                ):
+                    held_operation_locks.append(name)
+                    try:
+                        yield
+                    finally:
+                        self.assertEqual(held_operation_locks.pop(), name)
+
+            def require_overlap_before_publication(
+                _log: object, _outputs: object
+            ) -> None:
+                self.assertIn(
+                    "reproduction-promotion-index.lock", held_operation_locks
+                )
+                self.assertNotIn(
+                    "reproduction-publication.lock", held_operation_locks
+                )
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_promotion.operation_lock",
+                    side_effect=tracked_operation_lock,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_promotion._require_no_active_input_overlap",
+                    side_effect=require_overlap_before_publication,
+                ),
+            ):
+                marker = _begin_promotion(log, "run-id", "execution-id", ())
+            self.assertTrue(marker.is_file())
+            marker.unlink()
+
+    def test_current_staging_promotes_before_and_after_publication(self) -> None:
+        for published in (False, True):
+            with (
+                self.subTest(published=published),
+                _job_fixture(executions=1) as (
+                    _project,
+                    fixture,
+                    entry,
+                    plan,
+                    accepted,
+                    root,
+                ),
+            ):
+                _start_and_finish(root, plan, 0)
+                comparison = _comparison(plan, 0)
+                record_execution_comparison(root, comparison)
+                for name in ("workspace", "runtime", "diagnostics", "executions"):
+                    (root / name).mkdir()
+                staged_value = comparison.artifacts[0].staged_path
+                self.assertIsNotNone(staged_value)
+                if staged_value is None:
+                    self.fail("comparison omitted its staged path")
+                staged = root / staged_value
+                staged.parent.mkdir(parents=True)
+                artifact = comparison.artifacts[0].artifact
+                destination = entry.root / artifact
+                staged.write_bytes(destination.read_bytes())
+                if published:
+                    record_requirement_effect(
+                        root,
+                        RequirementEffect(
+                            comparison.entry,
+                            comparison.execution_id,
+                            "2030-01-01T00:02:00Z",
+                        ),
+                    )
+                    _publish_current_stage(
+                        _CurrentSupervisorContext(fixture.log, root, plan, "fresh")
+                    )
+                    with result_snapshot(fixture.log.root) as db:
+                        identities = [
+                            tuple(row)
+                            for row in db.execute(
+                                "SELECT entry, execution_id "
+                                "FROM reproduction_run_commands"
+                            )
+                        ]
+                    self.assertEqual(
+                        identities,
+                        [(comparison.entry, comparison.execution_id)],
+                    )
+                    shown = show_reproduction_command(
+                        fixture.log,
+                        entry=comparison.entry,
+                        execution_id=comparison.execution_id,
+                        run_id=accepted.run_id,
+                    )
+                    diagnostics = shown["diagnostics"]
+                    self.assertIsInstance(diagnostics, dict)
+                    if not isinstance(diagnostics, dict):
+                        self.fail("command diagnostics projection is invalid")
+                    self.assertEqual(diagnostics["availability"], "available")
+                    checkpoint = diagnostics["checkpoint"]
+                    self.assertIsInstance(checkpoint, dict)
+                    if not isinstance(checkpoint, dict):
+                        self.fail("command checkpoint projection is invalid")
+                    self.assertEqual(checkpoint["path"], "state.sqlite")
+                if not published:
+                    with self.assertRaises(ResultStoreError) as raised:
+                        promote_execution(
+                            fixture.log,
+                            run_id=accepted.run_id,
+                            execution_id=comparison.execution_id,
+                        )
+                    self.assertEqual(raised.exception.code, "results.store.missing")
+                    self.assertTrue(staged.is_file())
+                    self.assertTrue(destination.is_file())
+                    continue
+                result = promote_execution(
+                    fixture.log,
+                    run_id=accepted.run_id,
+                    execution_id=comparison.execution_id,
+                )
+                self.assertEqual(result.outputs, (artifact,))
+                self.assertTrue(staged.is_file())
+                self.assertTrue(destination.is_file())
+
     def test_install_rechecks_missing_and_changed_destination_baselines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -177,31 +332,25 @@ class ReproductionPromotionTests(unittest.TestCase):
         self.assertNotIn("source_snapshot", fields)
 
     def test_incomplete_or_unbound_staging_cannot_reach_promotion(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            run_id = "reproduce-20300101t000000z-promotion"
-            execution_id = "pyrun-exec/v1:" + "1" * 64
-            staging = {
-                "schema": "research-log-reproduction-staging/2",
-                "run_id": run_id,
-                "target": {"kind": "log", "entry": None},
-                "executions": [
-                    {
-                        "bytes": 0,
-                        "complete": False,
-                        "diagnostics": [],
-                        "entry": "e001",
-                        "execution_id": execution_id,
-                        "outputs": [],
-                        "path": "executions/e001",
-                    }
-                ],
-            }
-            (root / "staging.json").write_text(json.dumps(staging), encoding="utf-8")
+        with _job_fixture(executions=1) as (
+            _project,
+            _fixture,
+            _entry,
+            plan,
+            accepted,
+            root,
+        ):
+            execution_id = str(plan.executions[0]["execution_id"])
+            _start_and_finish(root, plan, 0)
+            record_execution_comparison(
+                root, replace(_comparison(plan, 0), complete=False)
+            )
             with self.assertRaisesRegex(ActionError, "incomplete"):
-                _load_bundle(root, run_id, execution_id)
+                _load_current_bundle(root, accepted.run_id, execution_id)
             with self.assertRaisesRegex(ActionError, "expected one staged"):
-                _load_bundle(root, run_id, "pyrun-exec/v1:" + "2" * 64)
+                _load_current_bundle(
+                    root, accepted.run_id, "pyrun-exec/v1:" + "2" * 64
+                )
 
     def test_staged_paths_cannot_escape_the_accepted_run_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

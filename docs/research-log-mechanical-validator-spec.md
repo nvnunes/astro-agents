@@ -72,9 +72,9 @@ or evolution requires it.
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
 | Published validation export | `research-log-published-validation/2` (explicit export only) |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; this specification owns the physical shared schema, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/10` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Entry validation CLI result | `research-log-entry-validation-cli-result/1` |
-| Queryable result store | `<log>/.cache/results.sqlite` (current consolidated SQLite schema) |
 | Cached result and view | Store projections; JSON is explicit export only |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |
@@ -4038,6 +4038,19 @@ slots; an entry result replaces only its entry slot. Failed, incomplete, or
 unstable publication preserves the previous completed slots. JSON is produced
 only by an explicit export of a selected stored result; no maintained aggregate
 JSON file exists.
+
+This specification owns the shared database's physical SQLite
+`user_version=14` schema and transaction boundary. The reproduction
+specification owns the meaning and projection of its reproduction-domain rows;
+neither domain may introduce a second maintained result store.
+
+Clearing this result store removes only disposable validation and reproduction
+query state and their report-materialization markers. It does not inspect,
+rewrite, or remove a reproduction run's `state.sqlite`, accepted plan,
+checkpoint or comparison rows, retained workspace outputs, diagnostics, or
+entry-root `pyrun.json`. A stopped current-format run therefore resumes from
+the same identity-scoped state after result clearing; a completed run's result
+domain requires an explicit reproduction `--recheck` to rebuild.
 
 `<log>/.cache/research-log-validation.sqlite3` is disposable per-log
 acceleration state using the schema and component versions listed in `Current

@@ -31,13 +31,18 @@ from .context import (
     resolve_project_root,
 )
 from .model import ActionError
-from .reproduction_comparison import LEGACY_STAGING_SCHEMA, STAGING_SCHEMA
 from .reproduction_contract import (
     ReproductionPlan,
     accepted_invocation,
 )
 from .reproduction_execution import _fingerprint
-from .reproduction_jobs import _find_run, _load_run, load_accepted_plan
+from .reproduction_job_storage import (
+    JobStoreError,
+    load_publication_projection,
+    load_run_status,
+    recognize_run_directory,
+)
+from .reproduction_jobs import _find_run, load_accepted_plan
 from .reproduction_paths import iter_canonical_run_roots
 from .reproduction_planner import project_reproduction_state
 from .reproduction_result_storage import load_reproduction_report_projection
@@ -48,7 +53,6 @@ from .reproduction_results import (
 )
 from .storage import atomic_write_text, atomic_write_texts, entry_lock
 
-MAX_STAGING_BYTES = 64 << 20
 MAX_ACTIVE_RUNS = 100_000
 
 
@@ -91,7 +95,6 @@ class _InstalledOutput:
 @dataclass(frozen=True)
 class _StagingBundle:
     record: Mapping[str, object]
-    schema: str
 
 
 @dataclass(frozen=True)
@@ -113,9 +116,8 @@ def promote_execution(
     """Promote one complete current staging bundle without changing its source."""
 
     run_root = _find_run(log, run_id)
-    _load_run(run_root / "run.json")
     plan = load_accepted_plan(run_root)
-    bundle = _load_bundle(run_root, run_id, execution_id)
+    bundle = _load_current_bundle(run_root, run_id, execution_id)
     entry_id = _required_string(bundle.record, "entry")
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
@@ -138,62 +140,68 @@ def promote_execution(
     )
 
 
-def _load_bundle(run_root: Path, run_id: str, execution_id: str) -> _StagingBundle:
-    path = run_root / "staging.json"
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or path.stat().st_size > MAX_STAGING_BYTES
-    ):
-        raise ActionError("reproduction.promotion.staging_missing", str(path))
+def _load_current_bundle(
+    run_root: Path, run_id: str, execution_id: str
+) -> _StagingBundle:
+    """Project one complete staged execution from the current SQLite store."""
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        projection = load_publication_projection(run_root)
+    except JobStoreError as error:
+        raise ActionError(error.code, str(error)) from error
+    if projection.identity.run_id != run_id:
         raise ActionError(
-            "reproduction.promotion.staging_invalid", str(error)
-        ) from error
-    if not isinstance(value, Mapping) or set(value) != {
-        "executions",
-        "run_id",
-        "schema",
-        "target",
-    }:
-        raise ActionError("reproduction.promotion.staging_invalid", str(path))
-    executions = value.get("executions")
-    if (
-        value.get("schema") not in {LEGACY_STAGING_SCHEMA, STAGING_SCHEMA}
-        or value.get("run_id") != run_id
-        or not isinstance(executions, list)
-    ):
-        raise ActionError("reproduction.promotion.staging_invalid", str(path))
+            "reproduction.promotion.execution_missing", "run identity changed"
+        )
     matches = [
-        item
-        for item in executions
-        if isinstance(item, Mapping) and item.get("execution_id") == execution_id
+        item for item in projection.comparisons if item.execution_id == execution_id
     ]
     if len(matches) != 1:
         raise ActionError(
             "reproduction.promotion.execution_missing",
             f"expected one staged execution, found {len(matches)}",
         )
-    bundle = cast(Mapping[str, object], matches[0])
-    if (
-        set(bundle)
-        != {
-            "bytes",
-            "complete",
-            "diagnostics",
-            "entry",
-            "execution_id",
-            "outputs",
-            "path",
-        }
-        or bundle.get("complete") is not True
-    ):
+    comparison = matches[0]
+    if not comparison.complete:
         raise ActionError(
             "reproduction.promotion.incomplete", "staged execution is incomplete"
         )
-    return _StagingBundle(bundle, cast(str, value["schema"]))
+    outputs = []
+    workspace = PurePosixPath(comparison.workspace_path)
+    for item in comparison.artifacts:
+        staged = item.staged_path
+        if staged is not None:
+            try:
+                staged = PurePosixPath(staged).relative_to(workspace).as_posix()
+            except ValueError as error:
+                raise ActionError(
+                    "reproduction.promotion.staging_invalid",
+                    f"staged output is outside its workspace: {item.artifact}",
+                ) from error
+        outputs.append(
+            {
+                "artifact": item.artifact,
+                "available": item.available,
+                "expected": item.expected,
+                "kind": item.kind,
+                "outcome": item.outcome,
+                "profile": item.profile,
+                "reason": item.reason,
+                "regenerated": item.regenerated,
+                "staged": staged,
+            }
+        )
+    return _StagingBundle(
+        {
+            "bytes": comparison.retained_bytes,
+            "complete": True,
+            "diagnostics": list(comparison.diagnostics),
+            "entry": comparison.entry,
+            "execution_id": comparison.execution_id,
+            "outputs": outputs,
+            "path": comparison.workspace_path,
+        },
+    )
 
 
 def _resolve_outputs(
@@ -224,7 +232,7 @@ def _resolve_outputs(
         raise ActionError(
             "reproduction.promotion.staging_invalid", "invalid staged output list"
         )
-    records = _index_staged_outputs(raw_outputs, context.bundle.schema)
+    records = _index_staged_outputs(raw_outputs)
     expected = dict(accepted.execution.recipe.outputs)
     if set(records) != set(expected):
         raise ActionError(
@@ -279,7 +287,7 @@ def _resolve_outputs(
 
 
 def _index_staged_outputs(
-    raw_outputs: Sequence[object], staging_schema: str
+    raw_outputs: Sequence[object],
 ) -> Mapping[str, Mapping[str, object]]:
     records: dict[str, Mapping[str, object]] = {}
     output_fields = {
@@ -291,9 +299,8 @@ def _index_staged_outputs(
         "reason",
         "regenerated",
         "staged",
+        "profile",
     }
-    if staging_schema == STAGING_SCHEMA:
-        output_fields.add("profile")
     for value in raw_outputs:
         if not isinstance(value, Mapping) or set(value) != output_fields:
             raise ActionError(
@@ -318,8 +325,8 @@ def _begin_promotion(
     project = resolve_project_root(log.root)
     marker = operation_directory(project) / f"promotion-{token}.json"
     with operation_lock(project, "reproduction-promotion-index.lock"):
+        _require_no_active_input_overlap(log, outputs)
         with operation_lock(log.root, "reproduction-publication.lock"):
-            _require_no_active_input_overlap(log, outputs)
             atomic_write_text(
                 marker,
                 _canonical(
@@ -354,11 +361,13 @@ def _require_no_active_input_overlap(
     except OSError as error:
         raise ActionError("reproduction.promotion.state_invalid", str(error)) from error
     for run_root in run_roots:
-        path = run_root / "run.json"
-        if run_root.is_symlink() or not path.is_file() or path.is_symlink():
+        if recognize_run_directory(run_root) != "current":
             continue
-        record = _load_run(path)
-        if cast(Mapping[str, object], record["state"])["status"] is not None:
+        try:
+            status = load_run_status(run_root)
+        except JobStoreError as error:
+            raise ActionError(error.code, str(error)) from error
+        if status.status is not None:
             continue
         plan = load_accepted_plan(run_root)
         materials = cast(

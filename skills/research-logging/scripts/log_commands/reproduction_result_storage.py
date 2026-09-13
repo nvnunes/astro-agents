@@ -8,7 +8,7 @@ import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from research_log_data import parse_fingerprint
 from research_log_paths import RESULTS_STORE
@@ -56,6 +56,38 @@ class ReproductionPublicationRequest:
     commands: tuple[CommandResult, ...]
     selected_execution_keys: tuple[tuple[str, str], ...]
     selected_pre_execution_artifact_keys: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class PublicationCommitQuery:
+    """Immutable terminal identity used to recognize one committed run."""
+
+    run_id: str
+    target_kind: str
+    target_entry: str | None
+    target_execution_id: str | None
+    include_all: bool
+    accepted_at: str
+    finished_at: str
+    status: str
+    folder_path: str
+
+
+@dataclass(frozen=True)
+class PublicationCommitMatch:
+    """Bounded result-store recognition of one interrupted publication."""
+
+    disposition: Literal["absent", "exact", "conflict"]
+    observed_generation: int | None = None
+
+    def __post_init__(self) -> None:
+        exact = self.disposition == "exact"
+        if exact != (
+            isinstance(self.observed_generation, int)
+            and not isinstance(self.observed_generation, bool)
+            and self.observed_generation > 0
+        ):
+            raise ValueError("only an exact commit has a positive generation")
 
 
 def _root(path: Path) -> Path:
@@ -283,7 +315,49 @@ def publish_reproduction_results(
             )
             db.execute("DELETE FROM report_materializations WHERE kind='reproduction'")
             _validate_explicit_export_bound(db, path)
-            return generation
+        return generation
+    except ResultStoreError as error:
+        raise ReproductionStorageError(str(error), code=error.code) from error
+
+
+def lookup_reproduction_run_commit(
+    path: Path, query: PublicationCommitQuery
+) -> PublicationCommitMatch:
+    """Recognize one unique historical run row in a bounded result snapshot."""
+
+    if not path.exists() and not path.is_symlink():
+        return PublicationCommitMatch("absent")
+    expected = (
+        query.target_kind,
+        query.target_entry,
+        query.target_execution_id,
+        int(query.include_all),
+        query.status,
+        query.accepted_at,
+        query.finished_at,
+        query.folder_path,
+    )
+    try:
+        with result_snapshot(_root(path)) as db:
+            row = db.execute(
+                "SELECT target_kind,target_entry,target_execution_id,include_all,"
+                "status,accepted_at,finished_at,folder_path "
+                "FROM reproduction_runs WHERE run_id=?",
+                (query.run_id,),
+            ).fetchone()
+            if row is None:
+                return PublicationCommitMatch("absent")
+            generation = db.execute(
+                "SELECT generation FROM store_state WHERE domain='reproduction'"
+            ).fetchone()
+            if generation is None:
+                raise ReproductionStorageError(
+                    "committed reproduction run has no generation"
+                )
+            observed = tuple(row)
+            if observed != expected:
+                return PublicationCommitMatch("conflict")
+            return PublicationCommitMatch("exact", int(generation[0]))
     except ResultStoreError as error:
         raise ReproductionStorageError(str(error), code=error.code) from error
 

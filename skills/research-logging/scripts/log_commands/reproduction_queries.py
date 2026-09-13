@@ -833,9 +833,13 @@ def _command_diagnostics(
     located = _locate_command_checkpoint(run_root, entry, execution_id)
     if located is None:
         return _unavailable_command_diagnostics("checkpoint_unavailable")
-    checkpoint = located
-    digest = execution_id.rsplit(":", 1)[-1]
-    diagnostic_root = Path("diagnostics") / entry / digest
+    checkpoint = {
+        key: value
+        for key, value in located.items()
+        if key not in {"_stderr_path", "_stdout_path"}
+    }
+    stderr_path = located.get("_stderr_path")
+    stdout_path = located.get("_stdout_path")
     return {
         "attempt": None,
         "availability": "available",
@@ -843,14 +847,18 @@ def _command_diagnostics(
         "reason": None,
         "stderr": _diagnostic_stream(
             run_root,
-            diagnostic_root / "stderr.log",
+            Path(stderr_path),
             published_root=run.folder.path,
-        ),
+        )
+        if isinstance(stderr_path, str)
+        else None,
         "stdout": _diagnostic_stream(
             run_root,
-            diagnostic_root / "stdout.log",
+            Path(stdout_path),
             published_root=run.folder.path,
-        ),
+        )
+        if isinstance(stdout_path, str)
+        else None,
     }
 
 
@@ -859,17 +867,19 @@ def _retained_command_run(
 ) -> tuple[Path, Mapping[str, object]] | str:
     """Load shared diagnostic authority once per query, including unavailable state."""
 
-    from .reproduction_jobs import _find_run, _load_run
+    from .reproduction_job_storage import JobStoreError, load_run_status
+    from .reproduction_jobs import _find_run
 
     try:
         root = _find_run(log, run.run_id)
         if root != (resolve_project_root(log.root) / run.folder.path).resolve():
             return "reproduction.run.directory_changed"
-        return root, _load_run(root / "run.json")
-    except (ActionError, OSError) as error:
+        status = load_run_status(root)
+        return root, {"run_id": status.run_id}
+    except (ActionError, JobStoreError, OSError) as error:
         return (
             error.code
-            if isinstance(error, ActionError)
+            if isinstance(error, (ActionError, JobStoreError))
             else "run_directory_unavailable"
         )
 
@@ -925,16 +935,47 @@ def _locate_command_checkpoint(
 ) -> Mapping[str, object] | None:
     """Find the one fixed-plan checkpoint for a compound command identity."""
 
-    from .reproduction_jobs import _checkpoint_dicts
+    from .reproduction_job_storage import (
+        ExecutionIdentity,
+        JobStoreError,
+        load_execution_checkpoint,
+    )
 
-    matches = [
-        item
-        for item in _checkpoint_dicts(run_root)
-        if item.get("entry") == entry
-        and item.get("execution_id") == execution_id
-        and item.get("state") != "active"
-    ]
-    return matches[0] if len(matches) == 1 else None
+    try:
+        checkpoint = load_execution_checkpoint(
+            run_root, ExecutionIdentity(entry, execution_id)
+        )
+    except JobStoreError:
+        return None
+    if checkpoint is None or checkpoint.state == "active":
+        return None
+    return {
+        "_stderr_path": checkpoint.stderr_path,
+        "_stdout_path": checkpoint.stdout_path,
+        "completed_at": (
+            checkpoint.finished_at if checkpoint.state == "succeeded" else None
+        ),
+        "elapsed_seconds": checkpoint.elapsed_seconds,
+        "entry": checkpoint.entry,
+        "execution_id": checkpoint.execution_id,
+        "failure": (
+            None
+            if checkpoint.failure_code is None
+            else {
+                "code": checkpoint.failure_code,
+                "message": checkpoint.failure_message,
+                "recorded_at": checkpoint.failure_recorded_at,
+            }
+        ),
+        "finished_at": checkpoint.finished_at,
+        "outputs": [
+            {"artifact": item.artifact, "fingerprint": dict(item.fingerprint)}
+            for item in checkpoint.outputs
+        ],
+        "path": "state.sqlite",
+        "started_at": checkpoint.started_at,
+        "state": checkpoint.state,
+    }
 
 
 def _diagnostic_stream(

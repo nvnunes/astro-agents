@@ -6,18 +6,86 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from log_commands.reproduction_comparison import compare_execution_outputs
-from log_commands.reproduction_contract import accepted_comparison
+from log_commands.context import EntryContext
+from log_commands.reproduction_comparison import compare_current_execution_outputs
+from log_commands.reproduction_contract import ReproductionPlan, accepted_comparison
 from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionCheckpoint,
     ReproductionWorkspace,
+    current_execution_attempts,
 )
+from log_commands.reproduction_job_storage import AcceptedJob, create_job
+from log_commands.reproduction_paths import canonical_run_path, run_leaf
 from reproduction_fixed_plan_test_support import accepted_plan
 from test_log_reproduction_planning import _Fixture, _plan
 
 
 class ReproductionComparisonTests(unittest.TestCase):
+    def test_current_comparison_persists_explicit_baseline_inability(self) -> None:
+        from log_commands.reproduction_comparison import (
+            compare_current_execution_outputs,
+        )
+        from log_commands.reproduction_job_storage import load_publication_projection
+        from test_reproduction_job_storage import _job_fixture, _start_and_finish
+
+        with _job_fixture(executions=1) as (
+            project,
+            fixture,
+            entry,
+            plan,
+            accepted,
+            run_root,
+        ):
+            _start_and_finish(run_root, plan, 0)
+            workspace = ReproductionWorkspace(
+                accepted.run_id,
+                run_root,
+                project,
+                run_root / "workspace",
+                run_root / "runtime",
+                run_root / "diagnostics",
+                run_root / "executions",
+            )
+            for path in (
+                workspace.work_project,
+                workspace.runtime_root,
+                workspace.diagnostics_root,
+                workspace.staging_root,
+            ):
+                path.mkdir(exist_ok=True)
+            execution = plan.executions[0]
+            identity = str(execution["execution_id"])
+            private = (
+                workspace.staging_root
+                / entry.id
+                / identity.rsplit(":", 1)[-1]
+                / entry.root.relative_to(project)
+                / "data"
+                / "output-00.txt"
+            )
+            private.parent.mkdir(parents=True)
+            private.write_text("output-00\n", encoding="utf-8")
+            retained = entry.root / "data" / "output-00.txt"
+            retained.write_text("changed after acceptance\n", encoding="utf-8")
+            attempt = current_execution_attempts(
+                fixture.log, plan, workspace
+            )[0]
+            comparison = compare_current_execution_outputs(
+                fixture.log,
+                plan,
+                workspace,
+                attempt,
+                recorded_at="2030-01-01T00:01:00Z",
+            )
+            self.assertEqual(
+                (comparison.artifacts[0].outcome, comparison.artifacts[0].reason),
+                ("comparison_failed", "baseline_changed"),
+            )
+            stored = load_publication_projection(run_root).comparisons[0]
+            self.assertEqual(stored.artifacts[0].outcome, "comparison_failed")
+            self.assertEqual(stored.artifacts[0].reason, "baseline_changed")
+
     def test_empty_context_has_no_live_comparison_fallback(self) -> None:
         comparison = accepted_comparison(
             accepted_plan(), "e001", "pyrun-exec/v1:" + "0" * 64, "data/out"
@@ -28,6 +96,8 @@ class ReproductionComparisonTests(unittest.TestCase):
         self,
     ) -> None:
         """A fixed plan must never compare against a silently replaced baseline."""
+
+        from test_reproduction_job_storage import _start_and_finish
 
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -50,54 +120,21 @@ class ReproductionComparisonTests(unittest.TestCase):
             )
             fixture.write_pyrun(entry, [(identity, execution)])
             plan = _plan(fixture, entry)
-            source_project = fixture.root.resolve()
-            run_root = source_project / "run"
-            work = run_root / "workspace"
-            runtime = run_root / "runtime"
-            diagnostics = run_root / "diagnostics"
-            staging = run_root / "executions"
-            for path in (work, runtime, diagnostics, staging):
-                path.mkdir(parents=True)
-            workspace = ReproductionWorkspace(
-                "reproduce-baseline",
-                run_root,
-                source_project,
-                work,
-                runtime,
-                diagnostics,
-                staging,
-            )
+            run_root, workspace = _current_workspace(fixture, entry, plan)
+            _start_and_finish(run_root, plan, 0)
 
             # Both present and regenerated values agree, but neither is the
             # accepted output observation frozen in the plan.
             output.write_text("replaced\n", encoding="utf-8")
-            regenerated = workspace.map_source(output)
+            regenerated = _private_output(workspace, entry, identity, output)
             regenerated.parent.mkdir(parents=True, exist_ok=True)
             regenerated.write_text("replaced\n", encoding="utf-8")
-            checkpoint = ExecutionCheckpoint(
-                entry.id,
-                identity,
-                "succeeded",
-                "checkpoints/fixture.json",
-                "2030-01-01T00:00:01Z",
-                (),
-            )
-            comparison = compare_execution_outputs(
+            comparison = compare_current_execution_outputs(
                 fixture.log,
                 plan,
                 workspace,
-                ExecutionAttempt(
-                    entry.id,
-                    identity,
-                    0,
-                    False,
-                    None,
-                    None,
-                    checkpoint,
-                    (),
-                    "diagnostics/out",
-                    "diagnostics/err",
-                ),
+                _current_attempt(entry.id, identity),
+                recorded_at="2030-01-01T00:01:00Z",
             )
 
             self.assertFalse(comparison.matched)
@@ -108,18 +145,25 @@ class ReproductionComparisonTests(unittest.TestCase):
     ) -> None:
         """Tolerance is downstream of the accepted retained-byte baseline."""
 
+        from test_reproduction_job_storage import _start_and_finish
+
         with tempfile.TemporaryDirectory() as directory:
             fixture, entry, output, identity, plan = _evidence_scoped_fixture(
                 Path(directory)
             )
-            workspace = _comparison_workspace(fixture.root.resolve())
-            regenerated = workspace.map_source(output)
+            run_root, workspace = _current_workspace(fixture, entry, plan)
+            _start_and_finish(run_root, plan, 0)
+            regenerated = _private_output(workspace, entry, identity, output)
             regenerated.parent.mkdir(parents=True, exist_ok=True)
             regenerated.write_text("stable\nruntime 2\n", encoding="utf-8")
-            attempt = _attempt(entry.id, identity)
+            attempt = _current_attempt(entry.id, identity)
 
-            evidence_match = compare_execution_outputs(
-                fixture.log, plan, workspace, attempt
+            evidence_match = compare_current_execution_outputs(
+                fixture.log,
+                plan,
+                workspace,
+                attempt,
+                recorded_at="2030-01-01T00:01:00Z",
             )
             self.assertTrue(evidence_match.matched)
             self.assertEqual(evidence_match.artifacts[0].profile, "evidence")
@@ -128,7 +172,23 @@ class ReproductionComparisonTests(unittest.TestCase):
             # evidence definition, but the retained artifact no longer matches
             # the observation accepted into this plan.
             output.write_text("stable\nruntime replaced\n", encoding="utf-8")
-            replaced = compare_execution_outputs(fixture.log, plan, workspace, attempt)
+            # Use a second current job because comparison rows are immutable.
+            second_root, second_workspace = _current_workspace(
+                fixture, entry, plan, suffix="second"
+            )
+            _start_and_finish(second_root, plan, 0)
+            second_regenerated = _private_output(
+                second_workspace, entry, identity, output
+            )
+            second_regenerated.parent.mkdir(parents=True, exist_ok=True)
+            second_regenerated.write_text("stable\nruntime 2\n", encoding="utf-8")
+            replaced = compare_current_execution_outputs(
+                fixture.log,
+                plan,
+                second_workspace,
+                _current_attempt(entry.id, identity),
+                recorded_at="2030-01-01T00:01:00Z",
+            )
             self.assertFalse(replaced.matched)
             self.assertEqual(replaced.artifacts[0].reason, "baseline_changed")
 
@@ -199,27 +259,70 @@ def _evidence_scoped_fixture(
     return fixture, entry, output, identity, _plan(fixture, entry)
 
 
-def _comparison_workspace(project: Path) -> ReproductionWorkspace:
-    root = project / "comparison-run"
-    work, runtime, diagnostics, staging = (
+def _current_workspace(
+    fixture: _Fixture,
+    entry: EntryContext,
+    plan: ReproductionPlan,
+    *,
+    suffix: str = "first",
+) -> tuple[Path, ReproductionWorkspace]:
+    project = fixture.root.resolve()
+    run_id = f"reproduce-20300101t000000z-comparison-{suffix}"
+    logical = canonical_run_path(
+        "2030-01-01T00:00:00Z",
+        run_leaf(fixture.log_root.name, entry.id, run_id),
+    )
+    root = project / logical
+    root.mkdir(parents=True)
+    create_job(
+        root,
+        AcceptedJob(
+            run_id,
+            plan,
+            "2030-01-01T00:00:00Z",
+            logical.as_posix(),
+        ),
+    )
+    workspace = ReproductionWorkspace(
+        run_id,
+        root,
+        project,
         root / "workspace",
         root / "runtime",
         root / "diagnostics",
         root / "executions",
     )
-    for path in (work, runtime, diagnostics, staging):
-        path.mkdir(parents=True)
-    return ReproductionWorkspace(
-        "reproduce-comparison", root, project, work, runtime, diagnostics, staging
+    for path in (
+        workspace.work_project,
+        workspace.runtime_root,
+        workspace.diagnostics_root,
+        workspace.staging_root,
+    ):
+        path.mkdir(exist_ok=True)
+    return root, workspace
+
+
+def _private_output(
+    workspace: ReproductionWorkspace,
+    entry: EntryContext,
+    identity: str,
+    output: Path,
+) -> Path:
+    return (
+        workspace.staging_root
+        / entry.id
+        / identity.rsplit(":", 1)[-1]
+        / entry.root.resolve().relative_to(workspace.source_project.resolve())
+        / output.resolve().relative_to(entry.root.resolve())
     )
 
 
-def _attempt(entry: str, identity: str) -> ExecutionAttempt:
+def _current_attempt(entry: str, identity: str) -> ExecutionAttempt:
     checkpoint = ExecutionCheckpoint(
         entry,
         identity,
         "succeeded",
-        "checkpoints/fixture.json",
+        "state.sqlite",
         "2030-01-01T00:00:01Z",
         (),
     )

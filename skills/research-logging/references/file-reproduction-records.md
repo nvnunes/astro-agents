@@ -15,9 +15,10 @@ Reproduce may create or update only these generated paths:
   `accepted_at`; and
 - the existing operation-lock paths used to protect the selected log or entry
   and serialize reproduction publication; and
-- `<project>/.cache/research-log-operations/reproduction-scheduler.json`, the
-  bounded generated coordinator for active ordinary/exclusive permits and
-  waiting exclusive tickets; and
+- `<project>/.cache/research-log-operations/reproduction-scheduler.sqlite` and
+  its safe `-journal`, `-wal`, and `-shm` SQLite companions, the bounded
+  normalized coordinator for active ordinary/exclusive permits, ordered path
+  claims, and waiting exclusive tickets; and
 - `<project>/.cache/research-log-operations/reproduction-scheduler.lock`, the
   existing-operation-lock mutex that serializes coordinator updates.
 
@@ -46,15 +47,18 @@ reproduction `--recheck`; an ordinary incremental invocation may correctly
 select no commands. The committed Markdown report remains a human snapshot and
 is never used to reconstruct machine state.
 
-Any launch with no selected executions creates no run ID, run folder, result
-write, or report write. It emits an ephemeral current
+Any launch with no selected executions normally creates no run ID, run folder,
+result write, or report write. The sole exception is an explicitly launched
+empty whole-log `--recheck`, which may replace unsupported generated
+reproduction results and `reproduction.md` after validation publication while
+still creating no run or worker. Other no-work launches emit an ephemeral current
 reconciliation using the plan's policy, no-work, and blocked selections together
 with current artifact state. A prior completed run may be named only as
 historical context; its command counts do not replace the current invocation's
 counts.
 
-The current result-store schema retains every newly
-published run counts every command in its log or entry exactly once as
+Every newly published run in the current result-store schema counts each command
+in its log or entry exactly once as
 reproduction not needed, an unchanged prior failure, an unchanged prior block,
 not automatic, succeeded, failed, or blocked by a planning condition or
 selected command failure. Those command counts are separate from
@@ -63,7 +67,7 @@ Compact reports combine the first three internal categories into one
 `reproduction not retried` total without exposing the prior disposition.
 Each run also owns a complete immutable command-query projection containing
 the recorded recipe and working directory, initial policy and queue state,
-attempt selection, source digest, planning detail, accounting reason, and
+accepted selection, source digest, planning detail, accounting reason, and
 terminal disposition. Historical command list and show queries use this
 projection without consulting current `pyrun.json`.
 
@@ -76,10 +80,11 @@ disposition and the exact digest of its recipe, environment, scripts, code,
 inputs, dependency outputs, baselines, comparison definitions, and planning
 state. Initial incremental reproduction uses current `pyrun.json` state
 directly for completed commands and retains unchanged failure and block
-dispositions. A logical run's first attempt freezes its authorized queue.
-Resume preserves successes, retries failures only after their source closure
-changes, reconsiders blocks, reruns commands with no durable terminal outcome,
-and adds only affected downstream commands already in that queue. It never
+dispositions. The accepted plan freezes one authorized queue for the run.
+Resume does not replan, adopt source changes, reconsider failed or blocked
+terminal outcomes, or add downstream work. It preserves every terminal
+checkpoint and continues only never-started work or a checkpoint stopped before
+a terminal outcome. A source or declaration change requires a new run. It never
 infers this decision from artifact outcomes. `--recheck` is an initial-launch
 override and does not apply to resume.
 
@@ -118,6 +123,11 @@ scheduling permit is released only after terminal checkpoint publication and
 worker exit. Older job files remain untouched but are unsupported: Reproduce
 does not resume, migrate, or decode them, and directs the caller to start a
 new current-format run.
+
+SQLite may create `state.sqlite-journal`, `state.sqlite-wal`, and
+`state.sqlite-shm` beside the database. These safe companions share the run
+store's ownership and count with `state.sqlite` toward the 256 MiB durable-store
+limit whenever present.
 
 ## Research Boundary
 

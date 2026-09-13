@@ -107,13 +107,16 @@ For reproduction planning, comparison, and staging development, run:
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_log_reproduction_planning.py \
+  skills/research-logging/tests/test_reproduction_job_storage.py \
+  skills/research-logging/tests/test_log_reproduction_scheduler.py \
   skills/research-logging/tests/test_log_reproduction_execution_selection.py \
   skills/research-logging/tests/test_log_reproduction_comparison.py \
   skills/research-logging/tests/test_log_reproduction_results.py \
   skills/research-logging/tests/test_log_reproduction_jobs.py \
+  skills/research-logging/tests/test_log_reproduction_empty_recovery.py \
   skills/research-logging/tests/test_log_reproduction_promotion.py \
   skills/research-logging/tests/test_log_reproduction_publication.py \
-  skills/research-logging/tests/test_log_reproduction_queries.py \
+  skills/research-logging/tests/test_log_reproduction_queries.py
 ```
 
 For consolidated result storage, render recovery, or scaffold changes, also run
@@ -123,19 +126,21 @@ the focused store tests:
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_research_log_result_store.py \
+  skills/research-logging/tests/test_log_reproduction_empty_recovery.py \
   skills/research-logging/tests/test_log_results_render.py \
   skills/research-logging/tests/test_log_scaffold.py
 ```
 
 This focused command supplements rather than replaces the complete tool gate.
 
-The reproduction suite is migrating to fixed-plan fixtures. Its completion
-coverage must exercise locked fresh preparation, strict accepted plan/run
-decoding, stop and interruption recovery, dependency failure and independent
-progress, publication-only retry, source-change rejection and new-run
-preparation, comparison-baseline invariance, reservation/promotion overlap, and
-validation-bundle invariance. It must not restore continuation, whole-snapshot
-certification, or accepted-attempt lineage coverage.
+The reproduction suite uses fixed-plan fixtures. Its completion coverage must
+exercise locked fresh preparation, strict accepted plan insertion and SQLite
+reconstruction, run-store and scheduler transactions, stop and interruption
+recovery, dependency failure and independent progress, publication-only retry,
+source-change rejection and new-run preparation, comparison-baseline
+invariance, reservation/promotion overlap, and validation-bundle invariance.
+It must not restore continuation, whole-snapshot certification, JSON job
+decoding, or accepted-attempt lineage coverage.
 
 For reproduction execution and process-lifecycle development, run the focused
 controlled-fixture suite outside any enclosing process-observation sandbox:

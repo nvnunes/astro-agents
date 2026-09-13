@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence, cast
+from typing import Iterator, Mapping, Sequence, cast
 
 from research_log_data import DataContractError, parse_fingerprint
 from research_log_paths import (
@@ -38,10 +38,13 @@ from .reproduction_planner import (
     project_reproduction_state,
 )
 from .reproduction_result_storage import (
+    PublicationCommitMatch,
+    PublicationCommitQuery,
     ReproductionPublicationRequest,
     ReproductionStorageError,
     initialize_empty_reproduction_results,
     load_reproduction_report_projection,
+    lookup_reproduction_run_commit,
     publish_reproduction_results,
 )
 from .reproduction_results import (
@@ -79,6 +82,156 @@ class CompletedPublication:
     finished_at: str
     run_folder: Path
     dependency_skips: tuple[Mapping[str, object], ...] = ()
+    execution_timings: tuple[Mapping[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class PublishedResultCommit:
+    """One selected-key result transaction and its committed generation."""
+
+    generation: int
+
+
+@dataclass(frozen=True)
+class PublishedReport:
+    """The current aggregate and report materialized for one generation."""
+
+    generation: int
+    results: ReproductionResults
+    report: str
+
+
+class LockedReproductionPublication:
+    """Result/report operations serialized by the two settled log locks."""
+
+    def __init__(self, log: LogContext):
+        self._log = log
+        self._project_root = resolve_project_root(log.root)
+        self._result_path = log.root / RESULTS_STORE
+
+    def publish_result_transaction(
+        self, request: CompletedPublication
+    ) -> PublishedResultCommit:
+        """Commit only the selected result rows and return their generation."""
+
+        generation = publish_reproduction_results(
+            self._result_path, _result_publication_request(self._log, request)
+        )
+        return PublishedResultCommit(generation)
+
+    def lookup_run_commit(
+        self, query: PublicationCommitQuery
+    ) -> PublicationCommitMatch:
+        """Recognize an interrupted result commit while publication is locked."""
+
+        return lookup_reproduction_run_commit(self._result_path, query)
+
+    def materialize_report(self, expected_generation: int) -> PublishedReport:
+        """Materialize the requested generation or retry the newer current report."""
+
+        report = self._render_current_report(expected_generation)
+        if self._record_report_marker(report, expected_generation):
+            return report
+        from research_log_result_store import result_generation
+
+        current_generation = result_generation(self._log.root, "reproduction")
+        current = self._render_current_report(current_generation)
+        if not self._record_report_marker(current, current_generation):
+            raise ActionError(
+                "results.report.write_failed",
+                "reproduction generation changed while results lock was held",
+            )
+        return current
+
+    def _render_current_report(self, generation: int) -> PublishedReport:
+        merged = load_reproduction_report_projection(
+            self._result_path, project_root=self._project_root
+        )
+        projected, currentness = project_current_results(
+            merged, project_reproduction_state(self._log)
+        )
+        try:
+            report = compose_reproduction_report(
+                projected,
+                context=load_report_context(self._log.summary),
+                currentness=currentness,
+                folder_links_from=self._log.root,
+            )
+        except Exception as error:
+            raise ActionError(
+                "results.report.render_failed",
+                f"committed reproduction generation {generation}: {error}",
+            ) from error
+        try:
+            atomic_write_texts({self._log.root / REPRODUCTION_REPORT: report})
+        except (OSError, PublicationError) as error:
+            raise ActionError(
+                "results.report.write_failed",
+                f"committed reproduction generation {generation}: {error}",
+            ) from error
+        return PublishedReport(generation, merged, report)
+
+    def _record_report_marker(
+        self, report: PublishedReport, expected_generation: int
+    ) -> bool:
+        from research_log_result_store import record_report_materialization
+
+        try:
+            return record_report_materialization(
+                self._log.root,
+                "reproduction",
+                report.report.encode(),
+                expected_generation=expected_generation,
+            )
+        except Exception as error:
+            raise ActionError(
+                "results.report.write_failed",
+                f"committed reproduction generation {report.generation}; "
+                f"report marker is stale: {error}",
+            ) from error
+
+
+@contextmanager
+def open_reproduction_publication(
+    log: LogContext,
+) -> Iterator[LockedReproductionPublication]:
+    """Hold publication then result serialization locks for typed operations."""
+
+    from research_log_result_store import results_lock
+
+    with operation_lock(log.root, "reproduction-publication.lock"):
+        with results_lock(log.root):
+            yield LockedReproductionPublication(log)
+
+
+def _result_publication_request(
+    log: LogContext, request: CompletedPublication
+) -> ReproductionPublicationRequest:
+    """Construct the exact selected-key write from one terminal job projection."""
+
+    project_root = resolve_project_root(log.root)
+    artifacts = _artifact_results(request)
+    commands = _command_results(request)
+    run = _run_result(
+        request.plan,
+        artifacts,
+        request,
+        project_root,
+        project_reproduction_command_inventory(log, request.plan.target),
+    )
+    summary = log.summary.resolve().relative_to(project_root).as_posix()
+    return ReproductionPublicationRequest(
+        summary,
+        run,
+        artifacts,
+        commands,
+        tuple((item.entry, item.execution_id) for item in commands),
+        tuple(
+            (item.entry, item.artifact)
+            for item in artifacts
+            if item.execution_id is None
+        ),
+    )
 
 
 def verify_publication_retry_compatibility(
@@ -112,101 +265,10 @@ def publish_completed_reproduction(
 ) -> PublishedReproduction:
     """Publish one normally completed target without validation or state mutation."""
 
-    project_root = resolve_project_root(log.root)
     try:
-        artifacts = _artifact_results(request)
-        commands = _command_results(request)
-    except ReproductionResultError as error:
-        raise ActionError("reproduction.publication.failed", str(error)) from error
-    try:
-        with operation_lock(log.root, "reproduction-publication.lock"):
-            run = _run_result(
-                request.plan,
-                artifacts,
-                request,
-                project_root,
-                project_reproduction_command_inventory(log, request.plan.target),
-            )
-            result_path = log.root / RESULTS_STORE
-            summary = log.summary.resolve().relative_to(project_root).as_posix()
-            state_projection = project_reproduction_state(log)
-            snapshots = command_snapshot_index(request.plan)
-            state_projection = replace(
-                state_projection,
-                reachable_commands=frozenset(
-                    key for key, item in snapshots.items() if item.get("queued") is True
-                ),
-            )
-            if request.plan.target.get("kind") == "log":
-                state_projection = replace(
-                    state_projection,
-                    reachable=frozenset(
-                        (
-                            _required(case, "entry"),
-                            _required(case, "artifact"),
-                        )
-                        for case in request.plan.cases
-                    ),
-                )
-            context = load_report_context(log.summary)
-            from research_log_result_store import (
-                record_report_materialization,
-                results_lock,
-            )
-
-            with results_lock(log.root):
-                generation = publish_reproduction_results(
-                    result_path,
-                    ReproductionPublicationRequest(
-                        summary,
-                        run,
-                        artifacts,
-                        commands,
-                        tuple((item.entry, item.execution_id) for item in commands),
-                        tuple(
-                            (item.entry, item.artifact)
-                            for item in artifacts
-                            if item.execution_id is None
-                        ),
-                    ),
-                )
-                merged = load_reproduction_report_projection(
-                    result_path, project_root=project_root
-                )
-                projected, currentness = project_current_results(
-                    merged, state_projection
-                )
-                try:
-                    report = compose_reproduction_report(
-                        projected,
-                        context=context,
-                        currentness=currentness,
-                        folder_links_from=log.root,
-                    )
-                except Exception as error:
-                    raise ActionError(
-                        "results.report.render_failed",
-                        f"committed reproduction generation {generation}: {error}",
-                    ) from error
-                try:
-                    atomic_write_texts({log.root / REPRODUCTION_REPORT: report})
-                except (OSError, PublicationError) as error:
-                    raise ActionError(
-                        "results.report.write_failed",
-                        f"committed reproduction generation {generation}: {error}",
-                    ) from error
-                try:
-                    record_report_materialization(
-                        log.root,
-                        "reproduction",
-                        report.encode(),
-                        expected_generation=generation,
-                    )
-                except Exception as error:
-                    raise ActionError(
-                        "results.report.write_failed",
-                        f"committed reproduction generation {generation}; report marker is stale: {error}",  # noqa: E501
-                    ) from error
+        with open_reproduction_publication(log) as publisher:
+            committed = publisher.publish_result_transaction(request)
+            materialized = publisher.materialize_report(committed.generation)
     except ActionError:
         raise
     except (
@@ -221,7 +283,7 @@ def publish_completed_reproduction(
             else "reproduction.publication.failed"
         )
         raise ActionError(code, str(error)) from error
-    return PublishedReproduction(merged, report)
+    return PublishedReproduction(materialized.results, materialized.report)
 
 
 def empty_reproduction_recovery_needed(log: LogContext, plan: ReproductionPlan) -> bool:
@@ -529,7 +591,7 @@ def _run_result(
         request.finished_at,
         {outcome: counts[outcome] for outcome in OUTCOMES},
         RunFolder(folder, "available"),
-        _execution_timings(plan, request.run_folder),
+        request.execution_timings,
         command_outcomes,
         _command_records(plan, request),
     )
@@ -545,12 +607,14 @@ def _command_records(
         snapshots = command_snapshot_index(plan)
     except CommandAccountingError as error:
         raise ActionError("reproduction.publication.invalid", str(error)) from error
-    if not snapshots or any("recipe" not in item for item in snapshots.values()):
+    if not snapshots:
         return None
     compared = {(item.entry, item.execution_id): item for item in request.comparisons}
     skipped = _dependency_skip_index(request.dependency_skips)
     records: list[Mapping[str, object]] = []
     for key, snapshot in sorted(snapshots.items()):
+        execution_state = cast(Mapping[str, object], snapshot["execution_state"])
+        recipe = cast(Mapping[str, object], execution_state["recipe"])
         selection = cast(str, snapshot["selection"])
         prior = cast(str | None, snapshot["prior_disposition"])
         terminal: str | None = None
@@ -591,7 +655,7 @@ def _command_records(
                 "prior_disposition": prior,
                 "queued": snapshot["queued"],
                 "reason": reason,
-                "recipe": dict(cast(Mapping[str, object], snapshot["recipe"])),
+                "recipe": dict(recipe),
                 "requires_reproduction": snapshot["requires_reproduction"],
                 "run_selection": selection,
                 "source_digest": snapshot["source_digest"],
@@ -644,43 +708,6 @@ def _command_outcomes(
         "blocked": blocked,
         "total": selection.total,
     }
-
-
-def _execution_timings(
-    plan: ReproductionPlan, run_root: Path
-) -> tuple[Mapping[str, object], ...]:
-    """Project explicit launched-attempt timing in accepted execution order."""
-
-    observed: dict[tuple[str, str], Mapping[str, object]] = {}
-    for path in sorted((run_root / "checkpoints").glob("*.json")):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise ActionError("reproduction.publication.invalid", str(error)) from error
-        if not isinstance(value, Mapping) or value.get("started_at") is None:
-            continue
-        entry = value.get("entry")
-        identity = value.get("execution_id")
-        if not isinstance(entry, str) or not isinstance(identity, str):
-            raise ActionError(
-                "reproduction.publication.invalid",
-                "checkpoint timing identity is invalid",
-            )
-        observed[(entry, identity)] = {
-            "elapsed_seconds": value.get("elapsed_seconds"),
-            "entry": entry,
-            "execution_id": identity,
-            "finished_at": value.get("finished_at"),
-            "started_at": value.get("started_at"),
-        }
-    return tuple(
-        observed[key]
-        for planned in sorted(
-            plan.executions, key=lambda item: cast(int, item["order"])
-        )
-        for key in ((str(planned["entry"]), str(planned["execution_id"])),)
-        if key in observed
-    )
 
 
 def _fingerprint(value: object, subject: str):

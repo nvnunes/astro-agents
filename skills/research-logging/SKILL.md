@@ -38,9 +38,11 @@ Choose the core operation:
   workflows.
 - Explicit mechanical reproduction of a maintained log or one entry: read
   `references/operation-reproduce.md`. Ordinary reproduction does not target
-  one command. Reproduce is CLI-owned, uses authored JSON declarations and
-  `pyrun.json` as graph/execution authority, and uses `results.sqlite` only for
-  disposable query results; it never becomes Record, Review, or Validate.
+  one command. Reproduce is CLI-owned: `evidence.json`, `data.json`, and
+  `pyrun.json` collectively provide authored pre-acceptance graph/execution
+  authority; after acceptance, the immutable plan in run-local `state.sqlite`
+  owns durable execution, resume, and job state. `results.sqlite` owns only
+  disposable query results. Reproduce never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, causal group, finding class,
   malformed or legacy state, transaction residue, or other identified log
   defect: read `references/operation-repair.md`. Correction language such as

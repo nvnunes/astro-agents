@@ -7,16 +7,15 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
-import threading
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, Sequence, cast
+from pathlib import Path
+from typing import Any, Callable, Literal, Mapping, Sequence, cast
 
 import psutil
 from research_log_data import (
@@ -44,34 +43,79 @@ from validation.operation_state import (
 from .context import LogContext, resolve_entry, resolve_log, resolve_project_root
 from .model import ActionError
 from .reproduction_comparison import (
-    ExecutionComparison,
-    clear_execution_reproduction_requirement_locked,
-    compare_execution_outputs,
-    load_recorded_comparisons,
-    verify_evidence_only_context,
+    CurrentRequirementContext,
+    clear_current_reproduction_requirement,
+    compare_current_execution_outputs,
+    load_current_recorded_comparisons,
+    project_current_recorded_comparisons,
+    record_current_dependency_skip,
 )
 from .reproduction_contract import (
     ReproductionPlan,
     ReproductionRuntime,
-    accepted_invocation,
     canonical_record_digest,
 )
 from .reproduction_execution import (
-    ExecutionAttempt,
-    ExecutionControl,
-    ReproductionWorkspace,
-    WorkerRecord,
-    cleanup_reproduction_scratch,
-    completed_execution_attempts,
-    execute_reproduction_plan,
-    open_existing_workspace,
-    populate_output_workspace,
+    CurrentPlanControl,
+    ReproductionControlPlaneError,
+    current_execution_attempts,
+    execute_current_reproduction_plan,
+    open_current_workspace,
+    populate_current_output_workspace,
     preflight_execution_safety,
+)
+from .reproduction_job_storage import (
+    AcceptedJob,
+    ExecutionIdentity,
+    ExecutionTerminal,
+    JobStoreError,
+    PublicationFailure,
+    PublicationProjection,
+    PublicationResumeRequest,
+    RecoveryWorkerObservation,
+    RunFailure,
+    RunOwner,
+    RunResumeRequest,
+    RunStatus,
+    RunStopCompletion,
+    RunStopRequest,
+    begin_publication_resume,
+    begin_run_resume,
+    clear_execution_permit,
+    clear_execution_scratch,
+    create_job,
+    finish_run_stop,
+    load_accepted_scheduling,
+    load_execution_checkpoint,
+    load_execution_readiness,
+    load_run_control,
+    load_run_owner,
+    load_scheduler_owner,
+    open_locked_job,
+    recognize_run_directory,
+    record_execution_terminal,
+    record_publication_failure,
+    replace_recovery_workers,
+    replace_run_owner,
+    request_run_failure,
+    request_run_stop,
+)
+from .reproduction_job_storage import (
+    WorkerRecord as StoredWorkerRecord,
+)
+from .reproduction_job_storage import (
+    load_accepted_plan as load_current_accepted_plan,
+)
+from .reproduction_job_storage import (
+    load_publication_projection as load_current_publication_projection,
+)
+from .reproduction_job_storage import (
+    load_run_status as load_current_run_status,
 )
 from .reproduction_paths import (
     canonical_run_path,
-    is_checkpoint_temporary_name,
     iter_canonical_run_roots,
+    project_tmp_relative,
     run_leaf,
 )
 from .reproduction_planner import (
@@ -81,32 +125,17 @@ from .reproduction_planner import (
 )
 from .reproduction_publication import (
     CompletedPublication,
-    publish_completed_reproduction,
+    open_reproduction_publication,
     verify_publication_retry_compatibility,
 )
-from .reproduction_results import OUTCOMES
-from .storage import atomic_write_text
+from .reproduction_result_storage import PublicationCommitQuery
 
-RUN_SCHEMA = "research-log-reproduction-run/7"
 STATUS_SCHEMA = "research-log-reproduction-status/7"
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 EXECUTION_ID_RE = re.compile(r"pyrun-exec/v1:[0-9a-f]{64}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
-ACTIVE_PHASES = {
-    "accepted",
-    "planning",
-    "preflight",
-    "executing",
-    "comparing",
-    "publishing",
-    "stopping",
-}
-TERMINAL_STATUSES = {"complete", "stopped", "failed"}
-MAX_RUN_RECORD_BYTES = 256 * 1024 * 1024
 MAX_STATUS_BYTES = 64 * 1024 * 1024
 MAX_RUN_DIRECTORIES = 100_000
-MAX_CHECKPOINTS = 2_048
-MAX_CHECKPOINT_DIRECTORY_ENTRIES = 2 * MAX_CHECKPOINTS
 STOP_WAIT_SECONDS = 45.0
 STATUS_POLL_SECONDS = 0.1
 FRESH_RUN = "fresh"
@@ -115,33 +144,34 @@ PUBLICATION_RETRY = "publication"
 
 
 @dataclass(frozen=True)
-class _FailureContext:
-    now: str | None = None
-    entry: str | None = None
-    include_entry: bool = False
+class _CurrentSupervisorContext:
+    """Validated current-format state supplied to one stage callback."""
 
-
-@dataclass(frozen=True)
-class _ResumeContext:
-    root: Path
-    record: Mapping[str, object]
-    state: Mapping[str, object]
-    publication_retry: bool
-    entry: str | None
-
-
-@dataclass(frozen=True)
-class _CheckpointTerminal:
-    state: str
-    code: str
-    message: str
-
-
-@dataclass(frozen=True)
-class _RunStateContext:
     log: LogContext
-    root: Path
+    run_root: Path
+    plan: ReproductionPlan
+    mode: Literal["fresh", "stopped", "publication"]
+
+
+@dataclass(frozen=True)
+class _LostSupervisorContext:
+    """One locked snapshot used to reconcile a dead durable owner."""
+
+    log: LogContext
+    run_root: Path
     run_id: str
+    status: RunStatus
+    owner: RunOwner | None
+    now: str
+
+
+@dataclass(frozen=True)
+class _CurrentSupervisorCallbacks:
+    """Current-format stage callbacks replaced by later cutover Tasks."""
+
+    execute: Callable[[_CurrentSupervisorContext], Literal["completed", "stopped"]]
+    compare: Callable[[_CurrentSupervisorContext], None]
+    publish: Callable[[_CurrentSupervisorContext], None]
 
 
 @dataclass(frozen=True)
@@ -163,9 +193,420 @@ class ReproductionLaunch:
         return cast(str, self.summary)
 
 
-_RUN_STATE_THREAD_LOCK = threading.Lock()
-RECOVERY_GUARD_PREFIX = "reproduction-recovery-"
-RECOVERY_GUARD_SCHEMA = "research-log-reproduction-recovery-guard/1"
+def _supervise_current_job(
+    log: LogContext,
+    run_root: Path,
+    *,
+    mode: Literal["fresh", "stopped", "publication"],
+    callbacks: _CurrentSupervisorCallbacks,
+) -> None:
+    """Route one current SQLite job through validated durable stage boundaries."""
+
+    recognized = recognize_run_directory(run_root)
+    if recognized == "historical_unsupported":
+        raise ActionError(
+            "reproduction.run.unsupported",
+            "historical reproduction run cannot use current supervision",
+        )
+    if recognized != "current":
+        raise ActionError(
+            "reproduction.run.invalid", "current reproduction state is absent"
+        )
+    if mode not in {FRESH_RUN, STOPPED_RESUME, PUBLICATION_RETRY}:
+        raise ActionError("reproduction.run.invalid", "invalid supervisor mode")
+    plan = load_current_accepted_plan(run_root)
+    project_root = resolve_project_root(log.root)
+    if (project_root / plan.summary).resolve() != log.summary.resolve():
+        raise ActionError(
+            "reproduction.run.invalid", "accepted run belongs to a different log"
+        )
+    context = _CurrentSupervisorContext(log, run_root, plan, mode)
+    if mode == PUBLICATION_RETRY:
+        _supervise_current_publication(context, callbacks)
+        return
+    _supervise_current_execution(context, callbacks)
+
+
+def _supervise_current_publication(
+    context: _CurrentSupervisorContext,
+    callbacks: _CurrentSupervisorCallbacks,
+) -> None:
+    status = load_current_run_status(context.run_root)
+    failure = load_current_publication_projection(context.run_root).publication
+    if not _current_publication_route_valid(status, failure):
+        raise ActionError(
+            "reproduction.run.invalid",
+            "publication supervisor mode does not match durable state",
+        )
+    callbacks.publish(context)
+    _require_current_publication_complete(context.run_root)
+
+
+def _current_publication_route_valid(status: object, publication: object) -> bool:
+    """Accept explicit retries and interruption recovery, but no other mode."""
+
+    from .reproduction_job_storage import PublicationStateProjection, RunStatus
+
+    if not isinstance(status, RunStatus) or not isinstance(
+        publication, PublicationStateProjection
+    ):
+        return False
+    if (
+        status.status is not None
+        or status.phase != "publishing"
+        or publication.stage not in {"ready", "publishing", "result_committed"}
+        or publication.publication_identity is None
+    ):
+        return False
+    failures = (
+        publication.failure_code,
+        publication.failure_message,
+        publication.failure_recorded_at,
+    )
+    return all(value is None for value in failures) or all(
+        value is not None for value in failures
+    )
+
+
+def _supervise_current_execution(
+    context: _CurrentSupervisorContext,
+    callbacks: _CurrentSupervisorCallbacks,
+) -> None:
+    status = load_current_run_status(context.run_root)
+    mode = context.mode
+    if (
+        status.status is not None
+        or status.phase not in {"accepted", "executing", "comparing"}
+        or status.stop_requested_at is not None
+        or (mode == FRESH_RUN and status.resumed_at is not None)
+        or (mode == STOPPED_RESUME and status.resumed_at is None)
+    ):
+        raise ActionError(
+            "reproduction.run.invalid",
+            f"{mode} supervisor mode does not match durable state",
+        )
+    outcome = callbacks.execute(context)
+    after_execute = load_current_run_status(context.run_root)
+    if outcome == "stopped":
+        if after_execute.status != "stopped" or after_execute.phase is not None:
+            raise ActionError(
+                "reproduction.run.invalid",
+                "stopped callback result is not durably terminal",
+            )
+        return
+    if outcome != "completed":
+        raise ActionError(
+            "reproduction.run.invalid", "execution callback returned invalid outcome"
+        )
+    if (
+        after_execute.status is not None
+        or after_execute.phase not in {"executing", "comparing"}
+        or after_execute.stop_requested_at is not None
+        or any(
+            checkpoint.state in {"active", "stopped"}
+            for checkpoint in after_execute.checkpoints
+        )
+    ):
+        raise ActionError(
+            "reproduction.run.invalid", "execution callback did not durably complete"
+        )
+    callbacks.compare(context)
+    after_compare = load_current_run_status(context.run_root)
+    if (
+        after_compare.status is not None
+        or after_compare.phase != "comparing"
+        or after_compare.stop_requested_at is not None
+    ):
+        raise ActionError(
+            "reproduction.run.invalid", "comparison callback changed run lifecycle"
+        )
+    callbacks.publish(context)
+    _require_current_publication_complete(context.run_root)
+
+
+def _require_current_publication_complete(run_root: Path) -> None:
+    status = load_current_run_status(run_root)
+    if status.status != "complete" or status.phase is not None:
+        raise ActionError(
+            "reproduction.run.invalid",
+            "publication callback did not durably complete the run",
+        )
+
+
+def _execute_current_stage(
+    context: _CurrentSupervisorContext,
+    *,
+    confinement: Any = None,
+) -> Literal["completed", "stopped"]:
+    """Run the accepted execution graph through current SQLite callbacks."""
+
+    status = load_current_run_status(context.run_root)
+    workspace = open_current_workspace(
+        resolve_project_root(context.log.root), context.run_root, status.run_id
+    )
+    batch = execute_current_reproduction_plan(
+        context.log,
+        context.plan,
+        workspace,
+        CurrentPlanControl(
+            os.getpid(),
+            resume=context.mode == STOPPED_RESUME,
+            execution_timeout_seconds=context.plan.execution_timeout_seconds,
+            stop_requested=lambda: (
+                load_run_control(context.run_root).stop_requested_at is not None
+            ),
+            confinement=confinement,
+        ),
+    )
+    if not batch.stopped:
+        return "completed"
+    owner = _require_current_supervisor_owner(context.run_root)
+    now = max(_utc_now(), status.updated_at, owner.registered_at)
+    replace_run_owner(
+        context.run_root,
+        RunOwner(os.getpid(), "stopped", owner.registered_at, now),
+    )
+    finish_run_stop(context.run_root, RunStopCompletion(now))
+    return "stopped"
+
+
+def _compare_current_stage(context: _CurrentSupervisorContext) -> None:
+    """Commit missing terminal comparisons, skips, and exact entry effects."""
+
+    status = load_current_run_status(context.run_root)
+    project_root = resolve_project_root(context.log.root)
+    workspace = open_current_workspace(project_root, context.run_root, status.run_id)
+    recorded = {
+        (item.entry, item.execution_id): item
+        for item in load_current_recorded_comparisons(
+            context.run_root, workspace, verify_outputs=True
+        )
+    }
+    for attempt in current_execution_attempts(context.log, context.plan, workspace):
+        key = (attempt.entry, attempt.execution_id)
+        comparison = recorded.get(key)
+        if comparison is None:
+            comparison = compare_current_execution_outputs(
+                context.log,
+                context.plan,
+                workspace,
+                attempt,
+                recorded_at=_utc_now(),
+            )
+            recorded[key] = comparison
+        if comparison.complete:
+            clear_current_reproduction_requirement(
+                CurrentRequirementContext(
+                    context.log, context.plan, context.run_root, project_root
+                ),
+                comparison,
+                recorded_at=_utc_now(),
+            )
+    for planned in sorted(
+        context.plan.executions, key=lambda item: cast(int, item["order"])
+    ):
+        entry = cast(str, planned["entry"])
+        execution_id = cast(str, planned["execution_id"])
+        key = (entry, execution_id)
+        if key in recorded:
+            continue
+        checkpoint = load_execution_checkpoint(
+            context.run_root, ExecutionIdentity(entry, execution_id)
+        )
+        readiness = load_execution_readiness(
+            context.run_root, ExecutionIdentity(entry, execution_id)
+        )
+        if checkpoint is None and readiness.disposition == "dependency_failed":
+            recorded[key] = record_current_dependency_skip(
+                context.plan,
+                planned,
+                run_root=context.run_root,
+                recorded_at=_utc_now(),
+            )
+            continue
+        raise ActionError(
+            "reproduction.comparison.inventory_invalid",
+            f"execution has no terminal comparison input: {entry}:{execution_id}",
+        )
+
+
+def _publish_current_stage(context: _CurrentSupervisorContext) -> None:
+    """Publish or reconcile one fixed terminal job under the complete lock order."""
+
+    with open_locked_job(context.run_root) as store:
+        projection = store.load_publication_projection()
+        request = _current_completed_publication(context, projection)
+        publication_identity = _current_publication_identity(request, projection)
+        stage = projection.publication.stage
+        stored_identity = projection.publication.publication_identity
+        if stage == "not_ready":
+            store.prepare_publication(publication_identity, updated_at=_utc_now())
+            stage = "ready"
+        elif stored_identity != publication_identity:
+            raise ActionError(
+                "reproduction.publication.identity_changed",
+                "durable publication identity does not match terminal state",
+            )
+        query = _current_publication_query(context, request)
+        with open_reproduction_publication(context.log) as publisher:
+            if stage == "ready":
+                store.begin_publication(publication_identity, updated_at=_utc_now())
+                stage = "publishing"
+            if stage in {"publishing", "result_committed"}:
+                match = publisher.lookup_run_commit(query)
+                if match.disposition == "conflict":
+                    raise ActionError(
+                        "reproduction.publication.conflict",
+                        "result store contains conflicting metadata for this run ID",
+                    )
+                if match.disposition == "absent":
+                    if stage == "publishing":
+                        store.reset_absent_publication(
+                            publication_identity, updated_at=_utc_now()
+                        )
+                    else:
+                        store.reset_missing_result_commit(
+                            publication_identity, updated_at=_utc_now()
+                        )
+                    store.begin_publication(publication_identity, updated_at=_utc_now())
+                    result_commit = publisher.publish_result_transaction(request)
+                    generation = result_commit.generation
+                    store.record_result_commit(
+                        publication_identity, generation, updated_at=_utc_now()
+                    )
+                    stage = "result_committed"
+                elif stage == "publishing":
+                    assert match.observed_generation is not None
+                    store.record_result_commit(
+                        publication_identity,
+                        match.observed_generation,
+                        updated_at=_utc_now(),
+                    )
+                    stage = "result_committed"
+            if stage != "result_committed":
+                raise ActionError(
+                    "reproduction.publication.state_invalid",
+                    f"cannot materialize report from publication stage {stage}",
+                )
+            committed = store.load_publication_projection().publication
+            assert committed.result_generation is not None
+            report = publisher.materialize_report(committed.result_generation)
+            store.record_report_commit(
+                publication_identity, report.generation, updated_at=_utc_now()
+            )
+
+
+def _current_completed_publication(
+    context: _CurrentSupervisorContext, projection: PublicationProjection
+) -> CompletedPublication:
+    """Reconstruct the exact terminal publication input from durable job rows."""
+
+    workspace = open_current_workspace(
+        resolve_project_root(context.log.root),
+        context.run_root,
+        projection.identity.run_id,
+    )
+    stored = project_current_recorded_comparisons(
+        projection.comparisons,
+        context.run_root,
+        workspace,
+        verify_outputs=True,
+    )
+    checkpoint_keys = {
+        (item.entry, item.execution_id) for item in projection.checkpoints
+    }
+    comparisons = tuple(
+        item for item in stored if (item.entry, item.execution_id) in checkpoint_keys
+    )
+    skipped = tuple(
+        {
+            "entry": item.entry,
+            "execution_id": item.execution_id,
+            "reason": "dependency_failed",
+        }
+        for item in stored
+        if (item.entry, item.execution_id) not in checkpoint_keys
+        and all(
+            artifact.outcome == "skipped" and artifact.reason == "dependency_failed"
+            for artifact in item.artifacts
+        )
+    )
+    if len(comparisons) + len(skipped) != len(stored):
+        raise ActionError(
+            "reproduction.publication.invalid",
+            "durable dependency-skip comparison is malformed",
+        )
+    terminal_times = [item.recorded_at for item in projection.comparisons]
+    terminal_times.extend(
+        item.finished_at
+        for item in projection.checkpoints
+        if item.finished_at is not None
+    )
+    return CompletedPublication(
+        context.plan,
+        comparisons,
+        projection.identity.run_id,
+        projection.accepted_at,
+        max(projection.accepted_at, *terminal_times),
+        context.run_root,
+        skipped,
+        tuple(
+            {
+                "elapsed_seconds": item.elapsed_seconds,
+                "entry": item.entry,
+                "execution_id": item.execution_id,
+                "finished_at": item.finished_at,
+                "started_at": item.started_at,
+            }
+            for item in sorted(
+                projection.checkpoints,
+                key=lambda value: next(
+                    cast(int, planned["order"])
+                    for planned in context.plan.executions
+                    if planned["entry"] == value.entry
+                    and planned["execution_id"] == value.execution_id
+                ),
+            )
+            if item.started_at is not None
+        ),
+    )
+
+
+def _current_publication_identity(
+    request: CompletedPublication, projection: PublicationProjection
+) -> str:
+    """Digest the fixed plan and exact terminal rows before any result write."""
+
+    return canonical_record_digest(
+        {
+            "accepted_at": request.accepted_at,
+            "comparisons": [asdict(item) for item in projection.comparisons],
+            "finished_at": request.finished_at,
+            "plan": json.loads(request.plan.serialized()),
+            "run_id": request.run_id,
+            "run_path": projection.identity.run_path,
+        }
+    )
+
+
+def _current_publication_query(
+    context: _CurrentSupervisorContext, request: CompletedPublication
+) -> PublicationCommitQuery:
+    """Build the bounded unique-run lookup from immutable terminal metadata."""
+
+    project_root = resolve_project_root(context.log.root)
+    target = request.plan.target
+    return PublicationCommitQuery(
+        request.run_id,
+        cast(str, target["kind"]),
+        cast(str | None, target.get("entry")),
+        cast(str | None, target.get("execution_id")),
+        request.plan.include_all,
+        request.accepted_at,
+        request.finished_at,
+        "complete",
+        project_tmp_relative(request.run_folder, project_root),
+    )
 
 
 def _prepare_plan(  # noqa: PLR0913
@@ -312,16 +753,16 @@ def launch_reproduction(
             with operation_lock(project, "reproduction-promotion-index.lock"):
                 with operation_lock(log.root, "reproduction-publication.lock"):
                     _require_no_promotion_conflict(log, plan)
-                    run_root.mkdir(parents=True)
-                    atomic_write_text(run_root / "plan.json", plan.serialized())
-                    accepted = _accepted_record(
-                        log,
-                        plan,
+                run_root.mkdir(parents=True)
+                create_job(
+                    run_root,
+                    AcceptedJob(
                         run_id,
-                        run_root,
-                        accepted_at=accepted_at,
-                    )
-                    atomic_write_text(run_root / "run.json", _canonical(accepted))
+                        plan,
+                        accepted_at,
+                        canonical_run_path(accepted_at, run_root.name).as_posix(),
+                    ),
+                )
         _spawn_supervisor(log, run_root, lock_fds, mode=FRESH_RUN)
     finally:
         _close_fds(lock_fds)
@@ -357,11 +798,8 @@ def reproduction_status(
 
     root = _find_run(log, run_id)
     if reconcile:
-        _reconcile_lost_supervisor(log, root, run_id)
-    record = _load_run(root / "run.json")
-    plan = load_accepted_plan(root)
-    _require_active_membership(record, plan)
-    return _status_projection(record, plan, root)
+        _reconcile_current_lost_supervisor(log, root, run_id)
+    return _current_status_projection(load_current_run_status(root), root)
 
 
 def format_reproduction_status(status: Mapping[str, object]) -> str:
@@ -410,42 +848,36 @@ def stop_reproduction(log: LogContext, run_id: str) -> Mapping[str, object]:
     """Request bounded worker-tree shutdown and wait for a stable result."""
 
     root = _find_run(log, run_id)
-    _reconcile_lost_supervisor(log, root, run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(root / "run.json")
-        state = cast(dict[str, object], record["state"])
-        if state["status"] == "stopped":
-            return _status_projection(record, load_accepted_plan(root), root)
-        if state["status"] is not None:
-            raise ActionError(
-                "reproduction.stop.invalid_state",
-                f"run is already {state['status']}",
-            )
-        state["phase"] = "stopping"
-        _touch(root / "stop.request")
-        _stamp(record)
-        _write_run(root, record)
-    from .reproduction_scheduler import cancel_scheduling_waiters
+    _reconcile_current_lost_supervisor(log, root, run_id)
+    status = load_current_run_status(root)
+    if status.status == "stopped":
+        return _current_status_projection(status, root)
+    if status.status is not None:
+        raise ActionError(
+            "reproduction.stop.invalid_state", f"run is already {status.status}"
+        )
+    request_run_stop(root, RunStopRequest(_utc_now()))
+    from .reproduction_scheduler import cancel_run_waiters
 
-    cancel_scheduling_waiters(resolve_project_root(log.root), run_id)
+    cancel_run_waiters(resolve_project_root(log.root), run_id)
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     while time.monotonic() < deadline:
-        status = reproduction_status(log, run_id)
-        if status["status"] == "stopped":
-            return status
-        if status["status"] == "failed":
+        projected = reproduction_status(log, run_id)
+        if projected["status"] == "stopped":
+            return projected
+        if projected["status"] == "failed":
             raise ActionError(
                 "reproduction.stop.failed", "run failed before stop completed"
             )
-        if status["status"] == "complete":
+        if projected["status"] == "complete":
             raise ActionError(
                 "reproduction.stop.completed", "run completed before stop took effect"
             )
         time.sleep(STATUS_POLL_SECONDS)
-    status = reproduction_status(log, run_id)
+    projected = reproduction_status(log, run_id)
     raise ActionError(
         "reproduction.stop.incomplete",
-        _survivor_summary(status.get("surviving_workers")),
+        _survivor_summary(projected.get("surviving_workers")),
     )
 
 
@@ -453,26 +885,49 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
     """Resume one stopped fixed plan or retry its failed publication."""
 
     root = _find_run(log, run_id)
-    _reconcile_lost_supervisor(log, root, run_id)
-    record = _load_run(root / "run.json")
-    _verify_checkpoint_inventory(root, record)
-    context = _resume_context(root, record)
-    plan = load_accepted_plan(context.root)
-    if context.publication_retry:
+    _reconcile_current_lost_supervisor(log, root, run_id)
+    status = load_current_run_status(root)
+    publication = load_current_publication_projection(root).publication
+    publication_retry = (
+        status.status == "failed"
+        and status.operational_failure is not None
+        and status.operational_failure.code == "reproduction.publication.failed"
+        and publication.stage in {"ready", "result_committed"}
+        and publication.publication_identity is not None
+    )
+    if status.status != "stopped" and not publication_retry:
+        raise ActionError(
+            "reproduction.resume.invalid_state",
+            "only a stopped run or failed reproduction publication can resume",
+        )
+    plan = load_current_accepted_plan(root)
+    if publication_retry:
         verify_publication_retry_compatibility(log, plan)
-    lock_fds = _acquire_scope_locks(log, context.entry)
+    entry = cast(str | None, plan.target["entry"])
+    lock_fds = _acquire_scope_locks(log, entry)
     try:
         with operation_lock(
             resolve_project_root(log.root), "reproduction-promotion-index.lock"
         ):
             _verify_resume_activation(log, plan)
-            (root / "stop.request").unlink(missing_ok=True)
-            _activate_fixed_plan_resume(log, run_id, context, plan, now=_utc_now())
+            now = _utc_now()
+            if publication_retry:
+                assert publication.publication_identity is not None
+                begin_publication_resume(
+                    root,
+                    PublicationResumeRequest(
+                        publication.publication_identity,
+                        cast(Literal["ready", "result_committed"], publication.stage),
+                        now,
+                    ),
+                )
+            else:
+                begin_run_resume(root, RunResumeRequest(now))
         _spawn_supervisor(
             log,
             root,
             lock_fds,
-            mode=PUBLICATION_RETRY if context.publication_retry else STOPPED_RESUME,
+            mode=PUBLICATION_RETRY if publication_retry else STOPPED_RESUME,
         )
     except BaseException:
         _close_fds(lock_fds)
@@ -481,89 +936,8 @@ def resume_reproduction(log: LogContext, run_id: str) -> str:
     return run_id
 
 
-def _resume_context(root: Path, record: Mapping[str, object]) -> _ResumeContext:
-    state = cast(Mapping[str, object], record["state"])
-    publication_retry = _is_publication_retry(record, root)
-    if state["status"] != "stopped" and not publication_retry:
-        raise ActionError(
-            "reproduction.resume.invalid_state",
-            "only a stopped run or failed reproduction publication can resume",
-        )
-    return _ResumeContext(
-        root,
-        record,
-        state,
-        publication_retry,
-        cast(str | None, load_accepted_plan(root).target["entry"]),
-    )
-
-
 def _verify_resume_activation(log: LogContext, plan: ReproductionPlan) -> None:
     _require_no_promotion_conflict(log, plan)
-
-
-def _activate_fixed_plan_resume(
-    log: LogContext,
-    run_id: str,
-    context: _ResumeContext,
-    plan: ReproductionPlan,
-    *,
-    now: str,
-) -> None:
-    with _run_state_lock(log, run_id):
-        updated = _load_run(context.root / "run.json")
-        _require_run_identity(updated, run_id)
-        updated_state = cast(dict[str, object], updated["state"])
-        current_publication_retry = _is_publication_retry(updated, context.root)
-        if updated_state["status"] != "stopped" and not current_publication_retry:
-            raise ActionError(
-                "reproduction.resume.invalid_state",
-                "run state changed before resume",
-            )
-        if current_publication_retry != context.publication_retry:
-            raise ActionError(
-                "reproduction.resume.invalid_state",
-                "run recovery mode changed before resume",
-            )
-        updated_state.update(
-            {"status": None, "phase": "accepted", "operational_failure": None}
-        )
-        _clear_active(updated_state)
-        timestamps = cast(dict[str, object], updated["timestamps"])
-        timestamps.update({"resumed_at": now, "stopped_at": None, "updated_at": now})
-        _write_run(context.root, updated)
-
-
-def _is_publication_retry(
-    record: Mapping[str, object], root: Path | None = None
-) -> bool:
-    """Recognize a terminal current-format publication failure."""
-
-    state = cast(Mapping[str, object], record["state"])
-    timestamps = cast(Mapping[str, object], record["timestamps"])
-    terminal = (
-        state.get("status") == "failed"
-        and state.get("phase") is None
-        and isinstance(timestamps.get("finished_at"), str)
-        and state.get("active_executions") == []
-        and all(
-            item.get("state") == "exited"
-            for item in cast(Sequence[Mapping[str, object]], record["workers"])
-        )
-        and root is not None
-        and all(
-            item.get("state") in {"succeeded", "failed"}
-            for item in _checkpoint_dicts(root)
-        )
-    )
-    if not terminal:
-        return False
-    operational = state.get("operational_failure")
-    if not isinstance(operational, Mapping):
-        return False
-    if operational.get("code") == "reproduction.publication.failed":
-        return True
-    return False
 
 
 def supervise_reproduction(
@@ -580,304 +954,167 @@ def supervise_reproduction(
         raise ActionError(
             "reproduction.run.invalid", f"invalid supervisor mode: {mode}"
         )
-    resume = mode in {STOPPED_RESUME, PUBLICATION_RETRY}
-    record = _load_run(run_root / "run.json")
-    _verify_checkpoint_inventory(run_root, record)
-    plan = load_accepted_plan(run_root)
-    run_id = cast(str, record["run_id"])
-    run_state = _RunStateContext(log, run_root, run_id)
+    recognized = recognize_run_directory(run_root)
+    if recognized == "historical_unsupported":
+        raise ActionError(
+            "reproduction.run.unsupported",
+            "historical reproduction jobs are unsupported; start a new run",
+        )
+    if recognized != "current":
+        raise ActionError("reproduction.run.invalid", "current job state is absent")
+    status = load_current_run_status(run_root)
     try:
-        _transition(run_state, phase="preflight", started=True)
-        preflight_execution_safety(confinement)
-        workspace = (
-            open_existing_workspace(resolve_project_root(log.root), run_root, run_id)
-            if resume
-            else populate_output_workspace(
-                resolve_project_root(log.root), run_root, run_id
-            )
+        owner = _require_current_supervisor_owner(run_root)
+        if mode != PUBLICATION_RETRY:
+            preflight_execution_safety(confinement)
+            if mode == FRESH_RUN:
+                populate_current_output_workspace(
+                    resolve_project_root(log.root), run_root, status.run_id
+                )
+            else:
+                open_current_workspace(
+                    resolve_project_root(log.root), run_root, status.run_id
+                )
+        callbacks = _CurrentSupervisorCallbacks(
+            lambda context: _execute_current_stage(context, confinement=confinement),
+            _compare_current_stage,
+            _publish_current_stage,
         )
-        comparisons = {
-            (item.entry, item.execution_id): item
-            for item in load_recorded_comparisons(plan, workspace)
-        }
-        if mode == PUBLICATION_RETRY:
-            _retry_publication(log, run_state, plan, comparisons, record)
-            _close_fds(inherited_locks)
-            return
-        for comparison in comparisons.values():
-            verify_evidence_only_context(plan)
-            clear_execution_reproduction_requirement_locked(
-                log,
-                plan,
-                comparison,
-                project_root=workspace.source_project,
-            )
-        for attempt in completed_execution_attempts(
+        _supervise_current_job(
             log,
-            plan,
-            workspace,
-        ):
-            key = (attempt.entry, attempt.execution_id)
-            if key not in comparisons:
-                comparison = _compare_and_confirm(log, plan, workspace, attempt)
-                comparisons[key] = comparison
-        resumable = _resumable_execution_references(run_root, mode=mode)
-        checkpoint_failures = _failed_checkpoint_references(run_root)
-        prior_failures = (
-            frozenset(
-                f"{item.entry}:{item.execution_id}"
-                for item in comparisons.values()
-                if not item.matched
-                and f"{item.entry}:{item.execution_id}" not in resumable
-            )
-            | checkpoint_failures
+            run_root,
+            mode=cast(Literal["fresh", "stopped", "publication"], mode),
+            callbacks=callbacks,
         )
-        prior_attempts = (
-            frozenset(
-                f"{item.entry}:{item.execution_id}"
-                for item in comparisons.values()
-                if f"{item.entry}:{item.execution_id}" not in resumable
-            )
-            | checkpoint_failures
-        )
-
-        def completed(attempt: ExecutionAttempt) -> bool:
-            comparison = _compare_and_confirm(log, plan, workspace, attempt)
-            comparisons[(attempt.entry, attempt.execution_id)] = comparison
-            return comparison.matched
-
-        _transition(run_state, phase="executing")
-        batch = execute_reproduction_plan(
-            log,
-            plan,
-            workspace,
-            ExecutionControl(
-                resume=resume,
-                execution_timeout_seconds=plan.execution_timeout_seconds,
-                stop_requested=lambda: (run_root / "stop.request").exists(),
-                confinement=confinement,
-                prior_attempts=prior_attempts,
-                prior_failures=prior_failures,
-                attempt_completed=completed,
-                progress=lambda event, entry, identity, attempt: _execution_progress(
-                    run_state, event, (entry, identity), attempt
-                ),
-                worker_progress=lambda entry, identity, workers: _execution_workers(
-                    run_state, entry, identity, workers
-                ),
+        latest = load_current_run_status(run_root)
+        now = max(_utc_now(), latest.updated_at, owner.registered_at)
+        replace_run_owner(
+            run_root,
+            RunOwner(
+                os.getpid(),
+                "stopped" if latest.status == "stopped" else "exited",
+                owner.registered_at,
+                now,
             ),
         )
-        if batch.stopped:
-            _finish_stopped(log, run_root, run_id, batch.attempts)
-            return
-        _transition(run_state, phase="comparing")
-        recorded_comparisons = load_recorded_comparisons(
-            plan, workspace, verify_outputs=False
-        )
-        _transition(run_state, phase="publishing")
-        _verify_accepted_materials(plan)
-        current = _load_run(run_root / "run.json")
-        accepted_at = cast(Mapping[str, str | None], current["timestamps"])[
-            "accepted_at"
-        ]
-        finished = _utc_now()
-        published = publish_completed_reproduction(
-            log,
-            CompletedPublication(
-                plan,
-                recorded_comparisons,
-                run_id,
-                cast(str, accepted_at),
-                finished,
-                run_root,
-                batch.dependency_skips,
-            ),
-        )
-        run = next(item for item in published.results.runs if item.run_id == run_id)
-        _finish_complete(log, run_root, run_id, run.artifact_outcomes, finished)
-        _close_fds(inherited_locks)
+        return
+    except SystemExit:
+        raise
     except BaseException as error:
-        _finish_failed(log, run_root, run_id, error)
+        _record_current_supervisor_failure(run_root, status, error)
+        raise
 
 
-def _compare_and_confirm(
-    log: LogContext,
-    plan: ReproductionPlan,
-    workspace: ReproductionWorkspace,
-    attempt: ExecutionAttempt,
-) -> ExecutionComparison:
-    comparison = compare_execution_outputs(log, plan, workspace, attempt)
-    verify_evidence_only_context(plan)
-    clear_execution_reproduction_requirement_locked(
-        log,
-        plan,
-        comparison,
-        project_root=workspace.source_project,
-    )
-    return comparison
-
-
-def _publication_retry_skips(
-    plan: ReproductionPlan,
-    comparisons: Mapping[tuple[str, str], ExecutionComparison],
-) -> tuple[Mapping[str, object], ...]:
-    """Derive terminal dependency skips from immutable edges and comparisons."""
-
-    expected = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"]))
-        for item in plan.executions
-    }
-    if not set(comparisons) <= expected:
-        raise ActionError(
-            "reproduction.publication.inventory_invalid",
-            "publication retry comparison is outside the accepted plan",
-        )
-    failed = {key for key, comparison in comparisons.items() if not comparison.matched}
-    skipped: dict[tuple[str, str], Mapping[str, object]] = {}
-    pending = {key for key in expected if key not in comparisons}
-    by_key = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
-        for item in plan.executions
-    }
-    while pending:
-        changed = False
-        for key in sorted(pending):
-            dependencies = {
-                _split_execution_reference(value)
-                for value in cast(Sequence[str], by_key[key].get("depends_on", ()))
-            }
-            blocked = sorted(dependencies & (failed | set(skipped)))
-            if blocked:
-                skipped[key] = {
-                    "depends_on": [
-                        f"{entry}:{identity}" for entry, identity in blocked
-                    ],
-                    "entry": key[0],
-                    "execution_id": key[1],
-                    "reason": "dependency_failed",
-                }
-                pending.remove(key)
-                changed = True
-        if not changed:
-            break
-    if not expected or pending:
-        raise ActionError(
-            "reproduction.publication.inventory_invalid",
-            "publication retry requires complete durable terminal accounting",
-        )
-    return tuple(skipped[key] for key in sorted(skipped))
-
-
-def _retry_publication(
-    log: LogContext,
-    run_state: _RunStateContext,
-    plan: ReproductionPlan,
-    comparisons: Mapping[tuple[str, str], ExecutionComparison],
-    record: Mapping[str, object],
+def _record_current_supervisor_failure(
+    run_root: Path, initial: object, error: BaseException
 ) -> None:
-    """Retry only the durable publication transaction for a fixed terminal run."""
+    """Persist one current supervisor failure without converting process death."""
 
-    verify_evidence_only_context(plan)
-    skips = _publication_retry_skips(plan, comparisons)
-    _require_retry_checkpoint_inventory(run_state.root, plan, comparisons, skips)
-    project_root = resolve_project_root(log.root)
-    for comparison in comparisons.values():
-        clear_execution_reproduction_requirement_locked(
-            log, plan, comparison, project_root=project_root
+    from .reproduction_job_storage import RunStatus
+
+    cleanup_incomplete = (
+        isinstance(error, ReproductionControlPlaneError) and error.cleanup_incomplete
+    )
+    if not isinstance(initial, RunStatus):
+        _require_cleanup_exclusion(
+            cleanup_incomplete,
+            "cleanup-incomplete failure has no current lifecycle snapshot",
         )
-        verify_evidence_only_context(plan)
-        _verify_accepted_materials(plan)
-    _transition(run_state, phase="publishing")
-    accepted_at = cast(Mapping[str, str | None], record["timestamps"])["accepted_at"]
-    finished = _utc_now()
-    published = publish_completed_reproduction(
-        log,
-        CompletedPublication(
-            plan,
-            tuple(comparisons.values()),
-            run_state.run_id,
-            cast(str, accepted_at),
-            finished,
-            run_state.root,
-            skips,
+        return
+    try:
+        _persist_current_supervisor_failure(
+            run_root, error, cleanup_incomplete=cleanup_incomplete
+        )
+    except BaseException as persistence_error:
+        _raise_cleanup_exclusion_failure(cleanup_incomplete, persistence_error)
+        return
+
+
+def _persist_current_supervisor_failure(
+    run_root: Path,
+    error: BaseException,
+    *,
+    cleanup_incomplete: bool,
+) -> None:
+    owner = load_scheduler_owner(run_root).owner
+    owned = (
+        owner is not None
+        and owner.supervisor_pid == os.getpid()
+        and owner.state == "running"
+    )
+    _require_cleanup_exclusion(
+        cleanup_incomplete and not owned,
+        "cleanup-incomplete failure lost its durable owner lease",
+    )
+    if not owned or owner is None:
+        return
+    status = load_current_run_status(run_root)
+    now = max(_utc_now(), status.updated_at, owner.registered_at)
+    if status.status is None and status.phase == "publishing":
+        _record_current_publication_failure(run_root, error, now)
+    elif status.status is None:
+        request_run_failure(
+            run_root,
+            RunFailure(
+                cast(str, getattr(error, "code", "reproduction.supervisor.failed")),
+                str(error) or type(error).__name__,
+                now,
+            ),
+        )
+    if not cleanup_incomplete:
+        replace_run_owner(
+            run_root,
+            RunOwner(os.getpid(), "exited", owner.registered_at, now),
+        )
+
+
+def _record_current_publication_failure(
+    run_root: Path, error: BaseException, now: str
+) -> None:
+    publication = load_current_publication_projection(run_root).publication
+    if publication.stage not in {"publishing", "result_committed"}:
+        return
+    record_publication_failure(
+        run_root,
+        publication.stage,
+        PublicationFailure(
+            cast(str, getattr(error, "code", "reproduction.publication.failed")),
+            str(error) or type(error).__name__,
+            now,
         ),
     )
-    run = next(
-        item for item in published.results.runs if item.run_id == run_state.run_id
-    )
-    _finish_complete(
-        log, run_state.root, run_state.run_id, run.artifact_outcomes, finished
-    )
 
 
-def _require_retry_checkpoint_inventory(
-    root: Path,
-    plan: ReproductionPlan,
-    comparisons: Mapping[tuple[str, str], ExecutionComparison],
-    skips: Sequence[Mapping[str, object]],
+def _require_cleanup_exclusion(required: bool, message: str) -> None:
+    if required:
+        raise ActionError("reproduction.recovery.exclusion_failed", message)
+
+
+def _raise_cleanup_exclusion_failure(
+    cleanup_incomplete: bool, error: BaseException
 ) -> None:
-    """Require one complete, non-overlapping terminal retry inventory."""
-
-    checkpoints = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): item
-        for item in _checkpoint_dicts(root)
-    }
-    skipped = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])) for item in skips
-    }
-    expected = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"]))
-        for item in plan.executions
-    }
-    compared = set(comparisons)
-    if (
-        not expected
-        or compared & skipped
-        or compared | skipped != expected
-        or set(checkpoints) != compared
-        or any(
-            item["state"] not in {"succeeded", "failed"}
-            for item in checkpoints.values()
-        )
+    if not cleanup_incomplete:
+        return
+    if isinstance(error, ActionError) and (
+        error.code == "reproduction.recovery.exclusion_failed"
     ):
+        raise error
+    raise ActionError(
+        "reproduction.recovery.exclusion_failed",
+        "cleanup-incomplete failure could not persist durable exclusion",
+    ) from error
+
+
+def _require_current_supervisor_owner(run_root: Path) -> RunOwner:
+    """Return the exact live owner installed before this supervisor was released."""
+
+    owner = load_scheduler_owner(run_root).owner
+    if owner is None or owner.supervisor_pid != os.getpid() or owner.state != "running":
         raise ActionError(
-            "reproduction.publication.inventory_invalid",
-            "publication retry checkpoint inventory is incomplete",
+            "reproduction.run.owner_invalid",
+            "current supervisor does not own the durable running lease",
         )
-    for key, comparison in comparisons.items():
-        checkpoint = checkpoints[key]
-        invocation = accepted_invocation(plan, *key)
-        declared = {name for name, _kind in invocation.execution.recipe.outputs}
-        artifacts = {item.artifact: item for item in comparison.artifacts}
-        outputs = {
-            cast(str, item["artifact"]): cast(Mapping[str, object], item["fingerprint"])
-            for item in cast(Sequence[Mapping[str, object]], checkpoint["outputs"])
-        }
-        if set(artifacts) != declared:
-            raise ActionError(
-                "reproduction.publication.inventory_invalid",
-                "publication retry comparison outputs disagree with the "
-                "accepted execution",
-            )
-        if checkpoint["state"] == "succeeded":
-            if not comparison.complete or set(outputs) != declared:
-                raise ActionError(
-                    "reproduction.publication.inventory_invalid",
-                    "successful checkpoint lacks complete durable comparison evidence",
-                )
-            if any(
-                artifact.regenerated != outputs[name]
-                for name, artifact in artifacts.items()
-            ):
-                raise ActionError(
-                    "reproduction.publication.inventory_invalid",
-                    "checkpoint output observations disagree with durable comparison",
-                )
-        elif comparison.complete:
-            raise ActionError(
-                "reproduction.publication.inventory_invalid",
-                "failed checkpoint cannot retain a complete comparison",
-            )
+    return owner
 
 
 def _verify_accepted_materials(plan: ReproductionPlan) -> None:
@@ -937,45 +1174,23 @@ def _verify_accepted_materials(plan: ReproductionPlan) -> None:
             ) from error
 
 
-def _split_execution_reference(value: str) -> tuple[str, str]:
-    """Decode one planner-owned entry-qualified execution dependency."""
-
-    entry, separator, identity = value.partition(":pyrun-exec/")
-    if not separator:
-        raise ActionError(
-            "reproduction.publication.inventory_invalid", "invalid dependency"
-        )
-    return entry, f"pyrun-exec/{identity}"
-
-
-def _resumable_execution_references(root: Path, *, mode: str) -> frozenset[str]:
-    if mode != STOPPED_RESUME:
-        return frozenset()
-    return frozenset(
-        f"{item['entry']}:{item['execution_id']}"
-        for item in _checkpoint_dicts(root)
-        if item["state"] == "stopped"
-    )
-
-
-def _failed_checkpoint_references(root: Path) -> frozenset[str]:
-    return frozenset(
-        f"{item['entry']}:{item['execution_id']}"
-        for item in _checkpoint_dicts(root)
-        if item["state"] == "failed"
-    )
-
-
 def supervisor_main(arguments: Sequence[str]) -> int:
     """Internal detached-supervisor process entrypoint."""
 
-    if len(arguments) != 4:
+    if len(arguments) not in {4, 5}:
         return 2
-    summary, run_root, raw_fds, raw_resume = arguments
+    summary, run_root, raw_fds, raw_resume = arguments[:4]
     if raw_resume not in {"0", "1", "2"}:
         return 2
     fds = tuple(int(value) for value in raw_fds.split(",") if value)
     try:
+        if len(arguments) == 5:
+            gate_fd = int(arguments[4])
+            try:
+                if os.read(gate_fd, 1) != b"1":
+                    return 2
+            finally:
+                os.close(gate_fd)
         log = resolve_log(Path(summary).with_suffix(""))
         supervise_reproduction(
             log,
@@ -1012,30 +1227,43 @@ def _spawn_supervisor(
     scripts = str(Path(__file__).resolve().parents[1])
     prior = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = scripts if not prior else f"{scripts}:{prior}"
-    log_path = run_root / "supervisor.log"
-    with log_path.open("ab", buffering=0) as output:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "log_commands.reproduction_jobs",
-                str(log.summary),
-                str(run_root),
-                ",".join(str(value) for value in lock_fds),
-                encoded_mode,
-            ],
-            cwd=resolve_project_root(log.root),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=output,
-            start_new_session=True,
-            pass_fds=tuple(lock_fds),
-        )
-    atomic_write_text(
-        run_root / "supervisor.json",
-        _canonical({"pid": process.pid, "started_at": _utc_now()}),
-    )
+    read_gate, write_gate = os.pipe()
+    try:
+        log_path = run_root / "supervisor.log"
+        with log_path.open("ab", buffering=0) as output:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "log_commands.reproduction_jobs",
+                    str(log.summary),
+                    str(run_root),
+                    ",".join(str(value) for value in lock_fds),
+                    encoded_mode,
+                    str(read_gate),
+                ],
+                cwd=resolve_project_root(log.root),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                start_new_session=True,
+                pass_fds=(*tuple(lock_fds), read_gate),
+            )
+        os.close(read_gate)
+        read_gate = -1
+        status = load_current_run_status(run_root)
+        now = max(_utc_now(), status.updated_at)
+        replace_run_owner(run_root, RunOwner(process.pid, "running", now, now))
+        os.write(write_gate, b"1")
+    except BaseException:
+        if "process" in locals():
+            process.terminate()
+        raise
+    finally:
+        if read_gate >= 0:
+            os.close(read_gate)
+        os.close(write_gate)
 
 
 def _acquire_scope_locks(
@@ -1047,7 +1275,7 @@ def _acquire_scope_locks(
     directory = operation_directory(log.root)
     directory.mkdir(parents=True, exist_ok=True)
     require_mutation_ready(log.root, entry_id=entry)
-    _require_no_recovery_guard(
+    _require_no_recovery_exclusion(
         log, entry, ignore_recovery_run_id=ignore_recovery_run_id
     )
     requests = (
@@ -1074,10 +1302,9 @@ def _acquire_scope_locks(
                 raise OperationLockError(path, operation_lock_owner(path)) from error
             os.set_inheritable(descriptor, True)
             opened.append(descriptor)
-        # A status process can persist a survivor guard after our initial
-        # check but before this process owns all overlapping fds.  Recheck
-        # while those fds are held, and let the exception path close them.
-        _require_no_recovery_guard(
+        # A supervisor can exit after our initial probe but before this process
+        # owns every overlapping descriptor. Recheck its SQLite lease now.
+        _require_no_recovery_exclusion(
             log, entry, ignore_recovery_run_id=ignore_recovery_run_id
         )
     except BaseException:
@@ -1137,635 +1364,351 @@ def _overlapping_paths(paths: set[Path], other: Sequence[Path]) -> set[Path]:
     return result
 
 
-@contextmanager
-def _run_state_lock(log: LogContext, run_id: str) -> Iterator[None]:
-    digest = run_id.removeprefix("reproduce-")
-    with _RUN_STATE_THREAD_LOCK:
-        with operation_lock(log.root, f"reproduction-state-{digest}.lock"):
-            yield
-
-
-@contextmanager
-def _locked_run(run: _RunStateContext) -> Iterator[dict[str, object]]:
-    with _run_state_lock(run.log, run.run_id):
-        record = _load_run(run.root / "run.json")
-        _require_run_identity(record, run.run_id)
-        yield record
-
-
-def _require_run_identity(record: Mapping[str, object], run_id: str) -> None:
-    if record.get("run_id") != run_id:
-        raise ActionError("reproduction.run.invalid", "run ID changed")
-
-
-def _execution_progress(
-    run: _RunStateContext,
-    event: str,
-    execution: tuple[str, str],
-    attempt: ExecutionAttempt | None,
+def _reconcile_current_lost_supervisor(
+    log: LogContext, run_root: Path, run_id: str
 ) -> None:
-    entry, identity = execution
-    with _locked_run(run) as record:
-        plan = load_accepted_plan(run.root)
-        state = cast(dict[str, object], record["state"])
-        progress = cast(dict[str, object], record["progress"])
-        reference = _execution_progress_reference(entry, identity)
-        if _plan_order(plan, reference) == 2**31:
-            raise ActionError(
-                "reproduction.run.invalid",
-                f"execution is absent from accepted plan: {entry}:{identity}",
-            )
-        if event == "started":
-            active = cast(list[Mapping[str, object]], state["active_executions"])
-            if reference not in active:
-                active.append(reference)
-                active.sort(key=lambda item: _plan_order(plan, item))
-        else:
-            state["active_executions"] = [
-                item
-                for item in cast(list[Mapping[str, object]], state["active_executions"])
-                if item != reference
-            ]
-        if event == "finished":
-            progress["completed_executions"] = (
-                cast(int, progress["completed_executions"]) + 1
-            )
-        if attempt is not None:
-            prior_workers: dict[tuple[str, str, str], Mapping[str, object]] = {
-                (
-                    str(item.get("entry") or ""),
-                    str(item.get("execution_id") or ""),
-                    cast(str, item["worker_id"]),
-                ): item
-                for item in cast(Sequence[Mapping[str, object]], record["workers"])
-            }
-            for item in attempt.workers:
-                value = item.as_dict()
-                if "active_executions" not in state:
-                    value.pop("entry", None)
-                prior_workers[
-                    (
-                        str(value.get("entry") or ""),
-                        str(value.get("execution_id") or ""),
-                        cast(str, value["worker_id"]),
-                    )
-                ] = value
-            record["workers"] = sorted(
-                prior_workers.values(),
-                key=lambda item: (
-                    str(item.get("entry") or ""),
-                    str(item.get("execution_id") or ""),
-                    str(item["worker_id"]),
-                ),
-            )
-            if attempt.failure_code is not None:
-                state["latest_execution_diagnostic"] = _failure(
-                    attempt.failure_code,
-                    attempt.failure_message or "Execution failed.",
-                    identity,
-                    _FailureContext(
-                        entry=attempt.entry,
-                        include_entry="active_executions" in state,
-                    ),
-                )
-        _stamp(record)
-        _write_run(run.root, record)
+    """Reconcile one dead current supervisor without restarting its work."""
 
-
-def _execution_progress_reference(
-    entry: str,
-    identity: str,
-) -> Mapping[str, object]:
-    return {"entry": entry, "execution_id": identity}
-
-
-def _execution_workers(
-    run: _RunStateContext,
-    entry: str,
-    identity: str,
-    workers: Sequence[WorkerRecord],
-) -> None:
-    """Persist the current complete worker history for one active execution."""
-
-    with _locked_run(run) as record:
-        retained = [
-            item
-            for item in cast(Sequence[Mapping[str, object]], record["workers"])
-            if (item.get("entry"), item.get("execution_id")) != (entry, identity)
-        ]
-        current = [item.as_dict() for item in workers]
-        record["workers"] = sorted(
-            (*retained, *current),
-            key=_worker_sort_key,
-        )
-        _stamp(record)
-        _write_run(run.root, record)
-
-
-def _plan_order(plan: ReproductionPlan, reference: Mapping[str, object]) -> int:
-    for item in cast(
-        Sequence[Mapping[str, object]],
-        plan.executions,
-    ):
-        if (
-            isinstance(item, Mapping)
-            and item.get("entry") == reference.get("entry")
-            and item.get("execution_id") == reference.get("execution_id")
-        ):
-            return cast(int, item["order"])
-    return 2**31
-
-
-def _plan_item(
-    plan: ReproductionPlan, reference: Mapping[str, object]
-) -> Mapping[str, object]:
-    for item in cast(
-        Sequence[Mapping[str, object]],
-        plan.executions,
-    ):
-        if item.get("entry") == reference.get("entry") and item.get(
-            "execution_id"
-        ) == reference.get("execution_id"):
-            return item
-    return {}
-
-
-def _worker_sort_key(item: Mapping[str, object]) -> tuple[str, str, str]:
-    return (
-        str(item.get("entry") or ""),
-        str(item.get("execution_id") or ""),
-        str(item["worker_id"]),
-    )
-
-
-def _clear_active(state: dict[str, object]) -> None:
-    state["active_executions"] = []
-
-
-def _transition(
-    run: _RunStateContext,
-    *,
-    phase: str,
-    started: bool = False,
-) -> None:
-    with _locked_run(run) as record:
-        state = cast(dict[str, object], record["state"])
-        state["phase"] = phase
-        timestamps = cast(dict[str, object], record["timestamps"])
-        if started and timestamps["started_at"] is None:
-            timestamps["started_at"] = _utc_now()
-        _stamp(record)
-        _write_run(run.root, record)
-
-
-def _finish_stopped(
-    log: LogContext,
-    run_root: Path,
-    run_id: str,
-    attempts: Sequence[ExecutionAttempt],
-    *,
-    wait_for_retry: bool = True,
-) -> None:
-    latest = attempts[-1] if attempts else None
-    observed_survivors = _stop_workers_and_clean_scratch(run_root, run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        workers = _combined_attempt_workers(
-            attempts,
-            prior=cast(Sequence[Mapping[str, object]], record["workers"]),
-        )
-        workers = _reconciled_worker_history(workers, observed_survivors)
-        survivors = [item for item in workers if item["state"] == "running"]
-        if survivors:
-            state = cast(dict[str, object], record["state"])
-            state.update({"status": None, "phase": "stopping"})
-            if latest is not None:
-                state["latest_execution_diagnostic"] = _failure(
-                    "worker_cleanup_incomplete",
-                    latest.failure_message or "One or more workers survived shutdown.",
-                    latest.execution_id,
-                    _FailureContext(
-                        entry=latest.entry,
-                        include_entry="active_executions" in state,
-                    ),
-                )
-            record["workers"] = workers
-            _stamp(record)
-            _write_run(run_root, record)
-    if survivors:
-        if wait_for_retry:
-            _wait_for_cleanup_retry(log, run_root, run_id)
+    status = load_current_run_status(run_root)
+    if status.run_id != run_id:
         return
-    from .reproduction_scheduler import release_run_scheduling
-
-    release_run_scheduling(resolve_project_root(log.root), run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        workers = _combined_attempt_workers(
-            attempts,
-            prior=cast(Sequence[Mapping[str, object]], record["workers"]),
-        )
-        workers = _reconciled_worker_history(workers, ())
-        now = _utc_now()
-        state = cast(dict[str, object], record["state"])
-        state.update({"status": "stopped", "phase": None})
-        _clear_active(state)
-        state["latest_execution_diagnostic"] = _failure(
-            latest.failure_code if latest else "stop_requested",
-            latest.failure_message
-            if latest
-            else "Reproduction was stopped by request.",
-            latest.execution_id if latest else None,
-            _FailureContext(
-                now=now,
-                entry=latest.entry if latest else None,
-                include_entry="active_executions" in state,
-            ),
-        )
-        timestamps = cast(dict[str, object], record["timestamps"])
-        timestamps.update({"stopped_at": now, "updated_at": now})
-        record["workers"] = workers
-        _write_run(run_root, record)
-
-
-def _combined_attempt_workers(
-    attempts: Sequence[ExecutionAttempt],
-    *,
-    prior: Sequence[Mapping[str, object]] = (),
-) -> list[Mapping[str, object]]:
-    """Return every attempt worker in stable compound-identity order."""
-
-    retained = {_worker_identity(item): dict(item) for item in prior}
-    for attempt in attempts:
-        for worker in attempt.workers:
-            value = worker.as_dict()
-            key = _worker_identity(value)
-            retained[key] = value
-    return sorted(retained.values(), key=_worker_sort_key)
-
-
-def _worker_identity(item: Mapping[str, object]) -> tuple[object, object, object]:
-    return (
-        item.get("entry"),
-        item.get("execution_id"),
-        item.get("worker_id"),
-    )
-
-
-def _reconciled_worker_history(
-    prior: Sequence[Mapping[str, object]],
-    survivors: Sequence[Mapping[str, object]],
-) -> list[Mapping[str, object]]:
-    live = {_worker_identity(item): item for item in survivors}
-    retained = {
-        _worker_identity(item): {
-            **item,
-            "state": ("running" if _worker_identity(item) in live else "exited"),
-        }
-        for item in prior
-    }
-    for identity, survivor in live.items():
-        if identity in retained:
-            retained[identity] = {
-                **retained[identity],
-                "state": "running",
-                "last_observed_at": survivor["last_observed_at"],
-            }
-        else:
-            retained[identity] = dict(survivor)
-    return sorted(retained.values(), key=_worker_sort_key)
-
-
-def _wait_for_cleanup_retry(
-    log: LogContext,
-    run_root: Path,
-    run_id: str,
-    *,
-    terminal_status: str = "stopped",
-) -> None:
-    request = run_root / "stop.request"
-    observed = request.stat().st_mtime_ns if request.exists() else 0
-    while True:
-        time.sleep(STATUS_POLL_SECONDS)
-        current = request.stat().st_mtime_ns if request.exists() else 0
-        if current == observed:
-            continue
-        observed = current
-        complete = (
-            _continue_failed_cleanup(log, run_root, run_id)
-            if terminal_status == "failed"
-            else _retry_stopped_cleanup(log, run_root, run_id)
-        )
-        if complete:
-            return
-
-
-def _retry_stopped_cleanup(log: LogContext, run_root: Path, run_id: str) -> bool:
-    _finish_stopped(
-        log,
-        run_root,
-        run_id,
-        (),
-        wait_for_retry=False,
-    )
-    return (
-        cast(Mapping[str, object], _load_run(run_root / "run.json")["state"])["status"]
-        == "stopped"
-    )
-
-
-def _finish_complete(
-    log: LogContext,
-    run_root: Path,
-    run_id: str,
-    counts: Mapping[str, int],
-    finished: str,
-) -> None:
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        state = cast(dict[str, object], record["state"])
-        state.update(
-            {
-                "status": "complete",
-                "phase": None,
-                "operational_failure": None,
-            }
-        )
-        _clear_active(state)
-        cast(dict[str, object], record["progress"])["artifact_outcomes"] = dict(counts)
-        timestamps = cast(dict[str, object], record["timestamps"])
-        timestamps.update({"finished_at": finished, "updated_at": finished})
-        _write_run(run_root, record)
-
-
-def _finish_failed(
-    log: LogContext, run_root: Path, run_id: str, error: BaseException
-) -> None:
-    if not (run_root / "run.json").is_file():
+    owner = load_run_owner(run_root)
+    if _current_recovery_not_needed(status, owner):
         return
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        now = _utc_now()
-        state = cast(dict[str, object], record["state"])
-        state.update({"status": None, "phase": "stopping"})
-        state["operational_failure"] = _failure(
-            cast(str, getattr(error, "code", "reproduction.job.failed")),
-            str(error),
-            None,
-            _FailureContext(
-                now=now,
-                include_entry="active_executions" in state,
-            ),
-        )
-        _stamp(record)
-        _write_run(run_root, record)
-    if not _continue_failed_cleanup(log, run_root, run_id):
-        _wait_for_cleanup_retry(log, run_root, run_id, terminal_status="failed")
-
-
-def _continue_failed_cleanup(log: LogContext, run_root: Path, run_id: str) -> bool:
-    survivors = _stop_workers_and_clean_scratch(run_root, run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        state = cast(dict[str, object], record["state"])
-        if state["status"] is not None:
-            return state["status"] == "failed"
-        operational = state.get("operational_failure")
-        if not isinstance(operational, Mapping):
-            raise ActionError(
-                "reproduction.run.invalid", "failed cleanup lost terminal intent"
-            )
-        workers = _reconciled_worker_history(
-            cast(Sequence[Mapping[str, object]], record["workers"]),
-            survivors,
-        )
-        record["workers"] = workers
-        if survivors:
-            state.update({"status": None, "phase": "stopping"})
-            _stamp(record)
-            _write_run(run_root, record)
-            return False
-        now = _utc_now()
-        _terminalize_active_checkpoints(
-            run_root,
-            now=now,
-            terminal=_CheckpointTerminal(
-                "failed",
-                cast(str, operational["code"]),
-                cast(str, operational["message"]),
-            ),
-        )
-        _synchronize_checkpoint_progress(record, run_root)
-        _stamp(record)
-        _write_run(run_root, record)
-    from .reproduction_scheduler import release_run_scheduling
-
-    release_run_scheduling(resolve_project_root(log.root), run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        state = cast(dict[str, object], record["state"])
-        if state["status"] is not None:
-            return state["status"] == "failed"
-        now = _utc_now()
-        state.update({"status": "failed", "phase": None})
-        _clear_active(state)
-        timestamps = cast(dict[str, object], record["timestamps"])
-        timestamps.update({"finished_at": now, "updated_at": now})
-        _write_run(run_root, record)
-    return True
-
-
-def _reconcile_lost_supervisor(log: LogContext, run_root: Path, run_id: str) -> None:
-    """Reserve the accepted scope before reconciling an orphaned supervisor."""
-
-    record = _load_run(run_root / "run.json")
-    _require_run_identity(record, run_id)
-    if cast(Mapping[str, object], record["state"])["status"] is not None:
-        return
-    pid = _supervisor_pid(run_root)
-    if pid is not None and _pid_alive(pid):
-        return
-    plan = load_accepted_plan(run_root)
+    plan = load_current_accepted_plan(run_root)
     fds = _acquire_scope_locks(
         log,
         cast(str | None, plan.target["entry"]),
         ignore_recovery_run_id=run_id,
     )
     try:
-        _reconcile_lost_supervisor_reserved(log, run_root, run_id)
-        latest = _load_run(run_root / "run.json")
-        state = cast(Mapping[str, object], latest["state"])
-        workers = cast(Sequence[Mapping[str, object]], latest["workers"])
-        survivors = [item for item in workers if item.get("state") == "running"]
-        if state["status"] is None and state["phase"] == "stopping" and survivors:
-            _write_recovery_guard(
-                log, run_id, cast(str | None, plan.target["entry"]), survivors
+        status = load_current_run_status(run_root)
+        owner = load_run_owner(run_root)
+        if _current_recovery_not_needed(status, owner):
+            return
+        now = max(
+            _utc_now(),
+            status.updated_at,
+            owner.registered_at if owner is not None else status.accepted_at,
+            owner.last_observed_at if owner is not None else status.accepted_at,
+        )
+        context = _LostSupervisorContext(log, run_root, run_id, status, owner, now)
+        if status.status is not None:
+            _reconcile_terminal_owner(context)
+        elif status.phase == "publishing":
+            _fail_interrupted_current_publication(run_root, now)
+            replace_run_owner(
+                run_root,
+                RunOwner(
+                    owner.supervisor_pid if owner is not None else os.getpid(),
+                    "exited",
+                    owner.registered_at if owner is not None else status.accepted_at,
+                    now,
+                ),
             )
-        elif state["status"] is not None:
-            _clear_recovery_guard(log, run_id)
+        else:
+            _reconcile_interrupted_execution_owner(context)
     finally:
         _close_fds(fds)
 
 
-def _reconcile_lost_supervisor_reserved(
-    log: LogContext, run_root: Path, run_id: str
-) -> None:
-    record = _load_run(run_root / "run.json")
-    plan = load_accepted_plan(run_root)
-    _require_run_identity(record, run_id)
-    if cast(Mapping[str, object], record["state"])["status"] is not None:
+def _current_recovery_not_needed(status: RunStatus, owner: RunOwner | None) -> bool:
+    if status.status is not None and (owner is None or owner.state != "running"):
+        return True
+    return (
+        owner is not None
+        and owner.state == "running"
+        and _pid_alive(owner.supervisor_pid)
+    )
+
+
+def _reconcile_terminal_owner(context: _LostSupervisorContext) -> None:
+    """Close only a dead supervisor lease left after terminal publication."""
+
+    survivors = _terminate_marked_workers(context.run_id)
+    if survivors:
+        # The terminal run's still-running dead owner remains the durable
+        # SQLite exclusion until a later pass proves every process exited.
         return
-    pid = _supervisor_pid(run_root)
-    if pid is not None and _pid_alive(pid):
-        return
-    state = cast(Mapping[str, object], record["state"])
-    if state["phase"] == "stopping" and isinstance(
-        state.get("operational_failure"), Mapping
-    ):
-        _continue_failed_cleanup(log, run_root, run_id)
-        return
-    survivors = _stop_workers_and_clean_scratch(run_root, run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        state = cast(dict[str, object], record["state"])
-        if state["status"] is not None:
-            return
-        now = _utc_now()
-        workers = _reconciled_worker_history(
-            cast(Sequence[Mapping[str, object]], record["workers"]),
-            survivors,
-        )
-        state["latest_execution_diagnostic"] = _failure(
-            "supervisor_lost",
-            "The durable supervisor was interrupted.",
-            None,
-            _FailureContext(
-                now=now,
-                include_entry="active_executions" in state,
+    owner = context.owner
+    if owner is not None and owner.state == "running":
+        replace_run_owner(
+            context.run_root,
+            RunOwner(
+                owner.supervisor_pid,
+                "exited",
+                owner.registered_at,
+                context.now,
             ),
         )
-        if survivors:
-            state["phase"] = "stopping"
-            record["workers"] = workers
-            _write_recovery_guard(
-                log,
-                run_id,
-                cast(str | None, plan.target["entry"]),
-                survivors,
-            )
-        else:
-            _stop_active_checkpoints(run_root, now=now)
-            _synchronize_checkpoint_progress(record, run_root)
-            record["workers"] = workers
-            state.update({"status": None, "phase": "stopping"})
-        cast(dict[str, object], record["timestamps"])["updated_at"] = now
-        _write_run(run_root, record)
+
+
+def _reconcile_interrupted_execution_owner(
+    context: _LostSupervisorContext,
+) -> None:
+    """Stop and close a dead execution supervisor after worker cleanup."""
+
+    survivors = _terminate_marked_workers(context.run_id)
+    replace_recovery_workers(
+        context.run_root,
+        _recovery_worker_observations(survivors, observed_at=context.now),
+        observed_at=context.now,
+    )
     if survivors:
         return
-    from .reproduction_scheduler import release_run_scheduling
+    from .reproduction_scheduler import reconcile_run_admission
 
-    release_run_scheduling(resolve_project_root(log.root), run_id)
-    with _run_state_lock(log, run_id):
-        record = _load_run(run_root / "run.json")
-        _require_run_identity(record, run_id)
-        state = cast(dict[str, object], record["state"])
-        if state["status"] is not None:
-            return
-        now = _utc_now()
-        _clear_active(state)
-        state.update({"status": "stopped", "phase": None})
-        timestamps = cast(dict[str, object], record["timestamps"])
-        timestamps.update({"stopped_at": now, "updated_at": now})
-        _write_run(run_root, record)
+    reconcile_run_admission(resolve_project_root(context.log.root), context.run_root)
+    if context.status.phase != "stopping":
+        request_run_stop(context.run_root, RunStopRequest(context.now))
+    _terminalize_current_active_executions(
+        resolve_project_root(context.log.root), context.run_root, context.now
+    )
+    owner = context.owner
+    replace_run_owner(
+        context.run_root,
+        RunOwner(
+            owner.supervisor_pid if owner is not None else os.getpid(),
+            "stopped",
+            (owner.registered_at if owner is not None else context.status.accepted_at),
+            context.now,
+        ),
+    )
+    finish_run_stop(context.run_root, RunStopCompletion(context.now))
 
 
-def _recovery_guard_path(log: LogContext, run_id: str) -> Path:
-    return operation_directory(log.root) / f"{RECOVERY_GUARD_PREFIX}{run_id}.json"
-
-
-def _write_recovery_guard(
-    log: LogContext,
-    run_id: str,
-    entry: str | None,
-    survivors: Sequence[Mapping[str, object]],
-) -> None:
-    """Persist exclusion after this inspecting process releases its descriptors."""
-
-    atomic_write_text(
-        _recovery_guard_path(log, run_id),
-        _canonical(
-            {
-                "entry": entry,
-                "run_id": run_id,
-                "schema": RECOVERY_GUARD_SCHEMA,
-                "workers": [
-                    {
-                        "pid": item.get("pid"),
-                        "worker_id": item.get("worker_id"),
-                    }
-                    for item in survivors
-                ],
-            }
+def _fail_interrupted_current_publication(run_root: Path, now: str) -> None:
+    projection = load_current_publication_projection(run_root).publication
+    if projection.publication_identity is None:
+        raise ActionError(
+            "reproduction.publication.state_invalid",
+            "interrupted publication has no durable identity",
+        )
+    if projection.stage == "ready":
+        with open_locked_job(run_root) as store:
+            store.begin_publication(projection.publication_identity, updated_at=now)
+        expected = "publishing"
+    elif projection.stage in {"publishing", "result_committed"}:
+        expected = projection.stage
+    else:
+        raise ActionError(
+            "reproduction.publication.state_invalid",
+            f"interrupted publication has invalid stage {projection.stage}",
+        )
+    record_publication_failure(
+        run_root,
+        expected,
+        PublicationFailure(
+            "reproduction.supervisor.interrupted",
+            "The durable supervisor was interrupted during publication.",
+            now,
         ),
     )
 
 
-def _clear_recovery_guard(log: LogContext, run_id: str) -> None:
-    _recovery_guard_path(log, run_id).unlink(missing_ok=True)
+def _terminalize_current_active_executions(
+    project_root: Path, run_root: Path, now: str
+) -> None:
+    """Stop dead-owner checkpoints and reconcile each exact scheduler permit."""
+
+    from .reproduction_scheduler import SchedulerIdentity, reconcile_permit
+
+    status = load_current_run_status(run_root)
+    for initial_checkpoint in status.checkpoints:
+        checkpoint = initial_checkpoint
+        identity = ExecutionIdentity(checkpoint.entry, checkpoint.execution_id)
+        if checkpoint.state == "active":
+            if checkpoint.permit_id is None:
+                raise ActionError(
+                    "reproduction.run.invariant",
+                    "active recovery checkpoint has no scheduler permit",
+                )
+            workers = tuple(
+                StoredWorkerRecord(
+                    worker.worker_id,
+                    worker.parent_worker_id,
+                    worker.pid,
+                    "exited",
+                    worker.registered_at,
+                    max(now, worker.last_observed_at),
+                )
+                for worker_identity, worker in status.workers
+                if worker_identity == identity
+            )
+            record_execution_terminal(
+                run_root,
+                ExecutionTerminal(
+                    checkpoint.entry,
+                    checkpoint.execution_id,
+                    checkpoint.permit_id,
+                    "stopped",
+                    now,
+                    None,
+                    checkpoint.elapsed_seconds,
+                    failure_code="supervisor_lost",
+                    failure_message="The durable supervisor was interrupted.",
+                    failure_recorded_at=now,
+                    workers=workers,
+                ),
+            )
+            refreshed = load_execution_checkpoint(run_root, identity)
+            if refreshed is None:
+                raise ActionError(
+                    "reproduction.run.invariant",
+                    "recovery checkpoint disappeared after terminal commit",
+                )
+            checkpoint = refreshed
+        if checkpoint.permit_id is not None:
+            accepted = load_accepted_scheduling(run_root, identity)
+            reconciliation = reconcile_permit(
+                SchedulerIdentity(
+                    project_root,
+                    status.run_id,
+                    checkpoint.entry,
+                    checkpoint.execution_id,
+                    accepted.plan_order,
+                ),
+                load_scheduler_owner(run_root),
+            )
+            if reconciliation.clear_run_permit_id is not None:
+                clear_execution_permit(
+                    run_root,
+                    identity,
+                    reconciliation.clear_run_permit_id,
+                    cast(Literal["succeeded", "failed", "stopped"], checkpoint.state),
+                    now,
+                )
+        if checkpoint.scratch_path is not None:
+            _remove_current_scratch(Path(checkpoint.scratch_path))
+            clear_execution_scratch(run_root, identity, checkpoint.scratch_path)
 
 
-def _require_no_recovery_guard(
+def _remove_current_scratch(path: Path) -> None:
+    temporary = Path("/private/tmp")
+    if (
+        not path.is_absolute()
+        or path.parent != temporary
+        or not path.name.startswith("reproduction-scratch-")
+    ):
+        raise ActionError(
+            "reproduction.scratch.invalid", "stored scratch path is not owned"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(temporary, flags)
+    except OSError as error:
+        raise ActionError(
+            "reproduction.scratch.invalid", "scratch parent is unavailable"
+        ) from error
+    try:
+        try:
+            observed = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or not shutil.rmtree.avoids_symlink_attacks
+        ):
+            raise ActionError(
+                "reproduction.scratch.invalid", "stored scratch path is not owned"
+            )
+        try:
+            cast(Any, shutil.rmtree)(path.name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise ActionError(
+                "reproduction.scratch.invalid", "stored scratch path changed"
+            ) from error
+    finally:
+        os.close(directory_fd)
+
+
+def _require_no_recovery_exclusion(
     log: LogContext,
     entry: str | None,
     *,
     ignore_recovery_run_id: str | None,
 ) -> None:
-    """Reject new work while an orphan cleanup still owns an overlapping scope."""
+    """Reject overlap while a current SQLite run still needs orphan recovery."""
 
-    directory = operation_directory(log.root)
-    if not directory.is_dir():
+    project_root = resolve_project_root(log.root)
+    if not (project_root / "tmp").exists():
         return
-    for path in sorted(directory.glob(f"{RECOVERY_GUARD_PREFIX}*.json")):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise ActionError(
-                "reproduction.recovery.guard_invalid", str(path)
-            ) from error
-        if (
-            not isinstance(value, Mapping)
-            or value.get("schema") != RECOVERY_GUARD_SCHEMA
-            or not isinstance(value.get("run_id"), str)
-            or value.get("entry") is not None
-            and not isinstance(value.get("entry"), str)
-            or not isinstance(value.get("workers"), list)
-        ):
-            raise ActionError("reproduction.recovery.guard_invalid", str(path))
-        guard_run = cast(str, value["run_id"])
-        guard_entry = cast(str | None, value["entry"])
-        if guard_run == ignore_recovery_run_id:
+    try:
+        roots = iter_canonical_run_roots(project_root, max_entries=MAX_RUN_DIRECTORIES)
+    except OSError as error:
+        raise ActionError("reproduction.recovery.invalid", str(error)) from error
+    for run_root in roots:
+        if recognize_run_directory(run_root) != "current":
             continue
-        if entry is None or guard_entry is None or entry == guard_entry:
+        try:
+            plan = load_current_accepted_plan(run_root)
+            if plan.summary != _summary_identity(log):
+                continue
+            status = load_run_control(run_root)
+            owner = load_run_owner(run_root)
+            run_id = load_current_run_status(run_root).run_id
+        except JobStoreError as error:
+            raise ActionError("reproduction.recovery.invalid", str(run_root)) from error
+        if run_id == ignore_recovery_run_id:
+            continue
+        owner_live = (
+            owner is not None
+            and owner.state == "running"
+            and _pid_alive(owner.supervisor_pid)
+        )
+        needs_recovery = (
+            status.status is None and status.phase == "stopping"
+        ) or (
+            owner is not None and owner.state == "running" and not owner_live
+        ) or (status.status is None and not owner_live)
+        target_entry = cast(str | None, plan.target["entry"])
+        if needs_recovery and (
+            entry is None or target_entry is None or entry == target_entry
+        ):
             raise ActionError(
                 "reproduction.recovery.active",
-                f"orphaned worker cleanup still owns {guard_run}",
+                f"orphaned worker cleanup still owns {run_id}",
             )
 
 
-def _stop_workers_and_clean_scratch(
-    run_root: Path, run_id: str
-) -> list[Mapping[str, object]]:
-    survivors = _terminate_marked_workers(run_id)
-    if not survivors:
-        cleanup_reproduction_scratch(run_root)
-    return survivors
+def _recovery_worker_observations(
+    survivors: Sequence[Mapping[str, object]],
+    *,
+    observed_at: str,
+) -> tuple[RecoveryWorkerObservation, ...]:
+    """Convert one exhaustive process scan to durable worker observations."""
+
+    observed: list[RecoveryWorkerObservation] = []
+    for survivor in survivors:
+        entry = survivor.get("entry")
+        execution_id = survivor.get("execution_id")
+        identity = (
+            ExecutionIdentity(entry, execution_id)
+            if isinstance(entry, str) and isinstance(execution_id, str)
+            else None
+        )
+        registered_at = survivor.get("registered_at")
+        last_observed_at = survivor.get("last_observed_at")
+        observed.append(
+            RecoveryWorkerObservation(
+                identity,
+                StoredWorkerRecord(
+                    cast(str, survivor["worker_id"]),
+                    cast(str | None, survivor.get("parent_worker_id")),
+                    cast(int, survivor["pid"]),
+                    "running",
+                    registered_at
+                    if isinstance(registered_at, str)
+                    else observed_at,
+                    last_observed_at
+                    if isinstance(last_observed_at, str)
+                    else observed_at,
+                ),
+            )
+        )
+    return tuple(observed)
 
 
 def _terminate_marked_workers(run_id: str) -> list[Mapping[str, object]]:
@@ -1821,171 +1764,121 @@ def _marker_identity(run_id: str, marker: object) -> tuple[str | None, str | Non
     return None, None
 
 
-def _stop_active_checkpoints(
-    run_root: Path,
-    *,
-    now: str,
-) -> list[Mapping[str, object]]:
-    return _terminalize_active_checkpoints(
-        run_root,
-        now=now,
-        terminal=_CheckpointTerminal(
-            "stopped",
-            "supervisor_lost",
-            "The durable supervisor was interrupted.",
-        ),
-    )
-
-
-def _synchronize_checkpoint_progress(record: dict[str, object], run_root: Path) -> None:
-    checkpoints = _checkpoint_dicts(run_root)
-    completed = sum(item["state"] != "active" for item in checkpoints)
-    progress = cast(dict[str, object], record["progress"])
-    progress["completed_executions"] = completed
-
-
-def _terminalize_active_checkpoints(
-    run_root: Path,
-    *,
-    now: str,
-    terminal: _CheckpointTerminal,
-) -> list[Mapping[str, object]]:
-    checkpoints = _checkpoint_dicts(run_root)
-    for checkpoint in checkpoints:
-        if checkpoint["state"] != "active":
-            continue
-        updated = dict(checkpoint)
-        updated["state"] = terminal.state
-        updated["failure"] = {
-            "code": terminal.code,
-            "message": terminal.message,
-            "recorded_at": now,
-        }
-        path = run_root / cast(str, updated["path"])
-        atomic_write_text(path, json.dumps(updated, indent=2, sort_keys=True) + "\n")
-    stopped = _checkpoint_dicts(run_root)
-    return stopped
-
-
-def _accepted_record(
-    log: LogContext,
-    plan: ReproductionPlan,
-    run_id: str,
-    run_root: Path,
-    *,
-    accepted_at: str | None = None,
-) -> dict[str, object]:
-    now = accepted_at or _utc_now()
-    return {
-        "paths": {
-            "diagnostics": "diagnostics",
-            "run": canonical_run_path(now, run_root.name).as_posix(),
-            "staging": "executions",
-            "workspace": "workspace",
-        },
-        "progress": {
-            "artifact_outcomes": {name: 0 for name in OUTCOMES},
-            "completed_executions": 0,
-        },
-        "run_id": run_id,
-        "schema": RUN_SCHEMA,
-        "state": {
-            "active_executions": [],
-            "latest_execution_diagnostic": None,
-            "operational_failure": None,
-            "phase": "accepted",
-            "status": None,
-        },
-        "timestamps": {
-            "accepted_at": now,
-            "finished_at": None,
-            "resumed_at": None,
-            "started_at": None,
-            "stopped_at": None,
-            "updated_at": now,
-        },
-        "workers": [],
-    }
-
-
 def load_accepted_plan(run_root: Path) -> ReproductionPlan:
-    """Load the one immutable plan accepted beside a current run record."""
+    """Load the immutable plan from the current SQLite authority."""
 
-    path = run_root / "plan.json"
-    try:
-        if path.is_symlink() or not path.is_file():
-            raise OSError("accepted plan is not a regular file")
-        return ReproductionPlan.from_json(path.read_bytes())
-    except (OSError, ValueError) as error:
-        raise ActionError("reproduction.run.invalid", str(error)) from error
-
-
-def _status_projection(
-    record: Mapping[str, object], plan: ReproductionPlan, root: Path
-) -> Mapping[str, object]:
-    state = cast(Mapping[str, object], record["state"])
-    progress = cast(Mapping[str, object], record["progress"])
-    workers = cast(Sequence[Mapping[str, object]], record["workers"])
-    checkpoints = _checkpoint_dicts(root)
-    active = cast(Sequence[Mapping[str, object]], state["active_executions"])
-    active_references = {(item["entry"], item["execution_id"]) for item in active}
-    projection = {
-        "artifact_outcomes": progress["artifact_outcomes"],
-        "active_executions": list(active),
-        "active_workers": [
-            dict(item)
-            for item in workers
-            if item.get("state") == "running"
-            and (item.get("entry"), item.get("execution_id")) in active_references
-        ],
-        "completed_executions": progress["completed_executions"],
-        "execution_timeout_seconds": plan.execution_timeout_seconds,
-        "execution_timings": _execution_timings(checkpoints),
-        "include_all": plan.include_all,
-        "jobs": plan.jobs,
-        "latest_execution_diagnostic": state["latest_execution_diagnostic"],
-        "operational_failure": state["operational_failure"],
-        "phase": state["phase"],
-        "run_id": record["run_id"],
-        "schema": STATUS_SCHEMA,
-        "status": state["status"],
-        "summary": plan.summary,
-        "surviving_workers": _running_workers(workers),
-        "target": plan.target,
-        "timestamps": record["timestamps"],
-        "total_executions": len(plan.executions),
-    }
-    projection["resumable"] = state["status"] == "stopped" or _is_publication_retry(
-        record, root
-    )
-    return _bounded_status(projection)
-
-
-def _require_active_membership(
-    record: Mapping[str, object], plan: ReproductionPlan
-) -> None:
-    """Require active permits to be accepted, ordered, and within the job cap."""
-
-    state = cast(Mapping[str, object], record["state"])
-    active = cast(Sequence[Mapping[str, object]], state["active_executions"])
-    order = {
-        (cast(str, item["entry"]), cast(str, item["execution_id"])): cast(
-            int, item["order"]
-        )
-        for item in plan.executions
-    }
-    keys = [
-        (cast(str, item["entry"]), cast(str, item["execution_id"])) for item in active
-    ]
-    if (
-        len(keys) > plan.jobs
-        or any(key not in order for key in keys)
-        or keys != sorted(keys, key=lambda key: order[key])
-    ):
+    recognized = recognize_run_directory(run_root)
+    if recognized == "historical_unsupported":
         raise ActionError(
-            "reproduction.run.invalid",
-            "active executions do not match accepted scheduling membership",
+            "reproduction.run.unsupported",
+            "historical reproduction jobs are unsupported; start a new run",
         )
+    if recognized != "current":
+        raise ActionError("reproduction.run.invalid", "current job state is absent")
+    try:
+        return load_current_accepted_plan(run_root)
+    except JobStoreError as error:
+        raise ActionError(error.code, str(error)) from error
+
+
+def _current_status_projection(status: object, run_root: Path) -> Mapping[str, object]:
+    """Project the SQLite authority into the unchanged public status/7 shape."""
+
+    from .reproduction_job_storage import RunStatus
+
+    if not isinstance(status, RunStatus):
+        raise ActionError("reproduction.run.invalid", "invalid current run status")
+    active_keys = {
+        (item.entry, item.execution_id)
+        for item in status.checkpoints
+        if item.state == "active" and item.permit_id is not None
+    }
+    workers = [
+        {
+            **asdict(worker),
+            "entry": None if identity is None else identity.entry,
+            "execution_id": None if identity is None else identity.execution_id,
+        }
+        for identity, worker in status.workers
+    ]
+    active = [
+        {"entry": item.entry, "execution_id": item.execution_id}
+        for item in status.checkpoints
+        if (item.entry, item.execution_id) in active_keys
+    ]
+    timings = [
+        {
+            "elapsed_seconds": item.elapsed_seconds,
+            "entry": item.entry,
+            "execution_id": item.execution_id,
+            "failure": (
+                None
+                if item.failure_code is None
+                else {
+                    "code": item.failure_code,
+                    "message": item.failure_message,
+                    "recorded_at": item.failure_recorded_at,
+                }
+            ),
+            "finished_at": item.finished_at,
+            "started_at": item.started_at,
+            "state": item.state,
+        }
+        for item in status.checkpoints
+        if item.started_at is not None
+    ]
+    resumable = status.status == "stopped"
+    if status.status == "failed":
+        publication = load_current_publication_projection(run_root).publication
+        resumable = (
+            status.operational_failure is not None
+            and status.operational_failure.code == "reproduction.publication.failed"
+            and publication.stage in {"ready", "result_committed"}
+            and publication.publication_identity is not None
+        )
+    projection = {
+        "artifact_outcomes": dict(status.artifact_outcomes),
+        "active_executions": active,
+        "active_workers": [
+            item
+            for item in workers
+            if item["state"] == "running"
+            and (item["entry"], item["execution_id"]) in active_keys
+        ],
+        "completed_executions": status.completed_executions,
+        "execution_timeout_seconds": status.execution_timeout_seconds,
+        "execution_timings": timings,
+        "include_all": status.include_all,
+        "jobs": status.jobs,
+        "latest_execution_diagnostic": (
+            None
+            if status.latest_execution_diagnostic is None
+            else asdict(status.latest_execution_diagnostic)
+        ),
+        "operational_failure": (
+            None
+            if status.operational_failure is None
+            else asdict(status.operational_failure)
+        ),
+        "phase": status.phase,
+        "resumable": resumable,
+        "run_id": status.run_id,
+        "schema": STATUS_SCHEMA,
+        "status": status.status,
+        "summary": status.summary,
+        "surviving_workers": [item for item in workers if item["state"] == "running"],
+        "target": dict(status.target),
+        "timestamps": {
+            "accepted_at": status.accepted_at,
+            "finished_at": status.finished_at,
+            "resumed_at": status.resumed_at,
+            "started_at": status.started_at,
+            "stopped_at": status.stopped_at,
+            "updated_at": status.updated_at,
+        },
+        "total_executions": status.total_executions,
+    }
+    return _bounded_status(projection)
 
 
 def _bounded_status(value: Mapping[str, object]) -> Mapping[str, object]:
@@ -2000,439 +1893,9 @@ def _bounded_status(value: Mapping[str, object]) -> Mapping[str, object]:
     return value
 
 
-def _execution_timings(
-    checkpoints: Sequence[Mapping[str, object]],
-) -> list[Mapping[str, object]]:
-    return [
-        {
-            "elapsed_seconds": item["elapsed_seconds"],
-            "entry": item["entry"],
-            "execution_id": item["execution_id"],
-            "failure": item.get("failure"),
-            "finished_at": item["finished_at"],
-            "started_at": item["started_at"],
-            "state": item["state"],
-        }
-        for item in checkpoints
-        if item["started_at"] is not None
-    ]
-
-
-def _running_workers(
-    workers: Sequence[Mapping[str, object]],
-) -> list[Mapping[str, object]]:
-    return [dict(item) for item in workers if item.get("state") == "running"]
-
-
-def _load_run(path: Path) -> dict[str, object]:
-    raw = _read_run_snapshot(path)
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ActionError("reproduction.run.invalid", str(error)) from error
-    fields = {"paths", "progress", "run_id", "schema", "state", "timestamps", "workers"}
-    if not isinstance(value, dict) or value.get("schema") != RUN_SCHEMA:
-        raise ActionError(
-            "reproduction.run.unsupported",
-            "this historical reproduction job cannot resume; "
-            "start a new current-format run",
-        )
-    if set(value) != fields:
-        raise ActionError("reproduction.run.invalid", "run record fields are invalid")
-    if RUN_ID_RE.fullmatch(str(value.get("run_id"))) is None:
-        raise ActionError("reproduction.run.invalid", "run ID is invalid")
-    state = value.get("state")
-    current_state_fields = {
-        "active_executions",
-        "latest_execution_diagnostic",
-        "operational_failure",
-        "phase",
-        "status",
-    }
-    if not isinstance(state, dict) or frozenset(state) != frozenset(
-        current_state_fields
-    ):
-        raise ActionError("reproduction.run.invalid", "run state is invalid")
-    status = state["status"]
-    phase = state["phase"]
-    if status not in {*TERMINAL_STATUSES, None} or phase not in {*ACTIVE_PHASES, None}:
-        raise ActionError("reproduction.run.invalid", "run lifecycle is invalid")
-    if (status is None) == (phase is None):
-        raise ActionError("reproduction.run.invalid", "run lifecycle is incoherent")
-    _validate_run_members(value)
-    canonical = _canonical(value).encode("utf-8")
-    if raw != canonical:
-        raise ActionError("reproduction.run.invalid", "run record is not canonical")
-    return cast(dict[str, object], value)
-
-
-def _read_run_snapshot(path: Path) -> bytes:
-    """Read one regular run record through a bounded immutable descriptor."""
-
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        with os.fdopen(descriptor, "rb") as handle:
-            metadata = os.fstat(handle.fileno())
-            if not stat.S_ISREG(metadata.st_mode):
-                raise OSError("run record is not a regular file")
-            if metadata.st_size > MAX_RUN_RECORD_BYTES:
-                raise OSError("run record crossed its byte bound")
-            raw = handle.read(MAX_RUN_RECORD_BYTES + 1)
-        if len(raw) > MAX_RUN_RECORD_BYTES:
-            raise OSError("run record crossed its byte bound")
-        return raw
-    except OSError as error:
-        raise ActionError("reproduction.run.invalid", str(error)) from error
-
-
-def _validate_run_members(value: Mapping[str, object]) -> None:
-    _validate_progress(value.get("progress"))
-    _validate_timestamps(value.get("timestamps"))
-    _validate_paths(value)
-    state = cast(Mapping[str, object], value["state"])
-    _validate_active_state(value, state)
-    _validate_failure(state.get("latest_execution_diagnostic"))
-    _validate_failure(state.get("operational_failure"))
-    _validate_workers(value.get("workers"))
-
-
-def _validate_active_state(
-    value: Mapping[str, object], state: Mapping[str, object]
-) -> None:
-    active = state.get("active_executions")
-    if (
-        not isinstance(active, list)
-        or len(active) > MAX_CHECKPOINTS
-        or any(
-            not isinstance(item, Mapping)
-            or set(item) != {"entry", "execution_id"}
-            or not isinstance(item.get("entry"), str)
-            or not isinstance(item.get("execution_id"), str)
-            or EXECUTION_ID_RE.fullmatch(cast(str, item.get("execution_id"))) is None
-            for item in active
-        )
-    ):
-        raise ActionError("reproduction.run.invalid", "active executions are invalid")
-    typed = cast(Sequence[Mapping[str, object]], active)
-    keys = [
-        (cast(str, item["entry"]), cast(str, item["execution_id"])) for item in typed
-    ]
-    if len(keys) != len(set(keys)):
-        raise ActionError(
-            "reproduction.run.invalid", "active execution order is invalid"
-        )
-
-
-def _validate_progress(value: object) -> None:
-    progress = value
-    if not isinstance(progress, Mapping) or set(progress) != {
-        "artifact_outcomes",
-        "completed_executions",
-    }:
-        raise ActionError("reproduction.run.invalid", "run progress is invalid")
-    counts = progress.get("artifact_outcomes")
-    completed = progress.get("completed_executions")
-    if (
-        not isinstance(counts, Mapping)
-        or set(counts) != set(OUTCOMES)
-        or any(not _nonnegative_int(item) for item in counts.values())
-        or not _nonnegative_int(completed)
-    ):
-        raise ActionError("reproduction.run.invalid", "run progress is invalid")
-
-
-def _validate_timestamps(value: object) -> None:
-    timestamp_fields = {
-        "accepted_at",
-        "finished_at",
-        "resumed_at",
-        "started_at",
-        "stopped_at",
-        "updated_at",
-    }
-    if not isinstance(value, Mapping) or set(value) != timestamp_fields:
-        raise ActionError("reproduction.run.invalid", "run timestamps are invalid")
-    if any(
-        item is not None
-        and not isinstance(item, str)
-        or isinstance(item, str)
-        and TIMESTAMP_RE.fullmatch(item) is None
-        for item in value.values()
-    ):
-        raise ActionError("reproduction.run.invalid", "run timestamp is invalid")
-
-
-def _validate_paths(record: Mapping[str, object]) -> None:
-    value = record.get("paths")
-    if not isinstance(value, Mapping) or set(value) != {
-        "diagnostics",
-        "run",
-        "staging",
-        "workspace",
-    }:
-        raise ActionError("reproduction.run.invalid", "run paths are invalid")
-    if (
-        value.get("diagnostics") != "diagnostics"
-        or value.get("staging") != "executions"
-        or value.get("workspace") != "workspace"
-    ):
-        raise ActionError("reproduction.run.invalid", "run paths are invalid")
-    if (
-        not isinstance(value.get("run"), str)
-        or Path(cast(str, value["run"])).is_absolute()
-    ):
-        raise ActionError("reproduction.run.invalid", "run path is not canonical")
-    logical = PurePosixPath(cast(str, value["run"]))
-    accepted_at = cast(Mapping[str, object], record["timestamps"])["accepted_at"]
-    if (
-        not isinstance(accepted_at, str)
-        or logical.parts[:3] != ("tmp", "reproduction", accepted_at[:10])
-        or len(logical.parts) != 4
-        or any(part in {"", ".", ".."} for part in logical.parts)
-    ):
-        raise ActionError("reproduction.run.invalid", "run path is not canonical")
-
-
-def _validate_failure(value: object) -> None:
-    if value is None:
-        return
-    fields = {"code", "execution_id", "message", "recorded_at"}
-    expected = fields | {"entry"}
-    if not isinstance(value, Mapping) or set(value) != expected:
-        raise ActionError("reproduction.run.invalid", "latest failure is invalid")
-    if not all(
-        isinstance(value.get(name), str) and value.get(name)
-        for name in ("code", "message")
-    ):
-        raise ActionError("reproduction.run.invalid", "latest failure is invalid")
-    execution = value.get("execution_id")
-    entry = value.get("entry")
-    if execution is not None and (
-        not isinstance(execution, str) or EXECUTION_ID_RE.fullmatch(execution) is None
-    ):
-        raise ActionError("reproduction.run.invalid", "failure execution is invalid")
-    if (
-        entry is not None
-        and (not isinstance(entry, str) or re.fullmatch(r"e[0-9]{3}", entry) is None)
-        or (entry is None) != (execution is None)
-    ):
-        raise ActionError("reproduction.run.invalid", "failure entry is invalid")
-    recorded = value.get("recorded_at")
-    if not isinstance(recorded, str) or TIMESTAMP_RE.fullmatch(recorded) is None:
-        raise ActionError("reproduction.run.invalid", "failure timestamp is invalid")
-
-
-def _validate_workers(value: object) -> None:
-    if not isinstance(value, list) or len(value) > 4_096:
-        raise ActionError("reproduction.run.invalid", "worker list is invalid")
-    fields = {
-        "execution_id",
-        "last_observed_at",
-        "parent_worker_id",
-        "pid",
-        "registered_at",
-        "state",
-        "worker_id",
-    }
-    expected = fields | {"entry"}
-    for raw in value:
-        if not isinstance(raw, Mapping):
-            raise ActionError("reproduction.run.invalid", "worker record is invalid")
-        item = cast(Mapping[str, object], raw)
-        entry = item.get("entry")
-        execution = item.get("execution_id")
-        if (
-            set(item) != expected
-            or not isinstance(item.get("worker_id"), str)
-            or re.fullmatch(r"worker-[0-9]+", cast(str, item["worker_id"])) is None
-            or item.get("parent_worker_id") is not None
-            and (
-                not isinstance(item.get("parent_worker_id"), str)
-                or re.fullmatch(r"worker-[0-9]+", cast(str, item["parent_worker_id"]))
-                is None
-            )
-            or not isinstance(item.get("pid"), int)
-            or isinstance(item.get("pid"), bool)
-            or cast(int, item["pid"]) <= 1
-            or item.get("state") not in {"running", "exited"}
-            or not _valid_timestamp(item.get("registered_at"))
-            or not _valid_timestamp(item.get("last_observed_at"))
-            or cast(str, item["last_observed_at"]) < cast(str, item["registered_at"])
-            or execution is not None
-            and (
-                not isinstance(execution, str)
-                or EXECUTION_ID_RE.fullmatch(execution) is None
-            )
-            or entry is not None
-            and (
-                not isinstance(entry, str) or re.fullmatch(r"e[0-9]{3}", entry) is None
-            )
-            or (entry is None) != (execution is None)
-        ):
-            raise ActionError("reproduction.run.invalid", "worker record is invalid")
-    typed = cast(Sequence[Mapping[str, object]], value)
-    keys = [
-        (
-            str(item.get("entry") or ""),
-            str(item.get("execution_id") or ""),
-            cast(str, item["worker_id"]),
-        )
-        for item in typed
-    ]
-    if keys != sorted(keys) or len(keys) != len(set(keys)):
-        raise ActionError("reproduction.run.invalid", "worker order is invalid")
-
-
-def _validate_checkpoints(value: object) -> None:
-    if not isinstance(value, list) or len(value) > 2_048:
-        raise ActionError("reproduction.run.invalid", "checkpoint list is invalid")
-    fields = {
-        "completed_at",
-        "elapsed_seconds",
-        "entry",
-        "execution_id",
-        "finished_at",
-        "outputs",
-        "path",
-        "started_at",
-        "state",
-    }
-    expected = fields | {"failure"}
-    if any(not isinstance(item, Mapping) or set(item) != expected for item in value):
-        raise ActionError("reproduction.run.invalid", "checkpoint record is invalid")
-    timestamp_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-    for item in cast(Sequence[Mapping[str, object]], value):
-        state = item["state"]
-        started_at = item["started_at"]
-        finished_at = item["finished_at"]
-        completed_at = item["completed_at"]
-        elapsed_seconds = item["elapsed_seconds"]
-        success = "succeeded"
-        states = {"active", "succeeded", "failed", "stopped"}
-        if (
-            not isinstance(item["entry"], str)
-            or re.fullmatch(r"e[0-9]{3}", item["entry"]) is None
-            or not isinstance(item["execution_id"], str)
-            or EXECUTION_ID_RE.fullmatch(item["execution_id"]) is None
-            or item["path"]
-            != "checkpoints/"
-            + item["entry"]
-            + "-"
-            + item["execution_id"].removeprefix("pyrun-exec/v1:")
-            + ".json"
-            or state not in states
-            or not isinstance(item["outputs"], list)
-            or len(cast(list[object], item["outputs"])) > 256
-            or not _valid_checkpoint_outputs(item["outputs"])
-            or any(
-                timestamp is not None
-                and (
-                    not isinstance(timestamp, str)
-                    or timestamp_re.fullmatch(timestamp) is None
-                )
-                for timestamp in (started_at, finished_at, completed_at)
-            )
-            or elapsed_seconds is not None
-            and (
-                not isinstance(elapsed_seconds, (int, float))
-                or isinstance(elapsed_seconds, bool)
-                or elapsed_seconds < 0
-            )
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "checkpoint record is invalid"
-            )
-        if (
-            started_at is None
-            and (finished_at is not None or elapsed_seconds is not None)
-            or started_at is not None
-            and elapsed_seconds is None
-            or state == "active"
-            and finished_at is not None
-            or isinstance(started_at, str)
-            and isinstance(finished_at, str)
-            and finished_at < started_at
-            or state == success
-            and (finished_at is None or completed_at != finished_at)
-            or state != success
-            and completed_at is not None
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "checkpoint timing is invalid"
-            )
-        failure = item.get("failure")
-        if (
-            state in {"active", "succeeded"}
-            and failure is not None
-            or state in {"failed", "stopped"}
-            and not _valid_checkpoint_failure(failure)
-        ):
-            raise ActionError(
-                "reproduction.run.invalid", "checkpoint failure is invalid"
-            )
-    keys = [
-        (cast(str, item["entry"]), cast(str, item["execution_id"]))
-        for item in cast(Sequence[Mapping[str, object]], value)
-    ]
-    if keys != sorted(keys) or len(keys) != len(set(keys)):
-        raise ActionError("reproduction.run.invalid", "checkpoint order is invalid")
-
-
-def _valid_checkpoint_outputs(value: object) -> bool:
-    assert isinstance(value, list)
-    artifacts: list[str] = []
-    for item in value:
-        if (
-            not isinstance(item, Mapping)
-            or set(item) != {"artifact", "fingerprint"}
-            or not isinstance(item.get("artifact"), str)
-        ):
-            return False
-        artifact = cast(str, item["artifact"])
-        try:
-            parse_fingerprint(item.get("fingerprint"), artifact)
-        except (DataContractError, ValueError):
-            return False
-        artifacts.append(artifact)
-    return artifacts == sorted(set(artifacts))
-
-
-def _valid_checkpoint_failure(value: object) -> bool:
-    return (
-        isinstance(value, Mapping)
-        and set(value) == {"code", "message", "recorded_at"}
-        and all(
-            isinstance(value.get(name), str) and value.get(name)
-            for name in ("code", "message")
-        )
-        and _valid_timestamp(value.get("recorded_at"))
-    )
-
-
-def _valid_timestamp(value: object) -> bool:
-    return isinstance(value, str) and TIMESTAMP_RE.fullmatch(value) is not None
-
-
-def _nonnegative_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _write_run(root: Path, record: Mapping[str, object]) -> None:
-    encoded = _canonical(record)
-    if len(encoded.encode("utf-8")) > MAX_RUN_RECORD_BYTES:
-        raise ActionError(
-            "reproduction.run.resource_limit", "run record crossed its byte bound"
-        )
-    atomic_write_text(root / "run.json", encoded)
-
-
 def _find_run(log: LogContext, run_id: str) -> Path:
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
-    matches: list[Path] = []
     try:
         candidates = iter_canonical_run_roots(
             resolve_project_root(log.root), max_entries=MAX_RUN_DIRECTORIES
@@ -2444,24 +1907,56 @@ def _find_run(log: LogContext, run_id: str) -> Path:
             else "reproduction.run.missing"
         )
         raise ActionError(code, str(error)) from error
+    matches, unsupported = _matching_run_roots(log, run_id, candidates)
+    discovered = len(matches) + len(unsupported)
+    if discovered > 1:
+        raise ActionError(
+            "reproduction.run.integrity",
+            f"expected one run, found {discovered}: {run_id}",
+        )
+    if unsupported:
+        raise ActionError(
+            "reproduction.run.unsupported",
+            "historical reproduction run is unsupported; start a new current run",
+        )
+    if not matches:
+        raise ActionError("reproduction.run.missing", f"run not found: {run_id}")
+    return matches[0]
+
+
+def _matching_run_roots(
+    log: LogContext, run_id: str, candidates: Sequence[Path]
+) -> tuple[list[Path], list[Path]]:
+    """Classify exact current and historical candidates without decoding JSON."""
+
+    matches: list[Path] = []
+    unsupported: list[Path] = []
     for candidate in candidates:
         if not candidate.name.endswith(f"-{run_id}"):
             continue
-        path = candidate / "run.json"
-        if path.is_file() and not path.is_symlink():
-            record = _load_run(path)
-            if record["run_id"] == run_id and load_accepted_plan(
-                candidate
-            ).summary == _summary_identity(log):
+        recognized = recognize_run_directory(candidate)
+        if recognized == "current":
+            try:
+                status = load_current_run_status(candidate)
+            except JobStoreError as error:
+                raise ActionError(error.code, str(error)) from error
+            if status.run_id == run_id and status.summary == _summary_identity(log):
                 matches.append(candidate.resolve())
-    if not matches:
-        raise ActionError("reproduction.run.missing", f"run not found: {run_id}")
-    if len(matches) > 1:
-        raise ActionError(
-            "reproduction.run.integrity",
-            f"expected one run, found {len(matches)}: {run_id}",
-        )
-    return matches[0]
+        elif recognized == "historical_unsupported" and _historical_run_matches_log(
+            candidate, log, run_id
+        ):
+            unsupported.append(candidate.resolve())
+    return matches, unsupported
+
+
+def _historical_run_matches_log(candidate: Path, log: LogContext, run_id: str) -> bool:
+    """Match only the legacy canonical leaf, without reading historical JSON."""
+
+    log_leaf = run_leaf(log.root.name, None, run_id)
+    prefix = log_leaf.removesuffix(run_id)
+    return candidate.name == log_leaf or (
+        candidate.name.startswith(prefix) and candidate.name.endswith(f"-{run_id}")
+    )
 
 
 def _new_run_root(
@@ -2484,97 +1979,6 @@ def _summary_identity(log: LogContext) -> str:
     return log.summary.resolve().relative_to(resolve_project_root(log.root)).as_posix()
 
 
-def _checkpoint_dicts(run_root: Path) -> list[Mapping[str, object]]:
-    root = run_root / "checkpoints"
-    if not root.exists() and not root.is_symlink():
-        return []
-    if root.is_symlink() or not root.is_dir():
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint root is invalid"
-        )
-    pairs = [(path, _checkpoint_value(path)) for path in _checkpoint_paths(root)]
-    values = [value for _path, value in pairs]
-    _validate_checkpoints(values)
-    for path, value in pairs:
-        if path.relative_to(run_root).as_posix() != value["path"]:
-            raise ActionError(
-                "reproduction.checkpoint.invalid",
-                "checkpoint file location does not match its payload",
-            )
-    _validate_checkpoint_membership(run_root, values)
-    return values
-
-
-def _checkpoint_paths(root: Path) -> list[Path]:
-    paths: list[Path] = []
-    with os.scandir(root) as entries:
-        for index, entry in enumerate(entries):
-            if index >= MAX_CHECKPOINT_DIRECTORY_ENTRIES:
-                raise ActionError(
-                    "reproduction.checkpoint.resource_limit",
-                    "checkpoint directory crossed its entry bound",
-                )
-            if is_checkpoint_temporary_name(entry.name):
-                continue
-            paths.append(Path(entry.path))
-            if len(paths) > MAX_CHECKPOINTS:
-                raise ActionError(
-                    "reproduction.checkpoint.resource_limit",
-                    "checkpoint directory crossed its checkpoint bound",
-                )
-    return sorted(paths)
-
-
-def _checkpoint_value(path: Path) -> Mapping[str, object]:
-    try:
-        if path.is_symlink() or not path.is_file() or path.suffix != ".json":
-            raise OSError(f"invalid checkpoint path: {path}")
-        raw = path.read_bytes()
-        if len(raw) > 16 * 1024 * 1024:
-            raise OSError("checkpoint crossed its byte bound")
-        text = raw.decode("utf-8")
-        value = json.loads(text)
-        if not isinstance(value, dict):
-            raise ValueError("checkpoint is not an object")
-        if (
-            text
-            != json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ):
-            raise ValueError("checkpoint is not canonical")
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.checkpoint.invalid", str(error)) from error
-    return value
-
-
-def _validate_checkpoint_membership(
-    run_root: Path, checkpoints: Sequence[Mapping[str, object]]
-) -> None:
-    plan = load_accepted_plan(run_root)
-    accepted = {(item["entry"], item["execution_id"]) for item in plan.executions}
-    observed = {(item["entry"], item["execution_id"]) for item in checkpoints}
-    if not observed <= accepted:
-        raise ActionError(
-            "reproduction.checkpoint.invalid",
-            "checkpoint is absent from the accepted plan",
-        )
-
-
-def _verify_checkpoint_inventory(run_root: Path, record: Mapping[str, object]) -> None:
-    del record
-    _checkpoint_dicts(run_root)
-
-
-def _supervisor_pid(run_root: Path) -> int | None:
-    try:
-        value = json.loads((run_root / "supervisor.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    pid = value.get("pid") if isinstance(value, dict) else None
-    return (
-        pid if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1 else None
-    )
-
-
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -2583,32 +1987,6 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
-
-
-def _failure(
-    code: str | None,
-    message: str | None,
-    execution_id: str | None,
-    context: _FailureContext = _FailureContext(),
-) -> Mapping[str, object]:
-    value: dict[str, object] = {
-        "code": code or "reproduction.job.failed",
-        "execution_id": execution_id,
-        "message": message or "Reproduction failed.",
-        "recorded_at": context.now or _utc_now(),
-    }
-    if context.include_entry:
-        value["entry"] = context.entry
-    return value
-
-
-def _stamp(record: dict[str, object]) -> None:
-    cast(dict[str, object], record["timestamps"])["updated_at"] = _utc_now()
-
-
-def _touch(path: Path) -> None:
-    path.touch(exist_ok=True)
-    os.utime(path, None)
 
 
 def _survivor_summary(value: object) -> str:
@@ -2622,10 +2000,6 @@ def _close_fds(values: Sequence[int]) -> None:
             os.close(descriptor)
         except OSError:
             pass
-
-
-def _canonical(value: Mapping[str, object]) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _utc_now() -> str:

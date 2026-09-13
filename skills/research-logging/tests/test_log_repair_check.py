@@ -732,7 +732,7 @@ class RepairCheckTests(unittest.TestCase):
             data["inputs"][0]["origin"] = False
             data_path.write_text(json.dumps(data), encoding="utf-8")
             with mock.patch(
-                "log_commands.reproduction_execution.execute_reproduction_plan",
+                "log_commands.reproduction_execution.execute_current_reproduction_plan",
                 side_effect=AssertionError("repair check must not launch a producer"),
             ) as producer:
                 result = run_repair_check(
@@ -746,7 +746,7 @@ class RepairCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity, bundle = self._pattern_directory_fixture(Path(directory))
             with mock.patch(
-                "log_commands.reproduction_execution.execute_reproduction_plan",
+                "log_commands.reproduction_execution.execute_current_reproduction_plan",
                 side_effect=AssertionError("repair check must not launch a producer"),
             ) as producer:
                 baseline = run_repair_check(
@@ -873,10 +873,10 @@ class RepairCheckTests(unittest.TestCase):
 
         sinks = (
             "log_commands.reproduction_jobs.launch_reproduction",
-            "log_commands.reproduction_comparison._record_execution",
+            "log_commands.reproduction_job_storage.record_execution_comparison",
             "log_commands.reproduction_publication.publish_completed_reproduction",
             "log_commands.reproduction_promotion.promote_execution",
-            "log_commands.reproduction_comparison.clear_execution_reproduction_requirement_locked",
+            "log_commands.reproduction_comparison.clear_current_reproduction_requirement",
         )
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))

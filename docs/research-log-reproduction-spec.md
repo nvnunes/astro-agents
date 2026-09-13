@@ -71,16 +71,16 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v1:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Reproduction result store | `<log>/.cache/results.sqlite` reproduction domain |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-results) |
+| Reproduction result projection | `research-log-reproduction-result/10` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run state | `research-log-reproduction-run/7` |
+| Durable run store | run-local `state.sqlite`, SQLite `user_version=1` |
 | Run status projection | `research-log-reproduction-status/7` |
 | Accepted plan | `research-log-reproduction-plan/9` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
-| Project scheduling coordinator | `research-log-reproduction-scheduler/1` |
-| Run-output manifest | `research-log-reproduction-staging/2` |
+| Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=1` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
@@ -140,16 +140,14 @@ the selected entry. Graph limits do not authorize broader scope.
 
 | Resource | Limit |
 | --- | ---: |
-| Durable run `state.sqlite` data | 256 MiB |
+| Durable run `state.sqlite` data plus safe `-journal`, `-wal`, and `-shm` companions | 256 MiB combined when companions are present |
 | Status projection encoded bytes | 64 MiB |
-| Staging manifest encoded bytes | 64 MiB |
 | Registered workers per execution | 1,024 |
 | Registered workers per run | 4,096 |
-| Project scheduler record encoded bytes | 64 MiB |
+| Project scheduler SQLite data | 64 MiB |
 | Active project scheduling permits | 4,096 |
 | Waiting project exclusive tickets | 10,000 |
 | Checkpoints per run | 2,048 |
-| Checkpoint-directory entries per run | 4,096 |
 | Outputs per checkpoint | 256 |
 | Command-query excerpt per diagnostic stream | 16 KiB |
 | Structured diagnostic events per run | 1,000,000 |
@@ -1041,13 +1039,17 @@ supervisor, emits its run ID, and returns immediately. The job is independent
 of the invoking terminal and agent turn. There is no foreground mode.
 
 A non-dry launch with no selected executions normally performs a no-op
-reconciliation. It creates no run ID, lock, run folder, worker, result write,
-or report write. The sole exception is explicitly launched empty-target
-whole-log recheck recovery of unsupported generated results, as specified in
+reproduction reconciliation. It creates no run ID, run folder, worker,
+reproduction-result write, or reproduction-report write. Like every non-dry
+launch, it first evaluates and publishes current mechanical validation under
+the normal locks; that validation result and `validation.md` are separate from
+reproduction state. The sole exception after that validation publication is
+explicitly launched empty-target whole-log recheck recovery of unsupported
+generated reproduction results, as specified in
 [Compatibility And Evolution](#compatibility-and-evolution): it acquires the
-scope and publication locks and atomically replaces the generated result and
-report, while still creating no run or worker. Standard output is the standard
-per-log summary using the
+scope and publication locks and atomically replaces the reproduction result
+and report, while still creating no run or worker. Standard output is the
+standard per-log summary using the
 current plan's command partition: commands for which reproduction is not
 needed, policy exclusions, and any blocked commands. Succeeded and failed
 are zero because no command ran. Current artifact state remains a separate
@@ -1085,69 +1087,73 @@ context, and admission; mutable job rows own only operational state. Result
 clearing never rewrites this database, staged outputs, diagnostics, retained
 baselines, or entry-root `pyrun.json` observations.
 
-`target` is exactly one of `{kind: "log", entry: null}`,
-`{kind: "entry", entry: ENTRY}`, or
-`{kind: "execution", entry: ENTRY, execution_id: ID}`. Entry IDs use the
-stable entry grammar; execution IDs use the full `pyrun-exec/v1` grammar. The
+`target` is exactly `{kind: "log", entry: null}` or
+`{kind: "entry", entry: ENTRY}`. Entry IDs use the stable entry grammar. The
 accepted plan fixes this target, `include_all`, `jobs`, timeout, and command
-membership. Resume cannot add commands or change any accepted setting.
+membership. Resume cannot add commands or change any accepted setting; current
+runs have no one-execution target.
 
-`state.status` is null while active and otherwise one terminal status:
-`complete`, `stopped`, or `failed`. `state.phase` is one of `accepted`,
-`planning`, `preflight`, `executing`, `comparing`, `publishing`, `stopping`, or
-null; it is null in terminal state. `active_executions` is the stable-plan-order
-array of every execution reference with a live scheduling permit and is empty
-otherwise. Its length never exceeds `jobs`; an exclusive item is always the
-only member.
-`latest_execution_diagnostic` is null or the latest execution-level failure or
-stop diagnostic. `operational_failure` is null unless a run-level error
-prevents reproduction from reaching its completed publication endpoint. Each
-non-null diagnostic has exactly `code`, `message`, `entry`, `execution_id`, and
-`recorded_at`; `entry` and `execution_id` are both null for a run-level
-diagnostic. A complete run always has a null
-`operational_failure`, even when one or more artifact outcomes are failures.
+The `runs` row owns immutable run metadata and paths. The normalized
+`accepted_*` rows are the single accepted plan/9 authority: admission,
+commands, recipes, materials, dependencies, outputs, claims, cases,
+boundaries, failures, and comparison definitions. They are inserted once and
+are not lifecycle history.
 
-`progress` has exactly the fields shown. Every outcome count is a nonnegative
-integer. `timestamps` has exactly the fields shown; absent lifecycle events are
-null. Paths are normalized run-directory-relative paths except `run`, which is
-project-relative. Worker and checkpoint arrays are sorted by their stable
-identities.
+The single `run_state` row owns mutable run lifecycle and aggregate artifact
+counts. Its `status` is null while active and otherwise `complete`, `stopped`,
+or `failed`. Its `phase` is `accepted`, `planning`, `preflight`, `executing`,
+`comparing`, `publishing`, `stopping`, or null; a terminal status requires a
+null phase. Lifecycle timestamps and the latest execution and operational
+diagnostics are columns of this row. A complete run has no operational
+failure, even when artifact outcomes include failures.
 
-Each worker item has exactly `worker_id`, `parent_worker_id`, `pid`, `entry`,
-`execution_id`, `state`, `registered_at`, and `last_observed_at`.
-`parent_worker_id`, `entry`, and `execution_id` may be null where their
-relationship is not applicable. `state` is exactly `running` or `exited`.
-Only `running` is live and may appear in `active_workers` or
-`surviving_workers`; an `exited` record is retained in run history but does not
-hold a permit. Each checkpoint item has exactly `entry`,
-`execution_id`, `state`, `path`, `completed_at`, `started_at`, `finished_at`,
-`elapsed_seconds`, `failure`, and `outputs`; `state` is `active`, `succeeded`,
-`failed`, or `stopped`. `failure` is null for active and succeeded attempts and
-otherwise has exactly `code`, `message`, and `recorded_at`. A stopped checkpoint
-is the only resumable attempt state; failed is terminal and is never retried in
-the same run. Fields unavailable in a state are null. Output entries use
-canonical output identities and observed fingerprints. Timing begins at the first
-supervised child launch. Elapsed time uses a monotonic clock and accumulates
-only active supervised runtime. A stopped resumable attempt preserves its
-first `started_at`, has no `finished_at`, and adds its resumed active interval
-to `elapsed_seconds`.
+Each accepted execution may own one `execution_checkpoints` row keyed by its
+accepted command identity. That row records `active`, `succeeded`, `failed`, or
+`stopped`, its current permit or exact released-permit tombstone, checkpoint
+time, first start, finish, accumulated elapsed time, failure fields, diagnostic
+paths, and scratch ownership. `checkpoint_outputs` stores its canonical output
+fingerprints as child rows. A stopped checkpoint is the only resumable
+execution state; failed and succeeded are terminal within the run. Timing
+begins at the first supervised child launch and accumulates only active
+supervised runtime. Stop preserves the first start, leaves finish null, and
+adds the next active interval on resume.
 
-The run record durably retains operational state only: run ID, state, progress,
-timestamps, workers, and run-relative paths. The accepted plan and invocation
-checkpoint files retain their respective immutable and per-invocation facts.
+`run_owner` stores the one supervisor lease. `workers` stores bounded worker
+rows with worker and parent identity, optional accepted execution identity,
+PID, `running` or `exited` state, registration time, and latest observation.
+Only running rows are live; exited rows are retained but hold no permit.
+`staged_executions`, staged diagnostic rows, artifact comparison and evidence
+rows, `execution_effects`, and `publication_state` separately own comparison,
+external `pyrun.json` mutation, and publication-retry progress. No table stores
+a whole-plan, checkpoint-history, active-execution, or worker JSON array.
 
-Unknown fields fail. Checkpoint writes must be atomic and sufficient to
-distinguish `succeeded`, `failed`, or `stopped` work from an `active` execution
-after process or host failure. Cardinality and byte limits are defined in
-[Fixed Resource Bounds](#fixed-resource-bounds) and do not weaken this state
-contract. A checkpoint-directory scan ignores only the writer-reserved atomic
-temporary form `.eNNN-<execution-digest>.json.<pid>.tmp`; every completed
-checkpoint and every other directory entry retains strict path, schema,
-membership, size, and canonical-serialization validation.
+The public status/7 object is a bounded projection of those rows, not another
+durable record. It orders active executions by accepted plan order and derives
+them from active checkpoints with attached permits. It derives active and
+surviving workers from running worker rows, execution timings from checkpoint
+rows, `total_executions` from accepted execution rows, aggregate outcomes and
+diagnostics from `run_state`, and resumability from stopped lifecycle or the
+exact failed-publication retry state. Its `timestamps` fields are null when the
+corresponding lifecycle event has not occurred.
+
+The database therefore durably retains the run identity, accepted plan,
+lifecycle, progress, supervisor and worker ownership, execution checkpoints
+and outputs, comparisons, requirement-effect checkpoints, and
+publication-retry state.
+Checkpoint transactions distinguish `succeeded`, `failed`, and `stopped` work
+from an active execution after process or host failure. Cardinality and byte
+limits are defined in [Fixed Resource Bounds](#fixed-resource-bounds) and do
+not weaken this state contract. There are no current-format plan, run,
+checkpoint, scratch-owner, supervisor, or staging JSON records.
 
 Every durable-state read validates one bounded SQLite snapshot and its typed
-rows. A reader must not combine rows from different snapshots. Stable malformed
-or unsupported state fails closed with `reproduction.run.invalid`. Writers use
+rows. A reader must not combine rows from different snapshots. A canonical
+historical JSON directory without `state.sqlite`, or a `state.sqlite` with an
+unsupported `user_version`, fails as `reproduction.run.unsupported`. Malformed
+SQLite or a malformed selected projection fails as `reproduction.run.invalid`;
+cross-row corruption fails as `reproduction.run.invariant`. Missing, busy, or
+unsafe current stores retain their specific `reproduction.run.missing`,
+`reproduction.run.busy`, or `reproduction.run.path_unsafe` result. Writers use
 short transactions while holding the run-state lock; callbacks retain the
 already accepted immutable run ID rather than rediscovering it from mutable
 state.
@@ -1219,8 +1225,10 @@ worker or scheduling permit remains. It retains the same run ID, workspace path,
 partial outputs, and diagnostics.
 
 If forced termination leaves a survivor, the run remains active in `stopping`,
-retains its lock, records exact survivor diagnostics, and the stop request
-returns nonzero. Repeating `stop` retries the bounded cleanup.
+records exact survivor worker rows in `state.sqlite`, and keeps the scope
+durably excluded even if the failed supervisor releases its inherited lock
+descriptors. The stop request returns nonzero. Repeating `stop` retries the
+bounded cleanup.
 
 ### Resume
 
@@ -1256,9 +1264,10 @@ is reconciled, surviving registered workers receive the same bounded cleanup,
 and its project-scheduler waiters and permits are reconciled under the scheduler
 mutex. The run becomes reason-coded `stopped` only after no worker or permit
 remains, except that a `stopping` run with non-null `operational_failure`
-preserves that durable intent and becomes `failed` after cleanup. The scope lock
-is not released earlier. Execution continues only after explicit `resume`
-passes ordinary guards.
+preserves that durable intent and becomes `failed` after cleanup. The scope
+remains excluded by either the live descriptor lock or the current SQLite
+owner/worker lifecycle until quiescent reconciliation is durable. Execution
+continues only after explicit `resume` passes ordinary guards.
 
 ### Exit Status
 
@@ -1334,10 +1343,9 @@ Users and research agents supply no scratch path. Runner-added paths and
 environment values do not enter recipe identity.
 
 Scratch is separate from declared inputs/outputs, caches, diagnostics, and
-checkpoints. Reproduction records its assigned absolute scratch path in
-`<run-root>/scratch/<entry>/<execution-digest>.json` before launch. This private
-execution-state record is a JSON string and is removed only after scratch
-cleanup succeeds. It is not a dependency, checkpoint, or resume input.
+checkpoints. Reproduction records its assigned absolute scratch path in the
+identity-scoped checkpoint row before launch and clears that field only after
+scratch cleanup succeeds. It is not a dependency or resume input.
 Confinement permits the assigned scratch directory and its contents alongside
 the attempt's run, runtime, and diagnostic roots, preserving read-only retained
 boundaries and restrictions on unrelated paths.
@@ -1584,108 +1592,6 @@ publication rolls back the whole selected-key merge on failure. Ordinary
 summary, artifact, command, and history queries continue to decode only their
 selected bounded projection.
 
-<!-- Historical aggregate example removed: use `log results ... --format json`
-for an explicit, bounded export of a selected stored projection. -->
-<!--
-{
-  "schema": "research-log-reproduction-result/10",
-  "summary": "docs/research.md",
-  "updated_at": "2030-01-01T00:05:00Z",
-  "artifacts": [
-    {
-      "entry": "e003",
-      "artifact": "data/result.csv",
-      "execution_id": "pyrun-exec/v1:...",
-      "outcome": "matched",
-      "reason": null,
-      "recorded_at": "2030-01-01T00:05:00Z",
-      "run_id": "reproduce-...",
-      "comparison": {
-        "contract": "research-log-reproduction-comparison/1",
-        "profile": "table",
-        "expected": {"algorithm": "sha256", "digest": "..."},
-        "regenerated": {"algorithm": "sha256", "digest": "..."}
-      }
-    }
-  ],
-  "commands": [
-    {
-      "entry": "e003",
-      "execution_id": "pyrun-exec/v1:...",
-      "disposition": "succeeded",
-      "source_digest": "...",
-      "recorded_at": "2030-01-01T00:05:00Z",
-      "run_id": "reproduce-..."
-    }
-  ],
-  "runs": [
-    {
-      "run_id": "reproduce-...",
-      "target": {"kind": "entry", "entry": "e003"},
-      "include_all": false,
-      "status": "complete",
-      "accepted_at": "2030-01-01T00:00:00Z",
-      "finished_at": "2030-01-01T00:05:00Z",
-      "command_outcomes": {
-        "not_automatic": 0,
-        "reproduction_not_needed": 2,
-        "unchanged_failed": 0,
-        "unchanged_blocked": 0,
-        "succeeded": 1,
-        "failed": 0,
-        "blocked": 0,
-        "total": 3
-      },
-      "command_records": [
-        {
-          "entry": "e003",
-          "execution_id": "pyrun-exec/v1:...",
-          "cwd": "docs/research/entries/2030-01-01-e003-example",
-          "recipe": {
-            "script": "scripts/build.py",
-            "inputs": [],
-            "outputs": {"data/result.csv": "file"},
-            "parameters": [],
-            "environment": {}
-          },
-          "auto_reproduce": true,
-          "exclusive": false,
-          "queued": true,
-          "requires_reproduction": true,
-          "run_selection": "run",
-          "prior_disposition": null,
-          "source_digest": "...",
-          "bucket": "succeeded",
-          "reason": "succeeded",
-          "terminal_disposition": "succeeded",
-          "details": []
-        }
-      ],
-      "artifact_outcomes": {
-        "matched": 1,
-        "changed": 0,
-        "failed": 0,
-        "comparison_failed": 0,
-        "skipped": 0
-      },
-      "executions": [
-        {
-          "entry": "e003",
-          "execution_id": "pyrun-exec/v1:...",
-          "started_at": "2030-01-01T00:00:01Z",
-          "finished_at": "2030-01-01T00:04:59Z",
-          "elapsed_seconds": 298.4
-        }
-      ],
-      "folder": {
-        "path": "tmp/reproduction/2030-01-01/reproduce-research-e003-reproduce-...",
-        "availability": "available"
-      }
-    }
-  ]
-}
--->
-
 `summary` is the maintained summary path. `updated_at` is the latest successful
 result publication time. `artifacts` is sorted by
 canonical log entry order, then artifact path. The pair `(entry, artifact)` is
@@ -1745,20 +1651,20 @@ counted once even when it produces several artifacts. New publications always
 record the complete mapping. `command_records` is the immutable, canonically
 ordered historical query projection for those same commands. It retains the
 accepted recipe, working directory, policy and exclusivity flags, queue and
-requirement state, attempt selection and prior disposition, source digest,
+requirement state, accepted selection and prior disposition, source digest,
 planning detail, accounting bucket and reason, and terminal disposition. Its
 bucket totals must exactly equal `command_outcomes`. Later command metadata or
 terminal publications never reinterpret these records.
 
-When a later attempt publishes the same logical run ID, publication merges its
-terminal command state into that run item, preserves the original accepted
-time and policy-skipped records, and retains successful prior outcomes that the
-new attempt correctly selected as not needed. Artifact mismatch does not keep
-the logical command queue unresolved: a command that ran to completion is a
-durable success regardless of comparison outcome.
+One run ID owns one accepted plan and each selected execution owns at most one
+terminal outcome. Resume completes only never-started or stopped work in that
+fixed plan, or retries its publication; it never merges a later attempt under
+the same run ID. Artifact mismatch does not keep the command queue unresolved:
+a command that ran to completion is a durable execution success regardless of
+comparison outcome.
 
 The `executions` array records one explicit timing projection for each launched
-attempt in accepted execution order. Planned work that never launched has no
+execution in accepted execution order. Planned work that never launched has no
 timing item. Timing is
 diagnostic only: it does not affect identity, currentness, selection,
 comparison, or reproduction-requirement update. Its target follows the run-state
@@ -1795,7 +1701,7 @@ records no longer reachable from current execution state.
 A stopped run or an operational failure before final reproduction publication
 leaves the current artifact map unchanged. Confirmations already written for
 matched executions remain intact. A publication failure may be retried from
-the durable run-output manifest through the guarded resume route without
+the durable comparison and publication rows through the guarded resume route without
 rerunning terminal execution attempts. Terminal lifecycle events may still
 update the run index and human Runs table without publishing partial artifact
 outcomes.
@@ -1858,20 +1764,20 @@ scans the immediate date directories for the exact matching leaf. Zero matches
 is not found; more than one match is an integrity failure. There is no date
 argument, persistent run index, or legacy-path lookup.
 
-The directory contains the durable run state, one project-layout `workspace/`,
-and one `research-log-reproduction-staging/2` manifest. The historical
-filename `staging.json` is retained for compatibility, but the v2 manifest is
-a durable comparison and run-output index rather than a copied staging bundle.
-Each execution record contains exactly `bytes`, `complete`, `diagnostics`,
-`entry`, `execution_id`, `outputs`, and `path`; `path` is `workspace`. Each
-output records its artifact identity, declared kind, availability, exact
-workspace-relative path, outcome and reason, selected comparison profile, and
-retained and regenerated fingerprints. The full record is written atomically
-before any reproduction-requirement update.
+The directory contains run-local `state.sqlite`, one project-layout
+`workspace/`, private runtime and diagnostic directories, and the retained
+execution output trees. Identity-scoped comparison rows in `state.sqlite` are
+the durable staging index. Each comparison retains byte count, completion,
+diagnostic paths, entry and execution identity, workspace path, and the closed
+artifact set. Each artifact row records its declared kind, availability,
+exact staged path, outcome and reason, comparison profile, retained and
+regenerated fingerprints, and any evidence-scoped detail. The comparison and
+artifact rows commit atomically before the separate `pyrun.json` requirement
+effect is attempted.
 
-Reproduction must never overwrite or delete a retained run directory or staged
-bundle. There is no discard, cleanup, or supersede command. A researcher may
-delete material directly from `<project>/tmp/reproduction`.
+Reproduction must never overwrite or delete a retained run directory or its
+staged output trees. There is no discard, cleanup, or supersede command. A
+researcher may delete material directly from `<project>/tmp/reproduction`.
 
 ### Promotion
 
@@ -1897,7 +1803,7 @@ does not invalidate an already published reproduction result.
 Promotion is a researcher-directed research mutation. It atomically updates
 retained outputs, the related `pyrun.json`, and reproduction state. It must not
 change `data.json` declarations, evidence records or their artifact baselines,
-or run validation. It leaves the staging bundle intact.
+or run validation. It leaves the retained run-local staged sources intact.
 
 ## Locking And Publication
 
@@ -1929,59 +1835,23 @@ invocation-scoped observation detects them.
 Project-wide ordinary and exclusive permits use the existing operation-lock
 implementation at the current Git project root, alongside rather than replacing
 entry and log scope locks. A brief project scheduler mutex protects one bounded
-generated coordinator record beneath the project operation-state directory.
-The record contains waiting exclusive tickets and active permits with run ID,
-execution reference, permit kind, supervisor identity, stable priority, and
-normalized path claims. It is coordination state, not research state or a
-reproduction result.
+SQLite coordinator beneath the project operation-state directory. Its normalized
+tables contain the ticket counter, waiting exclusive tickets, active permits,
+and their ordered path claims. This is coordination state, not research state
+or a reproduction result.
 
 The coordinator path is
-`<project>/.cache/research-log-operations/reproduction-scheduler.json`; its
+`<project>/.cache/research-log-operations/reproduction-scheduler.sqlite`; its
 mutex is `reproduction-scheduler.lock` in the same operation-state directory.
-The strict canonical record has exactly:
-
-```json
-{
-  "schema": "research-log-reproduction-scheduler/1",
-  "next_ticket": 4,
-  "waiters": [
-    {
-      "ticket": 3,
-      "run_id": "reproduce-...",
-      "entry": "e003",
-      "execution_id": "pyrun-exec/v1:...",
-      "plan_order": 7,
-      "supervisor_pid": 12345,
-      "registered_at": "2030-01-01T00:00:02Z"
-    }
-  ],
-  "active": [
-    {
-      "permit_id": "permit-...",
-      "kind": "ordinary",
-      "run_id": "reproduce-...",
-      "entry": "e004",
-      "execution_id": "pyrun-exec/v1:...",
-      "plan_order": 2,
-      "supervisor_pid": 12346,
-      "read_paths": ["/project/docs/research/.../data/input.csv"],
-      "write_paths": ["/project/tmp/reproduction/.../data/output.csv"],
-      "run_path": "/project/tmp/reproduction/.../entries/e004",
-      "writable_paths": ["/project/tmp/reproduction/.../runtime/e004/..."],
-      "granted_at": "2030-01-01T00:00:03Z"
-    }
-  ]
-}
-```
-
-`next_ticket` is a nonnegative monotonically increasing integer within the
-record. Waiters are sorted by `(ticket, run_id, plan_order)` and active permits
-by `(run_id, plan_order, entry, execution_id)`. Each item has exactly the
-fields shown. An exclusive active permit has `kind: "exclusive"` and is the
-only active item. Paths are absolute normalized resolved paths used only for
-same-project scheduling conflict checks. Empty state is removed once no active
-or waiting run can reference it; the mutex path remains ordinary operation-lock
-state.
+It uses SQLite `user_version=1`. `scheduler_state` owns the nonnegative,
+monotonically increasing next ticket. `scheduler_waiters` owns the ticket,
+run/entry/execution identity, accepted plan order, supervisor PID, and
+registration time. `scheduler_permits` owns the permit ID, kind, same accepted
+identity and order, supervisor PID, accepted run path, and grant time.
+`scheduler_claims` owns each ordered `read`, `write`, or `writable` absolute
+normalized path. An exclusive permit is the only active permit. Empty tables
+remain valid coordinator state; neither the database nor mutex is execution or
+research authority.
 
 An ordinary permit is admitted only when it conflicts with no active permit and
 no exclusive ticket is waiting. An exclusive execution first records its ticket,
@@ -1997,12 +1867,20 @@ reproduction-requirement lock, log publication mutex. No code may acquire an
 earlier lock while holding a later one. The scheduler mutex is never held while waiting for
 capacity, running or stopping workers, comparing artifacts, publishing results,
 or invoking validation. A transition that touches coordinator and run state
-takes the locks in that order and writes idempotent state so reconciliation can
-finish either side after interruption.
+takes scheduler then run locks. Permit admission validates the exact accepted
+execution, plan order, kind, resolved claims, and durable running supervisor
+before creating a scheduler row. It commits the grant before attaching the
+same permit ID to the checkpoint. A crash between those commits is reconciled
+from the exact accepted identity and live owner; a retry after attachment is
+idempotent. Release deletes the scheduler permit before clearing the exact
+checkpoint permit. The checkpoint retains the released permit ID as a tombstone
+so only an exact retry is idempotent after interruption.
 
 A scheduling permit is released only after the attempt's `succeeded`, `failed`,
-or `stopped` checkpoint is durable and every registered worker is gone. An incomplete stop
-or recovery retains the active permit and scope lock while a worker survives.
+or `stopped` checkpoint is durable and every registered worker is gone. An
+incomplete stop or recovery retains the active permit and a current SQLite
+owner/worker exclusion while a worker survives; the failed supervisor may
+release its inherited descriptor only after that durable exclusion exists.
 A stopped waiter removes its ticket before releasing its scope lock. Recovery
 reconciles coordinator entries against strict run state and live supervised
 process identity; it may remove a proved-dead waiter or permit but never infer a
@@ -2014,11 +1892,13 @@ no surviving worker. If those conditions cannot be proved, admission fails with
 `reproduction.scheduler.reconciliation_required` instead of waiting indefinitely;
 the owner run must be inspected or recovered before retrying.
 
-Historical reproduction jobs are never rewritten, migrated, or deleted. The
-current runtime accepts only `research-log-reproduction-run/7`; status, stop,
-resume, recovery, and publication reject older job records with
+Historical reproduction jobs are never rewritten, migrated, deleted, or
+decoded. A canonical historical JSON run directory without `state.sqlite` is
+recognized only by its path. Status, stop, resume, recovery, promotion, and
+publication reject it with
 `reproduction.run.unsupported` and direct the caller to start a new current
-run. An unsupported job never blocks current-format admission or scheduling.
+run. It creates no new file and never blocks current-format admission or
+scheduling because it owns no scheduler rows.
 
 ### Shared Publication
 
@@ -2028,12 +1908,21 @@ brief log-local publication mutex built on the existing lock infrastructure.
 It is not a reproduction scope lock and is not held during planning, execution,
 comparison, or per-execution reproduction-requirement update.
 
-Under the mutex, publication must reload current shared state, verify retained
-accepted invocation and comparison evidence, merge only the completed target or lifecycle
-record, append or update run history, compose the human report, and publish the
-two reproduction-owned files atomically. It must detect conflicting concurrent
-or manual edits and preserve the prior complete reproduction bundle on failure.
-It never reads or writes validation state.
+Publication holds the run-state lock, then this publication mutex, then the
+result-store lock. It reloads current shared state, verifies retained accepted
+invocation and comparison evidence, and commits the selected result keys as one
+result-store transaction. Before releasing the locks it records the returned
+generation in `state.sqlite`; report composition, file replacement, and the
+checked report marker follow without repeating that result transaction.
+
+A failure before the result transaction commits returns the durable publication
+stage to `ready`. A failure after it commits retains `result_committed` and is
+report-only on explicit resume. If the process dies before recording the
+generation, the unique run ID and immutable run metadata distinguish `absent`,
+`exact`, and `conflict`. An exact match records the current reproduction
+generation and materializes the current aggregate; this may be a later
+generation committed by another completed run. A conflict fails closed. The
+publisher never reads or writes validation state.
 
 ### Reproduction Requirement And Post-Reproduction Validation
 
@@ -2306,12 +2195,15 @@ and Reproduce require `pyrun.json`; neither executes legacy
 `pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
 legacy validation Reproduction section is not a current report surface.
 
-Parallel scheduling uses `research-log-pyrun/v5`; current reproduction plan,
-run, and status use version 6. Older accepted reproduction job formats are
-unsupported immutable historical files: no current consumer decodes them with
-defaults, resumes them, or transfers their execution provenance. Start a new
-version-6 run instead. The maintained-corpus execution-state cutover is
-complete.
+Parallel scheduling uses `research-log-pyrun/v5`. A current reproduction job
+uses run-local SQLite `user_version=1`, one accepted
+`research-log-reproduction-plan/9`, and the public
+`research-log-reproduction-status/7` projection. JSON
+`research-log-reproduction-run/7` and every earlier accepted reproduction job
+format are unsupported immutable history: no current consumer decodes them
+with defaults, resumes them, or transfers their execution provenance. Start a
+new SQLite-backed run instead. The maintained-corpus execution-state cutover
+is complete.
 
 The result reader accepts only the current consolidated result-store schema.
 Missing, malformed, busy, or unsupported stores fail precisely and do not fall
@@ -2324,11 +2216,13 @@ when the accepted target is completely empty: no recorded commands (including
 nonautomatic commands), artifact cases, boundaries, or planning failures. Under
 the whole-log scope and publication locks, it uses the accepted no-work plan and
 atomically replaces only the generated result and human
-report with canonical empty, not-yet-reproduced state. It creates no run, claims
-no successful execution, and does not invoke research or validation. Supported
-history and absent results remain unchanged. A dry-run preview never performs
-this recovery; incremental, partial, policy-skipped, and blocked no-work targets
-do not gain unsupported-state replacement authority.
+report with canonical empty, not-yet-reproduced state. It creates no run,
+claims no successful execution, and invokes no research execution or worker;
+the enclosing non-dry launch has already evaluated and published current
+mechanical validation before reaching this recovery. Supported history and
+absent results remain unchanged. A dry-run preview never performs this
+recovery; incremental, partial, policy-skipped, and blocked no-work targets do
+not gain unsupported-state replacement authority.
 
 Mechanical validation uses direct execution association and an output-owner
 index for current execution state. It has no legacy output projection or
@@ -2375,9 +2269,11 @@ ENTRY --execution-id ID`. It uses current declarations and retained output
 baselines in an isolated synchronous workspace. It never creates a run or
 changes generated results, reports, validation, promotion, or execution
 metadata. Bare reproduction targets are only log or entry. Current accepted
-plans are plan/9; run/7 and status/7 remain mutable lifecycle records. Earlier
-plans are rejected without migration. Result/10 retains passive read-only
-rendering of historical one-command rows.
+plans are plan/9, their mutable lifecycle lives in run-local SQLite
+`user_version=1`, and status/7 is a derived public projection. JSON run/7 is
+unsupported historical job state, not a current mutable record. Earlier plans
+are rejected without migration. Result/10 retains passive read-only rendering
+of historical one-command rows.
 
 `repair-check` requires one exact stable entry and one complete lowercase
 `pyrun-exec/v1:<64 hexadecimal digits>` identity. It resolves exactly one

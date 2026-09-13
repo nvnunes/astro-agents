@@ -100,10 +100,13 @@ operation completes. A populated log may contain:
 
 Reproduction runs additionally retain durable job state, checkpoints,
 comparison context, and diagnostics beneath the project's `tmp/reproduction/`
-run directory. Clearing disposable result rows never changes that run-local
-state, authored evidence baselines, fingerprint/selection caches, or
-`pyrun.json` observations. The Markdown reports are derived from the store and
-may be rerendered; they are never machine authority.
+run directory. Each current run uses one run-local `state.sqlite`; project-wide
+ordinary/exclusive admission uses
+`.cache/research-log-operations/reproduction-scheduler.sqlite`. Clearing
+disposable result rows never changes that run-local state, authored evidence
+baselines, fingerprint/selection caches, or `pyrun.json` observations. The
+Markdown reports are derived from the result store and may be rerendered; they
+are never machine authority.
 
 Create other optional files and folders only when they are needed. Start navigation
 from the summary for current understanding, scan `entries/` by date and topic,
@@ -977,13 +980,18 @@ is its only filesystem side effect:
   [--execution-timeout-seconds <seconds>] --dry-run
 ```
 
-Launch it by omitting `--dry-run`. The command prints a durable run ID and
-returns immediately while the CLI-owned background job continues. By default,
-selection is incremental. A current execution with
+Launch it by omitting `--dry-run`. When at least one execution is selected, the
+command prints a durable run ID and returns immediately while the CLI-owned
+background job continues. A no-work launch instead prints the current
+reconciliation summary and creates no run ID. By default, selection is
+incremental. A current execution with
 `requires_reproduction: false` needs no execution and does not depend on the
 reproduction cache. Add `--recheck` when you deliberately want
 every currently runnable eligible execution in the selected evidence-relevant
 scope to run again. Recheck does not bypass a planning blocker.
+After reproduction results have been cleared, rebuilding that generated result
+domain requires an explicit `--recheck`; an ordinary incremental launch may
+correctly select no execution and leave the result domain absent.
 
 For one current repaired invocation, use `log repair-check --path LOG --entry
 ENTRY --execution-id ID`. It is isolated and synchronous; automatic policy and
@@ -1069,6 +1077,11 @@ source change after acceptance requires a new run, and an unnoticed edit can
 invalidate conclusions and requires reassessment. An optional scheduled monitor may use `status --json` to
 report meaningful progress after you confirm that you want monitoring; it
 never controls the run.
+
+Current run management recognizes only a canonical run-local `state.sqlite`.
+A canonical historical JSON job without that database is left byte-for-byte
+unchanged and returns `reproduction.run.unsupported`; start a new run rather
+than migrating or repairing it in place.
 
 Each execution is attempted at most once in one run. Its complete comparison is
 recorded before a completed command clears `requires_reproduction` in

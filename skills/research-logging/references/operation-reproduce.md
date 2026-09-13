@@ -261,5 +261,8 @@ It does not move or discard the run folder.
 `log reproduce` accepts only whole-log or stable-entry targets. It has no
 one-command repair mode, and run-ID single-execution presentation is removed.
 Each current run stores one immutable plan/9 and mutable checkpoint
-state; stopped work resumes only that accepted plan. Use `log repair-check` for
-one current invocation. Historical result/10 execution rows remain read-only.
+state in its run-local `state.sqlite`; stopped work resumes only that accepted
+plan. Use `log repair-check` for one current invocation. Historical result/10
+execution rows remain read-only. Canonical historical JSON jobs without
+`state.sqlite` are unsupported and left unchanged; start a new run instead of
+asking Reproduce to migrate or repair one.

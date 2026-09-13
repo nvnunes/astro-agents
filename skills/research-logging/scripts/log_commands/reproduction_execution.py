@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -22,6 +21,7 @@ from typing import (
     BinaryIO,
     Callable,
     Iterable,
+    Literal,
     Mapping,
     Protocol,
     Sequence,
@@ -40,7 +40,6 @@ from research_log_data import (
     observe_directory_tree,
     observe_file_content,
     observe_fingerprint,
-    parse_fingerprint,
     resolve_input_token,
 )
 from validation.output_bindings import OutputBindingError, project_output_bindings
@@ -59,8 +58,12 @@ from .reproduction_contract import (
     accepted_invocation,
     successful_checkpoint_state,
 )
-from .reproduction_paths import canonical_run_root, checkpoint_temporary_path
-from .storage import atomic_write_text
+from .reproduction_job_storage import (
+    CheckpointProjection as StoredCheckpointProjection,
+)
+from .reproduction_job_storage import ExecutionIdentity as StoredExecutionIdentity
+from .reproduction_job_storage import WorkerRecord as StoredWorkerRecord
+from .reproduction_paths import canonical_run_root
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -203,24 +206,25 @@ class _BatchSchedule:
 
 
 @dataclass(frozen=True)
-class ExecutionControl:
-    """Runtime controls shared by one recipe or complete plan execution."""
+class CurrentExecutionControl:
+    """Runtime controls for one SQLite-owned fixed-plan invocation."""
 
+    permit_id: str
     resume: bool = False
     execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
     stop_requested: Callable[[], bool] = lambda: False
     confinement: ConfinementBackend | None = None
-    generated_paths: Mapping[Path, tuple[Path, str]] | None = None
-    source: _ExecutionSource | None = None
-    prior_attempts: frozenset[str] = frozenset()
-    prior_failures: frozenset[str] = frozenset()
-    attempt_completed: Callable[[ExecutionAttempt], bool] = lambda _attempt: True
-    progress: Callable[[str, str, str, ExecutionAttempt | None], None] = (
-        lambda _event, _entry, _execution_id, _attempt: None
-    )
-    worker_progress: Callable[[str, str, tuple[WorkerRecord, ...]], None] = (
-        lambda _entry, _execution_id, _workers: None
-    )
+
+
+@dataclass(frozen=True)
+class CurrentPlanControl:
+    """Supervisor-owned controls for the complete current-format execution stage."""
+
+    supervisor_pid: int
+    resume: bool = False
+    execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
+    stop_requested: Callable[[], bool] = lambda: False
+    confinement: ConfinementBackend | None = None
 
 
 class ReproductionControlPlaneError(ActionError):
@@ -234,19 +238,6 @@ class ReproductionControlPlaneError(ActionError):
         message = str(error) or type(error).__name__
         super().__init__(code, message)
         self.cleanup_incomplete = cleanup_incomplete
-
-
-class _ControlPlaneState:
-    """Share the first control-plane failure across concurrent attempts."""
-
-    def __init__(self) -> None:
-        self.failure = threading.Event()
-        self.errors: list[ReproductionControlPlaneError] = []
-
-    def record(self, error: ReproductionControlPlaneError) -> None:
-        if not self.errors:
-            self.errors.append(error)
-        self.failure.set()
 
 
 @dataclass(frozen=True)
@@ -264,7 +255,6 @@ class _PreparedExecution:
     captures: Mapping[str, Path]
     stdout: Path
     stderr: Path
-    checkpoint: Path
 
 
 @dataclass(frozen=True)
@@ -305,27 +295,14 @@ class _CommandContext:
 
 
 @dataclass(frozen=True)
-class _PlanExecutionContext:
+class _CurrentPlanExecutionContext:
     log: LogContext
     plan: ReproductionPlan
     workspace: ReproductionWorkspace
-    control: ExecutionControl
+    control: CurrentPlanControl
     backend: ConfinementBackend
-    sources: Mapping[str, _ExecutionSource]
+    sources: dict[str, _ExecutionSource]
     generated: Mapping[Path, tuple[Path, str]]
-
-
-@dataclass(frozen=True)
-class _AttemptFailure:
-    error: BaseException
-    prior: ExecutionCheckpoint | None
-
-
-@dataclass(frozen=True)
-class _CheckpointLoadContext:
-    workspace: ReproductionWorkspace
-    entry: str
-    execution_id: str
 
 
 @dataclass(frozen=True)
@@ -342,6 +319,27 @@ class _LaunchedProcess:
     process: subprocess.Popen[bytes]
     pumps: tuple[threading.Thread, ...]
     stream_errors: list[BaseException]
+
+
+@dataclass(frozen=True)
+class _CurrentPreparedInvocation:
+    identity: StoredExecutionIdentity
+    prior: StoredCheckpointProjection
+    source: _ExecutionSource
+    accepted: AcceptedInvocation
+    generated: Mapping[Path, tuple[Path, str]]
+    prepared: _PreparedExecution
+
+
+@dataclass(frozen=True)
+class _CurrentProcessResult:
+    prepared: _PreparedExecution
+    outcome: _ProcessOutcome
+    active_elapsed: float
+    scratch: Path
+    started_at: str
+    stdout: str
+    stderr: str
 
 
 @dataclass(frozen=True)
@@ -417,33 +415,10 @@ def preflight_execution_safety(
     (backend or DarwinSeatbelt()).preflight()
 
 
-def prepare_output_workspace(
+def populate_current_output_workspace(
     project_root: Path, run_root: Path, run_id: str
 ) -> ReproductionWorkspace:
-    """Create the sole run-ID-bound output workspace and runtime paths."""
-
-    if RUN_ID_RE.fullmatch(run_id) is None:
-        raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
-    source = project_root.resolve()
-    try:
-        target_root = canonical_run_root(run_root, source, require_exists=False)
-    except OSError as error:
-        raise ActionError(
-            "reproduction.run.path_invalid",
-            "run directory must use the canonical dated reproduction path",
-        ) from error
-    if target_root.exists() or target_root.is_symlink():
-        raise ActionError(
-            "reproduction.run.exists", f"run directory already exists: {run_root}"
-        )
-    target_root.mkdir(parents=True)
-    return _populate_output_workspace(source, target_root, run_id, cleanup_root=True)
-
-
-def populate_output_workspace(
-    project_root: Path, run_root: Path, run_id: str
-) -> ReproductionWorkspace:
-    """Populate an accepted run directory with no current-attempt workspace."""
+    """Populate one accepted SQLite run without legacy metadata directories."""
 
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
@@ -454,12 +429,15 @@ def populate_output_workspace(
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is invalid"
         ) from error
-    # Acceptance installs the immutable plan before the small mutable run record.
-    # A resumed workspace must retain those two records, but no attempt archive
-    # exists in the fixed-plan lifecycle.
-    allowed = {"plan.json", "run.json", "supervisor.json", "supervisor.log"}
-    entries = tuple(root.iterdir())
-    if any(path.name not in allowed for path in entries):
+    allowed = {
+        "state.sqlite",
+        "state.sqlite-journal",
+        "state.sqlite-shm",
+        "state.sqlite-wal",
+        "state.lock",
+        "supervisor.log",
+    }
+    if any(path.name not in allowed for path in root.iterdir()):
         raise ActionError(
             "reproduction.run.path_invalid", "accepted run directory is not pristine"
         )
@@ -467,7 +445,11 @@ def populate_output_workspace(
 
 
 def _populate_output_workspace(
-    source: Path, target_root: Path, run_id: str, *, cleanup_root: bool
+    source: Path,
+    target_root: Path,
+    run_id: str,
+    *,
+    cleanup_root: bool,
 ) -> ReproductionWorkspace:
     """Create an empty writable project-layout projection for generated files."""
 
@@ -477,20 +459,14 @@ def _populate_output_workspace(
         runtime = target_root / "runtime"
         diagnostics = target_root / "diagnostics"
         staging = target_root / "executions"
-        for directory in (runtime, diagnostics, target_root / "checkpoints"):
+        for directory in (runtime, diagnostics, staging):
             directory.mkdir()
         _sync_directory(target_root)
     except BaseException:
         if cleanup_root:
             shutil.rmtree(target_root, ignore_errors=True)
         else:
-            for name in (
-                "workspace",
-                "runtime",
-                "diagnostics",
-                "executions",
-                "checkpoints",
-            ):
+            for name in ("workspace", "runtime", "diagnostics", "executions"):
                 path = target_root / name
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path, ignore_errors=True)
@@ -506,49 +482,80 @@ def _populate_output_workspace(
     )
 
 
-def open_existing_workspace(
+def open_current_workspace(
     project_root: Path, run_root: Path, run_id: str
 ) -> ReproductionWorkspace:
-    """Open a stopped run's exact existing paths without recreating them."""
+    """Open the SQLite-format workspace without requiring legacy metadata paths."""
 
     if RUN_ID_RE.fullmatch(run_id) is None:
         raise ActionError("reproduction.run_id.invalid", f"invalid run ID: {run_id}")
-    root = run_root.resolve()
-    paths = [root / name for name in ("workspace", "runtime", "diagnostics")]
-    paths.append(root / "checkpoints")
-    if any(path.is_symlink() or not path.is_dir() for path in paths):
+    root = canonical_run_root(run_root, project_root.resolve(), require_exists=True)
+    paths = {
+        "workspace": root / "workspace",
+        "runtime": root / "runtime",
+        "diagnostics": root / "diagnostics",
+        "executions": root / "executions",
+    }
+    if any(path.is_symlink() or not path.is_dir() for path in paths.values()):
         raise ActionError(
-            "reproduction.workspace.invalid", "stopped run workspace is incomplete"
+            "reproduction.workspace.invalid", "current run workspace is incomplete"
         )
     return ReproductionWorkspace(
         run_id,
         root,
         project_root.resolve(),
-        paths[0],
-        paths[1],
-        paths[2],
-        root / "executions",
+        paths["workspace"],
+        paths["runtime"],
+        paths["diagnostics"],
+        paths["executions"],
     )
 
 
-def execute_planned_recipe(
+def execute_current_planned_recipe(
     log: LogContext,
     plan: ReproductionPlan,
     planned: Mapping[str, object],
     workspace: ReproductionWorkspace,
-    control: ExecutionControl = ExecutionControl(),
+    control: CurrentExecutionControl,
 ) -> ExecutionAttempt:
-    """Execute one accepted recipe against its run-local output workspace."""
+    """Execute one invocation whose mutable state is owned by ``state.sqlite``."""
 
-    sources: dict[str, _ExecutionSource] = {}
-    if control.source is not None:
-        sources[control.source.entry.id] = control.source
-    generated = control.generated_paths
-    if generated is None:
-        generated = _generated_output_paths(log, plan, workspace, sources=sources)
+    current = _prepare_current_invocation(log, plan, planned, workspace, control)
+    result = _run_current_invocation(current, plan, workspace, control)
+    return _finish_current_invocation(
+        current, result, planned, workspace, control
+    )
+
+
+def _prepare_current_invocation(
+    log: LogContext,
+    plan: ReproductionPlan,
+    planned: Mapping[str, object],
+    workspace: ReproductionWorkspace,
+    control: CurrentExecutionControl,
+) -> _CurrentPreparedInvocation:
+    """Validate and prepare one already-permitted current invocation."""
+
+    from .reproduction_job_storage import (
+        ExecutionIdentity,
+        load_execution_checkpoint,
+    )
+
     entry_id = _required_string(planned, "entry")
+    execution_id = _required_string(planned, "execution_id")
+    identity = ExecutionIdentity(entry_id, execution_id)
+    prior = load_execution_checkpoint(workspace.run_root, identity)
+    if prior is None or prior.state != "active" or prior.permit_id != control.permit_id:
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "reproduction.checkpoint.invalid",
+                "current execution has no matching attached permit",
+            )
+        )
+    sources: dict[str, _ExecutionSource] = {}
+    generated = _generated_output_paths(log, plan, workspace, sources=sources)
     source = _execution_source(log, plan, workspace, entry_id, sources)
-    accepted = source.invocation(_required_string(planned, "execution_id"))
+    accepted = source.invocation(execution_id)
     prepared = _prepare_execution(
         log,
         planned,
@@ -558,70 +565,130 @@ def execute_planned_recipe(
     )
     _verify_accepted_source_observations(prepared, source.entry.root, workspace)
     _preflight_output_paths(prepared.output_paths.values(), prepared.run_root)
-    prior = (
-        _load_checkpoint_control_plane(
-            workspace,
-            prepared.entry,
-            prepared.execution_id,
-        )
-        if control.resume
-        else None
+    _clear_outputs(prepared.output_paths.values())
+    return _CurrentPreparedInvocation(
+        identity, prior, source, accepted, generated, prepared
     )
-    if prior is None or prior.state == "stopped":
-        _clear_outputs(prepared.output_paths.values())
-    prior_started_at = prior.started_at if prior is not None else None
-    prior_elapsed = prior.elapsed_seconds or 0.0 if prior is not None else 0.0
-    backend = control.confinement or DarwinSeatbelt()
 
-    def launched(started_at: str) -> None:
-        _write_checkpoint(
-            prepared.checkpoint,
-            _active_checkpoint(
-                prepared,
-                workspace,
-                started_at=prior_started_at or started_at,
-                elapsed_seconds=prior_elapsed,
+
+def _run_current_invocation(
+    current: _CurrentPreparedInvocation,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    control: CurrentExecutionControl,
+) -> _CurrentProcessResult:
+    """Launch one child after durable scratch/start ownership is committed."""
+
+    from .reproduction_job_storage import (
+        ExecutionStart,
+        record_execution_start,
+        replace_execution_workers,
+    )
+
+    backend = control.confinement or DarwinSeatbelt()
+    scratch = Path(tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp"))
+    prepared = replace(
+        current.prepared,
+        environment={**current.prepared.environment, "TMPDIR": str(scratch)},
+    )
+    started_at = current.prior.started_at or _utc_now()
+    stdout = prepared.stdout.relative_to(workspace.run_root).as_posix()
+    stderr = prepared.stderr.relative_to(workspace.run_root).as_posix()
+    try:
+        command = _confined_command(
+            backend, prepared.command, plan, workspace, prepared
+        )
+        record_execution_start(
+            workspace.run_root,
+            ExecutionStart(
+                current.identity.entry,
+                current.identity.execution_id,
+                control.permit_id,
+                _utc_now(),
+                started_at,
+                str(scratch),
+                elapsed_seconds=current.prior.elapsed_seconds,
+                stdout_path=stdout,
+                stderr_path=stderr,
             ),
         )
-
-    outcome, launched_at, active_elapsed = _run_with_scratch(
+    except BaseException as error:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise ReproductionControlPlaneError(error) from error
+    outcome, _launched_at, active_elapsed = _run_prepared(
         prepared,
-        backend,
-        plan,
+        command,
         workspace,
         _RunCallbacks(
             control.stop_requested,
             control.execution_timeout_seconds,
-            launched,
+            lambda _at: None,
             lambda workers: _control_plane_call(
-                control.worker_progress,
-                prepared.entry,
-                prepared.execution_id,
-                workers,
+                replace_execution_workers,
+                workspace.run_root,
+                current.identity,
+                tuple(_stored_worker(item) for item in workers),
             ),
         ),
     )
+    if any(worker.state == "running" for worker in outcome.workers):
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "worker_cleanup_incomplete",
+                "terminal execution retains a supervised worker",
+            ),
+            cleanup_incomplete=True,
+        )
+    try:
+        shutil.rmtree(scratch)
+    except OSError as error:
+        raise ReproductionControlPlaneError(
+            ActionError("scratch_cleanup_incomplete", str(error)),
+            cleanup_incomplete=True,
+        ) from error
+    return _CurrentProcessResult(
+        prepared, outcome, active_elapsed, scratch, started_at, stdout, stderr
+    )
+
+
+def _finish_current_invocation(
+    current: _CurrentPreparedInvocation,
+    result: _CurrentProcessResult,
+    planned: Mapping[str, object],
+    workspace: ReproductionWorkspace,
+    control: CurrentExecutionControl,
+) -> ExecutionAttempt:
+    """Commit terminal output, release its permit, and clear scratch ownership."""
+
+    from .reproduction_job_storage import (
+        CheckpointOutput as StoredCheckpointOutput,
+    )
+    from .reproduction_job_storage import (
+        ExecutionTerminal,
+        clear_execution_permit,
+        clear_execution_scratch,
+        load_scheduler_owner,
+        record_execution_terminal,
+    )
+    from .reproduction_scheduler import SchedulerIdentity, reconcile_permit
+
+    prepared = result.prepared
     outputs = _observe_available_outputs(prepared.output_paths, prepared.execution)
     state, failure_code, failure_message = _attempt_state(
-        outcome,
-        len(outputs),
-        len(prepared.output_paths),
+        result.outcome, len(outputs), len(prepared.output_paths)
     )
-    finished_at = None if outcome.stopped or launched_at is None else _utc_now()
+    finished_at = None if state == "stopped" else _utc_now()
+    elapsed = current.prior.elapsed_seconds + result.active_elapsed
     checkpoint = ExecutionCheckpoint(
-        prepared.entry,
-        prepared.execution_id,
+        current.identity.entry,
+        current.identity.execution_id,
         state,
-        prepared.checkpoint.relative_to(workspace.run_root).as_posix(),
+        "state.sqlite",
         finished_at if successful_checkpoint_state(state) else None,
         outputs,
-        prior_started_at or launched_at,
+        result.started_at,
         finished_at,
-        (
-            prior_elapsed + active_elapsed
-            if prior_started_at is not None or launched_at is not None
-            else None
-        ),
+        elapsed,
         (
             None
             if failure_code is None
@@ -632,44 +699,596 @@ def execute_planned_recipe(
             }
         ),
     )
-    _write_checkpoint(prepared.checkpoint, checkpoint)
     if successful_checkpoint_state(state):
         try:
-            _verify_accepted_source_observations(prepared, source.entry.root, workspace)
-            _verify_accepted_input_observations(accepted, generated)
-            _materialize_outputs(prepared, workspace, source)
-        except (OSError, ValueError) as error:
-            failure_code = "output_materialization_failed"
+            _verify_accepted_source_observations(
+                prepared, current.source.entry.root, workspace
+            )
+            _verify_accepted_input_observations(
+                current.accepted, current.generated
+            )
+            _materialize_outputs(prepared, workspace, current.source)
+        except (OSError, ValueError, ActionError) as error:
+            failure_code = cast(
+                str, getattr(error, "code", "output_materialization_failed")
+            )
             failure_message = str(error)
-            checkpoint = ExecutionCheckpoint(
-                prepared.entry,
-                prepared.execution_id,
-                "failed",
-                checkpoint.path,
-                None,
-                checkpoint.outputs,
-                checkpoint.started_at,
-                checkpoint.finished_at,
-                checkpoint.elapsed_seconds,
-                {
+            finished_at = _utc_now()
+            checkpoint = replace(
+                checkpoint,
+                state="failed",
+                completed_at=None,
+                finished_at=finished_at,
+                failure={
                     "code": failure_code,
                     "message": failure_message,
-                    "recorded_at": _utc_now(),
+                    "recorded_at": finished_at,
                 },
             )
-            _write_checkpoint(prepared.checkpoint, checkpoint)
+    stored_workers = tuple(_stored_worker(item) for item in result.outcome.workers)
+    record_execution_terminal(
+        workspace.run_root,
+        ExecutionTerminal(
+            current.identity.entry,
+            current.identity.execution_id,
+            control.permit_id,
+            cast(Literal["succeeded", "failed", "stopped"], checkpoint.state),
+            _utc_now(),
+            checkpoint.finished_at,
+            elapsed,
+            tuple(
+                StoredCheckpointOutput(
+                    cast(str, item["artifact"]),
+                    cast(Mapping[str, object], item["fingerprint"]),
+                )
+                for item in checkpoint.outputs
+            ),
+            failure_code=(
+                None if checkpoint.failure is None else str(checkpoint.failure["code"])
+            ),
+            failure_message=(
+                None
+                if checkpoint.failure is None
+                else str(checkpoint.failure["message"])
+            ),
+            failure_recorded_at=(
+                None
+                if checkpoint.failure is None
+                else str(checkpoint.failure["recorded_at"])
+            ),
+            workers=stored_workers,
+        ),
+    )
+    scheduling = SchedulerIdentity(
+        workspace.source_project,
+        workspace.run_id,
+        current.identity.entry,
+        current.identity.execution_id,
+        _execution_order(planned),
+    )
+    reconciliation = reconcile_permit(
+        scheduling, load_scheduler_owner(workspace.run_root)
+    )
+    if reconciliation.clear_run_permit_id != control.permit_id:
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "reproduction.scheduler.reconciliation_required",
+                "terminal permit was not released exactly",
+            )
+        )
+    clear_execution_permit(
+        workspace.run_root,
+        current.identity,
+        control.permit_id,
+        cast(Literal["succeeded", "failed", "stopped"], checkpoint.state),
+        _utc_now(),
+    )
+    clear_execution_scratch(
+        workspace.run_root, current.identity, str(result.scratch)
+    )
     return ExecutionAttempt(
-        prepared.entry,
-        prepared.execution_id,
-        outcome.returncode,
-        outcome.stopped,
+        current.identity.entry,
+        current.identity.execution_id,
+        result.outcome.returncode,
+        result.outcome.stopped,
         failure_code,
         failure_message,
         checkpoint,
-        outcome.workers,
-        prepared.stdout.relative_to(workspace.run_root).as_posix(),
-        prepared.stderr.relative_to(workspace.run_root).as_posix(),
+        result.outcome.workers,
+        result.stdout,
+        result.stderr,
     )
+
+
+def _stored_worker(worker: WorkerRecord) -> StoredWorkerRecord:
+    """Translate one runtime worker without leaking storage types publicly."""
+
+    return StoredWorkerRecord(
+        worker.worker_id,
+        worker.parent_worker_id,
+        worker.pid,
+        cast(Literal["running", "exited"], worker.state),
+        worker.registered_at,
+        worker.last_observed_at,
+    )
+
+
+def execute_current_reproduction_plan(
+    log: LogContext,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    control: CurrentPlanControl,
+) -> ExecutionBatch:
+    """Execute one immutable plan using only SQLite scheduling and checkpoints."""
+
+    ordered = sorted(plan.executions, key=_execution_order)
+    _require_execution_order(ordered)
+    context = _prepare_current_plan_context(log, plan, workspace, control)
+    schedule = _recover_current_schedule(context, ordered)
+    _run_current_schedule(context, schedule)
+    return _current_execution_batch(schedule, ordered)
+
+
+def _prepare_current_plan_context(
+    log: LogContext,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+    control: CurrentPlanControl,
+) -> _CurrentPlanExecutionContext:
+    """Resolve immutable execution inputs once for the complete current plan."""
+
+    sources: dict[str, _ExecutionSource] = {}
+    generated = _generated_output_paths(log, plan, workspace, sources=sources)
+    return _CurrentPlanExecutionContext(
+        log,
+        plan,
+        workspace,
+        control,
+        control.confinement or DarwinSeatbelt(),
+        sources,
+        generated,
+    )
+
+
+def _recover_current_schedule(
+    context: _CurrentPlanExecutionContext,
+    ordered: Sequence[Mapping[str, object]],
+) -> _BatchSchedule:
+    """Rebuild the runnable schedule from identity-local durable checkpoints."""
+
+    schedule = _BatchSchedule(list(ordered), {}, {}, [], [], set(), set())
+    for planned in tuple(schedule.pending):
+        _recover_current_planned_execution(context, schedule, planned)
+    return schedule
+
+
+def _recover_current_planned_execution(
+    context: _CurrentPlanExecutionContext,
+    schedule: _BatchSchedule,
+    planned: Mapping[str, object],
+) -> None:
+    """Apply one checkpoint's exact recovery disposition to the schedule."""
+
+    from .reproduction_job_storage import load_execution_checkpoint
+
+    entry = _required_string(planned, "entry")
+    execution_id = _required_string(planned, "execution_id")
+    source = _execution_source(
+        context.log, context.plan, context.workspace, entry, context.sources
+    )
+    checkpoint = load_execution_checkpoint(
+        context.workspace.run_root, StoredExecutionIdentity(entry, execution_id)
+    )
+    reference = _execution_reference(entry, execution_id)
+    if checkpoint is None:
+        return
+    if checkpoint.state == "stopped":
+        if not context.control.resume:
+            raise ReproductionControlPlaneError(
+                ActionError(
+                    "reproduction.checkpoint.invalid",
+                    "fresh execution cannot reuse a stopped checkpoint",
+                )
+            )
+        _reset_current_stopped_workspace(context.workspace, entry, execution_id)
+        return
+    if checkpoint.state == "active" and checkpoint.started_at is None:
+        return
+    if checkpoint.state not in {"succeeded", "failed"}:
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "reproduction.checkpoint.recovery_required",
+                f"active execution requires recovery: {reference}",
+            )
+        )
+    if checkpoint.state == "succeeded":
+        local = _runtime_checkpoint(checkpoint)
+        if not _checkpoint_outputs_current(
+            local, source, context.workspace, execution_id
+        ):
+            raise ReproductionControlPlaneError(
+                ActionError(
+                    "reproduction.checkpoint.changed",
+                    f"completed checkpoint is not reusable: {reference}",
+                )
+            )
+        prepared = _prepare_execution(
+            context.log,
+            planned,
+            context.workspace,
+            context.generated,
+            _PreparationOptions(source),
+        )
+        _materialize_outputs(prepared, context.workspace, source)
+    else:
+        schedule.unavailable.add(reference)
+    schedule.complete.add(reference)
+    schedule.reused.append(reference)
+    schedule.pending.remove(planned)
+
+
+def _run_current_schedule(
+    context: _CurrentPlanExecutionContext, schedule: _BatchSchedule
+) -> None:
+    """Drain runnable identities while honoring durable and local stop requests."""
+
+    with ThreadPoolExecutor(
+        max_workers=context.plan.jobs, thread_name_prefix="reproduce-current"
+    ) as pool:
+        while schedule.pending or schedule.running:
+            if _current_stop_requested(context):
+                schedule.stopped = True
+            progress = _resolve_current_pending(
+                schedule, context.workspace.run_root
+            )
+            if not schedule.stopped:
+                progress = (
+                    _launch_current_ready(
+                        schedule,
+                        pool,
+                        context.plan.jobs,
+                        context.workspace.run_root,
+                        lambda planned: _execute_current_scheduled_recipe(
+                            context, planned
+                        ),
+                    )
+                    or progress
+                )
+            if schedule.running:
+                _collect_current_finished(schedule)
+            elif schedule.stopped:
+                break
+            elif schedule.pending and not progress:
+                time.sleep(POLL_SECONDS)
+
+
+def _current_stop_requested(context: _CurrentPlanExecutionContext) -> bool:
+    from .reproduction_job_storage import load_run_control
+
+    state = load_run_control(context.workspace.run_root)
+    return (
+        context.control.stop_requested()
+        or state.stop_requested_at is not None
+        or state.phase == "stopping"
+    )
+
+
+def _current_execution_batch(
+    schedule: _BatchSchedule, ordered: Sequence[Mapping[str, object]]
+) -> ExecutionBatch:
+    """Return attempts in accepted order without reconstructing skipped identities."""
+
+    ordered_attempts = tuple(
+        schedule.attempts[reference]
+        for reference in (
+            _execution_reference(
+                _required_string(item, "entry"),
+                _required_string(item, "execution_id"),
+            )
+            for item in ordered
+        )
+        if reference in schedule.attempts
+    )
+    return ExecutionBatch(
+        ordered_attempts,
+        tuple(schedule.reused),
+        tuple(schedule.skips),
+        schedule.stopped,
+    )
+
+
+def current_execution_attempts(
+    log: LogContext,
+    plan: ReproductionPlan,
+    workspace: ReproductionWorkspace,
+) -> tuple[ExecutionAttempt, ...]:
+    """Reconstruct comparison-ready terminal attempts from SQLite checkpoints."""
+
+    from .reproduction_job_storage import ExecutionIdentity, load_execution_checkpoint
+
+    results = []
+    sources: dict[str, _ExecutionSource] = {}
+    for planned in sorted(plan.executions, key=_execution_order):
+        entry = _required_string(planned, "entry")
+        execution_id = _required_string(planned, "execution_id")
+        checkpoint = load_execution_checkpoint(
+            workspace.run_root, ExecutionIdentity(entry, execution_id)
+        )
+        if checkpoint is None or checkpoint.state not in {"succeeded", "failed"}:
+            continue
+        runtime = _runtime_checkpoint(checkpoint)
+        source = _execution_source(log, plan, workspace, entry, sources)
+        if checkpoint.state == "succeeded" and not _checkpoint_outputs_current(
+            runtime, source, workspace, execution_id
+        ):
+            raise ActionError(
+                "reproduction.checkpoint.changed",
+                f"completed checkpoint is not current: {entry}:{execution_id}",
+            )
+        results.append(
+            ExecutionAttempt(
+                entry,
+                execution_id,
+                0 if checkpoint.state == "succeeded" else None,
+                False,
+                checkpoint.failure_code,
+                checkpoint.failure_message,
+                runtime,
+                (),
+                checkpoint.stdout_path or "",
+                checkpoint.stderr_path or "",
+            )
+        )
+    return tuple(results)
+
+
+def _runtime_checkpoint(checkpoint: object) -> ExecutionCheckpoint:
+    from .reproduction_job_storage import CheckpointProjection
+
+    if not isinstance(checkpoint, CheckpointProjection):
+        raise ReproductionControlPlaneError(
+            ActionError(
+                "reproduction.checkpoint.invalid", "invalid checkpoint projection"
+            )
+        )
+    failure = (
+        None
+        if checkpoint.failure_code is None
+        else {
+            "code": checkpoint.failure_code,
+            "message": checkpoint.failure_message,
+            "recorded_at": checkpoint.failure_recorded_at,
+        }
+    )
+    return ExecutionCheckpoint(
+        checkpoint.entry,
+        checkpoint.execution_id,
+        checkpoint.state,
+        "state.sqlite",
+        checkpoint.finished_at if checkpoint.state == "succeeded" else None,
+        tuple(
+            {"artifact": item.artifact, "fingerprint": dict(item.fingerprint)}
+            for item in checkpoint.outputs
+        ),
+        checkpoint.started_at,
+        checkpoint.finished_at,
+        checkpoint.elapsed_seconds,
+        failure,
+    )
+
+
+def _reset_current_stopped_workspace(
+    workspace: ReproductionWorkspace, entry: str, execution_id: str
+) -> None:
+    """Discard only the stopped identity's private, non-authoritative bytes."""
+
+    for path in (
+        _attempt_root(workspace, entry, execution_id),
+        _attempt_runtime_root(workspace, entry, execution_id),
+    ):
+        if path.is_symlink():
+            raise ReproductionControlPlaneError(
+                ActionError("reproduction.workspace.invalid", str(path))
+            )
+        if path.exists():
+            shutil.rmtree(path)
+
+
+def _resolve_current_pending(
+    schedule: _BatchSchedule,
+    run_root: Path,
+) -> bool:
+    from .reproduction_job_storage import ExecutionIdentity, load_execution_readiness
+
+    progress = False
+    for planned in tuple(schedule.pending):
+        entry = _required_string(planned, "entry")
+        execution_id = _required_string(planned, "execution_id")
+        readiness = load_execution_readiness(
+            run_root, ExecutionIdentity(entry, execution_id)
+        )
+        if readiness.disposition != "dependency_failed":
+            continue
+        dependencies = tuple(
+            sorted(
+                _execution_reference(item.entry, item.execution_id)
+                for item in readiness.failed_dependencies
+            )
+        )
+        reference = _execution_reference(entry, execution_id)
+        schedule.skips.append(
+            {
+                "depends_on": list(dependencies),
+                "entry": entry,
+                "execution_id": execution_id,
+                "reason": "dependency_failed",
+            }
+        )
+        schedule.unavailable.add(reference)
+        schedule.complete.add(reference)
+        schedule.pending.remove(planned)
+        progress = True
+    return progress
+
+
+def _launch_current_ready(
+    schedule: _BatchSchedule,
+    pool: ThreadPoolExecutor,
+    jobs: int,
+    run_root: Path,
+    run_one: Callable[[Mapping[str, object]], ExecutionAttempt | None],
+) -> bool:
+    from .reproduction_job_storage import ExecutionIdentity, load_execution_readiness
+
+    slots = jobs - len(schedule.running)
+    if slots <= 0:
+        return False
+    ready = []
+    for planned in schedule.pending:
+        identity = ExecutionIdentity(
+            _required_string(planned, "entry"),
+            _required_string(planned, "execution_id"),
+        )
+        if load_execution_readiness(run_root, identity).disposition == "ready":
+            ready.append(planned)
+    exclusive = [item for item in ready if item.get("exclusive") is True]
+    launchable = exclusive[:1] if exclusive else ready
+    if exclusive and schedule.running:
+        return False
+    for planned in launchable[:slots]:
+        schedule.running[pool.submit(run_one, planned)] = planned
+        schedule.pending.remove(planned)
+        if planned.get("exclusive") is True:
+            break
+    return bool(launchable[:slots])
+
+
+def _execute_current_scheduled_recipe(
+    context: _CurrentPlanExecutionContext,
+    planned: Mapping[str, object],
+) -> ExecutionAttempt | None:
+    """Acquire one accepted permit, execute, and durably release it."""
+
+    from .reproduction_job_storage import (
+        ExecutionIdentity,
+        load_accepted_scheduling,
+        load_execution_checkpoint,
+        load_run_control,
+        load_scheduler_owner,
+    )
+    from .reproduction_scheduler import (
+        SchedulerIdentity,
+        SchedulerPermitRequest,
+        _resolve_claim,
+        _resolve_claims,
+        poll_permit,
+        reconcile_permit,
+    )
+
+    entry = _required_string(planned, "entry")
+    execution_id = _required_string(planned, "execution_id")
+    identity = ExecutionIdentity(entry, execution_id)
+    workspace = context.workspace
+    control = context.control
+    accepted = load_accepted_scheduling(workspace.run_root, identity)
+    scheduler_identity = SchedulerIdentity(
+        workspace.source_project,
+        workspace.run_id,
+        entry,
+        execution_id,
+        accepted.plan_order,
+    )
+    prior = load_execution_checkpoint(workspace.run_root, identity)
+    expected_state: Literal["absent", "stopped"] = (
+        "stopped" if prior is not None and prior.state == "stopped" else "absent"
+    )
+    request = SchedulerPermitRequest(
+        scheduler_identity,
+        accepted.kind,
+        control.supervisor_pid,
+        tuple(
+            _resolve_claims(
+                list(accepted.read_paths),
+                workspace.run_root,
+                workspace.source_project,
+            )
+        ),
+        tuple(
+            _resolve_claims(
+                list(accepted.write_paths),
+                workspace.run_root,
+                workspace.source_project,
+            )
+        ),
+        _resolve_claim(
+            accepted.run_path, workspace.run_root, workspace.source_project
+        ),
+        tuple(
+            _resolve_claims(
+                list(accepted.writable_paths),
+                workspace.run_root,
+                workspace.source_project,
+            )
+        ),
+        _utc_now(),
+    )
+    while True:
+        state = load_run_control(workspace.run_root)
+        if (
+            control.stop_requested()
+            or state.stop_requested_at is not None
+            or state.phase == "stopping"
+        ):
+            reconcile_permit(
+                scheduler_identity, load_scheduler_owner(workspace.run_root)
+            )
+            return None
+        request = replace(request, polled_at=_utc_now())
+        decision = poll_permit(
+            workspace.run_root,
+            request,
+            checkpointed_at=_utc_now(),
+            expected_state=expected_state,
+        )
+        if decision.disposition == "granted":
+            assert decision.permit is not None
+            return execute_current_planned_recipe(
+                context.log,
+                context.plan,
+                planned,
+                workspace,
+                CurrentExecutionControl(
+                    decision.permit.permit_id,
+                    resume=expected_state == "stopped",
+                    execution_timeout_seconds=control.execution_timeout_seconds,
+                    stop_requested=lambda: (
+                        control.stop_requested()
+                        or load_run_control(workspace.run_root).stop_requested_at
+                        is not None
+                    ),
+                    confinement=context.backend,
+                ),
+            )
+        time.sleep(POLL_SECONDS)
+
+
+def _collect_current_finished(schedule: _BatchSchedule) -> None:
+    """Fold one or more durable terminal current-format executions."""
+
+    done, _ = wait(tuple(schedule.running), return_when=FIRST_COMPLETED)
+    for future in done:
+        schedule.running.pop(future)
+        attempt = future.result()
+        if attempt is None:
+            schedule.stopped = True
+            continue
+        reference = _execution_reference(attempt.entry, attempt.execution_id)
+        schedule.attempts[reference] = attempt
+        schedule.complete.add(reference)
+        if attempt.stopped:
+            schedule.stopped = True
+        if not successful_checkpoint_state(attempt.checkpoint.state):
+            schedule.unavailable.add(reference)
 
 
 def execute_isolated_invocation(  # noqa: PLR0913
@@ -908,85 +1527,6 @@ def _verify_accepted_input_observations(
             )
 
 
-def cleanup_reproduction_scratch(run_root: Path) -> None:
-    """Remove owned scratch only after the caller has confirmed workers stopped.
-
-    Durable ownership records are retained on failure, blocking relaunch until
-    recovery can complete. No unrelated temporary directories are inspected.
-    """
-
-    for record in sorted((run_root / "scratch").glob("*/*.json")):
-        _remove_execution_scratch(record)
-
-
-def _remove_execution_scratch(record: Path) -> None:
-    try:
-        if record.is_symlink():
-            raise ValueError(f"scratch record is a symlink: {record}")
-        value = json.loads(record.read_text(encoding="utf-8"))
-        path = Path(value)
-        if path.parent != Path("/private/tmp") or not path.name.startswith(
-            "reproduction-scratch-"
-        ):
-            raise ValueError(f"invalid scratch directory: {path}")
-        if path.is_symlink():
-            raise ValueError(f"scratch directory is a symlink: {path}")
-        if path.exists():
-            shutil.rmtree(path)
-        record.unlink()
-    except (OSError, TypeError, ValueError) as error:
-        raise ReproductionControlPlaneError(
-            ActionError("scratch_cleanup_incomplete", str(error)),
-            cleanup_incomplete=True,
-        ) from error
-
-
-def _run_with_scratch(
-    prepared: _PreparedExecution,
-    backend: ConfinementBackend,
-    plan: ReproductionPlan,
-    workspace: ReproductionWorkspace,
-    callbacks: _RunCallbacks,
-) -> tuple[_ProcessOutcome, str | None, float]:
-    record = (
-        workspace.run_root
-        / "scratch"
-        / prepared.entry
-        / f"{prepared.execution_id.rsplit(':', 1)[-1]}.json"
-    )
-    if record.exists() or record.is_symlink():
-        raise ReproductionControlPlaneError(
-            ActionError(
-                "scratch_cleanup_incomplete", f"scratch recovery required: {record}"
-            ),
-            cleanup_incomplete=True,
-        )
-    scratch = Path(tempfile.mkdtemp(prefix="reproduction-scratch-", dir="/private/tmp"))
-    try:
-        record.parent.mkdir(parents=True, exist_ok=True)
-        _control_plane_call(atomic_write_text, record, json.dumps(str(scratch)) + "\n")
-    except BaseException:
-        shutil.rmtree(scratch)
-        raise
-    prepared = replace(
-        prepared, environment={**prepared.environment, "TMPDIR": str(scratch)}
-    )
-    cleanup_pending = False
-    try:
-        command = _confined_command(
-            backend, prepared.command, plan, workspace, prepared
-        )
-        result = _run_prepared(prepared, command, workspace, callbacks)
-        cleanup_pending = any(worker.state == "running" for worker in result[0].workers)
-        return result
-    except ReproductionControlPlaneError as error:
-        cleanup_pending = error.cleanup_incomplete
-        raise
-    finally:
-        if not cleanup_pending:
-            _remove_execution_scratch(record)
-
-
 def _prepare_execution(
     log: LogContext,
     planned: Mapping[str, object],
@@ -1034,7 +1574,6 @@ def _prepare_execution(
         ),
     )
     stdout_path, stderr_path = _diagnostic_paths(workspace, entry_id, execution_id)
-    checkpoint_path = _checkpoint_path(workspace, entry_id, execution_id)
     return _PreparedExecution(
         entry_id,
         execution_id,
@@ -1049,27 +1588,6 @@ def _prepare_execution(
         captures,
         stdout_path,
         stderr_path,
-        checkpoint_path,
-    )
-
-
-def _active_checkpoint(
-    prepared: _PreparedExecution,
-    workspace: ReproductionWorkspace,
-    *,
-    started_at: str,
-    elapsed_seconds: float,
-) -> ExecutionCheckpoint:
-    return ExecutionCheckpoint(
-        prepared.entry,
-        prepared.execution_id,
-        "active",
-        prepared.checkpoint.relative_to(workspace.run_root).as_posix(),
-        None,
-        (),
-        started_at,
-        None,
-        elapsed_seconds,
     )
 
 
@@ -1366,420 +1884,6 @@ def _attempt_state(
     return "succeeded", None, None
 
 
-def execute_reproduction_plan(
-    log: LogContext,
-    plan: ReproductionPlan,
-    workspace: ReproductionWorkspace,
-    control: ExecutionControl = ExecutionControl(),
-) -> ExecutionBatch:
-    """Execute every runnable component without crossing dependency failures."""
-
-    ordered = sorted(plan.executions, key=_execution_order)
-    _require_execution_order(ordered)
-    schedule = _BatchSchedule(
-        list(ordered),
-        {},
-        {},
-        [],
-        [],
-        set(control.prior_failures),
-        set(control.prior_attempts) | set(control.prior_failures),
-    )
-    backend = control.confinement or DarwinSeatbelt()
-    sources: dict[str, _ExecutionSource] = {}
-    generated = _generated_output_paths(log, plan, workspace, sources=sources)
-    for planned in ordered:
-        entry_id = _required_string(planned, "entry")
-        identity = _required_string(planned, "execution_id")
-        _execution_source(log, plan, workspace, entry_id, sources)
-        if control.resume:
-            _reset_stopped_execution_workspace(workspace, entry_id, identity)
-
-    control_state = _ControlPlaneState()
-    runtime_control = replace(
-        control,
-        stop_requested=lambda: (
-            control_state.failure.is_set() or control.stop_requested()
-        ),
-    )
-    runtime = _PlanExecutionContext(
-        log, plan, workspace, runtime_control, backend, sources, generated
-    )
-    with ThreadPoolExecutor(
-        max_workers=plan.jobs, thread_name_prefix="reproduce"
-    ) as pool:
-        while schedule.pending or schedule.running:
-            if runtime_control.stop_requested():
-                schedule.stopped = True
-            progress_made = _resolve_pending_controlled(
-                schedule, workspace, sources, runtime_control, control_state
-            )
-            if schedule.stopped:
-                if not schedule.running:
-                    break
-            else:
-                progress_made = (
-                    _launch_ready(
-                        schedule,
-                        pool,
-                        plan.jobs,
-                        lambda planned: _execute_scheduled_recipe(runtime, planned),
-                    )
-                    or progress_made
-                )
-            if schedule.running:
-                _collect_finished(
-                    schedule,
-                    runtime_control,
-                    control_state,
-                )
-            elif schedule.pending and not progress_made and not schedule.stopped:
-                raise ActionError(
-                    "reproduction.scheduler.deadlock",
-                    "no pending execution can become ready",
-                )
-    if control_state.errors:
-        raise control_state.errors[0]
-    ordered_attempts = tuple(
-        schedule.attempts[reference]
-        for reference in (
-            _execution_reference(
-                _required_string(item, "entry"),
-                _required_string(item, "execution_id"),
-            )
-            for item in ordered
-        )
-        if reference in schedule.attempts
-    )
-    return ExecutionBatch(
-        ordered_attempts,
-        tuple(schedule.reused),
-        tuple(schedule.skips),
-        schedule.stopped,
-    )
-
-
-def _reset_stopped_execution_workspace(
-    workspace: ReproductionWorkspace, entry: str, execution_id: str
-) -> None:
-    """Discard only a stopped invocation's non-durable private work on resume."""
-
-    checkpoint = _load_checkpoint(workspace, entry, execution_id)
-    if checkpoint is None or checkpoint.state != "stopped":
-        return
-    for path in (
-        _attempt_root(workspace, entry, execution_id),
-        _attempt_runtime_root(workspace, entry, execution_id),
-    ):
-        if path.exists() and not path.is_symlink():
-            shutil.rmtree(path)
-
-
-def _execute_scheduled_recipe(
-    context: _PlanExecutionContext, planned: Mapping[str, object]
-) -> ExecutionAttempt | None:
-    from .reproduction_scheduler import (
-        acquire_scheduling_permit,
-        release_scheduling_permit,
-    )
-
-    control = context.control
-    workspace = context.workspace
-    permit = acquire_scheduling_permit(
-        workspace.source_project,
-        workspace.run_root,
-        workspace.run_id,
-        planned,
-        stop_requested=control.stop_requested,
-    )
-    if permit is None:
-        return None
-    entry_id = _required_string(planned, "entry")
-    identity = _required_string(planned, "execution_id")
-    checkpoint: ExecutionCheckpoint | None = None
-    try:
-        checkpoint = _load_checkpoint_control_plane(workspace, entry_id, identity)
-        _control_plane_call(control.progress, "started", entry_id, identity, None)
-        attempt = execute_planned_recipe(
-            context.log,
-            context.plan,
-            planned,
-            workspace,
-            ExecutionControl(
-                resume=control.resume and checkpoint is not None,
-                execution_timeout_seconds=control.execution_timeout_seconds,
-                stop_requested=control.stop_requested,
-                confinement=context.backend,
-                generated_paths=context.generated,
-                source=context.sources[entry_id],
-                progress=control.progress,
-                worker_progress=control.worker_progress,
-            ),
-        )
-    except ReproductionControlPlaneError as error:
-        if not error.cleanup_incomplete:
-            release_scheduling_permit(permit)
-        raise
-    except BaseException as error:
-        attempt = _exception_attempt(
-            workspace,
-            entry_id,
-            identity,
-            _AttemptFailure(error, checkpoint),
-        )
-    if not any(worker.state == "running" for worker in attempt.workers):
-        release_scheduling_permit(permit)
-    return attempt
-
-
-def _exception_attempt(
-    workspace: ReproductionWorkspace,
-    entry: str,
-    execution_id: str,
-    failure: _AttemptFailure,
-) -> ExecutionAttempt:
-    """Durably terminate an attempt that failed outside child supervision."""
-
-    prior = failure.prior
-    error = failure.error
-    code = cast(str, getattr(error, "code", "execution_exception"))
-    message = str(error) or type(error).__name__
-    path = _checkpoint_path(workspace, entry, execution_id)
-    checkpoint = ExecutionCheckpoint(
-        entry,
-        execution_id,
-        "failed",
-        path.relative_to(workspace.run_root).as_posix(),
-        None,
-        prior.outputs if prior is not None else (),
-        prior.started_at if prior is not None else None,
-        prior.finished_at if prior is not None else None,
-        prior.elapsed_seconds if prior is not None else None,
-        {"code": code, "message": message, "recorded_at": _utc_now()},
-    )
-    _write_checkpoint(path, checkpoint)
-    stdout, stderr = _diagnostic_paths(workspace, entry, execution_id)
-    # Exceptions before child launch still publish the diagnostics promised by
-    # ExecutionAttempt so callers can inspect a stable empty stderr stream.
-    stdout.touch(exist_ok=True)
-    stderr.touch(exist_ok=True)
-    return ExecutionAttempt(
-        entry,
-        execution_id,
-        None,
-        False,
-        code,
-        message,
-        checkpoint,
-        (),
-        stdout.relative_to(workspace.run_root).as_posix(),
-        stderr.relative_to(workspace.run_root).as_posix(),
-    )
-
-
-def _resolve_pending(
-    schedule: _BatchSchedule,
-    workspace: ReproductionWorkspace,
-    sources: Mapping[str, _ExecutionSource],
-    control: ExecutionControl,
-) -> bool:
-    """Resolve failed dependencies, prior results, and reusable checkpoints."""
-
-    progress_made = False
-    for planned in list(schedule.pending):
-        entry_id = _required_string(planned, "entry")
-        identity = _required_string(planned, "execution_id")
-        reference = _execution_reference(entry_id, identity)
-        dependencies = set(_dependency_references(planned))
-        blocked = tuple(sorted(dependencies & schedule.unavailable))
-        if blocked:
-            schedule.skips.append(
-                {
-                    "depends_on": list(blocked),
-                    "entry": entry_id,
-                    "execution_id": identity,
-                    "reason": "dependency_failed",
-                }
-            )
-            schedule.unavailable.add(reference)
-            schedule.complete.add(reference)
-            schedule.pending.remove(planned)
-            progress_made = True
-            continue
-        if reference in schedule.complete:
-            schedule.reused.append(reference)
-            _control_plane_call(control.progress, "reused", entry_id, identity, None)
-            schedule.pending.remove(planned)
-            progress_made = True
-            continue
-        checkpoint = _load_checkpoint_control_plane(workspace, entry_id, identity)
-        if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
-            continue
-        if not control.resume or not _checkpoint_outputs_current(
-            checkpoint, sources[entry_id], workspace, identity
-        ):
-            raise ReproductionControlPlaneError(
-                ActionError(
-                    "reproduction.checkpoint.changed",
-                    f"completed checkpoint is not reusable: {reference}",
-                )
-            )
-        schedule.reused.append(reference)
-        schedule.complete.add(reference)
-        prepared = _prepare_execution(
-            sources[entry_id].entry.log,
-            planned,
-            workspace,
-            {},
-            _PreparationOptions(sources[entry_id]),
-        )
-        _materialize_outputs(prepared, workspace, sources[entry_id])
-        _control_plane_call(control.progress, "reused", entry_id, identity, None)
-        schedule.pending.remove(planned)
-        progress_made = True
-    return progress_made
-
-
-def _resolve_pending_controlled(
-    schedule: _BatchSchedule,
-    workspace: ReproductionWorkspace,
-    sources: Mapping[str, _ExecutionSource],
-    control: ExecutionControl,
-    control_state: _ControlPlaneState,
-) -> bool:
-    try:
-        return _resolve_pending(schedule, workspace, sources, control)
-    except ReproductionControlPlaneError as error:
-        control_state.record(error)
-        schedule.stopped = True
-        return False
-
-
-def _launch_ready(
-    schedule: _BatchSchedule,
-    pool: ThreadPoolExecutor,
-    jobs: int,
-    run_one: Callable[[Mapping[str, object]], ExecutionAttempt | None],
-) -> bool:
-    ready = [
-        planned
-        for planned in schedule.pending
-        if set(_dependency_references(planned)) <= schedule.complete
-    ]
-    exclusive_ready = [item for item in ready if item.get("exclusive") is True]
-    launchable = exclusive_ready[:1] if exclusive_ready else ready
-    if exclusive_ready and schedule.running:
-        return False
-    slots = jobs - len(schedule.running)
-    for planned in launchable[:slots]:
-        schedule.running[pool.submit(run_one, planned)] = planned
-        schedule.pending.remove(planned)
-        if planned.get("exclusive") is True:
-            break
-    return bool(launchable[:slots])
-
-
-def _collect_finished(
-    schedule: _BatchSchedule,
-    control: ExecutionControl,
-    control_state: _ControlPlaneState,
-) -> None:
-    done, _ = wait(tuple(schedule.running), return_when=FIRST_COMPLETED)
-    for future in done:
-        schedule.running.pop(future)
-        try:
-            attempt = future.result()
-        except ReproductionControlPlaneError as error:
-            control_state.record(error)
-            schedule.stopped = True
-            continue
-        if attempt is None:
-            schedule.stopped = True
-            continue
-        reference = _execution_reference(attempt.entry, attempt.execution_id)
-        schedule.attempts[reference] = attempt
-        schedule.complete.add(reference)
-        if control_state.failure.is_set():
-            continue
-        try:
-            _control_plane_call(
-                control.progress,
-                "finished",
-                attempt.entry,
-                attempt.execution_id,
-                attempt,
-            )
-        except ReproductionControlPlaneError as error:
-            control_state.record(error)
-            schedule.stopped = True
-            continue
-        comparison_succeeded = control.attempt_completed(attempt)
-        if attempt.stopped:
-            schedule.stopped = True
-        if not comparison_succeeded or not successful_checkpoint_state(
-            attempt.checkpoint.state
-        ):
-            schedule.unavailable.add(reference)
-
-
-def completed_execution_attempts(
-    log: LogContext,
-    plan: ReproductionPlan,
-    workspace: ReproductionWorkspace,
-) -> tuple[ExecutionAttempt, ...]:
-    """Load every complete planned checkpoint as a comparison-ready attempt."""
-
-    results: list[ExecutionAttempt] = []
-    sources: dict[str, _ExecutionSource] = {}
-    generated = _generated_output_paths(log, plan, workspace, sources=sources)
-    for planned in sorted(plan.executions, key=_execution_order):
-        entry_id = _required_string(planned, "entry")
-        identity = _required_string(planned, "execution_id")
-        checkpoint = _load_checkpoint(workspace, entry_id, identity)
-        if checkpoint is None or not successful_checkpoint_state(checkpoint.state):
-            continue
-        if not _checkpoint_outputs_current(
-            checkpoint,
-            _execution_source(log, plan, workspace, entry_id, sources),
-            workspace,
-            identity,
-        ):
-            raise ActionError(
-                "reproduction.checkpoint.changed",
-                f"completed checkpoint is not current: {entry_id}:{identity}",
-            )
-        prepared = _prepare_execution(
-            log,
-            planned,
-            workspace,
-            generated,
-            _PreparationOptions(
-                _execution_source(log, plan, workspace, entry_id, sources)
-            ),
-        )
-        if checkpoint.state == "succeeded":
-            _materialize_outputs(
-                prepared,
-                workspace,
-                _execution_source(log, plan, workspace, entry_id, sources),
-            )
-        results.append(
-            ExecutionAttempt(
-                entry_id,
-                identity,
-                0,
-                False,
-                None,
-                None,
-                checkpoint,
-                (),
-                prepared.stdout.relative_to(workspace.run_root).as_posix(),
-                prepared.stderr.relative_to(workspace.run_root).as_posix(),
-            )
-        )
-    return tuple(results)
-
-
 def _execution_order(planned: Mapping[str, object]) -> int:
     value = planned.get("order")
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -1821,209 +1925,6 @@ def _dependency_references(planned: Mapping[str, object]) -> tuple[str, ...]:
 
 def _execution_reference(entry: str, execution_id: str) -> str:
     return f"{entry}:{execution_id}"
-
-
-def _load_checkpoint(
-    workspace: ReproductionWorkspace,
-    entry: str,
-    execution_id: str,
-) -> ExecutionCheckpoint | None:
-    path = _checkpoint_path(workspace, entry, execution_id)
-    if not path.exists() and not path.is_symlink():
-        return None
-    if path.is_symlink() or not path.is_file():
-        raise ActionError(
-            "reproduction.checkpoint.invalid", f"invalid checkpoint path: {path}"
-        )
-    try:
-        raw = path.read_bytes()
-        if len(raw) > 16 * 1024 * 1024:
-            raise ValueError("checkpoint crossed its byte bound")
-        text = raw.decode("utf-8")
-        value = json.loads(text)
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ActionError("reproduction.checkpoint.invalid", str(error)) from error
-    value, state, completed_at, outputs, expected_path = _checkpoint_header(
-        value,
-        path,
-        _CheckpointLoadContext(workspace, entry, execution_id),
-    )
-    if text != json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n":
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint is not canonical"
-        )
-    decoded = _checkpoint_outputs(outputs)
-    failure = _checkpoint_failure(value, state, completed_at)
-    started_at, finished_at, elapsed_seconds = _checkpoint_timing(value, state)
-    return ExecutionCheckpoint(
-        entry,
-        execution_id,
-        state,
-        expected_path,
-        completed_at,
-        decoded,
-        started_at,
-        finished_at,
-        float(elapsed_seconds) if elapsed_seconds is not None else None,
-        failure,
-    )
-
-
-def _checkpoint_header(
-    value: object,
-    path: Path,
-    context: _CheckpointLoadContext,
-) -> tuple[Mapping[str, object], str, str | None, list[object], str]:
-    fields = {
-        "completed_at",
-        "elapsed_seconds",
-        "entry",
-        "execution_id",
-        "finished_at",
-        "outputs",
-        "path",
-        "started_at",
-        "state",
-    }
-    if not isinstance(value, Mapping) or set(value) != fields | {"failure"}:
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint fields are invalid"
-        )
-    state = value.get("state")
-    completed_at = value.get("completed_at")
-    outputs = value.get("outputs")
-    expected_path = path.relative_to(context.workspace.run_root).as_posix()
-    if (
-        value.get("entry") != context.entry
-        or value.get("execution_id") != context.execution_id
-        or value.get("path") != expected_path
-        or state not in {"active", "succeeded", "failed", "stopped"}
-        or completed_at is not None
-        and not isinstance(completed_at, str)
-        or not isinstance(outputs, list)
-        or len(outputs) > 256
-    ):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint content is invalid"
-        )
-    return (
-        value,
-        cast(str, state),
-        completed_at,
-        cast(list[object], outputs),
-        expected_path,
-    )
-
-
-def _checkpoint_outputs(outputs: Sequence[object]) -> tuple[Mapping[str, object], ...]:
-    decoded: list[Mapping[str, object]] = []
-    for output in outputs:
-        if (
-            not isinstance(output, Mapping)
-            or set(output) != {"artifact", "fingerprint"}
-            or not isinstance(output.get("artifact"), str)
-        ):
-            raise ActionError(
-                "reproduction.checkpoint.invalid", "checkpoint output is invalid"
-            )
-        parse_fingerprint(output.get("fingerprint"), str(output["artifact"]))
-        decoded.append(cast(Mapping[str, object], output))
-    artifacts = [cast(str, item["artifact"]) for item in decoded]
-    if artifacts != sorted(set(artifacts)):
-        raise ActionError(
-            "reproduction.checkpoint.invalid",
-            "checkpoint outputs are not canonical",
-        )
-    return tuple(decoded)
-
-
-def _checkpoint_failure(
-    value: Mapping[str, object], state: str, completed_at: str | None
-) -> Mapping[str, object] | None:
-    successful = state in {"complete", "succeeded"}
-    failure = value.get("failure")
-    if (
-        failure is not None
-        and (
-            not isinstance(failure, Mapping)
-            or set(failure) != {"code", "message", "recorded_at"}
-            or not all(
-                isinstance(failure.get(name), str) and failure.get(name)
-                for name in ("code", "message")
-            )
-            or not isinstance(failure.get("recorded_at"), str)
-            or TIMESTAMP_RE.fullmatch(cast(str, failure.get("recorded_at"))) is None
-        )
-        or state in {"active", "complete", "succeeded"}
-        and failure is not None
-        or state in {"failed", "stopped"}
-        and failure is None
-    ):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint failure is invalid"
-        )
-    if successful and not isinstance(completed_at, str):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "complete checkpoint has no timestamp"
-        )
-    return cast(Mapping[str, object] | None, failure)
-
-
-def _checkpoint_timing(
-    value: Mapping[str, object], state: object
-) -> tuple[str | None, str | None, float | int | None]:
-    """Decode one explicit attempt-timing projection."""
-
-    started_at = value.get("started_at")
-    finished_at = value.get("finished_at")
-    elapsed_seconds = value.get("elapsed_seconds")
-    if any(
-        item is not None
-        and (not isinstance(item, str) or TIMESTAMP_RE.fullmatch(item) is None)
-        for item in (value.get("completed_at"), started_at, finished_at)
-    ):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint timestamp is invalid"
-        )
-    if elapsed_seconds is not None and (
-        not isinstance(elapsed_seconds, (int, float))
-        or isinstance(elapsed_seconds, bool)
-        or elapsed_seconds < 0
-    ):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint elapsed time is invalid"
-        )
-    if started_at is None and (finished_at is not None or elapsed_seconds is not None):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "unlaunched checkpoint has timing"
-        )
-    if started_at is not None and elapsed_seconds is None:
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "launched checkpoint has no elapsed time"
-        )
-    if state == "active" and finished_at is not None:
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "active checkpoint is finished"
-        )
-    if (
-        isinstance(started_at, str)
-        and isinstance(finished_at, str)
-        and finished_at < started_at
-    ):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "checkpoint finishes before it starts"
-        )
-    completed_at = value.get("completed_at")
-    successful = state in {"complete", "succeeded"}
-    if successful and (finished_at is None or completed_at != finished_at):
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "complete checkpoint timing is invalid"
-        )
-    if not successful and completed_at is not None:
-        raise ActionError(
-            "reproduction.checkpoint.invalid", "incomplete checkpoint is completed"
-        )
-    return cast(str | None, started_at), cast(str | None, finished_at), elapsed_seconds
 
 
 def _checkpoint_outputs_current(
@@ -2698,47 +2599,6 @@ def _remove_materialization_temporary(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
     elif path.exists() or path.is_symlink():
         path.unlink(missing_ok=True)
-
-
-def _checkpoint_path(
-    workspace: ReproductionWorkspace, entry: str, execution_id: str
-) -> Path:
-    digest = execution_id.removeprefix("pyrun-exec/v1:")
-    return workspace.run_root / "checkpoints" / f"{entry}-{digest}.json"
-
-
-def _write_checkpoint(path: Path, checkpoint: ExecutionCheckpoint) -> None:
-    try:
-        value = checkpoint.as_dict()
-        payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        temporary = checkpoint_temporary_path(path, os.getpid())
-        try:
-            with temporary.open("x", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-            _sync_directory(path.parent)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
-    except ReproductionControlPlaneError:
-        raise
-    except BaseException as error:
-        raise ReproductionControlPlaneError(error) from error
-
-
-def _load_checkpoint_control_plane(
-    workspace: ReproductionWorkspace,
-    entry: str,
-    execution_id: str,
-) -> ExecutionCheckpoint | None:
-    try:
-        return _load_checkpoint(workspace, entry, execution_id)
-    except ReproductionControlPlaneError:
-        raise
-    except BaseException as error:
-        raise ReproductionControlPlaneError(error) from error
 
 
 def _control_plane_call(callback: Callable[..., _T], *args: object) -> _T:

@@ -67,11 +67,82 @@ recognizes:
 Data tokens occupy the complete input argument. Quote arguments that contain
 angle tokens. Do not embed a token in `label=<name>` or another opaque value.
 
-Every recorded invocation supplies one stable `--cid CID` before the required
-`--` separator. Use an ASCII alphanumeric name followed only by ASCII
-alphanumerics, `_`, or `-`. A CID owns one command or bounded loop, is unique
-across the entry's split documents, and is reused by every loop expansion.
-Keep exactly one independent command or loop in each fence.
+## Write A Recorded Command
+
+Start a Python command with the bare form when it needs no runner options:
+
+```bash
+./pyrun scripts/run_study.py \
+  --parameter value
+```
+
+In this form, the effective command ID (CID) defaults to the lexical Python
+filename without `.py`, here `run_study`. A valid CID starts with an ASCII
+alphanumeric and continues only with ASCII alphanumerics, `_`, or `-`.
+
+Add runner options only for captures, explicit environment values, material
+role declarations, automatic-reproduction policy, exclusive scheduling, or an
+explicit CID. When any runner option is present, place all runner options and
+the required `--` on the `./pyrun` line, then put the script alone on the
+following line:
+
+```bash
+./pyrun --exclusive -- \
+  scripts/run_study.py \
+  --parameter value
+```
+
+`--cid CID` is an override. Omit it when a Python filename supplies a valid,
+entry-unique, stable CID. Add it when:
+
+- the same program owns more than one independent command in the entry;
+- different program paths have the same basename;
+- one bounded loop contains more than one program;
+- the program is not a `.py` file or its filename stem is not a valid CID; or
+- a program filename changes while its existing command identity must remain
+  stable.
+
+For example, changing `foo.py` to `bar.py` while preserving CID `foo` requires:
+
+```bash
+./pyrun --cid foo -- \
+  scripts/bar.py
+```
+
+A CID owns one independent command or bounded loop, is unique across the
+entry's split documents, and is reused by every loop expansion. Keep exactly
+one independent command or loop in each eligible fence. A loop that expands
+one Python program may use the derived CID:
+
+```bash
+for case in baseline trial; do
+  ./pyrun scripts/run_study.py --case "$case"
+done
+```
+
+A loop containing several programs has one structural owner and therefore
+needs one explicit CID shared by every command:
+
+```bash
+for case in baseline trial; do
+  ./pyrun --cid prepare-study -- \
+    scripts/prepare.py \
+    --case "$case"
+  ./pyrun --cid prepare-study -- \
+    scripts/summarize.py \
+    --case "$case"
+done
+```
+
+When one program owns repeated independent commands, let at most one owner use
+the derived CID and give every other owner a distinct explicit override. For
+example, a second independent use may begin:
+
+```bash
+./pyrun --cid run_study-trial -- \
+  scripts/run_study.py \
+  --case trial
+```
 
 `pyrun` automatically gives each execution isolated temporary
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable
@@ -128,11 +199,7 @@ options through `--other-inputs` or `--other-outputs`. List option selectors
 without leading hyphens and positional selectors as one-based `@N` values:
 
 ```bash
-./pyrun \
-  --cid run-study \
-  --other-inputs catalog \
-  --other-outputs results,@2 \
-  -- \
+./pyrun --other-inputs catalog --other-outputs results,@2 -- \
   scripts/run_study.py \
   --catalog "<development_set>" \
   --results data/results.csv \
@@ -181,7 +248,7 @@ options for comparisons and sweeps when practical.
 Example:
 
 ```bash
-./pyrun --cid run-study -- scripts/run_study.py \
+./pyrun scripts/run_study.py \
   --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
@@ -200,19 +267,24 @@ For a split entry, record each invocation in the document that presents its
 outputs, even when the script lives in the parent entry's `scripts/`.
 
 When stdout or stderr supports presented evidence, capture it through `pyrun`
-so it receives a current execution-state output observation. Use `--capture-stdout <path>` and
-`--capture-stderr <path>` separately, or use
-`--capture-stdout-stderr <path>` for a merged stream. Keep the required CID,
-one capture option, and `--` on the `./pyrun` line:
+so it receives a current execution-state output observation. Use
+`--capture-stdout <path>` and `--capture-stderr <path>` separately, or use
+`--capture-stdout-stderr <path>` for a merged stream. Keep the capture option
+and `--` on the `./pyrun` line:
 
 ```bash
-./pyrun --cid run-study --capture-stdout-stderr "<run-log>" -- \
+./pyrun --capture-stdout-stderr "<run-log>" -- \
   scripts/run_study.py \
   --parameter value
 ```
 
-With several runner options, put `./pyrun`, the CID, each option-value pair, and `--` on
-separate lines as in the role-declaration example above.
+Several runner options may remain together on the opening line:
+
+```bash
+./pyrun --env OMP_NUM_THREADS=1 --auto-reproduce=false --exclusive -- \
+  scripts/run_study.py \
+  --parameter value
+```
 
 Raw shell redirection and `tee` do not establish execution-linked Provenance.
 Never create the retained log later from output held only in agent context. Do
@@ -260,7 +332,9 @@ across execution; do not edit that file by hand. Add
 comparable commands that should not run during automatic reproduction:
 
 ```bash
-./pyrun --cid run-simulation --auto-reproduce=false -- scripts/run_simulation.py --output-data data/result.json
+./pyrun --auto-reproduce=false -- \
+  scripts/run_simulation.py \
+  --output-data data/result.json
 ```
 
 Add `--exclusive` before `--` when managed reproduction must run the command
@@ -270,7 +344,9 @@ This is scheduling metadata only: direct `pyrun` execution is unchanged, and
 the option does not alter the execution ID or reserve unrelated host work.
 
 ```bash
-./pyrun --cid run-parallel-model --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
+./pyrun --exclusive -- \
+  scripts/run_parallel_model.py \
+  --output-data data/result.json
 ```
 
 For later changes, use [Synchronize A Recorded Command](#synchronize-a-recorded-command).
@@ -281,10 +357,10 @@ Put complete commands under `Steps:` in the descriptive section that uses the
 result, output, figure, table, or check they support. Do not require a reader
 to follow a cross-reference merely to find the reproduction command.
 
-
 ## Synchronize A Recorded Command
 
-Edit Markdown first, then synchronize every expansion owned by its CID:
+Edit Markdown first, then synchronize every expansion owned by its effective
+CID. Pass the derived program stem when the Markdown omits `--cid`:
 
 ```bash
 log command sync --path <log> --entry <entry> --cid <cid> --dry-run

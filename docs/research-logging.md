@@ -427,7 +427,9 @@ Compare the retained baseline with the proposed correction.
 
 `Steps:`
 ```bash
-./pyrun --cid compare-candidates -- scripts/compare.py --input "<test_set>" --output-csv data/comparison.csv
+./pyrun scripts/compare_candidates.py \
+  --input "<test_set>" \
+  --output-csv data/comparison.csv
 ```
 
 `Results:`
@@ -550,9 +552,14 @@ also expands these path tokens:
 Data tokens occupy the complete input argument. Quote arguments containing
 angle tokens.
 
-Every recorded invocation supplies one stable entry-unique `--cid CID` before
-the required `--` separator. A CID owns exactly one command or bounded loop,
-every loop expansion reuses it, and each fence contains one such owner.
+With no runner options, pass a Python script directly and omit `--`. Its
+filename stem becomes the effective command ID (CID). Any runner options must
+precede `--`, with the script on the following line. Use `--cid CID` only as an
+explicit override for repeated programs, basename collisions, multi-program
+owners, non-Python or invalid program names, or identity preservation across a
+program rename. The effective CID owns exactly one command or bounded loop,
+every loop expansion reuses it, and each fence contains one such owner. See the
+[detailed command-writing guidance](../skills/research-logging/references/file-entry-commands.md#write-a-recorded-command).
 
 For an active Python workflow, the entry uses a symbolic link named `pyrun`
 that points to the installed launcher; do not copy the launcher into the log.
@@ -567,7 +574,7 @@ material and `<name>` for indexed inputs. Put one option per line for a
 nontrivial command:
 
 ```bash
-./pyrun --cid run-study -- scripts/run_study.py \
+./pyrun scripts/run_study.py \
   --input-dataset "<development_set>" \
   --candidate baseline \
   --candidate trial \
@@ -599,23 +606,23 @@ Dynamic imports, runtime import-path changes, and separately launched Python
 entrypoints are not followed. `pyrun` warns when it recognizes those patterns,
 but missed dynamic dependencies and extra conditional dependencies are accepted
 coverage tradeoffs rather than launch blockers.
-Use `./pyrun --cid CID --auto-reproduce=false -- ...` for simulation, model training,
+Use the `--auto-reproduce=false` runner option for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
-Use `./pyrun --cid CID --exclusive -- ...` when managed reproduction must run the command
-alone across all active reproduction runs in the project. Exclusivity is a
-scheduling policy, not part of the recipe identity, and it does not change
-ordinary direct execution or reserve unrelated host processes. For a later
-policy-only change, edit Markdown first and run `log command sync` with
-`--path`, `--entry`, and `--cid`. Current
+Use the `--exclusive` runner option when managed reproduction must run the
+command alone across all active reproduction runs in the project. In both
+cases, put the runner option and `--` on the `./pyrun` line and the script on
+the following line. Exclusivity is a scheduling policy, not part of the recipe
+identity, and it does not change ordinary direct execution or reserve unrelated
+host processes. For a later policy-only change, edit Markdown first and run
+`log command sync` with `--path`, `--entry`, and the effective `--cid`. Current
 execution state must use `research-log-pyrun/v6`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
-`./pyrun --cid CID --capture-stdout ... --`, `--capture-stderr ... --`, or
-`--capture-stdout-stderr ... --`; every form retains the CID, and raw `tee` or redirection cannot create that
-current output record. Output available only in an agent's temporary context
-is not evidence. This is original research execution, not validation or
-reproduction; do not rerun an unchanged command solely to test reproducibility
-or Provenance.
+`--capture-stdout`, `--capture-stderr`, or `--capture-stdout-stderr` as a runner
+option before `--`; raw `tee` or redirection cannot create that current output
+record. Output available only in an agent's temporary context is not evidence.
+This is original research execution, not validation or reproduction; do not
+rerun an unchanged command solely to test reproducibility or Provenance.
 
 For corrections to a recorded command, edit its Markdown first, then use the
 [command synchronization workflow](../skills/research-logging/references/file-entry-commands.md#synchronize-a-recorded-command)

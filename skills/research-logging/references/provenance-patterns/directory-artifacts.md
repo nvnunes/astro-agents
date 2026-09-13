@@ -20,19 +20,19 @@ Required tooling:
 Research commands:
 
 ```bash
-./pyrun --cid run-simulation -- scripts/run_simulation.py \
+./pyrun scripts/run_simulation.py \
   --input-config "<simulation-config>" \
   --output-results-root "<simulation-results>"
 ```
 
 ```bash
-./pyrun --cid tabulate-results -- scripts/tabulate_results.py \
+./pyrun scripts/tabulate_results.py \
   --input-results-root "<simulation-results>" \
   --output-tables-root "<tabulated-results>"
 ```
 
 ```bash
-./pyrun --cid build-table -- scripts/build_table.py \
+./pyrun scripts/build_table.py \
   --input-summary "<tabulated-results>/summary.csv" \
   --output-table "<results-table>"
 ```

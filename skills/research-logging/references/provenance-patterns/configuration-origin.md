@@ -16,7 +16,7 @@ Required tooling:
 Research command:
 
 ```bash
-./pyrun --cid run-simulation -- scripts/run_simulation.py \
+./pyrun scripts/run_simulation.py \
   --input-config "<simulation-config>" \
   --output-results-root "<simulation-results>"
 ```

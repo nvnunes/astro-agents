@@ -11,7 +11,10 @@ does not invoke validation. Run Validate explicitly when a current validation
 result is required; reproduction does not copy the project into the run folder.
 
 Read `references/file-reproduction-records.md` before launching or reporting a
-run.
+run. When an admission failure or requested repair requires interpreting the
+authored command form or its effective CID, also read
+`references/file-entry-commands.md`; Reproduce itself keeps that Markdown
+read-only.
 
 ## Boundaries
 

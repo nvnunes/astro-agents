@@ -19,12 +19,12 @@ Required tooling:
 Research commands:
 
 ```bash
-./pyrun --cid summarize-measurements -- scripts/summarize_measurements.py \
+./pyrun scripts/summarize_measurements.py \
   --input-measurements "<measurements>" --output-summary "<summary>"
 ```
 
 ```bash
-./pyrun --cid plot-summary -- scripts/plot_summary.py \
+./pyrun scripts/plot_summary.py \
   --input-summary "<summary>" --output-figure "<summary-plot>"
 ```
 

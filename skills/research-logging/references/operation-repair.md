@@ -78,8 +78,9 @@ Use ordinary `log data add-generated` for a retained output or a pre-production
 declaration. Both require one structurally valid, unambiguous same-log producer;
 registration does not accept output bytes or change execution observations.
 
-For command edits, use `references/file-entry-commands.md` under “Synchronize A
-Recorded Command”; do not hand-edit `pyrun.json`.
+For command edits, read `references/file-entry-commands.md`, including “Write A
+Recorded Command” and “Synchronize A Recorded Command”; do not hand-edit
+`pyrun.json`.
 
 Derive reconstructed fields from retained evidence; keep reconstructed execution
 support at `requires_reproduction: true`. Never hand-edit generated validation. Only when malformed

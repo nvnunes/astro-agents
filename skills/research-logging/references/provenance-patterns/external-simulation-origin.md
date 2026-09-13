@@ -17,7 +17,7 @@ Required tooling:
 Research command:
 
 ```bash
-./pyrun --cid build-table -- scripts/build_table.py \
+./pyrun scripts/build_table.py \
   --input-summary "<external-results>/summary.csv" \
   --output-table "<results-table>"
 ```

@@ -554,10 +554,11 @@ angle tokens.
 
 With no runner options, pass a Python script directly and omit `--`. Its
 filename stem becomes the effective command ID (CID). Any runner options must
-precede `--`, with the script on the following line. Use `--cid CID` only as an
-explicit override for repeated programs, basename collisions, multi-program
-owners, non-Python or invalid program names, or identity preservation across a
-program rename. The effective CID owns exactly one command or bounded loop,
+precede `--`, with the script on the following line. For another independent
+use of the same Python program, `--cid 2` resolves to the full effective CID
+`PROGRAM_STEM-2`; only that full ID is stored. Use a full `--cid CID` override
+for multi-program owners, non-Python or invalid program names, or identity
+preservation across a program rename. The effective CID owns exactly one command or bounded loop,
 every loop expansion reuses it, and each fence contains one such owner. See the
 [detailed command-writing guidance](../skills/research-logging/references/file-entry-commands.md#write-a-recorded-command).
 

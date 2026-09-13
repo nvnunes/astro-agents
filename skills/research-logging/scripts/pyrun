@@ -127,14 +127,15 @@ class _PreparedCodeObservation:
 def usage() -> int:
     print(
         "usage: pyrun <script.py> [args...]\n"
-        "       pyrun --cid COMMAND_ID -- <script> [args...]\n"
-        "       pyrun [--cid COMMAND_ID] [--auto-reproduce=false] [--exclusive] "
+        "       pyrun --cid COMMAND_ID_OR_NUMBER -- <script> [args...]\n"
+        "       pyrun [--cid COMMAND_ID_OR_NUMBER] [--auto-reproduce=false] [--exclusive] "
         "[--env NAME=value] "
         "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
-        "       pyrun --capture-stdout-stderr <path> -- <script> [args...]",
+        "       pyrun --capture-stdout-stderr <path> -- <script> [args...]\n"
+        "A numeric --cid N resolves to the full ID <script-stem>-N.",
         file=sys.stderr,
     )
     return 2

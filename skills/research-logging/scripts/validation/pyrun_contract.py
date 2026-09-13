@@ -24,6 +24,7 @@ PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
 PYRUN_EXCLUSIVE_OPTION = "--exclusive"
 PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"})
 _OPTION_SELECTOR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+_CID_NUMBER_RE = re.compile(r"[1-9][0-9]*\Z")
 _POSITIONAL_SELECTOR_RE = re.compile(r"@[1-9][0-9]*\Z")
 _ENVIRONMENT_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>[^\x00\r\n]*)\Z"
@@ -152,21 +153,33 @@ def parse_pyrun_arguments(arguments: Sequence[str]) -> PyrunLayout:
 
 
 def _effective_cid(script: str, explicit_cid: str | None) -> str:
-    """Return the explicit CID or derive one from a lexical Python filename."""
+    """Resolve a full, numeric-shorthand, or program-derived CID."""
 
-    if explicit_cid is not None:
+    if explicit_cid is not None and not explicit_cid.isdigit():
         return explicit_cid
+    if explicit_cid is not None and _CID_NUMBER_RE.fullmatch(explicit_cid) is None:
+        raise PyrunContractError(
+            "numeric --cid requires a canonical positive integer"
+        )
     filename = script.rsplit("/", 1)[-1]
     if not filename.endswith(".py"):
+        if explicit_cid is not None:
+            raise PyrunContractError(
+                "numeric --cid requires a Python program name"
+            )
         raise PyrunContractError(
             "program cannot derive a command ID; add an explicit --cid"
         )
     stem = filename.removesuffix(".py")
     if _OPTION_SELECTOR_RE.fullmatch(stem) is None:
+        if explicit_cid is not None:
+            raise PyrunContractError(
+                "numeric --cid requires a valid Python program stem"
+            )
         raise PyrunContractError(
             "Python program stem is not a valid command ID; add an explicit --cid"
         )
-    return stem
+    return stem if explicit_cid is None else f"{stem}-{explicit_cid}"
 
 
 def _consume_runner_option(

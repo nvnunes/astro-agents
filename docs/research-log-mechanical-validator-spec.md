@@ -2857,20 +2857,25 @@ participate in Provenance.
 
 A command with no runner options passes its Python program directly without a
 separator. Any runner option requires one leading runner-option group followed
-by `--` and the program. `--cid CID` is an optional runner override. When it is
-present, its valid value is the effective CID. When it is absent, the parser
-derives the effective CID from the lexical `.py` program filename without its
-suffix. The derived stem must use the same command-ID grammar as an authored
-CID: one ASCII alphanumeric followed only by ASCII alphanumerics, `_`, or `-`.
-Non-Python programs and invalid stems require an explicit `--cid`.
+by `--` and the program. `--cid VALUE` is an optional runner override. A
+nonnumeric valid value is the full effective CID. A canonical positive integer
+`N` is numeric shorthand that resolves to the valid lexical Python filename
+stem plus `-N`; for example, `--cid 2 -- scripts/foo.py` resolves to `foo-2`.
+The shorthand rejects zero and leading-zero values and requires a `.py`
+program whose stem satisfies the command-ID grammar. When `--cid` is absent,
+the parser derives the effective CID from that same lexical `.py` filename
+stem. A full explicit CID remains available for non-Python programs and invalid
+stems.
 
 The effective CID owns one command or bounded loop, is stable across all of
 that owner's expansions, and is unique across the entry's split documents.
-Repeated programs, basename collisions, multi-program owners, and program
-replacement that must preserve the prior identity require explicit overrides.
-Static discovery and the live runner derive the same effective CID at their
-shared parsing boundary. Diagnostics for a duplicate or unstable derived CID
-direct the author to add an explicit override; they do not invent suffixes.
+Repeated programs and basename collisions may use explicit numeric shorthand.
+Multi-program owners and program replacement that must preserve a prior
+identity require a full explicit CID. Static discovery and the live runner
+resolve the same effective CID at their shared parsing boundary. Diagnostics
+for a duplicate derived CID direct the author to add an explicit numeric or
+full override. An unstable multi-program owner requires one full CID shared by
+every command. Diagnostics do not invent suffixes.
 
 An exact file or repository-locator token is the whole argument `<name>`. A
 Git repository commit token is the whole argument `<name:commit>`. A directory
@@ -3909,9 +3914,9 @@ cross-entry declaration disagreement remains a validation finding.
 `command sync` is the sole recipe and execution-policy editing route. The
 agent edits the selected Markdown owner first, then sync compares every current
 expansion with the selected effective-CID bucket by parameter ID and complete
-recipe. The `--cid` selector passed to `command sync` names the effective CID,
-whether the Markdown owner authored it explicitly or derived it from its Python
-program name.
+recipe. The `--cid` selector passed to `command sync` names the full effective
+CID, whether the Markdown owner authored it in full, used numeric shorthand,
+or derived it from its Python program name.
 Missing invocations become observation-empty records requiring reproduction;
 recipe changes retain only still-applicable observations and require
 reproduction; policy-only changes preserve observations and the requirement.

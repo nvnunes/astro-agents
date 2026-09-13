@@ -227,6 +227,30 @@ class PyrunResolutionTests(unittest.TestCase):
 
                 self.assertEqual(layout.cid, "stable-model")
 
+    def test_numeric_cid_resolves_to_full_python_program_id(self) -> None:
+        cases = (("1", "model-1"), ("2", "model-2"), ("12", "model-12"))
+        for number, expected in cases:
+            with self.subTest(number=number):
+                layout = PYRUN_MODULE.parse_pyrun_arguments(
+                    ["--cid", number, "--", "<log>/scripts/model.py"]
+                )
+
+                self.assertEqual(layout.cid, expected)
+
+    def test_numeric_cid_requires_canonical_number_and_python_stem(self) -> None:
+        cases = (
+            (["--cid", "0", "--", "scripts/model.py"], "canonical positive"),
+            (["--cid", "02", "--", "scripts/model.py"], "canonical positive"),
+            (["--cid", "2", "--", "scripts/model.sh"], "Python program name"),
+            (["--cid", "2", "--", "scripts/model.v2.py"], "valid Python program stem"),
+        )
+        for arguments, message in cases:
+            with (
+                self.subTest(arguments=arguments),
+                self.assertRaisesRegex(PYRUN_MODULE.PyrunContractError, message),
+            ):
+                PYRUN_MODULE.parse_pyrun_arguments(arguments)
+
     def test_implicit_cid_requires_a_valid_python_program_stem(self) -> None:
         cases = (
             (["scripts/model.sh"], "cannot derive a command ID"),
@@ -275,6 +299,30 @@ class PyrunResolutionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
             self.assertEqual(set(state["commands"]), {"print_args"})
+
+    def test_numeric_cid_publishes_to_the_full_derived_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+
+            result = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "--cid",
+                    "2",
+                    "--",
+                    "scripts/print_args.py",
+                    "--label",
+                    "visible",
+                ],
+                cwd=entry,
+                add_default_cid=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(state["commands"]), {"print_args-2"})
 
     def test_cid_is_runner_only_and_never_reaches_the_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

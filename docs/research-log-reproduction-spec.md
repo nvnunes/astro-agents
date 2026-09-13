@@ -201,12 +201,14 @@ discarding available run history or current artifact state.
 - **Execution recipe:** the normalized structural information required to
   invoke one child process and associate its direct inputs and complete output
   set.
-- **Authored CID:** an explicit `--cid CID` runner-option override.
+- **Authored CID token:** an explicit `--cid VALUE` runner option. A canonical
+  positive integer is a numeric shorthand; any other valid value is a full CID.
 - **Derived CID:** the valid command ID obtained from a Python program's lexical
   filename without its `.py` suffix when `--cid` is absent.
-- **Command ID (CID), or effective CID:** the authored CID when present,
-  otherwise the derived CID. It is the stable entry-unique owner shared by
-  every expansion of one command or loop.
+- **Command ID (CID), or effective CID:** the full authored CID, the derived
+  program stem plus `-N` for numeric shorthand `--cid N`, or the derived CID
+  when `--cid` is absent. It is the stable entry-unique owner shared by every
+  expansion of one command or loop.
 - **Execution ID:** the stable `pyrun-exec/v2:<digest>` identity of one expanded
   child-parameter vector within a CID.
 - **Reproduction run:** one durable entry- or log-target reproduction job.
@@ -498,22 +500,27 @@ Only `pyrun` may establish reproduction-eligible execution state. Each eligible
 fence contains exactly one authored command or bounded static loop. A command
 with no runner options may pass a Python program directly. When runner options
 are present, they form one leading group followed by `--` and the program.
-`--cid CID` is one such runner option.
+`--cid VALUE` is one such runner option.
 
-An authored CID overrides derivation. Without `--cid`, the program must be a
-`.py` path whose lexical filename stem satisfies the command-ID grammar: one
-ASCII alphanumeric followed only by ASCII alphanumerics, `_`, or `-`. The
-effective CID is unique within the entry across split documents, is shared by
-every concrete expansion of its command or loop, and never reaches the child
-process. An explicit override is required for non-Python programs, invalid
-stems, repeated uses or basename collisions within one entry, multi-program
-owners, and preservation of an existing identity when the program filename
-changes. In the last case, changing `foo.py` to `bar.py` while retaining the
-existing identity requires `--cid foo`.
+A nonnumeric authored value is the full CID and overrides derivation. A
+canonical positive integer `N` resolves to the full effective CID formed from
+the valid lexical Python filename stem plus `-N`; for example,
+`--cid 2 -- scripts/foo.py` resolves to `foo-2`. Zero and leading-zero forms
+are invalid. Without `--cid`, the program must be a `.py` path whose lexical
+filename stem satisfies the command-ID grammar: one ASCII alphanumeric
+followed only by ASCII alphanumerics, `_`, or `-`. The effective CID is unique
+within the entry across split documents, is shared by every concrete expansion
+of its command or loop, and never reaches the child process. Numeric shorthand
+is available for repeated uses and basename collisions with a valid Python
+stem. A full authored CID is required for non-Python programs, invalid stems,
+multi-program owners, and preservation of an existing identity when the
+program filename changes. In the last case, changing `foo.py` to `bar.py`
+while retaining the existing identity requires `--cid foo`.
 
-`pyrun.json` stores only the effective CID as its ordinary command-bucket key.
-It does not record whether that CID was authored or derived, and this behavior
-does not change the state schema.
+`pyrun.json` stores only the resolved effective CID as its ordinary
+command-bucket key. It does not record the authored token, whether the CID was
+authored or derived, or any separate invocation number. This behavior does not
+change the state schema.
 
 Production command blocks must not use direct non-`pyrun` executables,
 pipelines, redirection, `tee`, shell environment prefixes, command or process

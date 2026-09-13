@@ -107,6 +107,31 @@ class LogCommandSyncTests(unittest.TestCase):
             )
             self.assertEqual(set(state.commands), {"build"})
 
+    def test_numeric_cid_resolves_before_full_owner_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                "./pyrun --cid 2 -- scripts/build.py --count 2",
+            )
+
+            result = run_log(
+                logical.parent,
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "build-2",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=Path(directory)
+            )
+            self.assertEqual(set(state.commands), {"build-2"})
+
     def test_success_creates_pending_no_output_member_without_observing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(

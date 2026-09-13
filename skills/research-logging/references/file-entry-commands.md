@@ -92,11 +92,16 @@ following line:
   --parameter value
 ```
 
-`--cid CID` is an override. Omit it when a Python filename supplies a valid,
-entry-unique, stable CID. Add it when:
+`--cid VALUE` resolves to one full effective CID. A canonical positive integer
+is numeric shorthand: `--cid 2 -- scripts/run_study.py` resolves to
+`run_study-2`. The runner stores only that full ID; it does not store a separate
+number. A nonnumeric valid value is the full CID. Zero and leading-zero numeric
+forms are invalid.
 
-- the same program owns more than one independent command in the entry;
-- different program paths have the same basename;
+Omit `--cid` when a Python filename supplies a valid, entry-unique, stable CID.
+Add numeric shorthand when the same Python stem needs another distinct owner.
+Use a full CID when:
+
 - one bounded loop contains more than one program;
 - the program is not a `.py` file or its filename stem is not a valid CID; or
 - a program filename changes while its existing command identity must remain
@@ -135,14 +140,18 @@ done
 ```
 
 When one program owns repeated independent commands, let at most one owner use
-the derived CID and give every other owner a distinct explicit override. For
-example, a second independent use may begin:
+the derived CID and number every other owner explicitly. For example, a second
+independent use begins:
 
 ```bash
-./pyrun --cid run_study-trial -- \
+./pyrun --cid 2 -- \
   scripts/run_study.py \
   --case trial
 ```
+
+This command's effective CID is `run_study-2`. The same shorthand can
+disambiguate different Python program paths that share the same basename. Use
+full descriptive CIDs instead when stable meaning is clearer than numbering.
 
 `pyrun` automatically gives each execution isolated temporary
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable
@@ -359,8 +368,10 @@ to follow a cross-reference merely to find the reproduction command.
 
 ## Synchronize A Recorded Command
 
-Edit Markdown first, then synchronize every expansion owned by its effective
-CID. Pass the derived program stem when the Markdown omits `--cid`:
+Edit Markdown first, then synchronize every expansion owned by its full
+effective CID. Pass the derived program stem when Markdown omits `--cid`, and
+pass `run_study-2` rather than the authored shorthand `2` for the example
+above:
 
 ```bash
 log command sync --path <log> --entry <entry> --cid <cid> --dry-run

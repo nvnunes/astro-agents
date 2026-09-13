@@ -15,6 +15,7 @@ from .model import (
     ActionError,
     ActionResult,
     AddArguments,
+    CommandSyncArguments,
     DataAddArguments,
     DataUpdateArguments,
     EntryUpdateArguments,
@@ -26,12 +27,12 @@ from .model import (
 
 FAMILIES = (
     "add",
+    "command",
     "data",
     "discover",
     "evidence",
     "findings",
     "init",
-    "pyrun",
     "repair-check",
     "reproduce",
     "reorganize",
@@ -40,7 +41,7 @@ FAMILIES = (
     "validate",
 )
 AUTHORING_FAMILIES = frozenset(
-    {"add", "data", "evidence", "init", "pyrun", "reorganize", "retention"}
+    {"add", "command", "data", "evidence", "init", "reorganize", "retention"}
 )
 
 
@@ -63,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _top_parser().error(f"unknown task family: {family}")
     selected_task = (
         f"{family}.{arguments[0]}"
-        if family in {"data", "evidence", "pyrun", "reorganize", "retention"}
+        if family in {"command", "data", "evidence", "reorganize", "retention"}
         and arguments
         else family
     )
@@ -80,10 +81,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return read_only_dispatch[family](arguments)
         dispatch = {
             "add": _dispatch_add,
+            "command": _dispatch_command,
             "data": _dispatch_data,
             "evidence": _dispatch_evidence,
             "init": _dispatch_init,
-            "pyrun": _dispatch_pyrun,
             "reorganize": _dispatch_reorganize,
             "retention": _dispatch_retention,
         }
@@ -124,7 +125,20 @@ def _report_failure(
         from .diagnostic_errors import report_diagnostic
 
         if dry_run:
-            print("Diagnostic not cached (--dry-run).")
+            print("Diagnostic not cached (--dry-run).", file=sys.stderr)
+            print(
+                json.dumps(
+                    ActionResult(
+                        selected_task,
+                        "failed",
+                        str(code),
+                        False,
+                        records=error.records,
+                    ).as_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
         else:
             report_diagnostic(error)
         return 2
@@ -411,6 +425,39 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     return result
 
 
+def _dispatch_command(arguments: Sequence[str]) -> ActionResult:
+    parser = _AuthoringParser(prog="log command")
+    actions = parser.add_subparsers(dest="action", required=True)
+    sync = actions.add_parser(
+        "sync", help="Synchronize one Markdown-owned CID and its declarations"
+    )
+    _entry_arguments(sync)
+    sync.add_argument("--cid", required=True, help="stable command ID")
+    sync.add_argument("--add-origin", action="append", default=[], metavar="NAME=PATH")
+    sync.add_argument(
+        "--add-generated", action="append", default=[], metavar="NAME=PATH"
+    )
+    sync.add_argument("--rename", action="append", default=[], metavar="OLD=NEW")
+    sync.add_argument("--remove", action="append", default=[], metavar="NAME")
+    sync.add_argument("--retire", action="append", default=[], metavar="EXECUTION_ID")
+    _mutation_argument(sync)
+    args = parser.parse_args(arguments)
+    from .command_sync import sync_command
+
+    return sync_command(
+        resolve_entry(resolve_log(args.path), args.entry),
+        CommandSyncArguments(
+            cid=args.cid,
+            add_origins=tuple(args.add_origin),
+            add_generated=tuple(args.add_generated),
+            renames=tuple(args.rename),
+            removals=tuple(args.remove),
+            retirements=tuple(args.retire),
+            dry_run=args.dry_run,
+        ),
+    )
+
+
 def _add_data_input_parsers(
     actions: argparse._SubParsersAction[_AuthoringParser],
 ) -> None:
@@ -493,103 +540,6 @@ def _add_data_update_parser(
         "--reproduction-comparison",
         choices=("exact", "evidence"),
         help="select exact-default or evidence-scoped reproduction comparison",
-    )
-
-
-def _pyrun_edit_arguments(
-    actions: argparse._SubParsersAction[_AuthoringParser],
-) -> None:
-    descriptions = {
-        "add-input": "Record an input parameter declaration",
-        "add-output": "Record an output parameter declaration",
-        "set-parameter": "Record a parameter value change or addition",
-        "remove-parameter": "Remove a recorded parameter and its associations",
-        "set-role": "Record an existing parameter's input, output, or ordinary role",
-        "set-script": "Record a corrected script path",
-    }
-    for name, description in descriptions.items():
-        action = actions.add_parser(
-            name,
-            help=description,
-            description=description
-            + ". Edit Markdown first; verifies it and writes only pyrun.json.",
-        )
-        _entry_arguments(action)
-        _mutation_argument(action)
-        action.add_argument("--execution-id", "--execution", required=True)
-        if name == "set-script":
-            action.add_argument("--script", dest="value", required=True)
-            continue
-        target = action.add_mutually_exclusive_group(required=True)
-        target.add_argument(
-            "--parameter", help="script parameter name, without leading dashes"
-        )
-        target.add_argument(
-            "--position", type=int, help="one-based positional parameter"
-        )
-        if name == "set-role":
-            action.add_argument(
-                "--role", choices=("input", "output", "ordinary"), required=True
-            )
-        else:
-            action.add_argument(
-                "--occurrence",
-                type=int,
-                help="one-based occurrence of a repeated named parameter",
-            )
-        if name in {"add-input", "add-output", "set-parameter"}:
-            action.add_argument("--value", required=True)
-
-
-def _dispatch_pyrun_edit(args: argparse.Namespace) -> ActionResult:
-    from .pyrun_edit import edit_command
-    from .pyrun_parameters import CommandEdit
-
-    edit = CommandEdit(
-        args.action,
-        getattr(args, "parameter", None),
-        getattr(args, "position", None),
-        getattr(args, "occurrence", None),
-        getattr(args, "value", None),
-        getattr(args, "role", None),
-    )
-    return edit_command(
-        resolve_entry(resolve_log(args.path), args.entry),
-        execution_id_value=args.execution_id,
-        edit=edit,
-        dry_run=args.dry_run,
-    )
-
-
-def _dispatch_pyrun(
-    arguments: Sequence[str],
-) -> ActionResult | Mapping[str, object] | str | int:
-    parser = _AuthoringParser(prog="log pyrun")
-    actions = parser.add_subparsers(dest="action", required=True)
-    for name in ("set-auto-reproduce", "set-exclusive"):
-        policy = actions.add_parser(
-            name, help="Apply a Markdown-first execution policy change"
-        )
-        _entry_arguments(policy)
-        policy.add_argument("--execution-id", "--execution", required=True)
-        policy.add_argument("--value", choices=("true", "false"), required=True)
-    _pyrun_edit_arguments(actions)
-    args = parser.parse_args(arguments)
-    if args.action not in {"set-auto-reproduce", "set-exclusive"}:
-        return _dispatch_pyrun_edit(args)
-    from . import pyrun_policy
-
-    entry = resolve_entry(resolve_log(args.path), args.entry)
-    if args.action == "set-auto-reproduce":
-        return pyrun_policy.set_auto_reproduce(
-            entry,
-            execution_id_value=args.execution_id,
-            auto_reproduce=args.value == "true",
-        )
-    return pyrun_policy.set_exclusive(
-        entry,
-        execution_id_value=args.execution_id,
-        exclusive=args.value == "true",
     )
 
 

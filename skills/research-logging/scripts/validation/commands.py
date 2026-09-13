@@ -125,6 +125,7 @@ class CommandDeclaration:
 
     fence: int
     ordinal: int
+    document: str
     tokens: tuple[str, ...]
     owner: str
     outputs: tuple[tuple[str, str], ...]
@@ -201,6 +202,7 @@ def index_commands(
                 CommandDeclaration(
                     fence_number,
                     ordinal,
+                    context.document,
                     command.tokens,
                     _declaration_owner(context),
                     tuple(sorted(set(outputs))),
@@ -263,6 +265,236 @@ def observe_commands(
         duplicates[canonical] = duplicate + 1
         invocations.append(invocation)
     return DiscoveryResult(tuple(invocations), tuple(failures))
+
+
+def materialize_declared_commands(
+    declarations: CommandDeclarationResult,
+    context: CommandDeclarationContext,
+) -> DiscoveryResult:
+    """Build recipe-capable invocations without observing filesystem bytes.
+
+    This is the authoring counterpart to :func:`observe_commands`.  It resolves
+    named registry resources and lexical paths, but never opens scripts, hashes
+    inputs, or enumerates directory members.
+    """
+
+    normalized = CommandDeclarationContext(
+        context.log_id,
+        context.entry,
+        context.document,
+        context.entry_root.resolve(),
+        context.log_root.resolve(),
+        context.project_root.resolve(),
+        context.data_file,
+        context.require_experimental_context,
+    )
+    invocations: list[Invocation] = []
+    failures = list(declarations.failures)
+    duplicates: dict[str, int] = {}
+    for declaration in declarations.declarations:
+        command = declaration.parsed
+        canonical_value: object = list(command.tokens)
+        if command.static_projection:
+            canonical_value = [canonical_value, list(command.static_projection)]
+        canonical = canonical_json(canonical_value)
+        duplicate = duplicates.get(canonical, 0)
+        try:
+            invocation = _build_declared_invocation(
+                command,
+                normalized,
+                _InvocationPosition(
+                    declaration.fence,
+                    declaration.ordinal,
+                    len(invocations),
+                    duplicate,
+                ),
+            )
+        except CommandV2Error as error:
+            failures.append(
+                CommandDiscoveryFailure(declaration.fence, declaration.ordinal, error)
+            )
+            continue
+        duplicates[canonical] = duplicate + 1
+        invocations.append(invocation)
+    return DiscoveryResult(tuple(invocations), tuple(failures))
+
+
+def _build_declared_invocation(
+    command: _ParsedCommand,
+    declaration: CommandDeclarationContext,
+    position: _InvocationPosition,
+) -> Invocation:
+    """Materialize one parsed command from declarations alone."""
+
+    context = CommandContext(
+        declaration.log_id,
+        declaration.entry,
+        declaration.document,
+        declaration.entry_root,
+        declaration.log_root,
+        declaration.project_root,
+        declaration.data_file,
+        declaration.require_experimental_context,
+    )
+    state = _DeclaredRoleState(context, [], [], [])
+
+    for target, value in command.capture_outputs:
+        _collect_declared_argument(value, target, "output", state)
+    for occurrence in command.options:
+        _collect_declared_argument(
+            occurrence.value,
+            occurrence.name,
+            command.runner_roles.get(
+                occurrence.name, automatic_option_role(occurrence.name)
+            ),
+            state,
+        )
+    for index, value in enumerate(command.positionals, 1):
+        target = f"@{index}"
+        _collect_declared_argument(
+            value, target, command.runner_roles.get(target), state
+        )
+    if state.unresolved:
+        _fail(
+            "material.candidate.unresolved",
+            declaration.document,
+            {"candidates": [item["resolved"] for item in state.unresolved]},
+        )
+    relationships = list(
+        _deduplicate_relationships(state.relationships, declaration.document)
+    )
+    outputs = tuple(item for item in relationships if item.direction == "output")
+    recipe_parameters = _canonical_recipe_output_parameters(
+        command.recipe_parameters,
+        outputs,
+        context,
+    )
+    script_token = (
+        command.tokens[command.script_index]
+        if command.script_index is not None
+        else None
+    )
+    identity_payload: list[object] = [
+        declaration.log_id,
+        declaration.entry,
+        declaration.document,
+        list(command.tokens),
+    ]
+    if command.static_projection:
+        identity_payload.append(list(command.static_projection))
+    identity_payload.extend((script_token, position.duplicate))
+    return Invocation(
+        hashlib.sha256(canonical_json(identity_payload).encode()).hexdigest(),
+        command.cid,
+        declaration.document,
+        declaration.entry,
+        position.fence,
+        position.ordinal,
+        position.sequence,
+        command.tokens,
+        command.tokens[command.executable_index],
+        script_token,
+        command.parameters,
+        script_token,
+        None,
+        tuple(item for item in relationships if item.direction == "input"),
+        outputs,
+        tuple(state.collections),
+        (),
+        _declaration_owner(declaration),
+        recipe_parameters,
+        command.environment,
+        command.auto_reproduce,
+        command.exclusive,
+        command.authored_group,
+        effective_parameter_roles(
+            command.tokens[command.script_index + 1 :]
+            if command.script_index is not None
+            else (),
+            command.runner_roles,
+        ),
+    )
+
+
+def _collect_declared_argument(
+    value: str,
+    target: str,
+    role: str | None,
+    state: _DeclaredRoleState,
+) -> None:
+    """Collect one recipe relationship without observing its target."""
+
+    if role == "ordinary":
+        return
+    if role is None:
+        if _path_like(value):
+            state.unresolved.append(
+                {"selector": target, "value": value, "resolved": value}
+            )
+        return
+    direction = "input" if role.startswith("input") else "output"
+    relationship, directory = _declared_relationship(
+        value, direction, target, state.context
+    )
+    state.relationships.append(relationship)
+    if directory:
+        state.collections.append(
+            MaterialCollection(
+                direction,
+                "directory",
+                target,
+                (),
+                relationship.path,
+            )
+        )
+
+
+def _declared_relationship(
+    value: str,
+    direction: str,
+    target: str,
+    context: CommandContext,
+) -> tuple[MaterialRelationship, bool]:
+    """Resolve one relationship without observing its target."""
+
+    if input_token_parts(value) is not None:
+        try:
+            resolved = resolve_input_token(value, context.data_file)
+        except DataContractError as error:
+            _fail(error.code, context.document, error.observed)
+        resource = resolved.resource
+        if direction == "output" and (
+            resource.origin
+            or resource.reference_entry is not None
+            or resolved.member is not None
+        ):
+            _fail(
+                "data.output.declaration_invalid",
+                context.document,
+                {"artifact": resource.name, "value": value},
+            )
+        return (
+            MaterialRelationship(
+                resolved.path,
+                direction,
+                "named-input" if direction == "input" else "named-output",
+                target,
+                resource.name,
+                resource.origin,
+                resource,
+            ),
+            resource.kind == "directory" and resolved.member is None,
+        )
+    if direction == "input":
+        _reject_raw_input(value, context)
+    _require_portable_output(value, context)
+    path = _expand_path(value, context)
+    if path is None:
+        _fail("material.unresolved", context.document, {"value": value})
+    return (
+        MaterialRelationship(path.absolute().as_posix(), direction, "option", target),
+        path.is_dir(),
+    )
 
 
 def _declaration_owner(context: CommandDeclarationContext) -> str:
@@ -489,6 +721,14 @@ class _RoleState:
     context: CommandContext
     relationships: list[MaterialRelationship]
     collections: list[MaterialCollection]
+
+
+@dataclass
+class _DeclaredRoleState:
+    context: CommandContext
+    relationships: list[MaterialRelationship]
+    collections: list[MaterialCollection]
+    unresolved: list[dict[str, str]]
 
 
 @dataclass(frozen=True)

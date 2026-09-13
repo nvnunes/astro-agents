@@ -266,7 +266,7 @@ the option does not alter the execution ID or reserve unrelated host work.
 ./pyrun --exclusive -- scripts/run_parallel_model.py --output-data data/result.json
 ```
 
-For later changes, use the actions under [Correct A Recorded Command](#correct-a-recorded-command).
+For later changes, use [Synchronize A Recorded Command](#synchronize-a-recorded-command).
 Execution state must use `research-log-pyrun/v5`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
@@ -275,32 +275,22 @@ result, output, figure, table, or check they support. Do not require a reader
 to follow a cross-reference merely to find the reproduction command.
 
 
-## Correct A Recorded Command
+## Synchronize A Recorded Command
 
-Edit Markdown first. Then run the matching `log pyrun` action with
-`--path <log> --entry <entry> --execution-id <old-id>`:
+Edit Markdown first, then synchronize every expansion owned by its CID:
 
-| Change | Action and parameters |
-|---|---|
-| Declare an input parameter | `add-input --parameter NAME --value '<registered_name>'` |
-| Declare an output parameter | `add-output --parameter NAME --value TARGET` |
-| Set or append a parameter | `set-parameter --parameter NAME --value VALUE` |
-| Remove a parameter | `remove-parameter --parameter NAME` |
-| Correct an existing parameter's role | `set-role --parameter NAME --role input\|output\|ordinary` |
-| Correct the script path | `set-script --script PATH` |
-| Set automatic reproduction policy | `set-auto-reproduce --value true\|false` |
-| Set exclusive scheduling policy | `set-exclusive --value true\|false` |
+```bash
+log command sync --path <log> --entry <entry> --cid <cid> --dry-run
+```
 
-All actions verify Markdown and update only `pyrun.json`. The two policy setters
-preserve the execution ID and reproduction state. They do not accept `--dry-run`.
+Review both registry diffs, then repeat without `--dry-run`. Supply simple
+missing declarations with repeatable `--add-origin NAME=PATH` and
+`--add-generated NAME=PATH`. Safe local declaration corrections may use
+`--rename OLD=NEW` or `--remove NAME`; use `log data` when evidence,
+cross-entry references, specialized identities, or other CIDs are involved.
 
-For recipe edits, use `--position N` instead of `--parameter NAME` for positional parameters.
-For repeated named parameters, specify `--occurrence N`; roles apply to all
-occurrences. Preview with `--dry-run`. Use `log data` for registration first.
-Recipe edits return a new execution ID. Use that ID for subsequent edits.
-Input/output actions set or append the parameter and verify its role.
-`set-parameter` preserves an existing role or appends an ordinary parameter.
-New inputs must resolve through an observable registered declaration; new
-outputs must exist so the corrected execution can record their observations.
-Recipe corrections require reproduction. Run validation only at the applicable
-checkpoint.
+When parameters disappear, sync refuses and reports one exact
+`--retire EXECUTION_ID` retry flag for every stale member. Pass all and only
+those flags. Sync does not run the command or sample retained bytes. Changed or
+new recipes require reproduction; policy-only changes retain their current
+reproduction state.

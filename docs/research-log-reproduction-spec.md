@@ -584,26 +584,16 @@ The false value marks work that must not be rerun automatically, such as
 simulation or model training. It is an authored policy, not an inference from
 measured duration. No other spelling or truthy/falsey value is accepted.
 
-Automatic-reproduction policy is outside identity. A later policy-only change
-uses:
+Automatic-reproduction policy is outside identity. For a later policy-only
+change, edit the Markdown option first and synchronize its CID:
 
 ```text
-log pyrun set-auto-reproduce --path LOG --entry ENTRY --execution-id ID --value BOOL
+log command sync --path LOG --entry ENTRY --cid CID
 ```
 
-`BOOL` is exactly `true` or `false`. The operation takes the selected entry
-lock, changes only `auto_reproduce`, and writes atomically. The researcher or
-authoring agent must first edit the Markdown option. The operation resolves the
-supplied execution ID to one concrete expanded recipe and its containing
-authored invocation, requires exact structural agreement apart from the
-requested policy difference, and never edits Markdown.
-
-If the authored invocation is one bounded static loop, the operation resolves
-the complete expansion and atomically applies the same policy to every
-distinct affected execution ID. It never merges those executions. Any other
-Markdown-to-state disagreement is a refusal. The operation neither runs the
-recipe nor refreshes validation; ordinary validation remains the separate next
-authoring step.
+Sync derives policy from every current expansion, preserves applicable
+observations and reproduction requirements, and never edits Markdown or runs
+the recipe.
 
 ### Exclusive-Scheduling Policy
 
@@ -613,72 +603,37 @@ is accepted. The option affects managed reproduction scheduling only: ordinary
 direct `pyrun` execution is unchanged, and the runner does not reserve CPUs,
 GPUs, devices, host affinity, or unrelated host processes.
 
-Exclusivity is outside execution identity. A later Markdown-first policy change
-uses:
+Exclusivity is outside execution identity. Apply a later Markdown-first policy
+change with the same `log command sync --path LOG --entry ENTRY --cid CID`
+operation. Sync applies the authored policy to every current expansion without
+merging their parameter identities.
+
+### Markdown-First Command Synchronization
+
+Edit the recorded Markdown command first, then run:
 
 ```text
-log pyrun set-exclusive --path LOG --entry ENTRY --execution-id ID --value BOOL
+log command sync --path LOG --entry ENTRY --cid CID [--dry-run]
 ```
 
-`BOOL` is exactly `true` or `false`. Each setter changes only its named policy.
-The operation otherwise uses the same concrete-expansion agreement, entry locking,
-identity preservation, and validation boundary as automatic-reproduction
-policy updates.
+Sync reconciles every current parameter expansion in the selected CID. It
+preserves unchanged records, retains only applicable observations when a recipe
+changes, applies policy-only changes without changing reproduction state, and
+creates observation-empty pending records for missing expansions. Stale
+parameter identities require explicit repeatable `--retire EXECUTION_ID`
+acknowledgements; sync reports the exact retry flags and refuses partial or
+extra acknowledgement.
 
-### Markdown-First Command Corrections
+Supply missing simple declarations in the same transaction with repeatable
+`--add-origin NAME=PATH` or `--add-generated NAME=PATH`. Use `--rename OLD=NEW`
+and `--remove NAME` only when no evidence, cross-entry reference, or unselected
+CID depends on the declaration. Specialized identities and coordinated
+evidence-aware changes remain under `log data`.
 
-Edit the recorded Markdown command first, then use one explicit operation below
-with `--path LOG --entry ENTRY --execution-id OLD_ID`. These operations read and
-verify Markdown; they write only the owning entry's `pyrun.json`.
-
-| Operation | Change selectors |
-|---|---|
-| `log pyrun add-input` | `--parameter NAME --value TOKEN` |
-| `log pyrun add-output` | `--parameter NAME --value TARGET` |
-| `log pyrun set-parameter` | `--parameter NAME --value VALUE` |
-| `log pyrun remove-parameter` | `--parameter NAME` |
-| `log pyrun set-role` | `--parameter NAME --role input\|output\|ordinary` |
-| `log pyrun set-script` | `--script PATH` |
-| `log pyrun set-auto-reproduce` | `--value true\|false` |
-| `log pyrun set-exclusive` | `--value true\|false` |
-
-The two policy setters follow [Automatic-Reproduction Policy](#automatic-reproduction-policy)
-and [Exclusive-Scheduling Policy](#exclusive-scheduling-policy): they preserve
-execution identity and reproduction state and do not accept `--dry-run`.
-The remaining rules in this section apply to recipe corrections.
-
-Use names without leading dashes. `--position N` replaces `--parameter NAME`
-for one-based positional parameters. New parameters append; existing parameters
-keep their position. A repeated named parameter requires `--occurrence N`, except
-`set-role`, which applies to every occurrence, matching the runner's role grammar.
-The bounded single-value parameter grammar is the same as command discovery.
-`add-input` and `add-output` set or append the selected value and require the
-corresponding Markdown role. Use `set-role` when only the role changes.
-`set-parameter` preserves the selected role; a new parameter is ordinary.
-Input tokens must resolve
-through the existing registry; named outputs must be local generated artifacts.
-`log data` owns registration. Removing a parameter removes its execution
-association only when no remaining parameter uses that material.
-
-The current Markdown must yield exactly one recipe matching the requested change,
-with unchanged environment and reproduction policies. Additional token or material
-changes, ambiguous matches, missing execution IDs, destination-ID collisions, and
-output-ownership conflicts within the entry refuse the operation without writes.
-Equals and separate-value option spellings may agree; parameter order and option
-spelling otherwise remain significant. These operations change one concrete
-execution; they do not apply a recipe edit to an entire loop expansion.
-
-The transaction replaces the old execution ID with the corrected recipe's ID,
-sets `requires_reproduction: true`, and sets `last_run_at: null`. It preserves
-observations for unchanged materials. Newly declared inputs require a stable
-current observation under their declaration identity; newly declared outputs
-require retained files that can be observed. Changing the script observes the new script and clears the old
-script's code observations. These observations are reconstruction support, not
-proof that the corrected command ran. Retained files and registries are unchanged.
-The strict current state decoder validates the complete replacement before one
-atomic write under the entry lock. Reproduction and validation remain separate.
-`--dry-run` performs the same checks and returns the exact state diff without
-writing. A request that leaves the recorded recipe unchanged is refused.
+The operation validates complete `data.json` and `pyrun.json` candidates and
+publishes both atomically under the entry lock. It never samples script, input,
+or output bytes. `--dry-run` performs the same semantic checks and returns both
+complete unified diffs without writing registries, diagnostics, or caches.
 
 ### Execution-Metadata Schema
 

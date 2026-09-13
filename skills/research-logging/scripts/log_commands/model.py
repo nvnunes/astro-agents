@@ -78,6 +78,19 @@ class DataUpdateArguments:
 
 
 @dataclass(frozen=True)
+class CommandSyncArguments:
+    """Complete selected-CID synchronization request."""
+
+    cid: str
+    add_origins: tuple[str, ...]
+    add_generated: tuple[str, ...]
+    renames: tuple[str, ...]
+    removals: tuple[str, ...]
+    retirements: tuple[str, ...]
+    dry_run: bool
+
+
+@dataclass(frozen=True)
 class EntryUpdateArguments:
     """Typed arguments for one closed entry-identity update."""
 
@@ -136,8 +149,11 @@ class ActionError(Exception):
     """One bounded authoring conflict or failed precondition."""
 
     def __init__(
-        self, code: str, message: str,
-        *, records: tuple[dict[str, object], ...] | None = None,
+        self,
+        code: str,
+        message: str,
+        *,
+        records: tuple[dict[str, object], ...] | None = None,
         diagnostic_log: Path | None = None,
     ):
         super().__init__(message)

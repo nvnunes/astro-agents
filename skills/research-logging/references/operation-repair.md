@@ -71,16 +71,15 @@ source records or script. Preserve the original in version control or a backup.
 | Retained execution-observation mismatch | Report the mismatch and request explicit Reproduce authority for confirmation; promotion or a fresh `./pyrun` requires a separately authorized researcher decision |
 | Evidence record or association | `log evidence` |
 | Disconnected-retention declaration | `log retention` |
-| Recorded execution policy or recipe | `log pyrun`; edit Markdown first, then verify and update state |
+| Recorded execution policy or recipe | `log command sync`; edit Markdown first, then synchronize its CID |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
 Use ordinary `log data add-generated` for a retained output or a pre-production
 declaration. Both require one structurally valid, unambiguous same-log producer;
 registration does not accept output bytes or change execution observations.
 
-For command edits, use the explicit actions in
-`references/file-entry-commands.md` under “Correct A Recorded Command”; do not hand-edit
-`pyrun.json`.
+For command edits, use `references/file-entry-commands.md` under “Synchronize A
+Recorded Command”; do not hand-edit `pyrun.json`.
 
 Derive reconstructed fields from retained evidence; keep reconstructed execution
 support at `requires_reproduction: true`. Never hand-edit generated validation. Only when malformed

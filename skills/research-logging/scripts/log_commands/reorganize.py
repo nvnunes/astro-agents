@@ -95,9 +95,12 @@ def update_entry(entry: EntryContext, arguments: EntryUpdateArguments) -> Action
         if not changed:
             return _result("update-entry", "unchanged", False, (entry.log.summary,))
         paths = (entry.root, destination)
+        data, evidence = _load_identity_registries(entry.log)
         if arguments.dry_run:
             return _result("update-entry", "dry-run", True, paths)
-        _publish_identity(entry.log, {entry.root: destination}, {})
+        _publish_identity(
+            entry.log, {entry.root: destination}, {}, data=data, evidence=evidence
+        )
         return _result("update-entry", "changed", True, paths)
 
 
@@ -138,9 +141,10 @@ def reorder(
         paths = tuple(path for pair in roots.items() for path in pair)
         if not changed:
             return _result("reorder", "unchanged", False, (log.summary,))
+        data, evidence = _load_identity_registries(log)
         if dry_run:
             return _result("reorder", "dry-run", True, paths)
-        _publish_identity(log, roots, documents)
+        _publish_identity(log, roots, documents, data=data, evidence=evidence)
         return _result("reorder", "changed", True, paths)
 
 
@@ -158,6 +162,7 @@ def relocate_log(log: LogContext, destination: Path, *, dry_run: bool) -> Action
     _require_relocation_markdown(log, target.name)
     paths = (log.summary, log.root, target_summary, target)
     if dry_run:
+        _load_data_registries(log)
         return _result("relocate-log", "dry-run", True, paths)
     from .context import resolve_project_root
 
@@ -176,7 +181,8 @@ def relocate_log(log: LogContext, destination: Path, *, dry_run: bool) -> Action
             )
         _require_relocation_target(log, target, target_summary)
         _require_relocation_markdown(log, target.name)
-        _publish_relocation(log, target_summary, target)
+        data = _load_data_registries(log)
+        _publish_relocation(log, target_summary, target, data)
     return _result("relocate-log", "changed", True, paths)
 
 
@@ -222,8 +228,10 @@ def _publish_identity(
     log: LogContext,
     roots: Mapping[Path, Path],
     documents: Mapping[Path, Path],
+    *,
+    data: Mapping[Path, DataFile],
+    evidence: Mapping[Path, EvidenceFile],
 ) -> None:
-    data, evidence = _load_identity_registries(log)
     residue = begin_reorganization(log.root)
     completed: list[tuple[Path, Path]] = []
     try:
@@ -250,8 +258,12 @@ def _publish_identity(
     finish_guarded_publication(_moved_residue(residue, roots))
 
 
-def _publish_relocation(log: LogContext, summary: Path, root: Path) -> None:
-    data = _load_data_registries(log)
+def _publish_relocation(
+    log: LogContext,
+    summary: Path,
+    root: Path,
+    data: Mapping[Path, DataFile],
+) -> None:
     residue = begin_reorganization(log.root)
     completed: list[tuple[Path, Path]] = []
     try:

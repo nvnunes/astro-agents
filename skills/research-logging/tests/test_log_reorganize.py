@@ -8,11 +8,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from unittest import mock
 
 from research_log_cli_test_support import fixture_parameter_roles, run_log
-from research_log_data import Fingerprint
+from research_log_data import DataFile, Fingerprint
 
 LOG = Path(__file__).resolve().parents[1] / "scripts" / "log"
 SCRIPT_ROOT = LOG.parent
@@ -608,7 +609,10 @@ class ReorganizeIdentityTests(unittest.TestCase):
             original = reorganize._publish_relocation
 
             def require_entry_locks(
-                log: LogContext, target_summary: Path, target_root: Path
+                log: LogContext,
+                target_summary: Path,
+                target_root: Path,
+                data: Mapping[Path, DataFile],
             ) -> None:
                 for entry_id in ("e001", "e002"):
                     lock = operation_directory(logical) / f"entry-{entry_id}.lock"
@@ -617,7 +621,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
                             fcntl.flock(
                                 handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
                             )
-                original(log, target_summary, target_root)
+                original(log, target_summary, target_root, data)
 
             with mock.patch.object(
                 reorganize, "_publish_relocation", side_effect=require_entry_locks
@@ -627,6 +631,74 @@ class ReorganizeIdentityTests(unittest.TestCase):
                 )
 
             self.assertTrue(changed.changed)
+
+    def test_identity_dry_runs_validate_the_declarations_they_would_rewrite(
+        self,
+    ) -> None:
+        for action in ("update-entry", "reorder", "relocate-log"):
+            with (
+                self.subTest(action=action),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                logical, entries = create_log(root, 2)
+                (entries[0] / "data.json").write_text("{broken", encoding="utf-8")
+                summary = logical.with_suffix(".md")
+                text = summary.read_text(encoding="utf-8")
+                if action == "update-entry":
+                    summary.write_text(
+                        text.replace("trial-1", "renamed"), encoding="utf-8"
+                    )
+                    arguments = (
+                        "update-entry",
+                        "--path",
+                        str(logical),
+                        "--entry",
+                        "e001",
+                        "--slug",
+                        "renamed",
+                        "--dry-run",
+                    )
+                elif action == "reorder":
+                    lines = [
+                        line for line in text.splitlines() if line.startswith("- `")
+                    ]
+                    swapped = [
+                        lines[1].replace("e002", "e001"),
+                        lines[0].replace("e001", "e002"),
+                    ]
+                    start = text.index(lines[0])
+                    end = text.index(lines[-1]) + len(lines[-1])
+                    summary.write_text(
+                        text[:start] + "\n".join(swapped) + text[end:],
+                        encoding="utf-8",
+                    )
+                    arguments = (
+                        "reorder",
+                        "--path",
+                        str(logical),
+                        "--entries",
+                        "e002,e001",
+                        "--dry-run",
+                    )
+                else:
+                    summary.write_text(
+                        text.replace("study/", "renamed/"), encoding="utf-8"
+                    )
+                    arguments = (
+                        "relocate-log",
+                        "--path",
+                        str(logical),
+                        "--to",
+                        str(logical.with_name("renamed")),
+                        "--dry-run",
+                    )
+
+                completed = run(root, "reorganize", *arguments)
+
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("data.declaration.invalid", completed.stderr)
+                self.assertTrue(logical.is_dir())
 
     def test_relocate_preserves_an_external_relative_data_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

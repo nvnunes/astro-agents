@@ -40,26 +40,52 @@ artifacts or tables rather than rerun simulation, training, or acquisition. A
 single deterministic script may analyze and plot an existing retained input
 when no intermediate table is reused by another command.
 
-When writing entry or log scripts, pass input and output paths as command-line
-arguments. Do not hard-code project, log, entry, data, image, or output paths in
-scripts. Do not make ordinary analysis scripts read the input registry;
-`pyrun` resolves named inputs and passes their paths to the script.
-Both `pyrun` and reproduction supply absolute declared file/directory input and
-output paths. Consume them directly and pass them to helpers and children;
-do not reconstruct paths from `__file__`, parent counts, or source-entry layout.
-Expose additional files selected by paths embedded in input contents as explicit
-declared parameters, using existing directory/member tokens where appropriate.
-Stored paths may remain descriptive metadata. Repair missing declarations and
-helper imports through existing mechanisms; do not add an embedded-path resolver
-or discovery framework. Direct Python execution supplies no runner behavior.
+## Retained Inputs And Outputs
 
-Use `tempfile` without a hardcoded temporary root for disposable intermediates.
-Both runners assign a fresh scratch directory under `/private/tmp` through
-`TMPDIR`; no researcher-supplied scratch path is needed. Pass created temporary
-paths to libraries and children as needed, and wait for children before returning.
+Accept all retained input and output locations through explicit arguments. Do
+not hard-code project, log, entry, data, image, or output paths in scripts.
+Require paths for operations the script performs; do not require paths for
+operations it skips.
+
+`pyrun` resolves named inputs and passes their paths to the script. Both
+ordinary `pyrun` and reproduction supply absolute declared file and directory
+input and output paths. Use supplied arguments throughout helpers and child
+processes. Do not replace them with guessed locations.
+
+Use supplied paths as-is when writing logs or metadata. Do not require them to
+be relative to the project directory. Stored paths may remain descriptive
+metadata, but scripts must not use stored paths or hidden sidecar conventions
+to select additional input files.
+
+A script may read files beneath an explicitly supplied, declared directory
+input. It must not follow paths stored in those files to select additional
+inputs; pass those inputs explicitly. Use existing directory-member tokens when
+one declared member is the intended input. Do not make ordinary analysis
+scripts read the input registry or add an embedded-path resolver or discovery
+framework. Direct Python execution supplies no runner behavior.
+
+## Temporary Files
+
+Use `tempfile` mechanisms that respect `TMPDIR`; do not hard-code a temporary
+root. Both runners assign fresh scratch under `/private/tmp` through `TMPDIR`,
+so no researcher-supplied scratch path is needed. Keep temporary paths available
+until all libraries, helpers, and child processes that consume them finish, and
+wait for children before returning.
+
 The runner removes scratch once workers stop, including on failure or stop.
-Never use it as a checkpoint, later input, cache, or retained debugging material;
-files needed later must be declared outputs. Every relaunch receives new scratch.
+Never use it as a checkpoint, later input, cache, or retained debugging
+material. Treat files needed by later commands as retained outputs and declare
+them accordingly. Every relaunch receives new scratch.
+
+## Code And Helper Locations
+
+Locate local helpers relative to `__file__` when needed. Keep code discovery
+independent of data arguments and Git-root discovery. `__file__` may anchor
+local code and helper discovery, but it must not reconstruct retained data
+locations. Git-root discovery likewise must not substitute for explicit input
+or output arguments.
+
+Repair missing declarations and helper imports through existing mechanisms.
 
 Use the project-declared execution environment. If it is unavailable, report
 that before using another interpreter.

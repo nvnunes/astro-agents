@@ -6,10 +6,11 @@ import fcntl
 import json
 import os
 import re
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Literal, Mapping
+
+from .file_publication import atomic_replace_bytes, sync_directory
 
 MAX_SNAPSHOT_FILES = 1_000_000
 RUNTIME_CACHE_DIRECTORIES = frozenset(
@@ -106,7 +107,7 @@ def operation_lock(
             if published_owner:
                 try:
                     owner_path.unlink(missing_ok=True)
-                    _sync_directory(directory)
+                    sync_directory(directory)
                 except OSError:
                     pass
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -124,20 +125,7 @@ def _publish_lock_owner(path: Path, owner: Mapping[str, object]) -> None:
     ).encode("utf-8")
     if len(raw) > MAX_LOCK_OWNER_BYTES:
         raise ValueError("operation owner crossed its byte bound")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    atomic_replace_bytes(path, raw, default_mode=0o600)
 
 
 def _read_lock_owner(path: Path) -> dict[str, object] | None:
@@ -215,7 +203,7 @@ def _begin_residue(log_root: Path, name: str, message: str) -> Path:
         handle.write(message.encode("utf-8"))
         handle.flush()
         os.fsync(handle.fileno())
-    _sync_directory(directory)
+    sync_directory(directory)
     return path
 
 
@@ -223,21 +211,13 @@ def finish_guarded_publication(path: Path) -> None:
     """Remove a completed or fully rolled-back publication marker."""
 
     path.unlink()
-    _sync_directory(path.parent)
+    sync_directory(path.parent)
 
 
 def operation_lock_owner(path: Path) -> Mapping[str, object] | None:
     """Read bounded owner metadata beside one canonical lock path."""
 
     return _read_lock_owner(path.with_name(f"{path.name}.owner.json"))
-
-
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def research_snapshot(summary: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:

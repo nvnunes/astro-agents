@@ -550,6 +550,13 @@ rejected without deleting or reassigning existing state.
 Failed or incomplete execution, capture, observation, or publication changes
 no `pyrun.json` state.
 
+The common single-file publication primitive owns temporary-file cleanup,
+existing-mode preservation, atomic installation, and directory sync for
+`pyrun.json` and other research-log files. Execution-state validation and
+ownership remain with the `pyrun.json` writer. Multi-output promotion keeps its
+operation-owned displacement and rollback sequence; it is not delegated to a
+generic transaction layer.
+
 Ordinary `pyrun` strictly loads the complete existing file once under the entry
 lock and retains that validated object through execution and publication.
 Publication validates the new execution without decoding unchanged records a

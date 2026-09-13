@@ -27,6 +27,7 @@ from log_commands.model import (  # noqa: E402
     TransferArguments,
 )
 from log_commands.storage import PublicationError  # noqa: E402
+from validation import file_publication  # noqa: E402
 from validation.operation_state import (  # noqa: E402
     REORGANIZE_RESIDUE,
     begin_reorganization,
@@ -166,7 +167,9 @@ class StorageTransactionTests(unittest.TestCase):
 
             with (
                 mock.patch.object(
-                    storage.os, "open", side_effect=fail_first_directory_open
+                    file_publication.os,
+                    "open",
+                    side_effect=fail_first_directory_open,
                 ),
                 self.assertRaises(PublicationError) as caught,
             ):

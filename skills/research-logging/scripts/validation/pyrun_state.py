@@ -6,8 +6,6 @@ import hashlib
 import json
 import os
 import re
-import stat
-import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Mapping, NoReturn, cast
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
 from .errors import MechanicalContractError
+from .file_publication import atomic_replace_text, install_path, remove_file
 from .json_codec import V2JsonError, decode_json
 from .pyrun_contract import (
     PYRUN_MANAGED_ENVIRONMENT,
@@ -1061,8 +1060,7 @@ def quarantine_invalid_pyrun_state(
         backup = root / f"{PYRUN_FILENAME}.{number}.bak"
         number += 1
     try:
-        os.replace(path, backup)
-        _sync_directory(root)
+        install_path(path, backup)
     except OSError as error:
         raise PyrunStateError(
             "pyrun.state.quarantine_failed",
@@ -1570,33 +1568,11 @@ def _fields(value: object) -> object:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_replace_text(path, text)
 
 
 def _atomic_remove(path: Path) -> None:
-    path.unlink()
-    _sync_directory(path.parent)
-
-
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    remove_file(path)
 
 
 def _invalid(subject: object, observed: object) -> NoReturn:

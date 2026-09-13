@@ -10,6 +10,11 @@ from pathlib import Path, PurePosixPath
 
 from research_log_paths import VALIDATION_REPORT
 
+from .file_publication import (
+    atomic_replace_bytes,
+    atomic_replace_from_file,
+    sync_directory,
+)
 from .filesystem import FileIdentity, file_identity
 from .operation_state import operation_lock, require_mutation_ready
 
@@ -20,58 +25,20 @@ class RecordPublicationError(RuntimeError):
     """Raised when generated validation state cannot be published safely."""
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _atomic_write_bytes(path: Path, payload: bytes) -> FileIdentity:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-        temporary = Path(handle.name)
-        try:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary.chmod(mode)
-            os.replace(temporary, path)
-            _fsync_directory(path.parent)
-            installed = os.fstat(handle.fileno())
-            current = path.lstat()
-            identity = file_identity(installed)
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or identity != file_identity(current)
-            ):
-                raise RecordPublicationError(
-                    f"validation publication destination changed: {path}"
-                )
-            return identity
-        finally:
-            temporary.unlink(missing_ok=True)
+    identity = atomic_replace_bytes(path, payload)
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or identity != file_identity(current):
+        raise RecordPublicationError(
+            f"validation publication destination changed: {path}"
+        )
+    return identity
 
 
 def _atomic_copy_file(path: Path, source: Path, mode: int) -> None:
     """Atomically replace ``path`` from a disk-backed snapshot."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-        with source.open("rb") as snapshot:
-            while chunk := snapshot.read(1024 * 1024):
-                handle.write(chunk)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_replace_from_file(path, source, mode)
 
 
 def _snapshot_file(path: Path, snapshot: Path) -> int:
@@ -130,7 +97,7 @@ def _restore_publication(
             prior_file = prior[relative]
             if prior_file is None:
                 path.unlink(missing_ok=True)
-                _fsync_directory(path.parent)
+                sync_directory(path.parent)
             else:
                 snapshot, mode = prior_file
                 _atomic_copy_file(path, snapshot, mode)

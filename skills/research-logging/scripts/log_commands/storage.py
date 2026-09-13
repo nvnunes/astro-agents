@@ -3,16 +3,37 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import stat
-import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping
 
+from validation.file_publication import (
+    atomic_create_text,
+    create_symlink,
+    remove_file,
+    sync_directory,
+)
+from validation.file_publication import atomic_replace_text as atomic_write_text
 from validation.operation_state import operation_lock, require_mutation_ready
 
 from .context import EntryContext, LogContext, LogCreationContext
+
+__all__ = [
+    "PublicationError",
+    "atomic_create_text",
+    "atomic_write_text",
+    "atomic_write_texts",
+    "create_symlink",
+    "entry_lock",
+    "entry_lock_under_log",
+    "entry_locks",
+    "log_and_entry_locks",
+    "log_creation_lock",
+    "log_lock",
+    "remove_or_write",
+    "reproduction_log_reservation",
+    "sync_directory",
+]
 
 
 class PublicationError(OSError):
@@ -115,30 +136,6 @@ def log_and_entry_locks(
         yield
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    """Replace one text file atomically and durably, preserving its mode."""
-
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def atomic_write_texts(updates: Mapping[Path, str | None]) -> None:
     """Publish text replacements/removals or restore every prior byte."""
 
@@ -162,47 +159,6 @@ def atomic_write_texts(updates: Mapping[Path, str | None]) -> None:
         raise PublicationError(error, tuple(rollback)) from error
 
 
-def atomic_create_text(path: Path, text: str) -> None:
-    """Create one text file atomically without replacing an existing target."""
-
-    path.parent.mkdir(parents=False, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    published = False
-    try:
-        temporary.chmod(0o644)
-        os.link(temporary, path, follow_symlinks=False)
-        published = True
-        _sync_directory(path.parent)
-    except OSError:
-        if published:
-            path.unlink(missing_ok=True)
-            _sync_directory(path.parent)
-        raise
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def create_symlink(path: Path, target: str) -> None:
-    """Create and durably publish one new symbolic link."""
-
-    published = False
-    try:
-        os.symlink(target, path)
-        published = True
-        _sync_directory(path.parent)
-    except OSError:
-        if published:
-            path.unlink(missing_ok=True)
-            _sync_directory(path.parent)
-        raise
-
-
 def remove_or_write(path: Path, text: str | None) -> None:
     """Publish canonical content or durably remove an empty registry."""
 
@@ -210,19 +166,4 @@ def remove_or_write(path: Path, text: str | None) -> None:
         atomic_write_text(path, text)
         return
     if path.exists():
-        path.unlink()
-        _sync_directory(path.parent)
-
-
-def sync_directory(path: Path) -> None:
-    """Durably record directory-entry changes in one existing directory."""
-
-    _sync_directory(path)
-
-
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        remove_file(path)

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, cast
@@ -15,6 +13,7 @@ from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
 from .entry_materials import is_entry_material_path
 from .errors import MechanicalContractError
+from .file_publication import atomic_replace_text
 from .json_codec import V2JsonError, decode_json
 
 PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
@@ -582,24 +581,7 @@ def _decode_fingerprint(
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary = Path(handle.name)
-    try:
-        temporary.chmod(mode)
-        os.replace(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_replace_text(path, text)
 
 
 def _bounded_string(value: object) -> bool:

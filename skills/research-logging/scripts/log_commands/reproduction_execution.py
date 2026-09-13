@@ -42,6 +42,7 @@ from research_log_data import (
     resolve_input_token,
 )
 from stream_capture import StreamCapture, StreamDestination
+from validation.file_publication import install_path, sync_directory
 from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
@@ -402,8 +403,7 @@ class DarwinSeatbelt:
                     handle.write(profile)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temporary, profile_path)
-                _sync_directory(profile_root)
+                install_path(temporary, profile_path)
             finally:
                 if temporary.exists():
                     temporary.unlink()
@@ -464,7 +464,7 @@ def _populate_output_workspace(
         staging = target_root / "executions"
         for directory in (runtime, diagnostics, staging):
             directory.mkdir()
-        _sync_directory(target_root)
+        sync_directory(target_root)
     except BaseException:
         if cleanup_root:
             shutil.rmtree(target_root, ignore_errors=True)
@@ -2612,8 +2612,7 @@ def _materialize_outputs(
         _remove_materialization_temporary(temporary)
         try:
             _copy_materialized_output(private, temporary)
-            os.replace(temporary, target)
-            _sync_directory(target.parent)
+            install_path(temporary, target)
         finally:
             _remove_materialization_temporary(temporary)
 
@@ -2679,11 +2678,3 @@ def _utc_now() -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
-
-
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)

@@ -4028,6 +4028,16 @@ owner lifecycle. A stale or malformed metadata file never owns a lock and is
 replaced by the next successful owner. Callers report the observed owner once;
 they do not poll, retry, or inspect process tables.
 
+Single-path durable file publication has one shared low-level owner beneath the
+validation and command modules. It owns sibling temporary creation, file flush
+and sync, existing-mode preservation, atomic install, parent-directory sync,
+and temporary cleanup. Create-only publication fails on an occupied target and
+removes a newly linked target if its directory sync fails. Operation modules
+retain path validation, locks, domain diagnostics, multi-file ordering,
+snapshots, rollback, and recovery residue; the shared primitive is not a
+transaction framework. Reorganize and promotion retain their own rename
+sequences because their displaced paths and rollback order are operation state.
+
 Both publishing and dry-run Validate hold `log.lock` exclusively from before
 their first research-owned read through evaluation, cache work, publication,
 and result construction. Lock contention is an operational conflict and no

@@ -430,6 +430,47 @@ class ClosedShellGrammarTests(unittest.TestCase):
             )
             self.assertEqual({item.cid for item in loop.invocations}, {"test-command"})
 
+    def test_multiple_commands_in_one_loop_share_the_loop_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = _discover_exact(
+                "for value in alpha beta; do\n"
+                "  ./pyrun --cid build -- scripts/run.py "
+                '--stage prepare --label "$value"\n'
+                "  ./pyrun --cid build -- scripts/run.py "
+                '--stage summarize --label "$value"\n'
+                "done",
+                _context(Path(directory)),
+            )
+
+            self.assertFalse(result.failures)
+            self.assertEqual(len(result.invocations), 4)
+            COMMAND.validate_command_structure(result.invocations)
+            self.assertEqual(
+                len({item.authored_group for item in result.invocations}), 1
+            )
+            self.assertEqual({item.cid for item in result.invocations}, {"build"})
+
+    def test_nested_loop_commands_share_the_top_level_loop_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = _discover_exact(
+                "for outer in alpha beta; do\n"
+                "  ./pyrun --cid build -- scripts/run.py "
+                '--stage outer --label "$outer"\n'
+                "  for inner in first second; do\n"
+                "    ./pyrun --cid build -- scripts/run.py "
+                '--stage nested --label "$outer" --inner "$inner"\n'
+                "  done\n"
+                "done",
+                _context(Path(directory)),
+            )
+
+            self.assertFalse(result.failures)
+            self.assertEqual(len(result.invocations), 6)
+            COMMAND.validate_command_structure(result.invocations)
+            self.assertEqual(
+                len({item.authored_group for item in result.invocations}), 1
+            )
+
     def test_missing_and_malformed_cids_fail_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = _context(Path(directory))

@@ -419,9 +419,13 @@ def _command(
     tokens = budget.tokenize(text)
     if not tokens:
         raise ValueError("empty shell invocation")
+    top_level_loop = next(
+        (item for item in projection if item.startswith("loop:")), None
+    )
     group = (
-        *(item for item in projection if item.startswith("loop:")),
-        f"command:{source or text}",
+        (top_level_loop,)
+        if top_level_loop is not None
+        else (f"command:{source or text}",)
     )
     return StaticCommand(text, projection, tokens, group)
 

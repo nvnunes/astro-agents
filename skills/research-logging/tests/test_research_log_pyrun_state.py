@@ -647,6 +647,27 @@ class PyrunStateLifecycleTests(unittest.TestCase):
 
             self.assertEqual((entry / PYRUN_FILENAME).read_bytes(), before)
 
+    def test_publication_rejects_execution_limit_without_changing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            executions = tuple(
+                _execution(_recipe(output=f"data/result-{index}.csv"))
+                for index in range(pyrun_state_module.MAX_EXECUTIONS)
+            )
+            path = entry / PYRUN_FILENAME
+            path.write_text(_state(entry, *executions).serialized(), encoding="utf-8")
+            current = load_pyrun_state(path, entry_root=entry, project_root=root)
+            before = path.read_bytes()
+            overflow = _execution(_recipe(output="data/result-overflow.csv"))
+
+            with self.assertRaisesRegex(PyrunStateError, "'executions': 257"):
+                publish_execution_locked(
+                    current, "build", overflow, project_root=root
+                )
+
+            self.assertEqual(path.read_bytes(), before)
+
     def test_direct_edit_after_load_is_an_unsupported_overwritten_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

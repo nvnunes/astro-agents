@@ -1574,7 +1574,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             self.assertIn("static code changed during execution", result.stderr)
             self.assertFalse((entry / "pyrun.json").exists())
 
-    def test_process_exit_does_not_require_an_observer_shutdown_hook(self) -> None:
+    def test_process_exit_without_normal_shutdown_can_publish(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)

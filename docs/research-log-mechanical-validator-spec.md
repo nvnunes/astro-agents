@@ -2993,10 +2993,9 @@ outside execution identity.
 required `--` separator. It normalizes them by name into the persisted
 execution signature and child environment. Duplicate names, malformed names,
 and runner-managed names are invalid. Each run receives fresh temporary
-directories for `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and its private Python code
-observer state. The observer's private environment is not part of the
-execution signature. Each command also receives a fresh, unique scratch
-directory under `/private/tmp`, assigned through `TMPDIR` after authored values.
+directories for `MPLCONFIGDIR` and `XDG_CACHE_HOME`. Each command also receives
+a fresh, unique scratch directory under `/private/tmp`, assigned through
+`TMPDIR` after authored values.
 Scripts use `tempfile` without a hardcoded temporary root; children inherit the
 environment and must finish before the ordinary wrapper returns. Scratch is
 removed after execution and is separate from retained outputs, caches,

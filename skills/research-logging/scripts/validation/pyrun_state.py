@@ -875,6 +875,12 @@ def publish_execution_locked(
         executions[identity] = execution
         commands[cid] = PyrunCommand(executions)
         result = PyrunFile(path, root, commands)
+        execution_count = len(result.execution_items())
+        if execution_count > MAX_EXECUTIONS:
+            _invalid(
+                path,
+                {"executions": execution_count, "limit": MAX_EXECUTIONS},
+            )
         serialized = result.serialized()
         if len(serialized.encode("utf-8")) > MAX_FILE_BYTES:
             _invalid(path, {"bytes": len(serialized.encode("utf-8"))})

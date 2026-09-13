@@ -4464,7 +4464,7 @@ corruption is found by its own selector or explicit audit. A selector may scan
 matching index keys to compute an exact count, but it decodes detail for no
 more than the bounded page.
 
-The 100,000-row publication ceiling counts actual v15 rows, including each
+The 200,000-row publication ceiling counts actual v15 rows, including each
 deduplicated code, artifact, registry payload, identity member, registry
 membership, and explicit batch-command-code match once. Query-derived batch
 codes and artifacts and deleted duplicate finding state are not counted as

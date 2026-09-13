@@ -31,6 +31,8 @@ from .commands import (
     CommandDeclaration,
     CommandDeclarationContext,
     CommandDeclarationResult,
+    CommandDiscoveryFailure,
+    DiscoveryResult,
     Invocation,
     ScriptObservation,
     discover_commands,
@@ -101,7 +103,7 @@ from .mechanical_results import (
     MechanicalGeneratedRecord,
 )
 from .mechanical_values import SelectionResult
-from .output_bindings import OutputBindingError, project_output_bindings
+from .output_bindings import OutputBinding, OutputBindingError, project_output_bindings
 from .output_support import (
     ResolvedCodeSupport,
     confirmed_output_record,
@@ -140,7 +142,10 @@ from .pyrun_outputs import (
 )
 from .pyrun_state import (
     PYRUN_FILENAME,
+    CommandComparison,
+    ExecutionChange,
     OutputOwnerIndex,
+    PyrunExecution,
     PyrunFile,
     associate_execution,
     compare_command,
@@ -1796,98 +1801,9 @@ def _discover_invocations(
     documents: list[tuple[Invocation, ...]] = []
     for entry in entries if entries is not None else state.entries:
         try:
-            document = entry.document
-            text = _read_text(document, state)
-            relative = document.relative_to(state.log_root).as_posix()
-            context = CommandContext(
-                log_id=state.log_root.as_posix(),
-                entry=entry.id,
-                document=relative,
-                entry_root=entry.root,
-                log_root=state.log_root,
-                project_root=state.project_root,
-                data_file=entry.data_file,
-                input_fingerprint_verifier=lambda resource: _verify_input(
-                    resource, state
-                ),
-                script_identity_cache=state.script_cache,
-                script_identity_observer=(
-                    (lambda path: _observe_script_identity(path, state))
-                    if state.fingerprint_cache is not None
-                    else None
-                ),
+            documents.append(
+                _discover_entry_invocations(state, entry, indexed_documents)
             )
-            declaration = (
-                indexed_documents.get(document.resolve())
-                if indexed_documents is not None
-                else None
-            )
-            discovery = (
-                observe_commands(declaration, text, context)
-                if declaration is not None
-                else discover_commands(text, context)
-            )
-            valid_invocations: list[Invocation] = []
-            for invocation in discovery.invocations:
-                _record_raw_output_findings(invocation, state)
-                prerequisites = _invocation_input_prerequisites(invocation, state)
-                if not prerequisites:
-                    valid_invocations.append(invocation)
-                    continue
-                identity = _command_check_identity(
-                    entry.document.stem, invocation.fence, invocation.ordinal
-                )
-                state.checks.append(
-                    _checks_depending_on(identity, CheckScope.PROVENANCE, prerequisites)
-                )
-                _register_invocation_blockers(invocation, identity, state)
-            documents.append(tuple(valid_invocations))
-            for failure in discovery.failures:
-                state.rejected_producers.add(failure.error.observed)
-                identity = _command_check_identity(
-                    entry.document.stem, failure.fence, failure.ordinal
-                )
-                prerequisites = _command_failure_prerequisites(
-                    entry, failure.error, state
-                )
-                if prerequisites:
-                    state.checks.append(
-                        _checks_depending_on(
-                            identity,
-                            _error_scope(failure.error, CheckScope.PROVENANCE),
-                            prerequisites,
-                        )
-                    )
-                    state.graph_failure_owners.setdefault(
-                        _material_owner(entry, state), set()
-                    ).add(identity)
-                    state.command_failure_owners.setdefault(
-                        _material_owner(entry, state), set()
-                    ).add(identity)
-                    continue
-                if failure.error.code == "material.candidate.unresolved":
-                    observed = failure.error.observed
-                    candidates = (
-                        observed.get("candidates", ())
-                        if isinstance(observed, Mapping)
-                        else ()
-                    )
-                    for candidate in candidates:
-                        if isinstance(candidate, str) and candidate:
-                            dependency = _command_candidate_dependency(candidate, entry)
-                            state.command_candidate_dependencies.setdefault(
-                                dependency, set()
-                            ).add(identity)
-                    state.command_failure_owners.setdefault(
-                        relative.rsplit("/", 1)[0], set()
-                    ).add(identity)
-                state.checks.append(
-                    _error_check(
-                        identity,
-                        _error_scope(failure.error, CheckScope.PROVENANCE),
-                        failure.error,
-                    )
-                )
         except MechanicalContractError as error:
             state.checks.append(
                 _error_check(
@@ -1904,6 +1820,128 @@ def _discover_invocations(
             _error_check("commands:structure", CheckScope.CONFORMANCE, error)
         )
     return result
+
+
+def _discover_entry_invocations(
+    state: _ScanState,
+    entry: _Entry,
+    indexed_documents: Mapping[Path, CommandDeclarationResult] | None,
+) -> tuple[Invocation, ...]:
+    document = entry.document
+    text = _read_text(document, state)
+    relative = document.relative_to(state.log_root).as_posix()
+    context = _command_context(state, entry, relative)
+    declaration = (
+        indexed_documents.get(document.resolve())
+        if indexed_documents is not None
+        else None
+    )
+    discovery = (
+        observe_commands(declaration, text, context)
+        if declaration is not None
+        else discover_commands(text, context)
+    )
+    valid = _eligible_discovered_invocations(discovery, entry, state)
+    for failure in discovery.failures:
+        _record_command_failure(entry, relative, failure, state)
+    return valid
+
+
+def _command_context(
+    state: _ScanState, entry: _Entry, relative: str
+) -> CommandContext:
+    return CommandContext(
+        log_id=state.log_root.as_posix(),
+        entry=entry.id,
+        document=relative,
+        entry_root=entry.root,
+        log_root=state.log_root,
+        project_root=state.project_root,
+        data_file=entry.data_file,
+        input_fingerprint_verifier=lambda resource: _verify_input(resource, state),
+        script_identity_cache=state.script_cache,
+        script_identity_observer=(
+            (lambda path: _observe_script_identity(path, state))
+            if state.fingerprint_cache is not None
+            else None
+        ),
+    )
+
+
+def _eligible_discovered_invocations(
+    discovery: DiscoveryResult, entry: _Entry, state: _ScanState
+) -> tuple[Invocation, ...]:
+    valid: list[Invocation] = []
+    for invocation in discovery.invocations:
+        _record_raw_output_findings(invocation, state)
+        prerequisites = _invocation_input_prerequisites(invocation, state)
+        if not prerequisites:
+            valid.append(invocation)
+            continue
+        identity = _command_check_identity(
+            entry.document.stem, invocation.fence, invocation.ordinal
+        )
+        state.checks.append(
+            _checks_depending_on(identity, CheckScope.PROVENANCE, prerequisites)
+        )
+        _register_invocation_blockers(invocation, identity, state)
+    return tuple(valid)
+
+
+def _record_command_failure(
+    entry: _Entry,
+    relative: str,
+    failure: CommandDiscoveryFailure,
+    state: _ScanState,
+) -> None:
+    state.rejected_producers.add(failure.error.observed)
+    identity = _command_check_identity(
+        entry.document.stem, failure.fence, failure.ordinal
+    )
+    prerequisites = _command_failure_prerequisites(entry, failure.error, state)
+    if prerequisites:
+        state.checks.append(
+            _checks_depending_on(
+                identity,
+                _error_scope(failure.error, CheckScope.PROVENANCE),
+                prerequisites,
+            )
+        )
+        owner = _material_owner(entry, state)
+        state.graph_failure_owners.setdefault(owner, set()).add(identity)
+        state.command_failure_owners.setdefault(owner, set()).add(identity)
+        return
+    if failure.error.code == "material.candidate.unresolved":
+        _record_command_candidate_dependencies(
+            entry, relative, failure, identity, state
+        )
+    state.checks.append(
+        _error_check(
+            identity,
+            _error_scope(failure.error, CheckScope.PROVENANCE),
+            failure.error,
+        )
+    )
+
+
+def _record_command_candidate_dependencies(
+    entry: _Entry,
+    relative: str,
+    failure: CommandDiscoveryFailure,
+    identity: str,
+    state: _ScanState,
+) -> None:
+    observed = failure.error.observed
+    candidates = observed.get("candidates", ()) if isinstance(observed, Mapping) else ()
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            dependency = _command_candidate_dependency(candidate, entry)
+            state.command_candidate_dependencies.setdefault(dependency, set()).add(
+                identity
+            )
+    state.command_failure_owners.setdefault(relative.rsplit("/", 1)[0], set()).add(
+        identity
+    )
 
 
 def _command_candidate_dependency(candidate: str, entry: _Entry) -> str:
@@ -2147,6 +2185,7 @@ def _validate_execution_bindings(
     for invocation in state.invocations:
         if invocation.material_owner == owner:
             current_by_cid.setdefault(invocation.cid, []).append(invocation)
+    context = _ExecutionBindingContext(entry_id, execution_state, state, dependency)
     for cid in sorted(set(current_by_cid) | set(execution_state.commands)):
         comparison = compare_command(
             execution_state,
@@ -2154,115 +2193,167 @@ def _validate_execution_bindings(
             tuple(current_by_cid.get(cid, ())),
             project_root=state.project_root,
         )
-        categorized = (
-            ("missing", tuple(member.identity for member in comparison.missing)),
-            ("stale", tuple(member.identity for member in comparison.stale)),
-            (
-                "recipe_changed",
-                tuple(member.current.identity for member in comparison.recipe_changed),
-            ),
-        )
-        for label, identities in categorized:
-            for identity in identities:
-                state.checks.append(
-                    _error_check(
-                        f"conformance:{entry_id}:pyrun:{cid}:{identity}",
-                        CheckScope.CONFORMANCE,
-                        EngineV2Error(
-                            f"pyrun.command.{label}",
-                            str(execution_state.path),
-                            {"cid": cid, "entry": entry_id, "execution_id": identity},
-                            "Pyrun Command State",
-                        ),
-                        dependencies=(dependency,),
-                    )
-                )
-        for change in comparison.policy_changed:
-            identity = change.current.identity
-            execution = change.stored
-            invocation = change.current.invocation
-            subject = (
-                f"{execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
-            )
-            if invocation.auto_reproduce != execution.auto_reproduce:
-                state.checks.append(
-                    _error_check(
-                        f"conformance:{entry_id}:pyrun-policy:{identity}",
-                        CheckScope.CONFORMANCE,
-                        EngineV2Error(
-                            "pyrun.policy.mismatch",
-                            subject,
-                            {
-                                "entry": entry_id,
-                                "cid": cid,
-                                "markdown_auto_reproduce": invocation.auto_reproduce,
-                                "recorded_auto_reproduce": execution.auto_reproduce,
-                            },
-                            "Pyrun Execution Policy",
-                        ),
-                        dependencies=(dependency,),
-                    )
-                )
-            if invocation.exclusive != execution.exclusive:
-                state.checks.append(
-                    _error_check(
-                        f"conformance:{entry_id}:pyrun-exclusive:{identity}",
-                        CheckScope.CONFORMANCE,
-                        EngineV2Error(
-                            "pyrun.exclusive.mismatch",
-                            subject,
-                            {
-                                "entry": entry_id,
-                                "cid": cid,
-                                "markdown_exclusive": invocation.exclusive,
-                                "recorded_exclusive": execution.exclusive,
-                            },
-                            "Pyrun Execution Policy",
-                        ),
-                        dependencies=(dependency,),
-                    )
-                )
+        _record_command_comparison(context, cid, comparison)
     for cid, identity, execution in execution_state.execution_items():
-        subject = f"{execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
-        try:
-            projection = project_output_bindings(
-                execution.recipe.parameters,
-                execution.recipe.outputs,
-                entry_root=execution_state.entry_root,
-                project_root=state.project_root,
-                subject=subject,
+        _record_execution_binding(context, cid, identity, execution)
+
+
+@dataclass(frozen=True)
+class _ExecutionBindingContext:
+    entry_id: str
+    execution_state: PyrunFile
+    state: _ScanState
+    dependency: Mapping[str, object]
+
+
+def _record_command_comparison(
+    context: _ExecutionBindingContext,
+    cid: str,
+    comparison: CommandComparison,
+) -> None:
+    categorized = (
+        ("missing", tuple(member.identity for member in comparison.missing)),
+        ("stale", tuple(member.identity for member in comparison.stale)),
+        (
+            "recipe_changed",
+            tuple(member.current.identity for member in comparison.recipe_changed),
+        ),
+    )
+    for label, identities in categorized:
+        for identity in identities:
+            _record_command_state_mismatch(context, cid, identity, label)
+    for change in comparison.policy_changed:
+        _record_policy_mismatches(context, cid, change)
+
+
+def _record_command_state_mismatch(
+    context: _ExecutionBindingContext, cid: str, identity: str, label: str
+) -> None:
+    context.state.checks.append(
+        _error_check(
+            f"conformance:{context.entry_id}:pyrun:{cid}:{identity}",
+            CheckScope.CONFORMANCE,
+            EngineV2Error(
+                f"pyrun.command.{label}",
+                str(context.execution_state.path),
+                {"cid": cid, "entry": context.entry_id, "execution_id": identity},
+                "Pyrun Command State",
+            ),
+            dependencies=(context.dependency,),
+        )
+    )
+
+
+def _record_policy_mismatches(
+    context: _ExecutionBindingContext, cid: str, change: ExecutionChange
+) -> None:
+    identity = change.current.identity
+    execution = change.stored
+    invocation = change.current.invocation
+    subject = (
+        f"{context.execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
+    )
+    if invocation.auto_reproduce != execution.auto_reproduce:
+        _record_policy_mismatch(
+            context,
+            identity,
+            "pyrun.policy.mismatch",
+            subject,
+            {
+                "entry": context.entry_id,
+                "cid": cid,
+                "markdown_auto_reproduce": invocation.auto_reproduce,
+                "recorded_auto_reproduce": execution.auto_reproduce,
+            },
+        )
+    if invocation.exclusive != execution.exclusive:
+        _record_policy_mismatch(
+            context,
+            identity,
+            "pyrun.exclusive.mismatch",
+            subject,
+            {
+                "entry": context.entry_id,
+                "cid": cid,
+                "markdown_exclusive": invocation.exclusive,
+                "recorded_exclusive": execution.exclusive,
+            },
+        )
+
+
+def _record_policy_mismatch(
+    context: _ExecutionBindingContext,
+    identity: str,
+    code: str,
+    subject: str,
+    observed: Mapping[str, object],
+) -> None:
+    check_kind = (
+        "pyrun-exclusive" if code == "pyrun.exclusive.mismatch" else "pyrun-policy"
+    )
+    context.state.checks.append(
+        _error_check(
+            f"conformance:{context.entry_id}:{check_kind}:{identity}",
+            CheckScope.CONFORMANCE,
+            EngineV2Error(code, subject, observed, "Pyrun Execution Policy"),
+            dependencies=(context.dependency,),
+        )
+    )
+
+
+def _record_execution_binding(
+    context: _ExecutionBindingContext,
+    cid: str,
+    identity: str,
+    execution: PyrunExecution,
+) -> None:
+    subject = (
+        f"{context.execution_state.path}:commands[{cid!r}]:executions[{identity!r}]"
+    )
+    try:
+        projection = project_output_bindings(
+            execution.recipe.parameters,
+            execution.recipe.outputs,
+            entry_root=context.execution_state.entry_root,
+            project_root=context.state.project_root,
+            subject=subject,
+        )
+        if projection.aliases:
+            raise _alias_binding_error(subject, context.entry_id, projection.aliases)
+    except OutputBindingError as error:
+        observed = dict(cast(Mapping[str, object], error.observed))
+        observed.setdefault("entry", context.entry_id)
+        context.state.checks.append(
+            _error_check(
+                f"conformance:{context.entry_id}:pyrun-binding:{identity}",
+                CheckScope.CONFORMANCE,
+                OutputBindingError(subject, observed),
+                dependencies=(context.dependency,),
             )
-            aliases = projection.aliases
-            if aliases:
-                first = aliases[0]
-                raise OutputBindingError(
-                    subject,
-                    {
-                        "aliases": [
-                            {
-                                "authored": binding.authored,
-                                "mechanism": binding.mechanism,
-                                "output": binding.output,
-                            }
-                            for binding in aliases
-                        ],
-                        "authored": first.authored,
-                        "entry": entry_id,
-                        "output": first.output,
-                        "reason": "noncanonical",
-                    },
-                )
-        except OutputBindingError as error:
-            observed = dict(cast(Mapping[str, object], error.observed))
-            observed.setdefault("entry", entry_id)
-            state.checks.append(
-                _error_check(
-                    f"conformance:{entry_id}:pyrun-binding:{identity}",
-                    CheckScope.CONFORMANCE,
-                    OutputBindingError(subject, observed),
-                    dependencies=(dependency,),
-                )
-            )
+        )
+
+
+def _alias_binding_error(
+    subject: str, entry_id: str, aliases: Sequence[OutputBinding]
+) -> OutputBindingError:
+    first = aliases[0]
+    return OutputBindingError(
+        subject,
+        {
+            "aliases": [
+                {
+                    "authored": binding.authored,
+                    "mechanism": binding.mechanism,
+                    "output": binding.output,
+                }
+                for binding in aliases
+            ],
+            "authored": first.authored,
+            "entry": entry_id,
+            "output": first.output,
+            "reason": "noncanonical",
+        },
+    )
 
 
 def _entry_root_for_owner(owner: str, state: _ScanState) -> Path:

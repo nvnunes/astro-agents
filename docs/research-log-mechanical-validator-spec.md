@@ -72,7 +72,7 @@ or evolution requires it.
 | Authoring results | `research-log-authoring-result/1` |
 | Validation results | `research-log-validation-result/1`, `research-log-validation-cli-result/1`, and `research-log-validation-batch-result/1` |
 | Published validation export | `research-log-published-validation/2` (explicit export only) |
-| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; this specification owns the physical shared schema, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/11` |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=15`; this specification owns the physical shared schema, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/11` |
 | Finding query results | `research-log-findings-list/2`, `research-log-findings-batch/1`, and `research-log-finding/1` |
 | Entry validation CLI result | `research-log-entry-validation-cli-result/1` |
 | Cached result and view | Store projections; JSON is explicit export only |
@@ -4070,7 +4070,7 @@ only by an explicit export of a selected stored result; no maintained aggregate
 JSON file exists.
 
 This specification owns the shared database's physical SQLite
-`user_version=14` schema and transaction boundary. The reproduction
+`user_version=15` schema and transaction boundary. The reproduction
 specification owns the meaning and projection of its reproduction-domain rows;
 neither domain may introduce a second maintained result store.
 
@@ -4380,7 +4380,7 @@ long-string chunking, or content-addressed packing is permitted. Missing or
 corrupt content produces an explicit query error; it does not trigger automatic
 regeneration. No separate archive or index-maintenance CLI is needed.
 
-The current consolidated store schema is v14. Public result, check, group,
+The current consolidated store schema is v15. Public result, check, group,
 command, batch, artifact, and code identities remain text at the command,
 cursor, report, accepted-plan, and export boundaries. Inside one validation
 result, deterministic positive integer keys own relationships among those
@@ -4412,7 +4412,7 @@ corruption is found by its own selector or explicit audit. A selector may scan
 matching index keys to compute an exact count, but it decodes detail for no
 more than the bounded page.
 
-The 100,000-row publication ceiling counts actual v14 rows, including each
+The 100,000-row publication ceiling counts actual v15 rows, including each
 deduplicated code, artifact, registry payload, identity member, registry
 membership, and explicit batch-command-code match once. Query-derived batch
 codes and artifacts and deleted duplicate finding state are not counted as

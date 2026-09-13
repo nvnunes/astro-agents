@@ -34,6 +34,7 @@ from validation.pyrun_state import (  # noqa: E402
     PYRUN_RUNNER,
     ExecutionRecipe,
     ObservedExecution,
+    PyrunCommand,
     PyrunExecution,
     PyrunFile,
     execution_id,
@@ -113,7 +114,11 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
         ),
     )
     identity = execution_id(recipe)
-    state = PyrunFile(entry / "pyrun.json", entry, {identity: execution})
+    state = PyrunFile(
+        entry / "pyrun.json",
+        entry,
+        {"transfer-fixture": PyrunCommand({identity: execution})},
+    )
     (entry / "pyrun.json").write_text(state.serialized(), encoding="utf-8")
     return identity
 

@@ -158,19 +158,33 @@ def _consume_runner_option(
     arguments: Sequence[str], index: int, state: _RunnerState
 ) -> int:
     option = arguments[index]
+    if _consume_flag_option(option, state):
+        return index + 1
+    if index + 1 >= len(arguments):
+        raise PyrunContractError(f"{option} lacks target")
+    _consume_valued_option(option, arguments[index + 1], state)
+    return index + 2
+
+
+def _consume_flag_option(option: str, state: _RunnerState) -> bool:
+    """Consume one value-free runner policy option when applicable."""
+
     if option == PYRUN_DISABLE_AUTO_REPRODUCE_OPTION:
         if not state.auto_reproduce:
             raise PyrunContractError("duplicate --auto-reproduce=false declaration")
         state.auto_reproduce = False
-        return index + 1
+        return True
     if option == PYRUN_EXCLUSIVE_OPTION:
         if state.exclusive:
             raise PyrunContractError("duplicate --exclusive declaration")
         state.exclusive = True
-        return index + 1
-    if index + 1 >= len(arguments):
-        raise PyrunContractError(f"{option} lacks target")
-    target = arguments[index + 1]
+        return True
+    return False
+
+
+def _consume_valued_option(option: str, target: str, state: _RunnerState) -> None:
+    """Consume one target-bearing runner option."""
+
     if option == PYRUN_ENV_OPTION:
         name, value = _parse_environment(target)
         if name in state.environment:
@@ -190,7 +204,6 @@ def _consume_runner_option(
         if option in state.declarations:
             raise PyrunContractError(f"duplicate {option} declaration")
         state.declarations[option] = _parse_selectors(option, target)
-    return index + 2
 
 
 def _parse_environment(value: str) -> tuple[str, str]:

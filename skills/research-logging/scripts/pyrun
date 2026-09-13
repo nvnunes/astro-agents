@@ -57,7 +57,7 @@ from log_commands.context import (
     LogContext,
     parse_entry_directory_name,
 )
-from log_commands.storage import atomic_write_texts, entry_lock
+from log_commands.storage import entry_lock
 from pyrun_code_observer import (
     MAX_CODE_PATHS,
     CodeObservationError,
@@ -96,6 +96,7 @@ from validation.pyrun_outputs import (
     portable_output_path,
 )
 from validation.pyrun_state import (
+    ExecutionRecipe,
     ObservedExecution,
     PyrunStateError,
     build_execution_recipe,
@@ -947,12 +948,14 @@ def main(argv: list[str]) -> int:
                 output_kinds[key] = output_kind
                 observed_outputs[key] = fingerprint
             recipe = build_execution_recipe(
-                script_identity,
-                parameters,
-                tuple(sorted(explicit_env.items())),
-                tuple(sorted(observed_inputs)),
-                tuple(sorted(output_kinds.items())),
-                parameter_roles,
+                ExecutionRecipe(
+                    script_identity,
+                    parameters,
+                    tuple(sorted(explicit_env.items())),
+                    tuple(sorted(observed_inputs)),
+                    tuple(sorted(output_kinds.items())),
+                    parameter_roles,
+                ),
                 subject=entry / "pyrun.json",
                 entry_root=entry,
                 project_root=root,
@@ -980,8 +983,6 @@ def main(argv: list[str]) -> int:
                     last_run_at=completed_at,
                 ),
                 project_root=root,
-                companion_updates={},
-                publish_updates=atomic_write_texts,
             )
             return returncode
     except PyrunContractError as error:

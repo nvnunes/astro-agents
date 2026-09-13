@@ -320,6 +320,22 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The recorded command uses shell syntax outside the supported command grammar.",
         "command",
     ),
+    "invocation.cid.duplicate": FindingPresentation(
+        "Duplicate Command ID",
+        "More than one recorded command or loop uses the same command ID "
+        "in this entry.",
+        "command",
+    ),
+    "invocation.cid.parameter_collision": FindingPresentation(
+        "Duplicate Command Parameters",
+        "Two expansions under one command ID have the same parameter identity.",
+        "command",
+    ),
+    "invocation.cid.unstable": FindingPresentation(
+        "Unstable Command ID",
+        "Expansions of one recorded command or loop use different command IDs.",
+        "command",
+    ),
     "invocation.executable.unresolved": FindingPresentation(
         "Command Executable Unresolved",
         "The recorded command executable cannot be resolved safely.",
@@ -329,6 +345,12 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "Embedded Material Path",
         "A material path is embedded in an argument instead of passed as one "
         "complete value.",
+        "command",
+    ),
+    "invocation.fence.multiple_commands": FindingPresentation(
+        "Multiple Commands In One Fence",
+        "The command fence contains more than one independent command or loop; "
+        "split it into separate fences.",
         "command",
     ),
     "lineage.ambiguous": FindingPresentation(

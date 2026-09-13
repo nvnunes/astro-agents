@@ -126,21 +126,20 @@ def promote_execution(
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
     with entry_lock(entry):
-        outputs = _resolve_outputs(
-            _PromotionResolution(
-                project,
-                entry.root,
-                run_root,
-                plan,
-                entry_id,
-                cid,
-                execution_id,
-                bundle,
-            )
+        resolution = _PromotionResolution(
+            project,
+            entry.root,
+            run_root,
+            plan,
+            entry_id,
+            cid,
+            execution_id,
+            bundle,
         )
+        outputs = _resolve_outputs(resolution)
         marker = _begin_promotion(log, run_id, execution_id, outputs)
         try:
-            _publish_promotion(log, plan, entry_id, cid, execution_id, outputs)
+            _publish_promotion(log, resolution, outputs)
         finally:
             _finish_promotion(log, marker)
     return PromotionResult(
@@ -416,15 +415,12 @@ def _overlapping_paths(left: set[Path], right: set[Path]) -> set[Path]:
 
 def _publish_promotion(
     log: LogContext,
-    plan: ReproductionPlan,
-    entry_id: str,
-    cid: str,
-    execution_id: str,
+    resolution: _PromotionResolution,
     outputs: Sequence[_PromotedOutput],
 ) -> None:
     project = resolve_project_root(log.root)
     text_candidates, prior_text = _metadata_candidates(
-        log, plan, entry_id, cid, execution_id, outputs
+        log, resolution, outputs
     )
     installed: tuple[_InstalledOutput, ...] = ()
     try:
@@ -475,24 +471,26 @@ def _publish_promotion(
 
 def _metadata_candidates(
     log: LogContext,
-    plan: ReproductionPlan,
-    entry_id: str,
-    cid: str,
-    execution_id: str,
+    resolution: _PromotionResolution,
     outputs: Sequence[_PromotedOutput],
 ) -> tuple[dict[Path, str], dict[Path, str]]:
     project = resolve_project_root(log.root)
-    entry = resolve_entry(log, entry_id)
+    entry = resolve_entry(log, resolution.entry_id)
     state = load_pyrun_state(
         entry.root / "pyrun.json", entry_root=entry.root, project_root=project
     )
-    execution = state.execution(cid, execution_id)
+    execution = state.execution(resolution.cid, resolution.execution_id)
     if execution is None:
         raise ActionError(
             "reproduction.promotion.execution_changed",
             "execution is no longer current",
         )
-    accepted = accepted_invocation(plan, entry_id, cid, execution_id)
+    accepted = accepted_invocation(
+        resolution.plan,
+        resolution.entry_id,
+        resolution.cid,
+        resolution.execution_id,
+    )
     if (
         execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
         or execution.observed.as_dict() != accepted.execution.observed.as_dict()
@@ -535,16 +533,16 @@ def _metadata_candidates(
         ),
         execution.exclusive,
     )
-    command = state.commands.get(cid)
+    command = state.commands.get(resolution.cid)
     if command is None:
         raise ActionError(
             "reproduction.promotion.execution_changed",
             "command is no longer current",
         )
     executions = dict(command.executions)
-    executions[execution_id] = candidate_execution
+    executions[resolution.execution_id] = candidate_execution
     commands = dict(state.commands)
-    commands[cid] = PyrunCommand(executions)
+    commands[resolution.cid] = PyrunCommand(executions)
     candidate_state = PyrunFile(state.path, state.entry_root, commands)
     updates = {
         state.path: validated_pyrun_serialization(candidate_state, project_root=project)

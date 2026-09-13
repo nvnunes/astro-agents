@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Mapping, NoReturn, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
@@ -514,12 +514,14 @@ def recipe_from_invocation(
             _invalid(invocation.document, {"output": key, "reason": "kind_conflict"})
     parameters = invocation.recipe_parameters or invocation.parameters
     return build_execution_recipe(
-        script,
-        parameters,
-        invocation.environment,
-        inputs,
-        tuple(sorted(outputs.items())),
-        invocation.parameter_roles,
+        ExecutionRecipe(
+            script,
+            parameters,
+            invocation.environment,
+            inputs,
+            tuple(sorted(outputs.items())),
+            invocation.parameter_roles,
+        ),
         subject=invocation.document,
         entry_root=entry_root,
         project_root=project_root,
@@ -527,12 +529,7 @@ def recipe_from_invocation(
 
 
 def build_execution_recipe(
-    script: str,
-    parameters: tuple[str, ...],
-    environment: tuple[tuple[str, str], ...],
-    inputs: tuple[str, ...],
-    outputs: tuple[tuple[str, str], ...],
-    parameter_roles: tuple[tuple[str, str], ...],
+    recipe: ExecutionRecipe,
     *,
     subject: object,
     entry_root: Path,
@@ -540,9 +537,6 @@ def build_execution_recipe(
 ) -> ExecutionRecipe:
     """Build and validate one canonical recipe for every producer path."""
 
-    recipe = ExecutionRecipe(
-        script, parameters, environment, inputs, outputs, parameter_roles
-    )
     _decode_recipe(
         recipe.as_dict(),
         str(subject),
@@ -721,49 +715,92 @@ def parse_pyrun_state_text(
         )
     if set(value) != {"commands", "schema"}:
         _invalid(subject, {"fields": _fields(value)})
-    raw_commands = value.get("commands")
+    commands = _decode_commands(
+        value.get("commands"),
+        subject=subject,
+        entry_root=root,
+        project_root=project_root,
+    )
+    result = PyrunFile(expected, root, commands)
+    _validate_ownership(result, project_root=project_root)
+    if raw != result.serialized():
+        _invalid(subject, {"reason": "noncanonical_serialization"})
+    return result
+
+
+def _decode_commands(
+    raw_commands: object,
+    *,
+    subject: object,
+    entry_root: Path,
+    project_root: Path | None,
+) -> dict[str, PyrunCommand]:
+    """Decode every bounded CID bucket in one current state file."""
+
     if not isinstance(raw_commands, Mapping):
-        _invalid(subject, {"schema": value.get("schema")})
+        _invalid(subject, {"schema": PYRUN_SCHEMA})
     if not raw_commands or len(raw_commands) > MAX_EXECUTIONS:
         _invalid(
             subject,
             {"commands": len(raw_commands), "limit": MAX_EXECUTIONS},
         )
     commands: dict[str, PyrunCommand] = {}
-    execution_count = 0
     for cid, raw_command in raw_commands.items():
-        if not isinstance(cid, str) or NAME_RE.fullmatch(cid) is None:
-            _invalid(subject, {"cid": cid})
-        if not isinstance(raw_command, Mapping) or set(raw_command) != {"executions"}:
-            _invalid(subject, {"cid": cid, "fields": _fields(raw_command)})
-        raw_executions = raw_command.get("executions")
-        if not isinstance(raw_executions, Mapping) or not raw_executions:
-            _invalid(subject, {"cid": cid, "executions": _fields(raw_executions)})
-        executions: dict[str, PyrunExecution] = {}
-        for key, raw_execution in raw_executions.items():
-            if not isinstance(key, str) or PYRUN_EXECUTION_RE.fullmatch(key) is None:
-                _invalid(subject, {"cid": cid, "execution_id": key})
-            execution = _decode_execution(
-                raw_execution,
-                f"{subject}:commands[{cid!r}]:executions[{key!r}]",
-                entry_root=root,
-                project_root=project_root,
-            )
-            if execution_id(execution.recipe) != key:
-                _invalid(
-                    subject,
-                    {"cid": cid, "execution_id": key, "reason": "identity_mismatch"},
-                )
-            executions[key] = execution
-            execution_count += 1
-        commands[cid] = PyrunCommand(executions)
+        decoded_cid = _decode_cid(cid, subject)
+        commands[decoded_cid] = _decode_command(
+            decoded_cid,
+            raw_command,
+            subject=subject,
+            entry_root=entry_root,
+            project_root=project_root,
+        )
+    execution_count = sum(len(command.executions) for command in commands.values())
     if execution_count > MAX_EXECUTIONS:
         _invalid(subject, {"executions": execution_count, "limit": MAX_EXECUTIONS})
-    result = PyrunFile(expected, root, commands)
-    _validate_ownership(result, project_root=project_root)
-    if raw != result.serialized():
-        _invalid(subject, {"reason": "noncanonical_serialization"})
-    return result
+    return commands
+
+
+def _decode_cid(value: object, subject: object) -> str:
+    if not isinstance(value, str) or NAME_RE.fullmatch(value) is None:
+        _invalid(subject, {"cid": value})
+    return value
+
+
+def _decode_command(
+    cid: object,
+    raw_command: object,
+    *,
+    subject: object,
+    entry_root: Path,
+    project_root: Path | None,
+) -> PyrunCommand:
+    if not isinstance(raw_command, Mapping) or set(raw_command) != {"executions"}:
+        _invalid(subject, {"cid": cid, "fields": _fields(raw_command)})
+    raw_executions = raw_command.get("executions")
+    if not isinstance(raw_executions, Mapping) or not raw_executions:
+        _invalid(subject, {"cid": cid, "executions": _fields(raw_executions)})
+    executions: dict[str, PyrunExecution] = {}
+    for key, raw_execution in raw_executions.items():
+        identity = _decode_execution_id(key, cid=cid, subject=subject)
+        execution = _decode_execution(
+            raw_execution,
+            f"{subject}:commands[{cid!r}]:executions[{identity!r}]",
+            entry_root=entry_root,
+            project_root=project_root,
+        )
+        if execution_id(execution.recipe) != identity:
+            _invalid(
+                subject,
+                {"cid": cid, "execution_id": identity, "reason": "identity_mismatch"},
+            )
+        executions[identity] = execution
+    return PyrunCommand(executions)
+
+
+def _decode_execution_id(value: object, *, cid: object, subject: object) -> str:
+    if not isinstance(value, str) or PYRUN_EXECUTION_RE.fullmatch(value) is None:
+        _invalid(subject, {"cid": cid, "execution_id": value})
+    return value
 
 
 def parse_pyrun_execution(
@@ -791,8 +828,6 @@ def publish_execution_locked(
     execution: PyrunExecution,
     *,
     project_root: Path | None = None,
-    companion_updates: Mapping[Path, str] | None = None,
-    publish_updates: Callable[[Mapping[Path, str | None]], None] | None = None,
 ) -> PyrunFile:
     """Atomically replace one complete key under the entry lock."""
 
@@ -814,12 +849,7 @@ def publish_execution_locked(
         commands[cid] = PyrunCommand(executions)
         result = PyrunFile(path, root, commands)
         serialized = _validated_serialization(result, project_root=project_root)
-        if companion_updates:
-            if publish_updates is None or path in companion_updates:
-                raise ValueError("companion publication requires one valid publisher")
-            publish_updates({path: serialized, **companion_updates})
-        else:
-            _atomic_write(path, serialized)
+        _atomic_write(path, serialized)
         return result
     except OSError as error:
         raise PyrunStateError(

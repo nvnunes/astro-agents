@@ -1031,6 +1031,7 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
         subparser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
     from .reproduction_queries import (
+        CommandListFilters,
         compose_reproduction_command,
         compose_reproduction_command_list,
         list_reproduction_commands,
@@ -1041,11 +1042,13 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
     if args.action == "list":
         result = list_reproduction_commands(
             log,
-            bucket=args.bucket,
-            entry=args.entry,
-            cid=args.cid,
-            reason=args.reason,
-            run_id=args.run_id,
+            CommandListFilters(
+                bucket=args.bucket,
+                entry=args.entry,
+                cid=args.cid,
+                reason=args.reason,
+                run_id=args.run_id,
+            ),
         )
         output = (
             json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"

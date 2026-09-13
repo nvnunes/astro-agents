@@ -71,16 +71,16 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v2:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=14`; the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-results) |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=15`; the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-results) |
 | Reproduction result projection | `research-log-reproduction-result/11` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run store | run-local `state.sqlite`, SQLite `user_version=1` |
+| Durable run store | run-local `state.sqlite`, SQLite `user_version=2` |
 | Run status projection | `research-log-reproduction-status/7` |
 | Accepted plan | `research-log-reproduction-plan/10` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
-| Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=1` |
+| Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
@@ -567,7 +567,7 @@ or stopped command leaves it true.
 
 ### Automatic-Reproduction Policy
 
-`pyrun --auto-reproduce=false -- script.py ...` records
+`pyrun --cid CID --auto-reproduce=false -- script.py ...` records
 `auto_reproduce: false`. Omitting the option records `auto_reproduce: true`.
 The false value marks work that must not be rerun automatically, such as
 simulation or model training. It is an authored policy, not an inference from
@@ -586,7 +586,7 @@ the recipe.
 
 ### Exclusive-Scheduling Policy
 
-`pyrun --exclusive -- script.py ...` records `exclusive: true`. Omitting
+`pyrun --cid CID --exclusive -- script.py ...` records `exclusive: true`. Omitting
 `--exclusive` records `exclusive: false`. No value-bearing or negative spelling
 is accepted. The option affects managed reproduction scheduling only: ordinary
 direct `pyrun` execution is unchanged, and the runner does not reserve CPUs,
@@ -1521,14 +1521,16 @@ queryable reproduction results. The reproduction domain stores normalized
 artifact, execution, command, and terminal-run projection rows keyed by their
 stable identities. It has no maintained aggregate JSON encoding.
 
-In consolidated store schema v14, each retained run has a positive internal
+In consolidated store schema v15, each retained run has a positive internal
 `run_pk`; the public `run_id` remains the only run identity exposed by reports,
 queries, exports, or producing-run fields. Run-command and run-execution
 junctions use `WITHOUT ROWID` composite primary keys. A historical command row
-stores its queryable scalar fields once, plus one bounded `details_json` list
-and one bounded `recipe_json` object. There is no `detail_json` copy of those
-same values, and the unchanged public command-detail object is reconstructed
-only for a selected row or explicit export.
+stores its queryable scalar fields, including its stable CID, once, plus one
+bounded `details_json` list and one bounded `recipe_json` object. Historical
+execution rows and command-to-execution relationships are CID-qualified. There
+is no `detail_json` copy of those same values, and the unchanged public
+command-detail object is reconstructed only for a selected row or explicit
+export.
 
 Cumulative publication and explicit export enforce the 64 MiB domain ceiling
 with a canonical incremental encoder over normalized rows. The encoder stops
@@ -1713,7 +1715,7 @@ The directory contains run-local `state.sqlite`, one project-layout
 `workspace/`, private runtime and diagnostic directories, and the retained
 execution output trees. Identity-scoped comparison rows in `state.sqlite` are
 the durable staging index. Each comparison retains byte count, completion,
-diagnostic paths, entry and execution identity, workspace path, and the closed
+diagnostic paths, entry/CID/execution identity, workspace path, and the closed
 artifact set. Each artifact row records its declared kind, availability,
 exact staged path, outcome and reason, comparison profile, retained and
 regenerated fingerprints, and any evidence-scoped detail. The comparison and
@@ -1788,9 +1790,9 @@ or a reproduction result.
 The coordinator path is
 `<project>/.cache/research-log-operations/reproduction-scheduler.sqlite`; its
 mutex is `reproduction-scheduler.lock` in the same operation-state directory.
-It uses SQLite `user_version=1`. `scheduler_state` owns the nonnegative,
+It uses SQLite `user_version=2`. `scheduler_state` owns the nonnegative,
 monotonically increasing next ticket. `scheduler_waiters` owns the ticket,
-run/entry/execution identity, accepted plan order, supervisor PID, and
+run/entry/CID/execution identity, accepted plan order, supervisor PID, and
 registration time. `scheduler_permits` owns the permit ID, kind, same accepted
 identity and order, supervisor PID, accepted run path, and grant time.
 `scheduler_claims` owns each ordered `read`, `write`, or `writable` absolute
@@ -2101,7 +2103,7 @@ the selected run's compact counts. They read that run's immutable
 `command_records` and reconcile every projected row against its published
 totals before returning it. For a launched command, `show` also resolves the
 selected run's exact retained directory and newest terminal checkpoint for the
-compound entry and execution identity. Command detail schema
+compound entry/CID/execution identity. Command detail schema
 `research-log-reproduction-command/3` includes the checkpoint failure,
 timing, and observed outputs plus retained stdout and stderr projections. Each
 stream projection records its project-relative path, availability, byte count,
@@ -2141,7 +2143,7 @@ and Reproduce require `pyrun.json`; neither executes legacy
 legacy validation Reproduction section is not a current report surface.
 
 Parallel scheduling uses `research-log-pyrun/v6`. A current reproduction job
-uses run-local SQLite `user_version=1`, one accepted
+uses run-local SQLite `user_version=2`, one accepted
 `research-log-reproduction-plan/10`, and the public
 `research-log-reproduction-status/7` projection. JSON
 `research-log-reproduction-run/7` and every earlier accepted reproduction job
@@ -2215,7 +2217,8 @@ baselines in an isolated synchronous workspace. It never creates a run or
 changes generated results, reports, validation, promotion, or execution
 metadata. Bare reproduction targets are only log or entry. Current accepted
 plans are plan/10, their mutable lifecycle lives in run-local SQLite
-`user_version=1`, and status/7 is a derived public projection. JSON run/7 is
+`user_version=2`, and status/7 is a derived public projection. State rows bind
+each planned command and execution to its stable CID. JSON run/7 is
 unsupported historical job state, not a current mutable record. Earlier plans
 are rejected without migration. Result/11 retains passive read-only rendering
 of historical one-command rows.

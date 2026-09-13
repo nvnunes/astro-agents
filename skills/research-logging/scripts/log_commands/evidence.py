@@ -101,9 +101,6 @@ def add_or_update_common(
                 )
             evaluated = evaluate_prepared_definition(
                 prepared,
-                entry_root=entry.root,
-                log_root=entry.log.root,
-                record_id=arguments.record_id,
                 definition=_candidate_definition(
                     sources=[
                         {"source": _token(arguments.source), "locator": None},
@@ -124,9 +121,6 @@ def add_or_update_common(
         transformation = _common_transformation(prepared, arguments)
         evaluated = evaluate_prepared_definition(
             prepared,
-            entry_root=entry.root,
-            log_root=entry.log.root,
-            record_id=arguments.record_id,
             definition=_candidate_definition(
                 sources=[
                     {"source": _token(arguments.source), "locator": locator},

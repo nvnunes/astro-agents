@@ -77,6 +77,8 @@ class PreparedEvidenceSource:
 class PreparedEvidenceContext:
     """Operation-local presentation and source state for one candidate."""
 
+    entry_root: Path
+    log_root: Path
     presentation: PresentedItem
     data: DataFile
     sources: tuple[PreparedEvidenceSource, ...]
@@ -155,6 +157,7 @@ def evaluate_candidate_record(
     )
     data = load_data_file(entry_root / "data.json", entry_root=entry_root)
     prepared = _prepare_context(
+        entry_root,
         presentation,
         data,
         record.sources,
@@ -179,6 +182,7 @@ def prepare_common_evidence_context(
     presentation = find_entry_presentation(entry_root, log_root, record_id)
     data = load_data_file(entry_root / "data.json", entry_root=entry_root)
     return _prepare_context(
+        entry_root,
         presentation,
         data,
         (source,),
@@ -240,20 +244,17 @@ def bind_prepared_locator(
 
 def evaluate_prepared_definition(
     context: PreparedEvidenceContext,
-    *,
-    entry_root: Path,
-    log_root: Path,
-    record_id: str,
     definition: Mapping[str, object],
+    *,
     capture_artifact_fingerprint: bool,
 ) -> CandidateEvaluation:
     """Decode and compare a definition using only prepared operation state."""
 
     record = _candidate_record(
         context.presentation,
-        entry_root=entry_root,
-        log_root=log_root,
-        record_id=record_id,
+        entry_root=context.entry_root,
+        log_root=context.log_root,
+        record_id=context.presentation.id,
         definition=definition,
     )
     expected = tuple((item.source, item.locator) for item in context.sources)
@@ -261,7 +262,7 @@ def evaluate_prepared_definition(
     if actual != expected:
         raise PresentationEvaluationError(
             "evidence.declaration.invalid",
-            record_id,
+            context.presentation.id,
             {"reason": "prepared_source_mismatch"},
             "Evidence Presentation Authoring",
         )
@@ -306,6 +307,7 @@ def _candidate_record(
 
 
 def _prepare_context(
+    entry_root: Path,
     presentation: PresentedItem,
     data: DataFile,
     sources: Sequence[EvidenceSource | str],
@@ -359,7 +361,12 @@ def _prepare_context(
             Fingerprint("sha256", digest), source.path, file_identity
         )
     return PreparedEvidenceContext(
-        presentation, data, tuple(prepared), artifact_observation
+        entry_root,
+        log_root,
+        presentation,
+        data,
+        tuple(prepared),
+        artifact_observation,
     )
 
 

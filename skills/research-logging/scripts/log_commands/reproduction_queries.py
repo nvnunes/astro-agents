@@ -66,6 +66,17 @@ COMMAND_REASONS = (
 )
 
 
+@dataclass(frozen=True)
+class CommandListFilters:
+    """Optional filters for one bounded completed-run command listing."""
+
+    bucket: str | None = None
+    entry: str | None = None
+    cid: str | None = None
+    reason: str | None = None
+    run_id: str | None = None
+
+
 def reproduction_report(log: LogContext, *, entry: str | None) -> str:
     """Return the centralized current human report projection."""
 
@@ -574,22 +585,25 @@ def show_reproduction_artifact(
 
 def list_reproduction_commands(
     log: LogContext,
-    *,
-    bucket: str | None,
-    entry: str | None,
-    cid: str | None,
-    reason: str | None,
-    run_id: str | None,
+    filters: CommandListFilters,
 ) -> dict[str, object]:
     """Return at most 50 commands from one completed run's accounting."""
 
-    if bucket is not None and bucket not in COMMAND_BUCKETS:
+    if filters.bucket is not None and filters.bucket not in COMMAND_BUCKETS:
         raise ActionError(
             "reproduction.command.bucket.invalid",
-            f"unsupported command bucket: {bucket}",
+            f"unsupported command bucket: {filters.bucket}",
         )
     summary, selected_run, matched, returned = _command_projection(
-        log, _CommandProjectionRequest(run_id, bucket, entry, reason, 50, cid)
+        log,
+        _CommandProjectionRequest(
+            filters.run_id,
+            filters.bucket,
+            filters.entry,
+            filters.reason,
+            50,
+            filters.cid,
+        ),
     )
     load_run = lru_cache(maxsize=1)(lambda: _retained_command_run(log, selected_run))
     rows = []
@@ -605,7 +619,12 @@ def list_reproduction_commands(
             error = _failure_summary(diagnostics)
         rows.append({**_command_list_record(record), "error": error})
     return {
-        "filters": {"bucket": bucket, "cid": cid, "entry": entry, "reason": reason},
+        "filters": {
+            "bucket": filters.bucket,
+            "cid": filters.cid,
+            "entry": filters.entry,
+            "reason": filters.reason,
+        },
         "matched": matched,
         "omitted": matched - len(returned),
         "records": rows,

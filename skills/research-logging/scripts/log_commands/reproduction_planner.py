@@ -755,10 +755,9 @@ def _trace_out_of_scope_resource(
         state.cases[(request.entry.context.id, request.artifact)] = _case(
             request.entry.context.id,
             request.artifact,
-            execution_id,
+            (candidates[0].cid if len(candidates) == 1 else None, execution_id),
             "skipped",
             "outside_entry",
-            candidates[0].cid if len(candidates) == 1 else None,
         )
 
 
@@ -805,10 +804,9 @@ def _stop_at_nonautomatic_policy(
         state.cases[(boundary.entry.context.id, boundary.artifact)] = _case(
             boundary.entry.context.id,
             boundary.artifact,
-            producer.execution_id,
+            (producer.cid, producer.execution_id),
             "skipped",
             "non_automatic",
-            producer.cid,
         )
     return True
 
@@ -827,7 +825,7 @@ def _trace_execution(
     for output, _ in owner.execution.recipe.outputs:
         state.cases.setdefault(
             (owner.entry.context.id, output),
-            _case(owner.entry.context.id, output, identity, "run", None, owner.cid),
+            _case(owner.entry.context.id, output, (owner.cid, identity), "run", None),
         )
     if not trace_inputs:
         state.visited.add(key)
@@ -1136,10 +1134,9 @@ def _record_failure(state: _PlanningState, failure: _Failure) -> None:
     state.cases[(failure.entry, failure.artifact)] = _case(
         failure.entry,
         failure.artifact,
-        failure.execution_id,
+        (failure.cid, failure.execution_id),
         "failed",
         failure.reason,
-        failure.cid,
     )
     if len(state.failures) > MAX_FAILURES:
         raise ActionError("reproduction.plan.resource_limit", "failure limit exceeded")
@@ -1184,10 +1181,9 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
                     state.cases[(owner.entry.context.id, output)] = _case(
                         owner.entry.context.id,
                         output,
-                        owner.execution_id,
+                        (owner.cid, owner.execution_id),
                         "skipped",
                         "dependency_failed",
-                        owner.cid,
                     )
                 changed = True
 
@@ -1505,10 +1501,9 @@ def _project_current_cases(state: _PlanningState, current: set[ExecutionKey]) ->
             state.cases[(owner.entry.context.id, output)] = _case(
                 owner.entry.context.id,
                 output,
-                owner.execution_id,
+                (owner.cid, owner.execution_id),
                 "current",
                 None,
-                owner.cid,
             )
 
 
@@ -2037,11 +2032,11 @@ def _portable_resource_artifact(resource: InputResource, project_root: Path) -> 
 def _case(
     entry: str,
     artifact: str,
-    execution_id: str | None,
+    identity: tuple[str | None, str | None],
     disposition: str,
     reason: str | None,
-    cid: str | None = None,
 ) -> dict[str, object]:
+    cid, execution_id = identity
     return {
         "artifact": artifact,
         "disposition": disposition,

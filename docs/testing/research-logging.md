@@ -82,7 +82,8 @@ observation sandbox and retry after the expected permission failure.
 ```bash
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \
-  skills/research-logging/scripts/pyrun_code_observer.py \
+  skills/research-logging/scripts/pyrun_code_dependencies.py \
+  skills/research-logging/scripts/stream_capture.py \
   skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/research_log_paths.py \
   skills/research-logging/scripts/log_commands/*.py \

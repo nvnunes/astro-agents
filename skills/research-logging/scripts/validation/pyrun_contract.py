@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from pyrun_code_observer import MANAGED_ENVIRONMENT as PYRUN_CODE_ENVIRONMENT
 from research_log_data import input_token_parts
 
 PYRUN_CAPTURE_STREAMS = {
@@ -23,9 +22,7 @@ PYRUN_ENV_OPTION = "--env"
 PYRUN_CID_OPTION = "--cid"
 PYRUN_DISABLE_AUTO_REPRODUCE_OPTION = "--auto-reproduce=false"
 PYRUN_EXCLUSIVE_OPTION = "--exclusive"
-PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"}).union(
-    PYRUN_CODE_ENVIRONMENT
-)
+PYRUN_MANAGED_ENVIRONMENT = frozenset({"MPLCONFIGDIR", "XDG_CACHE_HOME"})
 _OPTION_SELECTOR_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _POSITIONAL_SELECTOR_RE = re.compile(r"@[1-9][0-9]*\Z")
 _ENVIRONMENT_RE = re.compile(

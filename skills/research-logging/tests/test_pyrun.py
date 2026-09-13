@@ -272,12 +272,6 @@ class PyrunResolutionTests(unittest.TestCase):
             ["--env", "missing", "--", "scripts/model.py"],
             ["--env", "MODE=one", "--env", "MODE=two", "--", "scripts/model.py"],
             ["--env", "MPLCONFIGDIR=/tmp/custom", "--", "scripts/model.py"],
-            [
-                "--env",
-                "PYRUN_CODE_TRACE_DIRECTORY=/tmp/custom",
-                "--",
-                "scripts/model.py",
-            ],
             ["--env", "XDG_CACHE_HOME=/tmp/custom", "--", "scripts/model.py"],
             ["--env", "MODE=one", "scripts/model.py"],
         )
@@ -1277,7 +1271,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 record["recipe"]["script"], "<log>/scripts/build_shared.py"
             )
 
-    def test_records_only_loaded_direct_transitive_and_dynamic_helpers(self) -> None:
+    def test_records_static_helpers_with_dynamic_warning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1322,13 +1316,69 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                     name: {"algorithm": "sha256", "digest": digest(entry / name)}
                     for name in (
                         "scripts/direct_helper.py",
-                        "scripts/dynamic_helper.py",
                         "scripts/transitive_helper.py",
                     )
                 },
             )
+            self.assertIn("[dynamic_import]", result.stderr)
 
-    def test_records_log_sibling_and_logical_symlink_helpers(self) -> None:
+    def test_failed_run_retains_historical_code_until_static_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            helper = entry / "scripts/helper.py"
+            historical = entry / "scripts/historical_dynamic.py"
+            helper.write_text("VALUE = 'current'\n", encoding="utf-8")
+            historical.write_text("VALUE = 'historical'\n", encoding="utf-8")
+            (entry / "scripts/build_transition.py").write_text(
+                "from pathlib import Path\n"
+                "import helper\n"
+                "if Path('fail.flag').exists():\n    raise SystemExit(3)\n"
+                "Path('data/transition.txt').write_text(helper.VALUE)\n",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PYRUN),
+                "scripts/build_transition.py",
+                "--output-data",
+                "data/transition.txt",
+            ]
+            first = run(command, cwd=entry)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
+            record = next(
+                iter(state["commands"]["test-command"]["executions"].values())
+            )
+            record["observed"]["code"]["scripts/historical_dynamic.py"] = {
+                "algorithm": "sha256",
+                "digest": digest(historical),
+            }
+            (entry / "pyrun.json").write_text(
+                json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            before = (entry / "pyrun.json").read_bytes()
+            (entry / "fail.flag").write_text("fail\n", encoding="utf-8")
+
+            failed = run(command, cwd=entry)
+
+            self.assertEqual(failed.returncode, 3)
+            self.assertEqual((entry / "pyrun.json").read_bytes(), before)
+            (entry / "fail.flag").unlink()
+
+            succeeded = run(command, cwd=entry)
+
+            self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
+            final_code = execution_for_output(entry, "data/transition.txt")[
+                "observed"
+            ]["code"]
+            self.assertEqual(
+                set(final_code),
+                {"scripts/helper.py"},
+            )
+
+    def test_runtime_import_paths_warn_without_dependency_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1369,20 +1419,10 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             code = execution_for_output(entry, "data/scoped.txt")["observed"]["code"]
-            self.assertEqual(
-                set(code),
-                {
-                    "<log>/shared_helper.py",
-                    f"<log>/entries/{sibling.name}/sibling_helper.py",
-                    "<log>/linked/linked_helper.py",
-                },
-            )
-            self.assertEqual(
-                code["<log>/linked/linked_helper.py"]["digest"],
-                digest(storage / "linked_helper.py"),
-            )
+            self.assertEqual(code, {})
+            self.assertIn("[import_path_mutation]", result.stderr)
 
-    def test_records_python_child_entry_points_and_imports(self) -> None:
+    def test_python_child_entry_points_warn_without_dependency_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1417,7 +1457,8 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             code = execution_for_output(entry, "data/children.txt")["observed"]["code"]
-            self.assertEqual(set(code), {"scripts/child.py", "scripts/child_helper.py"})
+            self.assertEqual(code, {})
+            self.assertIn("[descendant_code]", result.stderr)
 
     def test_preserves_imported_package_resource_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1503,7 +1544,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                         {"scripts/process_helper.py", "scripts/process_worker.py"},
                     )
 
-    def test_changed_loaded_helper_publishes_no_support(self) -> None:
+    def test_changed_static_helper_publishes_no_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1530,10 +1571,10 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("loaded code changed during execution", result.stderr)
+            self.assertIn("static code changed during execution", result.stderr)
             self.assertFalse((entry / "pyrun.json").exists())
 
-    def test_missing_root_trace_publishes_no_support(self) -> None:
+    def test_process_exit_does_not_require_an_observer_shutdown_hook(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1556,11 +1597,10 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 cwd=entry,
             )
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("root Python process left no complete trace", result.stderr)
-            self.assertFalse((entry / "pyrun.json").exists())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((entry / "pyrun.json").exists())
 
-    def test_excessive_loaded_code_publishes_no_support(self) -> None:
+    def test_dynamic_import_count_is_an_incomplete_coverage_warning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1588,9 +1628,12 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 cwd=entry,
             )
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("code_path_limit", result.stderr)
-            self.assertFalse((entry / "pyrun.json").exists())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[dynamic_import]", result.stderr)
+            self.assertEqual(
+                execution_for_output(entry, "data/excessive.txt")["observed"]["code"],
+                {},
+            )
 
     def test_excludes_project_code_outside_the_current_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1621,7 +1664,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             record = execution_for_output(entry, "data/external.txt")
             self.assertEqual(record["observed"]["code"], {})
 
-    def test_preserves_an_existing_sitecustomize(self) -> None:
+    def test_explicit_pythonpath_warns_without_blocking_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1658,13 +1701,14 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[import_path_environment]", result.stderr)
             self.assertEqual(marker.read_text(), "loaded")
             self.assertEqual(
                 Path((entry / "data/site.txt").read_text()).resolve(),
                 (startup / "sitecustomize.py").resolve(),
             )
 
-    def test_many_short_children_share_one_deduplicated_code_map(self) -> None:
+    def test_many_short_children_add_no_static_dependency_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1700,8 +1744,8 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             record = execution_for_output(entry, "data/first.txt")
-            expected = {"scripts/shared_child_helper.py", "scripts/short_child.py"}
-            self.assertEqual(set(record["observed"]["code"]), expected)
+            self.assertEqual(record["observed"]["code"], {})
+            self.assertIn("[descendant_code]", result.stderr)
             self.assertEqual(
                 execution_for_output(entry, "data/first.txt"),
                 execution_for_output(entry, "data/second.txt"),

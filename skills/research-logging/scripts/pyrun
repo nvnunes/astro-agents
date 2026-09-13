@@ -47,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
@@ -58,12 +59,11 @@ from log_commands.context import (
     parse_entry_directory_name,
 )
 from log_commands.storage import entry_lock
-from pyrun_code_observer import (
+from pyrun_code_dependencies import (
     MAX_CODE_PATHS,
-    CodeObservationError,
-    ObservedCodePath,
-    load_traces,
-    prepare_environment,
+    CodeDiscoveryError,
+    DiscoveredCodePath,
+    discover_code,
 )
 from research_log_data import (
     DataContractError,
@@ -112,6 +112,16 @@ from validation.pyrun_state import (
 RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 CAPTURE_POLL_SECONDS = 0.05
 CAPTURE_TERMINATION_SECONDS = 1.0
+CAPTURE_DRAIN_SECONDS = 10.0
+
+
+@dataclass(frozen=True)
+class _PreparedCodeObservation:
+    """One pre-launch static helper observation awaiting stability checks."""
+
+    path: DiscoveredCodePath
+    key: str
+    fingerprint: Fingerprint
 
 
 def usage() -> int:
@@ -487,13 +497,13 @@ def _run_with_captures(
     captures: dict[str, Path],
     cwd: Path,
     environment: dict[str, str],
-) -> tuple[int, int]:
+) -> int:
     """Run one process while mirroring each requested captured byte stream."""
 
     if not captures:
         process = subprocess.Popen(command, cwd=cwd, env=environment)
         try:
-            return process.wait(), process.pid
+            return process.wait()
         finally:
             _finish_process(process, None)
     capture = StreamCapture()
@@ -557,7 +567,7 @@ def _run_with_captures(
                 ),
             )
         returncode = _wait_for_captured_process(process, capture.required_failed)
-        failures = capture.finish(CAPTURE_TERMINATION_SECONDS)
+        failures = capture.finish(CAPTURE_DRAIN_SECONDS)
         required = [failure for failure in failures if failure.required]
         if required:
             raise SystemExit(f"pyrun: capture failed: {required[0].error}")
@@ -566,11 +576,12 @@ def _run_with_captures(
                 _discard_failed_mirror(sys.stdout.fileno())
             elif failure.name == "stderr mirror":
                 _discard_failed_mirror(sys.stderr.fileno())
+            report = sys.stdout if failure.name == "stderr mirror" else sys.stderr
             print(
                 f"pyrun: stream mirror unavailable: {failure.error}",
-                file=sys.stderr,
+                file=report,
             )
-        return returncode, process.pid
+        return returncode
 
 
 def _discard_failed_mirror(descriptor: int) -> None:
@@ -591,7 +602,7 @@ def _finish_process(
     if process.poll() is None:
         _terminate_process(process)
     if capture is not None:
-        capture.finish(CAPTURE_TERMINATION_SECONDS)
+        capture.finish(CAPTURE_DRAIN_SECONDS)
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> int:
@@ -640,70 +651,87 @@ def _observe_output(
     return kind, observation.fingerprint
 
 
-def _observe_code(
-    traces: tuple[ObservedCodePath, ...],
+def _prepare_code_observations(
     *,
     entry: Path,
+    log: Path,
     script_path: Path,
+    explicit_env: Mapping[str, str],
     fingerprint_cache: FingerprintCache,
-) -> tuple[tuple[str, Fingerprint], ...]:
-    """Validate and fingerprint the unique loaded helpers after execution."""
+) -> tuple[_PreparedCodeObservation, ...]:
+    """Discover and fingerprint one bounded pre-launch static helper set."""
 
-    script_identity = script_path.resolve()
-    selected: dict[Path, tuple[str, tuple[int, int, int, int, int]]] = {}
-    for trace in traces:
+    try:
+        discovery = discover_code(script_path, entry_root=entry, log_root=log)
+    except (CodeDiscoveryError, OSError) as error:
+        raise SystemExit(f"pyrun: dependency discovery failed: {error}") from error
+    if "PYTHONPATH" in explicit_env:
+        print(
+            "pyrun: dependency coverage incomplete [import_path_environment] "
+            "<execution>: explicit PYTHONPATH roots are not followed",
+            file=sys.stderr,
+        )
+    for warning in discovery.warnings:
+        location = warning.path + (f":{warning.line}" if warning.line else "")
+        print(
+            "pyrun: dependency coverage incomplete "
+            f"[{warning.code}] {location}: {warning.detail}",
+            file=sys.stderr,
+        )
+    prepared: list[_PreparedCodeObservation] = []
+    for path in discovery.paths:
         try:
-            resolved = trace.logical.resolve(strict=True)
-            observation = trace.resolved.stat()
-        except OSError as error:
-            raise SystemExit(
-                f"pyrun: could not re-observe loaded code {trace.logical}: {error}"
-            ) from error
-        if (
-            resolved != trace.resolved
-            or not trace.resolved.is_file()
-            or file_identity(observation) != trace.identity
-        ):
-            raise SystemExit(
-                f"pyrun: loaded code changed during execution: {trace.logical}"
-            )
-        if resolved == script_identity:
-            continue
-        try:
-            key = portable_code_path(trace.logical, entry_root=entry)
+            key = portable_code_path(path.logical, entry_root=entry)
+            current = path.resolved.stat()
+            fingerprint = fingerprint_cache.observe_regular_file(path.resolved)
+            final = path.resolved.stat()
         except PyrunOutputsError as error:
             raise SystemExit(f"pyrun: {error}") from error
-        previous = selected.get(resolved)
-        if previous is not None:
-            if previous[1] != trace.identity:
-                raise SystemExit(
-                    f"pyrun: loaded code changed between processes: {trace.logical}"
-                )
-            if key.encode("utf-8") < previous[0].encode("utf-8"):
-                selected[resolved] = (key, trace.identity)
-            continue
-        selected[resolved] = (key, trace.identity)
-    if len(selected) > MAX_CODE_PATHS:
-        raise SystemExit(f"pyrun: loaded code exceeds {MAX_CODE_PATHS} unique paths")
-    code: list[tuple[str, Fingerprint]] = []
-    for resolved, (key, expected_identity) in sorted(
-        selected.items(), key=lambda item: item[1][0].encode("utf-8")
-    ):
-        try:
-            current = resolved.stat()
-            fingerprint_observation = fingerprint_cache.observe_regular_file(resolved)
-            final = resolved.stat()
         except (OSError, FingerprintCacheError) as error:
             raise SystemExit(
-                f"pyrun: could not observe loaded code {key}: {error}"
+                f"pyrun: could not observe static code {path.logical}: {error}"
             ) from error
         if (
-            file_identity(current) != expected_identity
-            or file_identity(final) != expected_identity
+            path.logical.resolve(strict=True) != path.resolved
+            or file_identity(current) != path.identity
+            or file_identity(final) != path.identity
         ):
-            raise SystemExit(f"pyrun: loaded code changed during execution: {key}")
-        code.append((key, fingerprint_observation.fingerprint))
-    return tuple(code)
+            raise SystemExit(
+                f"pyrun: static code changed during discovery: {path.logical}"
+            )
+        prepared.append(_PreparedCodeObservation(path, key, fingerprint.fingerprint))
+    if len(prepared) > MAX_CODE_PATHS:
+        raise AssertionError("static discovery exceeded its helper bound")
+    return tuple(prepared)
+
+
+def _confirm_code_observations(
+    prepared: tuple[_PreparedCodeObservation, ...],
+    *,
+    fingerprint_cache: FingerprintCache,
+) -> tuple[tuple[str, Fingerprint], ...]:
+    """Require pre-launch static helper paths and bytes to remain unchanged."""
+
+    result: list[tuple[str, Fingerprint]] = []
+    for item in prepared:
+        try:
+            resolved = item.path.logical.resolve(strict=True)
+            current = item.path.resolved.stat()
+            fingerprint = fingerprint_cache.observe_regular_file(item.path.resolved)
+            final = item.path.resolved.stat()
+        except (OSError, FingerprintCacheError) as error:
+            raise SystemExit(
+                f"pyrun: could not re-observe static code {item.key}: {error}"
+            ) from error
+        if (
+            resolved != item.path.resolved
+            or file_identity(current) != item.path.identity
+            or file_identity(final) != item.path.identity
+            or fingerprint.fingerprint != item.fingerprint
+        ):
+            raise SystemExit(f"pyrun: static code changed during execution: {item.key}")
+        result.append((item.key, item.fingerprint))
+    return tuple(result)
 
 
 def main(argv: list[str]) -> int:
@@ -763,6 +791,13 @@ def main(argv: list[str]) -> int:
                 script_observation = fingerprint_cache.observe_regular_file(script_path)
             except FingerprintCacheError as error:
                 raise SystemExit(f"pyrun: could not observe script: {error}") from error
+            prepared_code = _prepare_code_observations(
+                entry=entry,
+                log=log,
+                script_path=script_path,
+                explicit_env=explicit_env,
+                fingerprint_cache=fingerprint_cache,
+            )
             resolved_arguments = []
             for arg in script_args:
                 if material_roles.get(arg) == "output":
@@ -819,13 +854,9 @@ def main(argv: list[str]) -> int:
                     prefix="pyrun-scratch-", dir="/private/tmp"
                 ) as scratch,
             ):
-                environment, trace_directory = prepare_environment(
-                    _execution_environment(explicit_env, Path(temporary)),
-                    temporary_root=Path(temporary),
-                    log_root=log,
-                )
+                environment = _execution_environment(explicit_env, Path(temporary))
                 environment["TMPDIR"] = scratch
-                returncode, root_pid = _run_with_captures(
+                returncode = _run_with_captures(
                     [python_executable(root), str(script_path), *resolved_arguments],
                     capture_paths,
                     cwd,
@@ -833,12 +864,6 @@ def main(argv: list[str]) -> int:
                 )
                 if returncode != 0:
                     return returncode
-                try:
-                    traces = load_traces(trace_directory, root_pid=root_pid)
-                except CodeObservationError as error:
-                    raise SystemExit(
-                        f"pyrun: dependency observation failed: {error}"
-                    ) from error
             try:
                 current_script = fingerprint_cache.observe_regular_file(script_path)
             except FingerprintCacheError as error:
@@ -861,10 +886,8 @@ def main(argv: list[str]) -> int:
                         raise SystemExit(
                             f"pyrun: input {name!r} changed during execution"
                         )
-            code_support = _observe_code(
-                traces,
-                entry=entry,
-                script_path=script_path,
+            code_support = _confirm_code_observations(
+                prepared_code,
                 fingerprint_cache=fingerprint_cache,
             )
             observed_outputs: dict[str, Fingerprint] = {}

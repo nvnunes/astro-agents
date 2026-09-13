@@ -578,10 +578,16 @@ to produce or check its saved outputs before presenting them as results.
 Within the CID, `pyrun` derives one stable execution ID from the expanded
 child-parameter vector and records the complete recipe and its output set,
 current script, parameters, inputs, and bytes separately. It also
-records log-local Python source files loaded by the command or by an ordinary
-Python child invocation. A logical path through an intentional log symlink
-remains log-local. Changing a recorded helper makes the dependent execution
-support stale; a later successful run refreshes the observed dependency set.
+records bounded log-local Python source files found through ordinary static
+imports from the direct script. Packages, relative imports, cycles, and every
+syntactic conditional branch are analyzed without importing or executing code.
+A logical path through an intentional log symlink remains log-local. Changing
+a recorded helper makes the dependent execution support stale; a later
+successful run replaces the helper set with current static discoveries.
+Dynamic imports, runtime import-path changes, and separately launched Python
+entrypoints are not followed. `pyrun` warns when it recognizes those patterns,
+but missed dynamic dependencies and extra conditional dependencies are accepted
+coverage tradeoffs rather than launch blockers.
 Use `./pyrun --cid CID --auto-reproduce=false -- ...` for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
 Use `./pyrun --cid CID --exclusive -- ...` when managed reproduction must run the command

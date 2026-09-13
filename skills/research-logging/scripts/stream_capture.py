@@ -112,30 +112,8 @@ class StreamCapture:
         active = list(destinations)
         try:
             while chunk := source.read(self._chunk_bytes):
-                retained: list[StreamDestination] = []
-                for destination in active:
-                    try:
-                        destination.stream.write(chunk)
-                        if destination.flush_each_chunk:
-                            destination.stream.flush()
-                    except BaseException as error:
-                        self._record_failure(
-                            StreamFailure(
-                                destination.name, destination.required, error
-                            )
-                        )
-                    else:
-                        retained.append(destination)
-                active = retained
-            for destination in active:
-                try:
-                    destination.stream.flush()
-                    if destination.durable:
-                        os.fsync(destination.stream.fileno())
-                except BaseException as error:
-                    self._record_failure(
-                        StreamFailure(destination.name, destination.required, error)
-                    )
+                active = self._write_chunk(active, chunk)
+            self._finish_destinations(active)
         except BaseException as error:  # pragma: no cover - OS pipe failure
             self._record_failure(StreamFailure("source", True, error))
         finally:
@@ -143,6 +121,36 @@ class StreamCapture:
                 source.close()
             except BaseException as error:  # pragma: no cover - OS pipe failure
                 self._record_failure(StreamFailure("source", True, error))
+
+    def _write_chunk(
+        self, destinations: list[StreamDestination], chunk: bytes
+    ) -> list[StreamDestination]:
+        retained: list[StreamDestination] = []
+        for destination in destinations:
+            try:
+                destination.stream.write(chunk)
+                if destination.flush_each_chunk:
+                    destination.stream.flush()
+            except BaseException as error:
+                self._record_failure(
+                    StreamFailure(destination.name, destination.required, error)
+                )
+            else:
+                retained.append(destination)
+        return retained
+
+    def _finish_destinations(
+        self, destinations: list[StreamDestination]
+    ) -> None:
+        for destination in destinations:
+            try:
+                destination.stream.flush()
+                if destination.durable:
+                    os.fsync(destination.stream.fileno())
+            except BaseException as error:
+                self._record_failure(
+                    StreamFailure(destination.name, destination.required, error)
+                )
 
     def _record_failure(self, failure: StreamFailure) -> None:
         with self._failure_lock:

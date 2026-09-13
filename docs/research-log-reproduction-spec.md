@@ -439,9 +439,11 @@ reproduction. The binding projection is derived wholly from `parameters` and
 - `script` is the fingerprint of the directly executed script.
 - `inputs` maps every recipe input name to its execution-time fingerprint.
 - `code` maps every eligible participating local Python source other than the
-  directly executed script to its execution-time fingerprint, using the final
-  local-code-dependency path and observation rules owned by the mechanical
-  validator specification.
+  directly executed script to its pre-launch fingerprint, using the static
+  local-code-dependency path, stability, and warning rules owned by the
+  mechanical validator specification. Historical runtime-observed maps retain
+  the same structural and currentness meaning until successful execution
+  replaces them.
 - `outputs` maps every recipe output identity to its execution-time
   fingerprint.
 
@@ -1288,6 +1290,16 @@ Recipes execute from the workspace's mirrored entry directory using the
 project-local Python and recorded environment. Each attempt receives distinct
 runtime cache and diagnostic roots. `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and
 `MATLAB_PREFDIR` remain under its runtime root.
+
+Direct execution and reproduction use the same bounded byte-copy, independent
+destination-failure, pipe-drain, and source-close mechanics. Reproduction keeps
+process-tree supervision, scheduling, deadlines, cancellation, and failure
+precedence outside that shared component. Its retained stdout/stderr
+diagnostics and declared captures are required destinations: a write, durable
+flush, or bounded-drain failure stops the supervised tree and records
+`capture_failed` unless incomplete worker cleanup has precedence. The isolated
+repair check uses this same reproduction execution path without durable-job
+state.
 
 Both runners create fresh, unique scratch directories under `/private/tmp`
 before launching each command and assign `TMPDIR` after authored environment

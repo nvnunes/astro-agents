@@ -1806,36 +1806,9 @@ def _monitor_process(
     while process.poll() is None:
         _control_plane_call(registry.refresh)
         _control_plane_call(callbacks.on_workers, _control_plane_call(registry.records))
-        if launched.capture.required_failed.is_set():
-            survivors = _control_plane_call(registry.stop_all)
-            failure_code = (
-                "worker_cleanup_incomplete" if survivors else "capture_failed"
-            )
-            failure_message = (
-                _survivor_message(survivors)
-                if survivors
-                else "could not retain captured output"
-            )
-            stopped = bool(survivors)
-            break
-        if callbacks.stop_requested():
-            stopped = True
-            survivors = _control_plane_call(registry.stop_all)
-            if survivors:
-                failure_code = "worker_cleanup_incomplete"
-                failure_message = _survivor_message(survivors)
-            break
-        if time.monotonic() >= deadline:
-            survivors = _control_plane_call(registry.stop_all)
-            if survivors:
-                failure_code = "worker_cleanup_incomplete"
-                failure_message = _survivor_message(survivors)
-            else:
-                failure_code = "execution_timeout"
-                failure_message = (
-                    "command exceeded the runtime limit of "
-                    f"{callbacks.execution_timeout_seconds} seconds"
-                )
+        stop = _monitor_stop(launched, registry, callbacks, deadline)
+        if stop is not None:
+            stopped, failure_code, failure_message = stop
             break
         time.sleep(POLL_SECONDS)
     returncode = process.poll()
@@ -1861,6 +1834,45 @@ def _monitor_process(
         failure_code,
         failure_message,
         _control_plane_call(registry.records),
+    )
+
+
+def _stop_after_capture_failure(
+    registry: _WorkerRegistry,
+) -> tuple[bool, str, str]:
+    """Stop one worker tree after a required stream destination fails."""
+
+    survivors = _control_plane_call(registry.stop_all)
+    if survivors:
+        return True, "worker_cleanup_incomplete", _survivor_message(survivors)
+    return False, "capture_failed", "could not retain captured output"
+
+
+def _monitor_stop(
+    launched: _LaunchedProcess,
+    registry: _WorkerRegistry,
+    callbacks: _RunCallbacks,
+    deadline: float,
+) -> tuple[bool, str | None, str | None] | None:
+    """Return one requested execution stop and its failure projection."""
+
+    if launched.capture.required_failed.is_set():
+        return _stop_after_capture_failure(registry)
+    if callbacks.stop_requested():
+        survivors = _control_plane_call(registry.stop_all)
+        if survivors:
+            return True, "worker_cleanup_incomplete", _survivor_message(survivors)
+        return True, None, None
+    if time.monotonic() < deadline:
+        return None
+    survivors = _control_plane_call(registry.stop_all)
+    if survivors:
+        return True, "worker_cleanup_incomplete", _survivor_message(survivors)
+    return (
+        False,
+        "execution_timeout",
+        "command exceeded the runtime limit of "
+        f"{callbacks.execution_timeout_seconds} seconds",
     )
 
 

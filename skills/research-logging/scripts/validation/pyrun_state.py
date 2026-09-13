@@ -823,32 +823,61 @@ def parse_pyrun_execution(
 
 
 def publish_execution_locked(
-    entry_root: Path,
+    current: PyrunFile,
     cid: str,
     execution: PyrunExecution,
     *,
     project_root: Path | None = None,
 ) -> PyrunFile:
-    """Atomically replace one complete key under the entry lock."""
+    """Publish one execution into an already validated locked snapshot."""
 
-    root = entry_root.resolve()
+    root = current.entry_root.resolve()
     path = root / PYRUN_FILENAME
     try:
-        current = (
-            load_pyrun_state(path, entry_root=root, project_root=project_root)
-            if path.exists() or path.is_symlink()
-            else empty_pyrun_state(root)
-        )
+        if current.path != path or current.schema != PYRUN_SCHEMA:
+            _invalid(path, {"reason": "invalid_publication_snapshot"})
         if NAME_RE.fullmatch(cid) is None:
             _invalid(path, {"cid": cid, "reason": "invalid"})
         identity = execution_id(execution.recipe)
+        decoded = _decode_execution(
+            execution.as_dict(),
+            f"{path}:commands[{cid!r}]:executions[{identity!r}]",
+            entry_root=root,
+            project_root=project_root,
+        )
+        if decoded != execution or execution_id(decoded.recipe) != identity:
+            _invalid(
+                path,
+                {"execution_id": identity, "reason": "noncanonical_execution"},
+            )
+        targets = _output_targets(
+            execution.recipe, entry_root=root, project_root=project_root
+        )
+        for prior_cid, prior_identity, prior in current.execution_items():
+            if (prior_cid, prior_identity) == (cid, identity):
+                continue
+            prior_targets = _output_targets(
+                prior.recipe, entry_root=root, project_root=project_root
+            )
+            if _target_sets_overlap(targets, prior_targets):
+                _invalid(
+                    path,
+                    {
+                        "executions": sorted(
+                            ((prior_cid, prior_identity), (cid, identity))
+                        ),
+                        "reason": "output_ownership_overlap",
+                    },
+                )
         commands = dict(current.commands)
         command = commands.get(cid, PyrunCommand({}))
         executions = dict(command.executions)
         executions[identity] = execution
         commands[cid] = PyrunCommand(executions)
         result = PyrunFile(path, root, commands)
-        serialized = _validated_serialization(result, project_root=project_root)
+        serialized = result.serialized()
+        if len(serialized.encode("utf-8")) > MAX_FILE_BYTES:
+            _invalid(path, {"bytes": len(serialized.encode("utf-8"))})
         _atomic_write(path, serialized)
         return result
     except OSError as error:
@@ -1007,19 +1036,17 @@ def _with_command_executions(
 
 def quarantine_invalid_pyrun_state(
     entry_root: Path, *, project_root: Path | None = None
-) -> None:
-    """Preserve malformed state and require explicit Repair before execution."""
+) -> PyrunFile:
+    """Return valid initial state or preserve malformed state for Repair."""
 
     root = entry_root.resolve()
     path = root / PYRUN_FILENAME
     if not path.exists() and not path.is_symlink():
-        return
+        return empty_pyrun_state(root)
     if path.is_symlink() or not path.is_file():
-        load_pyrun_state(path, entry_root=root, project_root=project_root)
-        return
+        return load_pyrun_state(path, entry_root=root, project_root=project_root)
     try:
-        load_pyrun_state(path, entry_root=root, project_root=project_root)
-        return
+        return load_pyrun_state(path, entry_root=root, project_root=project_root)
     except PyrunStateError:
         pass
     backup = root / f"{PYRUN_FILENAME}.bak"

@@ -726,7 +726,7 @@ def main(argv: list[str]) -> int:
             entry_lock(operation_entry),
             FingerprintCache(root, writable=True) as fingerprint_cache,
         ):
-            quarantine_invalid_pyrun_state(entry, project_root=root)
+            initial_state = quarantine_invalid_pyrun_state(entry, project_root=root)
             legacy_state = entry / "pyrun-outputs.json"
             if legacy_state.exists() or legacy_state.is_symlink():
                 raise SystemExit(
@@ -927,7 +927,7 @@ def main(argv: list[str]) -> int:
                 .replace("+00:00", "Z")
             )
             publish_execution_locked(
-                entry,
+                initial_state,
                 cid,
                 ordinary_execution(
                     recipe,

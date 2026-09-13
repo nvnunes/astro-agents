@@ -538,14 +538,23 @@ Ordinary `pyrun` publishes only after:
 2. the script, direct inputs, and observed local Python code remain stable;
 3. every declared output exists with the declared kind and can be observed
    completely; and
-4. candidate state passes the complete production decoder and ownership
-   checks.
+4. the new execution passes the production decoder, identity, and output-set
+   checks, and its outputs do not overlap any other owner in the validated
+   initial state.
 
 A successful identical recipe atomically replaces its observed state. A
 successful new recipe whose output set overlaps another execution owner is
 rejected without deleting or reassigning existing state.
 Failed or incomplete execution, capture, observation, or publication changes
 no `pyrun.json` state.
+
+Ordinary `pyrun` strictly loads the complete existing file once under the entry
+lock and retains that validated object through execution and publication.
+Publication validates the new execution without decoding unchanged records a
+second time. Direct edits to `pyrun.json` during the locked command are
+unsupported: publication does not reload, merge, or detect them. External read
+boundaries and coordinated operations that construct complete state continue
+to apply the complete production decoder and ownership checks.
 
 `last_run_at` records the completion time of the latest successful atomic
 ordinary `pyrun` publication. Historically reconstructed state retains `null`

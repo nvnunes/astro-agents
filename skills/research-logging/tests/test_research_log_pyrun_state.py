@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import Fingerprint
+from validation import pyrun_state as pyrun_state_module
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
     PYRUN_EXECUTION_CONTRACT,
@@ -21,6 +23,7 @@ from validation.pyrun_state import (
     PyrunFile,
     PyrunStateError,
     clear_reproduction_requirement_locked,
+    empty_pyrun_state,
     execution_id,
     load_pyrun_state,
     portable_script_path,
@@ -508,7 +511,10 @@ class PyrunStateContractTests(unittest.TestCase):
             ):
                 with self.subTest(recipe=recipe), self.assertRaises(PyrunStateError):
                     publish_execution_locked(
-                        entry, "build", _execution(recipe), project_root=root
+                        empty_pyrun_state(entry),
+                        "build",
+                        _execution(recipe),
+                        project_root=root,
                     )
                 self.assertFalse((entry / PYRUN_FILENAME).exists())
 
@@ -529,7 +535,9 @@ class PyrunStateLifecycleTests(unittest.TestCase):
                 ),
             )
             first = _execution(first_recipe)
-            publish_execution_locked(entry, "build", first, project_root=root)
+            publish_execution_locked(
+                empty_pyrun_state(entry), "build", first, project_root=root
+            )
             second_recipe = ExecutionRecipe(
                 "scripts/build.py",
                 ("--mode", "new"),
@@ -546,8 +554,119 @@ class PyrunStateLifecycleTests(unittest.TestCase):
 
             before = (entry / PYRUN_FILENAME).read_bytes()
             with self.assertRaisesRegex(PyrunStateError, "output_ownership_overlap"):
-                publish_execution_locked(entry, "build", second, project_root=root)
+                publish_execution_locked(
+                    load_pyrun_state(
+                        entry / PYRUN_FILENAME,
+                        entry_root=entry,
+                        project_root=root,
+                    ),
+                    "build",
+                    second,
+                    project_root=root,
+                )
             self.assertEqual((entry / PYRUN_FILENAME).read_bytes(), before)
+
+    def test_publication_replaces_one_identical_complete_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            initial = _execution(last_run_at="2030-01-01T00:00:00Z")
+            current = publish_execution_locked(
+                empty_pyrun_state(entry), "build", initial, project_root=root
+            )
+            replacement = replace(
+                initial,
+                last_run_at="2030-01-02T00:00:00Z",
+                observed=replace(
+                    initial.observed,
+                    outputs=(("data/result.csv", _fingerprint("f")),),
+                ),
+            )
+
+            result = publish_execution_locked(
+                current, "build", replacement, project_root=root
+            )
+
+            identity = execution_id(initial.recipe)
+            self.assertEqual(set(result.commands["build"].executions), {identity})
+            self.assertEqual(
+                result.commands["build"].executions[identity], replacement
+            )
+
+    def test_publication_decodes_only_initial_and_new_executions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            first = _execution(_recipe(output="data/first.csv"))
+            second = _execution(_recipe(output="data/second.csv"))
+            current = publish_execution_locked(
+                empty_pyrun_state(entry), "first", first, project_root=root
+            )
+            publish_execution_locked(current, "second", second, project_root=root)
+            third = _execution(_recipe(output="data/third.csv"))
+
+            with mock.patch.object(
+                pyrun_state_module,
+                "_decode_execution",
+                wraps=pyrun_state_module._decode_execution,
+            ) as decode:
+                loaded = load_pyrun_state(
+                    entry / PYRUN_FILENAME,
+                    entry_root=entry,
+                    project_root=root,
+                )
+                initial_decodes = decode.call_count
+                publish_execution_locked(
+                    loaded, "third", third, project_root=root
+                )
+
+            self.assertEqual(initial_decodes, 2)
+            self.assertEqual(decode.call_count, 3)
+
+    def test_publication_failure_preserves_prior_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            current = publish_execution_locked(
+                empty_pyrun_state(entry), "first", _execution(), project_root=root
+            )
+            before = (entry / PYRUN_FILENAME).read_bytes()
+            second = _execution(_recipe(output="data/second.csv"))
+
+            with (
+                mock.patch.object(
+                    pyrun_state_module,
+                    "_atomic_write",
+                    side_effect=OSError("publication unavailable"),
+                ),
+                self.assertRaisesRegex(PyrunStateError, "publication unavailable"),
+            ):
+                publish_execution_locked(
+                    current, "second", second, project_root=root
+                )
+
+            self.assertEqual((entry / PYRUN_FILENAME).read_bytes(), before)
+
+    def test_direct_edit_after_load_is_an_unsupported_overwritten_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            first = _execution(_recipe(output="data/first.csv"))
+            retained = publish_execution_locked(
+                empty_pyrun_state(entry), "first", first, project_root=root
+            )
+            outside = _execution(_recipe(output="data/outside.csv"))
+            (entry / PYRUN_FILENAME).write_text(
+                _state(entry, outside).serialized(), encoding="utf-8"
+            )
+            second = _execution(_recipe(output="data/second.csv"))
+
+            result = publish_execution_locked(
+                retained, "second", second, project_root=root
+            )
+
+            self.assertEqual(set(result.commands), {"first", "second"})
+            self.assertNotIn("data/outside.csv", result.serialized())
 
     def test_policy_requirement_and_retirement_preserve_owned_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -555,7 +674,9 @@ class PyrunStateLifecycleTests(unittest.TestCase):
             entry = _entry(root)
             initial = _execution(requires_reproduction=True, last_run_at=None)
             identity = execution_id(initial.recipe)
-            publish_execution_locked(entry, "build", initial, project_root=root)
+            publish_execution_locked(
+                empty_pyrun_state(entry), "build", initial, project_root=root
+            )
             before = (
                 load_pyrun_state(
                     entry / PYRUN_FILENAME, entry_root=entry, project_root=root

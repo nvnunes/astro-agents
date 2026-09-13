@@ -5,9 +5,8 @@ implementation commits and maintained verification. It is a verification
 index, not a replacement for the normative mechanical-validator and
 reproduction specifications.
 
-The integration baseline is commit `4ede8fb`. Phase 8 adds durable publication
-ownership in `be67481` and the workflow test and correction referenced below in
-the commit named `Verify the integrated research log workflow`.
+The integration baseline is commit `d63f900`. Phase 8 adds durable publication
+ownership in `ffac117` and the workflow test and correction in `0f6481f`.
 
 ## Integrated Current-Format Workflow
 
@@ -49,7 +48,7 @@ remain authoritative for adjacent failure and bound checks.
 | Validation 3 — batch defects survive changing identities | `cb9bd0f` | `test_research_log_findings.py`; `test_validation_result_storage_conformance.py` |
 | Validation 4 — parallel result representations | `45d0f5`, `ff67241` | `test_research_log_result_store.py`; `test_validation_result_storage_conformance.py` |
 | Validation 5 — generic evaluation obscures lifecycle | `cb9bd0f` | `test_research_log_validation_controller.py`; `test_research_log_validation_cli.py` |
-| Validation 6 — current execution converted to transitional output state | `58e995c`, `59875e0` | `test_research_log_pyrun_state.py`; `test_current_execution_requires_exact_command_association` |
+| Validation 6 — current execution converted to transitional output state | `58e995c`, `c8a746b` | `test_research_log_pyrun_state.py`; `test_current_execution_requires_exact_command_association` |
 | Reproduction 1 — incident recovery remains in runtime | `19d368f` | `test_current_dead_owner_recovery_stops_without_restarting_work`; absence checks below |
 | Reproduction 2 — historical job formats keep multiple lifecycles | `19d368f` | `test_every_run_management_surface_refuses_historical_json_unchanged`; current SQLite job tests |
 | Reproduction 3 — planning repeats full validation | `13ca9d6` | `test_launch_captures_validation_context_for_rerender`; `test_dry_run_keeps_validation_result_state_absent` |
@@ -61,17 +60,17 @@ remain authoritative for adjacent failure and bound checks.
 | Repair 2 — registry edits rebuild whole-log context | `f7d9d78` | `test_entry_locks_serialize_locally_without_cross_entry_rewrites`; command-sync rollback cases |
 | Repair 3 — data update overlaps fingerprint refresh | `58e995c` | `test_data_registry_remains_declarative_when_file_bytes_change`; retired-refresh tests |
 | Repair 4 — evidence authoring reevaluates sources | `1f1b7b7` | `test_common_authoring_prepares_each_evidence_input_once`; publication identity recheck |
-| Reorganize 1 — small edits trigger whole-log material verification | `8ddc9a5`, `4ede8fb` | `test_update_entry_does_not_observe_unrelated_changed_bytes`; `test_identity_dry_runs_validate_the_declarations_they_would_rewrite` |
-| Reorganize 2 — transfer duplicates registry decoders | `66e7198` | `test_transfer_rejects_malformed_selected_evidence_declaration`; shared decoder tests |
+| Reorganize 1 — small edits trigger whole-log material verification | `b60f88b`, `d63f900` | `test_update_entry_does_not_observe_unrelated_changed_bytes`; `test_identity_dry_runs_validate_the_declarations_they_would_rewrite` |
+| Reorganize 2 — transfer duplicates registry decoders | `daa9c0f` | `test_transfer_rejects_malformed_selected_evidence_declaration`; shared decoder tests |
 | Reorganize 3 — transfer supports two provenance generations | `19d368f` | `test_transfer_reuses_selected_generated_output_observation`; absence checks below |
-| Pyrun 1 — runtime and Markdown reconstruct recipes separately | `272c2c4`, `59875e0` | `test_log_command_sync.py`; `test_auto_reproduce_is_policy_outside_recipe_parameters` |
-| Pyrun 2 — separate stream-capture engines | `cec1b09` | `test_stream_capture.py`; `test_capture_options_mirror_and_record_stream_outputs` |
-| Pyrun 3 — execution repeatedly validates the full registry | `59875e0` | `test_research_log_pyrun_state.py`; integrated workflow state transitions |
-| Pyrun 4 — helper discovery uses runtime instrumentation | `46d1a56` | `test_records_static_helpers_with_dynamic_warning`; `test_changed_static_helper_publishes_no_support` |
-| Other 1 — scaffolding eagerly creates reproduction results | `a95e790` | `test_init_dry_run_then_creates_only_canonical_empty_log` |
-| Other 2 — entry add requires unrelated summary canonicality | `a95e790` | `test_log_scaffold.py` summary-preservation and rollback cases |
-| Other 3 — discovery reads Markdown before filesystem shape | `a95e790` | `test_research_log_validation_cli.py` discovery shape cases |
-| Other 4 — durable publication has several owners | `be67481` | `test_file_publication.py`; authored-registry and validation-bundle rollback suites |
+| Pyrun 1 — runtime and Markdown reconstruct recipes separately | `272c2c4`, `c8a746b` | `test_log_command_sync.py`; `test_auto_reproduce_is_policy_outside_recipe_parameters` |
+| Pyrun 2 — separate stream-capture engines | `c89b420` | `test_stream_capture.py`; `test_capture_options_mirror_and_record_stream_outputs` |
+| Pyrun 3 — execution repeatedly validates the full registry | `c8a746b` | `test_research_log_pyrun_state.py`; integrated workflow state transitions |
+| Pyrun 4 — helper discovery uses runtime instrumentation | `95018fd` | `test_records_static_helpers_with_dynamic_warning`; `test_changed_static_helper_publishes_no_support` |
+| Other 1 — scaffolding eagerly creates reproduction results | `7cbc299` | `test_init_dry_run_then_creates_only_canonical_empty_log` |
+| Other 2 — entry add requires unrelated summary canonicality | `7cbc299` | `test_log_scaffold.py` summary-preservation and rollback cases |
+| Other 3 — discovery reads Markdown before filesystem shape | `7cbc299` | `test_research_log_validation_cli.py` discovery shape cases |
+| Other 4 — durable publication has several owners | `ffac117`, `0f6481f` | `test_file_publication.py`; integrated workflow; authored-registry and validation-bundle rollback suites |
 
 ## Approved Declaration/Observation Matrix
 
@@ -106,16 +105,20 @@ remain authoritative for adjacent failure and bound checks.
 
 ## One-Time Migration Evidence
 
-Declaration/evidence conversion is not a runtime feature. The Phase 2 execution
-record is the preservation proof: 50 data/v5 files, 50 evidence/v4 files, 2,769
-declarations, and 3,127 evidence records were audited; the disposable converter,
-historical inputs, and conversion tests were removed. The same record preserves
-the reviewed artifact-baseline transfer and acceptance inventory.
+Declaration/evidence conversion is not a runtime feature. The downstream
+`girmos-aosims` commit `21e1fff77762fff026044434ab145e02fc1250bb` and the
+Phase 2 execution record are the preservation proof: 50 data/v5 files, 50
+evidence/v4 files, 2,769 declarations, and 3,127 evidence records were audited;
+the disposable converter, historical inputs, and conversion tests were removed.
+The same record preserves the reviewed artifact-baseline transfer and acceptance
+inventory.
 
-CID conversion is likewise a completed plan event. The Phase 5 execution record
-preserves its preview, exact rewrite inventory, state/observation preservation,
-validation evidence, and downstream commit. Current tests construct CID-scoped
-pyrun/v6 state directly; they do not reconstruct the converter.
+CID conversion is likewise a completed plan event. The downstream
+`girmos-aosims` commit `72d61743042edbb1c7511c1a01705f769600a6ce` and the
+Phase 5 execution record preserve its preview, exact rewrite inventory,
+state/observation preservation, and validation evidence. Current tests
+construct CID-scoped pyrun/v6 state directly; they do not reconstruct the
+converter.
 
 ## Stale-Surface Gate
 

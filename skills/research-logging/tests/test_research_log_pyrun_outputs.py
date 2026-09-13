@@ -20,6 +20,7 @@ from validation.pyrun_outputs import (
     output_target_path,
     portable_code_path,
     portable_output_path,
+    quarantine_invalid_pyrun_outputs,
     update_pyrun_outputs_locked,
 )
 
@@ -47,6 +48,54 @@ def _update_outputs(
 class PyrunOutputsContractTests(unittest.TestCase):
     def test_module_exposes_only_the_caller_locked_update_path(self) -> None:
         self.assertFalse(hasattr(PYRUN_OUTPUTS, "update_pyrun_outputs"))
+
+    def test_quarantine_install_sync_failure_restores_original_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "entry"
+            entry.mkdir()
+            path = entry / "pyrun-outputs.json"
+            original = b"{malformed\n"
+            path.write_bytes(original)
+
+            with mock.patch(
+                "validation.file_publication.sync_directory",
+                side_effect=(OSError("backup sync failed"), None),
+            ):
+                with self.assertRaises(PyrunOutputsError) as raised:
+                    quarantine_invalid_pyrun_outputs(entry)
+
+            self.assertEqual(raised.exception.code, "pyrun.outputs.quarantine_failed")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse((entry / "pyrun-outputs.json.bak").exists())
+
+    def test_quarantine_rollback_sync_failure_is_reported_after_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "entry"
+            entry.mkdir()
+            path = entry / "pyrun-outputs.json"
+            original = b"{malformed\n"
+            path.write_bytes(original)
+
+            with (
+                mock.patch.object(
+                    PYRUN_OUTPUTS,
+                    "_atomic_write",
+                    side_effect=OSError("replacement failed"),
+                ),
+                mock.patch(
+                    "validation.file_publication.sync_directory",
+                    side_effect=(None, OSError("rollback sync failed")),
+                ),
+            ):
+                with self.assertRaises(PyrunOutputsError) as raised:
+                    quarantine_invalid_pyrun_outputs(entry)
+
+            self.assertEqual(raised.exception.code, "pyrun.outputs.quarantine_failed")
+            self.assertEqual(
+                raised.exception.observed["rollback_error"], "rollback sync failed"
+            )
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse((entry / "pyrun-outputs.json.bak").exists())
 
     def test_project_output_key_is_portable_and_resolves_to_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -13,7 +13,7 @@ from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
 from .entry_materials import is_entry_material_path
 from .errors import MechanicalContractError
-from .file_publication import atomic_replace_text
+from .file_publication import atomic_replace_text, install_path
 from .json_codec import V2JsonError, decode_json
 
 PYRUN_OUTPUTS_SCHEMA = "research-log-pyrun-outputs/v1"
@@ -450,13 +450,13 @@ def quarantine_invalid_pyrun_outputs(
         backup = root / f"{PYRUN_OUTPUTS_FILENAME}.{number}.bak"
         number += 1
     try:
-        os.replace(path, backup)
+        install_path(path, backup)
         _atomic_write(path, empty_pyrun_outputs(root).serialized())
     except OSError as error:
         rollback_error: OSError | None = None
         if not path.exists() and not path.is_symlink() and backup.exists():
             try:
-                os.replace(backup, path)
+                install_path(backup, path)
             except OSError as rollback:
                 rollback_error = rollback
         raise PyrunOutputsError(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +20,7 @@ from research_log_data import (
     observe_file_content,
     resolve_input_token,
 )
+from research_log_reservations import artifact_transaction, require_artifact_access
 from validation.errors import MechanicalContractError
 from validation.evidence import (
     MAX_PRESENTATION_BYTES,
@@ -51,6 +52,7 @@ from validation.locator import (
 from validation.operation_state import (
     begin_registry_transaction,
     finish_guarded_publication,
+    operation_lock,
 )
 from validation.presentation import require_artifact_source_association
 from validation.provenance import require_origin_boundary
@@ -60,7 +62,19 @@ from validation.transformation import (
     evaluate_transformation,
 )
 
-from .context import EntryContext, parse_entry_document_name, resolve_entry
+from .authoring_transactions import (
+    artifact_locations,
+    data_change_paths,
+    merge_data,
+    require_unchanged,
+    resource_authority,
+)
+from .context import (
+    EntryContext,
+    parse_entry_document_name,
+    resolve_entry,
+    resolve_project_root,
+)
 from .data_assertions import assignment, ensure_declaration, require_local_target
 from .materials import inspect_log_materials
 from .model import ActionError, ActionResult, EvidenceSyncArguments
@@ -69,8 +83,7 @@ from .scaffold import observe_physical_entries
 from .storage import (
     PublicationError,
     atomic_write_texts,
-    entry_lock_under_log,
-    log_lock,
+    entry_locks,
 )
 
 
@@ -94,13 +107,7 @@ def compare_or_sync(
 
     if action == "compare" or arguments.dry_run:
         return _prepare_operation(entry, action, arguments)
-    # The log lock protects forwarded summary text and dependency discovery.
-    # Entry locks retain the same ordering as every other graph authoring action.
-    with log_lock(entry.log, timeout_seconds=10), ExitStack() as locks:
-        targets = _lock_entries(entry, arguments)
-        for target in sorted(targets, key=lambda item: item.id):
-            locks.enter_context(entry_lock_under_log(target))
-        return _prepare_operation(entry, action, arguments)
+    return _prepare_operation(entry, action, arguments)
 
 
 def _lock_entries(
@@ -118,6 +125,18 @@ def _lock_entries(
 def _prepare_operation(
     entry: EntryContext, action: str, arguments: EvidenceSyncArguments
 ) -> ActionResult:
+    targets = _lock_entries(entry, arguments)
+    with (
+        nullcontext()
+        if action == "compare" or arguments.dry_run
+        else entry_locks(entry.log, targets, timeout_seconds=10)
+    ):
+        before_data = {target.id: _load_data(target) for target in targets}
+        before_records = {
+            target.id: {record.id: record for record in _load_records(target)}
+            for target in targets
+            if arguments.source is not None or target.id == entry.id
+        }
     observations: dict[Path, SourceObservation] = {}
     if arguments.source is not None:
         if (
@@ -150,16 +169,68 @@ def _prepare_operation(
         return ActionResult(
             "evidence.compare", "unchanged", "evidence.compared", False, records=report
         )
-    updates = _publication_updates(entry, edits)
-    updates.update(data_updates)
-    changed = {
-        path: value
-        for path, value in updates.items()
-        if not path.exists() or path.read_text(encoding="utf-8") != value
-    }
     _recheck_sources(edits, observations)
-    if not arguments.dry_run:
-        _publish_edits(edits, changed)
+    if arguments.dry_run:
+        changed = _changed_updates(entry, edits, data_updates)
+    else:
+        # Expensive extraction and hashing above hold no entry/log locks. Final
+        # reads rebind selected markers and merge into fresh documents/registries.
+        with (
+            entry_locks(entry.log, targets, timeout_seconds=10),
+            operation_lock(entry.log.root, "summary.lock", timeout_seconds=10),
+            artifact_transaction(resolve_project_root(entry.root)),
+        ):
+            _check_selected_edits(edits, before_records, observations)
+            fresh_edits = []
+            for edit in edits:
+                names = {_source_name(source.source) for source in edit.record.sources}
+                fresh = merge_data(
+                    before_data[edit.entry.id],
+                    edit.data,
+                    _load_data(edit.entry),
+                    names=names,
+                    entry=edit.entry,
+                )
+                assert fresh is not None
+                for name in names:
+                    require_unchanged(
+                        resource_authority(edit.data.by_name[name]),
+                        resource_authority(fresh.by_name[name]),
+                        f"{edit.entry.id}/{name} source target",
+                    )
+                fresh_edits.append(replace(edit, data=fresh))
+                if arguments.source is None:
+                    data_updates[fresh.path] = fresh.canonical_json()
+            edits = tuple(fresh_edits)
+            if arguments.source is not None:
+                require_unchanged(
+                    tuple(target.id for target in targets),
+                    tuple(target.id for target in _lock_entries(entry, arguments)),
+                    "source-scoped evidence entries",
+                )
+                require_unchanged(
+                    tuple(sorted((edit.entry.id, edit.record.id) for edit in edits)),
+                    _source_record_ids(entry, arguments.source),
+                    "source-scoped evidence selection",
+                )
+            reads = tuple(
+                path
+                for edit in edits
+                for path in artifact_locations(
+                    edit.data,
+                    {_source_name(source.source) for source in edit.record.sources},
+                )
+            )
+            writes = tuple(
+                path
+                for edit in edits
+                for path in data_change_paths(before_data[edit.entry.id], edit.data)
+            )
+            require_artifact_access(
+                resolve_project_root(entry.root), reads=reads, writes=writes
+            )
+            changed = _changed_updates(entry, edits, data_updates)
+            _publish_edits(edits, changed)
     return ActionResult(
         "evidence.sync",
         "dry-run" if arguments.dry_run else "changed" if changed else "unchanged",
@@ -168,6 +239,60 @@ def _prepare_operation(
         tuple(str(path) for path in sorted(changed)),
         records=report,
     )
+
+
+def _changed_updates(
+    entry: EntryContext,
+    edits: tuple[EvidenceEdit, ...],
+    data_updates: Mapping[Path, str],
+) -> dict[Path, str]:
+    updates = _publication_updates(entry, edits)
+    updates.update(data_updates)
+    return {
+        path: value
+        for path, value in updates.items()
+        if not path.exists() or path.read_text(encoding="utf-8") != value
+    }
+
+
+def _check_selected_edits(
+    edits: tuple[EvidenceEdit, ...],
+    before_records: Mapping[str, Mapping[str, EvidenceRecord]],
+    observations: Mapping[Path, SourceObservation],
+) -> None:
+    for observation in observations.values():
+        require_source_unchanged(observation)
+    for edit in edits:
+        document, marker, _ = _owned_marker(edit.entry, edit.record.id)
+        require_unchanged(edit.document, document, f"{edit.record.id} document")
+        require_unchanged(
+            replace(edit.marker, start=0, end=0, before=""),
+            replace(marker, start=0, end=0, before=""),
+            f"{edit.record.id} Markdown evidence",
+        )
+        if marker.before != edit.after:
+            require_unchanged(
+                edit.marker.before,
+                marker.before,
+                f"{edit.record.id} presented evidence",
+            )
+        current = {record.id: record for record in _load_records(edit.entry)}
+        if current.get(edit.record.id) != edit.record:
+            require_unchanged(
+                before_records[edit.entry.id].get(edit.record.id),
+                current.get(edit.record.id),
+                f"{edit.record.id} evidence record",
+            )
+        if edit.artifact_observation is not None:
+            path, _, identity = edit.artifact_observation
+            stat = path.stat()
+            fresh_identity = {
+                "kind": "file",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "ctime_ns": stat.st_ctime_ns,
+            }
+            require_unchanged(identity, fresh_identity, f"{edit.record.id} artifact")
 
 
 def _publish_edits(
@@ -424,6 +549,7 @@ def _evaluate_edit(
                 f"{source['source']}: select a declared directory member",
             )
         path = Path(resolved.path).resolve()
+        require_artifact_access(resolve_project_root(entry.root), reads=(path,))
         require_unretained_paths(entry, (path.as_posix(),))
         if marker.kind == "artifact":
             if presentation.presentation_form in {"image", "link"}:
@@ -617,6 +743,20 @@ def _source_edits(
     return tuple(edits)
 
 
+def _source_record_ids(
+    entry: EntryContext, raw_source: str
+) -> tuple[tuple[str, str], ...]:
+    name = _source_name(raw_source)
+    return tuple(
+        sorted(
+            (target.id, record.id)
+            for target, _ in _source_entries(entry, raw_source)
+            for record in _load_records(target)
+            if any(_source_name(source.source) == name for source in record.sources)
+        )
+    )
+
+
 def _publication_updates(
     entry: EntryContext, edits: tuple[EvidenceEdit, ...]
 ) -> dict[Path, str]:
@@ -641,8 +781,13 @@ def _publication_updates(
         updates[path] = built.canonical_json()
     for document in {edit.document for edit in edits}:
         text = document.read_text(encoding="utf-8")
+        rebound = [
+            replace(edit, marker=read_markdown_evidence(text, edit.record.id))
+            for edit in edits
+            if edit.document == document
+        ]
         for edit in sorted(
-            (edit for edit in edits if edit.document == document),
+            rebound,
             key=lambda item: item.marker.start,
             reverse=True,
         ):

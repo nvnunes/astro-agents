@@ -3998,15 +3998,34 @@ and exit-status contracts.
 
 Research operations coordinate through generated locks beneath
 `<log>/.cache/research-log-operations/`. The stable `log.lock` supports shared
-and exclusive nonblocking acquisition. Entry-scoped maintained mutations,
-including `pyrun`, hold it shared before taking their stable-ID entry lock
-exclusively; distinct entries can proceed concurrently, while contention on
-the same entry fails without mutation. Log-wide mutations hold `log.lock`
+and exclusive nonblocking acquisition. Entry-scoped maintained mutations hold
+it shared before taking their stable-ID entry lock exclusively. Command sync,
+evidence sync, and ordinary `pyrun` use short snapshot and publication
+transactions: command preparation, hashing, evidence extraction, and child
+execution hold no entry/log OS locks. Their short entry transactions allow up
+to ten seconds for acquisition; a remaining conflict fails without publication.
+Log-wide mutations hold `log.lock`
 exclusively before taking affected entry locks in sorted ID order. Initial log
 creation instead uses a lock beneath the owning project's
 `.cache/research-log-operations/`, keyed by the intended canonical log path.
 Recognized Reorganize and entry-keyed authored-registry transaction residue
 require explicit Repair and block applicable later operations.
+
+Sync checks the selected Markdown definition and relevant declarations against
+its preparation state before publication. A relevant concurrent change fails
+with `authoring.state.changed` and directs the caller to review it and rerun
+sync. Consistent redundant publication is accepted. Unrelated declaration,
+evidence, command, and prose changes are preserved by merging into freshly read
+registries and rebinding selected Markdown regions, not by installing a stale
+whole-file candidate. Evidence publication additionally holds the brief
+log-local `summary.lock` while refreshing selected forwarded values; it never
+holds an exclusive whole-log lock during extraction.
+
+Evidence compare/sync refuse sources reserved by an ordinary output writer.
+Data identity/location changes and deletion refuse boundaries in use by an
+ordinary execution, including directory descendants; comparison-policy-only
+changes remain possible. See the ordinary
+[artifact reservation contract](research-log-reproduction-spec.md#ordinary-artifact-reservations).
 
 An acquired operation lock publishes bounded JSON owner metadata beside the
 lock as `<lock>.owner.json`. It identifies the operation, scope, process,

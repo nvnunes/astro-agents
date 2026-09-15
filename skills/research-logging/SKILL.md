@@ -131,6 +131,11 @@ state does not start Repair without an explicit correction request.
 - If a maintained log command reports `operation.lock.conflict`, report the
   supplied owner metadata once and stop. Do not retry, poll, inspect process
   tables, or bypass the lock during the current operation.
+- For `authoring.state.changed` or `artifact.reservation.conflict`, report the
+  selected item, paths, and owners supplied by the CLI and stop the affected
+  operation. Do not bypass the guard or infer permission to rerun research.
+  Use the selected operation's focused command guidance for ordinary execution
+  and authorized abandoned-reservation cleanup.
 - If validation reports `research-owned state changed during validation`,
   retry the identical command once; do not infer concurrent activity unless it
   fails again.

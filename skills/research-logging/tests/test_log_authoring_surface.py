@@ -12,7 +12,15 @@ from research_log_cli_test_support import SCRIPTS, run_log
 class AuthoringSurfaceTests(unittest.TestCase):
     def test_help_contains_current_actions_without_removed_parameters(self):
         expected = {
-            "command": {"sync", "rename", "delete", "list", "verify", "show"},
+            "command": {
+                "sync",
+                "rename",
+                "delete",
+                "release",
+                "list",
+                "verify",
+                "show",
+            },
             "evidence": {"compare", "sync", "rename", "delete", "list"},
             "data": {"update", "rename", "delete", "list"},
             "retention": {"add", "update", "rename", "delete", "list"},

@@ -386,3 +386,32 @@ When parameters disappear, sync refuses and reports one exact
 those flags. Sync does not run the command or sample retained bytes. Changed or
 new recipes require reproduction; policy-only changes retain their current
 reproduction state.
+
+## Ordinary Concurrent Work
+
+Command sync and `pyrun` take entry/log locks only for short state reads and
+publication, not while hashing or running the script. Unrelated work may proceed
+in the same entry. Do not change the selected command or its input/output
+declarations while it runs; a relevant concurrent change rejects publication
+rather than overwriting it. Unrelated edits are preserved.
+
+`pyrun` reserves actual artifact access for the invocation. Readers can share
+inputs; overlapping writes or read/write access, including directory members
+and captures, fail with `artifact.reservation.conflict`. This is distinct from
+`--exclusive`, which controls managed reproduction scheduling, not ordinary
+artifact access. Scripts must finish their children and all output consumers
+before returning. Failed execution does not roll back output bytes or record
+successful execution state.
+
+Report a conflict once and stop the affected operation; do not retry, poll,
+inspect process tables, delete cache files, or bypass the guard. After a known
+interrupted invocation, separately authorized cleanup uses:
+
+```text
+<skill>/scripts/log command release --path LOG --entry ENTRY --cid FULL_CID
+```
+
+The CLI refuses live launcher/worker owners and removes only abandoned
+reservation state. `--dry-run` previews cleanup. It does not accept partial
+outputs or authorize rerunning the command; inspect affected saved outputs
+within the authorized investigation before deciding what to do next.

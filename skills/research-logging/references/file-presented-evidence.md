@@ -56,6 +56,15 @@ For a single item use `--id EID` in either command.
 Call sync even when the presentation did not change: it refreshes fingerprints
 and expectations without rewriting unchanged Markdown.
 
+Extraction runs without holding entry/log locks. Publication rechecks the
+selected definition, sources, and record, then preserves unrelated concurrent
+edits and refreshes only selected summary references under a short summary
+guard. Do not edit the selected evidence while sync is preparing it.
+`authoring.state.changed` directs you to review a relevant concurrent change;
+an active artifact writer causes `artifact.reservation.conflict`. Report either
+and stop the affected operation. Compare/sync after the producing invocation
+has finished, never against its partially written outputs.
+
 ## Supported Presentations
 
 - A short scalar, percentage, Boolean, range, tuple, interval, or plus/minus:

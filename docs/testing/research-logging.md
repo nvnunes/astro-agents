@@ -72,6 +72,17 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 
 ## Subprocess Fixture Launches
 
+Ordinary locking changes additionally exercise
+`test_research_log_ordinary_concurrency.py`: interleaved public syncs preserve
+unrelated declarations and shifted Markdown, selected edits reject publication,
+paused workers release entry/log locks, disjoint execution completes, artifact
+read/write and directory/capture overlap fail, live cleanup/relocation fails,
+and launcher interruption preserves a worker's reservation until explicit
+abandoned cleanup. Generated fixtures only; no maintained research recipe runs.
+The same suite proves malformed, oversized, and over-count reservation records
+fail closed and comparison-policy-only changes remain possible for an in-use
+artifact.
+
 Tests that execute a temporary `pyrun` must use `run_pyrun_process` from
 `research_log_cli_test_support`. The helper invokes the launcher through
 `/bin/sh` and sets a bounded timeout. Do not pass a temporary shebang script
@@ -98,6 +109,8 @@ observation sandbox and retry after the expected permission failure.
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \
   skills/research-logging/scripts/pyrun_code_dependencies.py \
+  skills/research-logging/scripts/pyrun_worker.py \
+  skills/research-logging/scripts/research_log_reservations.py \
   skills/research-logging/scripts/stream_capture.py \
   skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/research_log_paths.py \

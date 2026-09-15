@@ -56,6 +56,7 @@ from validation.retention import (
 )
 from validation.transformation import compare_presentation, evaluate_transformation
 
+from .authoring_transactions import data_publication_transaction
 from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult, TransferArguments
 from .scaffold import observe_physical_entries
@@ -128,9 +129,7 @@ def transfer_registries(
     )
     plan = _TransferPlan(selections, maps)
     observations = _MaterialObservations({}, {})
-    candidates = _build_candidates(
-        source, destination, state, plan, observations
-    )
+    candidates = _build_candidates(source, destination, state, plan, observations)
     _require_source_detached(source, candidates, plan)
     _verify_markdown(source, destination, candidates.moved_evidence, state, plan)
     _validate_log_data(
@@ -156,14 +155,17 @@ def transfer_registries(
         return _result("unchanged", False, (), reruns)
     if arguments.dry_run:
         return _result("dry-run", True, tuple(updates), reruns)
-    residue = begin_reorganization(source.log.root)
-    try:
-        atomic_write_texts(updates)
-    except PublicationError as error:
-        if error.rollback_complete:
-            finish_guarded_publication(residue)
-        raise ActionError("reorganize.transfer.failed", str(error)) from error
-    finish_guarded_publication(residue)
+    with data_publication_transaction(
+        (source, destination) if source != destination else (source,), updates
+    ):
+        residue = begin_reorganization(source.log.root)
+        try:
+            atomic_write_texts(updates)
+        except PublicationError as error:
+            if error.rollback_complete:
+                finish_guarded_publication(residue)
+            raise ActionError("reorganize.transfer.failed", str(error)) from error
+        finish_guarded_publication(residue)
     return _result("changed", True, tuple(updates), reruns)
 
 
@@ -547,9 +549,7 @@ def _require_selected_generated_observations(
     if not path.exists() and not path.is_symlink():
         raise ActionError("data.fingerprint.unobserved", selected[0][0].name)
     project_root = resolve_project_root(source.log.root)
-    state = load_pyrun_state(
-        path, entry_root=source.root, project_root=project_root
-    )
+    state = load_pyrun_state(path, entry_root=source.root, project_root=project_root)
     for original, candidate in selected:
         target = Path(original.canonical_target).resolve()
         matches = [

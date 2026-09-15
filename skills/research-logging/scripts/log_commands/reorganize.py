@@ -16,6 +16,7 @@ from research_log_data import (
     load_data_file,
     validate_log_consistency,
 )
+from research_log_reservations import artifact_transaction
 from validation.evidence import (
     EvidenceFile,
     EvidenceRecord,
@@ -32,6 +33,7 @@ from .context import (
     parse_entry_directory_name,
     parse_entry_document_name,
     resolve_entry,
+    resolve_project_root,
 )
 from .model import ActionError, ActionResult, EntryUpdateArguments, TransferArguments
 from .scaffold import (
@@ -51,9 +53,8 @@ from .storage import (
     log_creation_lock,
 )
 
-_MARKDOWN_LINK_RE = re.compile(
-    r"\]\((?P<target><[^<>\r\n]+>|[^()\s\r\n]+)\)"
-)
+_MARKDOWN_LINK_RE = re.compile(r"\]\((?P<target><[^<>\r\n]+>|[^()\s\r\n]+)\)")
+
 
 @dataclass(frozen=True)
 class _EntryUpdate:
@@ -98,9 +99,10 @@ def update_entry(entry: EntryContext, arguments: EntryUpdateArguments) -> Action
         data, evidence = _load_identity_registries(entry.log)
         if arguments.dry_run:
             return _result("update-entry", "dry-run", True, paths)
-        _publish_identity(
-            entry.log, {entry.root: destination}, {}, data=data, evidence=evidence
-        )
+        with artifact_transaction(resolve_project_root(entry.root), writes=paths):
+            _publish_identity(
+                entry.log, {entry.root: destination}, {}, data=data, evidence=evidence
+            )
         return _result("update-entry", "changed", True, paths)
 
 
@@ -144,7 +146,16 @@ def reorder(
         data, evidence = _load_identity_registries(log)
         if dry_run:
             return _result("reorder", "dry-run", True, paths)
-        _publish_identity(log, roots, documents, data=data, evidence=evidence)
+        with artifact_transaction(
+            resolve_project_root(log.root),
+            writes=tuple(
+                path
+                for source, destination in roots.items()
+                if source != destination
+                for path in (source, destination)
+            ),
+        ):
+            _publish_identity(log, roots, documents, data=data, evidence=evidence)
         return _result("reorder", "changed", True, paths)
 
 
@@ -182,7 +193,10 @@ def relocate_log(log: LogContext, destination: Path, *, dry_run: bool) -> Action
         _require_relocation_target(log, target, target_summary)
         _require_relocation_markdown(log, target.name)
         data = _load_data_registries(log)
-        _publish_relocation(log, target_summary, target, data)
+        with artifact_transaction(
+            resolve_project_root(log.root), writes=(log.root, target)
+        ):
+            _publish_relocation(log, target_summary, target, data)
     return _result("relocate-log", "changed", True, paths)
 
 
@@ -207,7 +221,10 @@ def remove_empty_entry(entry: EntryContext, *, dry_run: bool) -> ActionResult:
         paths = (document, runner, entry.root)
         if dry_run:
             return _result("remove-empty-entry", "dry-run", True, paths)
-        _remove_scaffold(entry, document, runner)
+        with artifact_transaction(
+            resolve_project_root(entry.root), writes=(entry.root,)
+        ):
+            _remove_scaffold(entry, document, runner)
         return _result("remove-empty-entry", "changed", True, paths)
 
 
@@ -246,9 +263,9 @@ def _publish_identity(
         atomic_write_texts(updates)
     except (OSError, UnicodeError, ValueError) as error:
         rollback = _rollback_renames(completed)
-        publication_rollback_complete = not isinstance(
-            error, PublicationError
-        ) or error.rollback_complete
+        publication_rollback_complete = (
+            not isinstance(error, PublicationError) or error.rollback_complete
+        )
         if not rollback and publication_rollback_complete:
             finish_guarded_publication(_moved_residue(residue, roots))
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
@@ -277,9 +294,9 @@ def _publish_relocation(
         atomic_write_texts(updates)
     except (OSError, UnicodeError, ValueError) as error:
         rollback = _rollback_renames(completed)
-        publication_rollback_complete = not isinstance(
-            error, PublicationError
-        ) or error.rollback_complete
+        publication_rollback_complete = (
+            not isinstance(error, PublicationError) or error.rollback_complete
+        )
         if not rollback and publication_rollback_complete:
             finish_guarded_publication(root / residue.relative_to(log.root))
         detail = f"; rollback failed: {'; '.join(rollback)}" if rollback else ""
@@ -398,9 +415,7 @@ def _mapped_input(
     if item.reference_entry is not None:
         return replace(
             item,
-            reference_entry=entry_ids.get(
-                item.reference_entry, item.reference_entry
-            ),
+            reference_entry=entry_ids.get(item.reference_entry, item.reference_entry),
         )
     if Path(item.location).is_absolute():
         if _map_path(Path(item.canonical_target), roots) != Path(item.canonical_target):
@@ -597,9 +612,7 @@ def _require_reorder_references(log: LogContext, plan: _ReorderPlan) -> None:
         for record in current.records:
             source = log.root / PurePosixPath(record.document)
             destination = plan.documents[source]
-            ownership.setdefault(record.id, []).append(
-                (source.stem, destination.stem)
-            )
+            ownership.setdefault(record.id, []).append((source.stem, destination.stem))
     references = index_summary_references(log.summary.read_text(encoding="utf-8"))
     for reference in references:
         candidates = ownership.get(reference.evidence_id, [])

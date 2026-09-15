@@ -43,6 +43,7 @@ __doc__ = "Run entry-local Python commands and publish current output support."
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,7 @@ from pathlib import Path
 from threading import Event
 from typing import Mapping
 
+from log_commands.authoring_transactions import resource_authority
 from log_commands.context import (
     EntryContext,
     LogContext,
@@ -76,7 +78,14 @@ from research_log_data import (
     require_git_repository_token_pairs,
     resolve_input_token,
 )
+from research_log_reservations import (
+    ArtifactReservationError,
+    artifact_transaction,
+    require_worker_finished,
+    reserve_execution,
+)
 from stream_capture import StreamCapture, StreamDestination
+from validation.commands import CommandDeclarationContext, index_commands
 from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.operation_state import (
@@ -99,8 +108,12 @@ from validation.pyrun_outputs import (
 from validation.pyrun_state import (
     ExecutionRecipe,
     ObservedExecution,
+    PyrunFile,
     PyrunStateError,
     build_execution_recipe,
+    empty_pyrun_state,
+    execution_id,
+    load_pyrun_state,
     ordinary_execution,
     portable_script_path,
     publish_execution_locked,
@@ -128,7 +141,8 @@ def usage() -> int:
     print(
         "usage: pyrun <script.py> [args...]\n"
         "       pyrun --cid COMMAND_ID_OR_NUMBER -- <script> [args...]\n"
-        "       pyrun [--cid COMMAND_ID_OR_NUMBER] [--auto-reproduce=false] [--exclusive] "
+        "       pyrun [--cid COMMAND_ID_OR_NUMBER] [--auto-reproduce=false] "
+        "[--exclusive] "
         "[--env NAME=value] "
         "[--other-inputs <selectors>] "
         "[--other-outputs <selectors>]\n"
@@ -503,7 +517,9 @@ def _run_with_captures(
     """Run one process while mirroring each requested captured byte stream."""
 
     if not captures:
-        process = subprocess.Popen(command, cwd=cwd, env=environment)
+        process = subprocess.Popen(
+            command, cwd=cwd, env=environment, start_new_session=True
+        )
         try:
             return process.wait()
         finally:
@@ -519,6 +535,7 @@ def _run_with_captures(
             command,
             cwd=cwd,
             env=environment,
+            start_new_session=True,
             stdout=subprocess.PIPE
             if combined is not None or "--capture-stdout" in captures
             else None,
@@ -611,14 +628,14 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> int:
     """Give the child a bounded shutdown interval, then kill and reap it."""
 
     try:
-        process.terminate()
+        os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     try:
         return process.wait(timeout=CAPTURE_TERMINATION_SECONDS)
     except subprocess.TimeoutExpired:
         try:
-            process.kill()
+            os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         return process.wait()
@@ -736,6 +753,109 @@ def _confirm_code_observations(
     return tuple(result)
 
 
+def _command_markdown(
+    entry: EntryContext, project: Path, cid: str
+) -> tuple[object, ...]:
+    """Snapshot the selected command, not prose or neighboring fences."""
+
+    declarations: list[object] = []
+    for path in sorted(entry.root.glob(f"{entry.id}*.md")):
+        context = CommandDeclarationContext(
+            entry.log.root.as_posix(),
+            entry.id,
+            path.relative_to(entry.log.root).as_posix(),
+            entry.root,
+            entry.log.root,
+            project,
+            None,
+        )
+        declarations.extend(
+            (path.name, item.parsed)
+            for item in index_commands(path.read_text(), context).declarations
+            if item.parsed.cid == cid
+        )
+    return tuple(declarations)
+
+
+def _recipe_authority(state: PyrunFile, cid: str) -> tuple[object, ...]:
+    command = state.commands.get(cid)
+    return (
+        tuple(
+            (key, item.recipe, item.auto_reproduce, item.exclusive)
+            for key, item in sorted(command.executions.items())
+        )
+        if command
+        else ()
+    )
+
+
+@dataclass(frozen=True)
+class _ExecutionAuthority:
+    """Relevant authored authority retained across unlocked ordinary execution."""
+
+    entry: EntryContext
+    project: Path
+    data: DataFile | None
+    state: PyrunFile
+    markdown: tuple[object, ...]
+
+    def require_current(self, cid: str, values: tuple[str, ...]) -> PyrunFile:
+        current_data = _load_data(self.entry.root)
+        for value in values:
+            parts = input_token_parts(value)
+            if parts is None:
+                continue
+            name = parts[0]
+            before = self.data.by_name.get(name) if self.data else None
+            after = current_data.by_name.get(name) if current_data else None
+            if resource_authority(before) != resource_authority(after):
+                raise SystemExit(f"pyrun: declaration changed: {name}; sync and rerun")
+        if _command_markdown(self.entry, self.project, cid) != self.markdown:
+            raise SystemExit(f"pyrun: Markdown command changed: {cid}; sync and rerun")
+        path = self.entry.root / "pyrun.json"
+        current = (
+            load_pyrun_state(
+                path, entry_root=self.entry.root, project_root=self.project
+            )
+            if path.exists()
+            else empty_pyrun_state(self.entry.root)
+        )
+        if _recipe_authority(self.state, cid) != _recipe_authority(current, cid):
+            raise SystemExit(f"pyrun: command recipe changed: {cid}; sync and rerun")
+        return current
+
+
+def _confirm_execution_materials(
+    script: Path,
+    expected_script: Fingerprint,
+    data: DataFile | None,
+    inputs: dict[str, Fingerprint],
+    code: tuple[_PreparedCodeObservation, ...],
+    cache: FingerprintCache,
+    *,
+    stage: str = "execution",
+) -> tuple[tuple[str, Fingerprint], ...]:
+    """Recheck expensive observations unlocked, after reserving or executing."""
+
+    try:
+        if cache.observe_regular_file(script).fingerprint != expected_script:
+            raise SystemExit(
+                f"pyrun: script bytes changed during {stage}; sync and rerun"
+            )
+        if data is not None:
+            for name, expected in sorted(inputs.items()):
+                current = cache.observe_resource(data.by_name[name])
+                if current is None or current.fingerprint != expected:
+                    raise SystemExit(
+                        f"pyrun: input {name!r} changed during {stage}; sync and rerun"
+                    )
+    except (DataContractError, FingerprintCacheError) as error:
+        raise SystemExit(
+            f"pyrun: could not re-observe execution materials: {error}"
+        ) from error
+    return _confirm_code_observations(code, fingerprint_cache=cache)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return usage()
@@ -753,17 +873,27 @@ def main(argv: list[str]) -> int:
     )
     try:
         with (
-            entry_lock(operation_entry),
             FingerprintCache(root, writable=True) as fingerprint_cache,
+            ExitStack() as reservations,
         ):
-            initial_state = quarantine_invalid_pyrun_state(entry, project_root=root)
+            with entry_lock(operation_entry):
+                initial_state = quarantine_invalid_pyrun_state(entry, project_root=root)
+                data = _load_data(entry)
+                authority = _ExecutionAuthority(
+                    operation_entry,
+                    root,
+                    data,
+                    initial_state,
+                    _command_markdown(
+                        operation_entry, root, _execution_layout(argv)[0]
+                    ),
+                )
             legacy_state = entry / "pyrun-outputs.json"
             if legacy_state.exists() or legacy_state.is_symlink():
                 raise SystemExit(
                     "pyrun: legacy pyrun-outputs.json requires execution-state "
                     "migration before another run"
                 )
-            data = _load_data(entry)
             (
                 cid,
                 script_argument,
@@ -850,47 +980,68 @@ def main(argv: list[str]) -> int:
                             binding.substituted(output_paths[binding.output][0])
                         )
             capture_paths = _capture_paths(captures, entry, root, log, data)
+            input_paths = tuple(
+                Path(resolve_input_token(value, data).path)
+                for value in material_roles
+                if input_token_parts(value) is not None
+                and material_roles[value] != "output"
+            )
+            with entry_lock(operation_entry):
+                authority.require_current(cid, (*script_args, *captures.values()))
+                reservation = reservations.enter_context(
+                    reserve_execution(
+                        root,
+                        entry,
+                        cid,
+                        (
+                            *input_paths,
+                            script_path,
+                            *(item.path.resolved for item in prepared_code),
+                        ),
+                        tuple(path for path, _ in output_paths.values()),
+                    )
+                )
             with (
                 tempfile.TemporaryDirectory(prefix="pyrun-") as temporary,
                 tempfile.TemporaryDirectory(
                     prefix="pyrun-scratch-", dir="/private/tmp"
                 ) as scratch,
             ):
+                _confirm_execution_materials(
+                    script_path,
+                    script_observation.fingerprint,
+                    data,
+                    observed_inputs,
+                    prepared_code,
+                    fingerprint_cache,
+                    stage="preparation",
+                )
                 environment = _execution_environment(explicit_env, Path(temporary))
                 environment["TMPDIR"] = scratch
                 returncode = _run_with_captures(
-                    [python_executable(root), str(script_path), *resolved_arguments],
+                    [
+                        python_executable(root),
+                        str(Path(__file__).resolve().with_name("pyrun_worker.py")),
+                        str(root),
+                        reservation.identity,
+                        python_executable(root),
+                        str(script_path),
+                        *resolved_arguments,
+                    ],
                     capture_paths,
                     cwd,
                     environment,
                 )
                 if returncode != 0:
                     return returncode
-            try:
-                current_script = fingerprint_cache.observe_regular_file(script_path)
-            except FingerprintCacheError as error:
-                raise SystemExit(
-                    f"pyrun: could not re-observe script: {error}"
-                ) from error
-            if current_script.fingerprint != script_observation.fingerprint:
-                raise SystemExit("pyrun: script bytes changed during execution")
-            if data is not None:
-                for name, expected in sorted(observed_inputs.items()):
-                    try:
-                        current_input = fingerprint_cache.observe_resource(
-                            data.by_name[name]
-                        )
-                    except (DataContractError, FingerprintCacheError) as error:
-                        raise SystemExit(
-                            f"pyrun: could not re-observe input {name!r}: {error}"
-                        ) from error
-                    if current_input is None or current_input.fingerprint != expected:
-                        raise SystemExit(
-                            f"pyrun: input {name!r} changed during execution"
-                        )
-            code_support = _confirm_code_observations(
+            require_worker_finished(root, reservation.identity)
+            code_support = _confirm_execution_materials(
+                script_path,
+                script_observation.fingerprint,
+                data,
+                observed_inputs,
                 prepared_code,
-                fingerprint_cache=fingerprint_cache,
+                fingerprint_cache,
             )
             observed_outputs: dict[str, Fingerprint] = {}
             output_kinds: dict[str, str] = {}
@@ -951,18 +1102,36 @@ def main(argv: list[str]) -> int:
                 .isoformat()
                 .replace("+00:00", "Z")
             )
-            publish_execution_locked(
-                initial_state,
-                cid,
-                ordinary_execution(
-                    recipe,
-                    observed,
-                    auto_reproduce=auto_reproduce,
-                    exclusive=exclusive,
-                    last_run_at=completed_at,
-                ),
-                project_root=root,
-            )
+            with (
+                entry_lock(operation_entry),
+                artifact_transaction(root, exclude=reservation.identity),
+            ):
+                current_state = authority.require_current(
+                    cid, (*script_args, *captures.values())
+                )
+                identity = execution_id(recipe)
+                before_command = initial_state.commands.get(cid)
+                after_command = current_state.commands.get(cid)
+                before_execution = (
+                    before_command.executions.get(identity) if before_command else None
+                )
+                after_execution = (
+                    after_command.executions.get(identity) if after_command else None
+                )
+                if before_execution != after_execution:
+                    raise SystemExit("pyrun: execution state changed; sync and rerun")
+                publish_execution_locked(
+                    current_state,
+                    cid,
+                    ordinary_execution(
+                        recipe,
+                        observed,
+                        auto_reproduce=auto_reproduce,
+                        exclusive=exclusive,
+                        last_run_at=completed_at,
+                    ),
+                    project_root=root,
+                )
             return returncode
     except PyrunContractError as error:
         raise SystemExit(f"pyrun: {error}") from error
@@ -972,6 +1141,8 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"pyrun: {error}") from error
     except OperationLockError as error:
         raise SystemExit(f"pyrun: operation conflict: {error}") from error
+    except ArtifactReservationError as error:
+        raise SystemExit(f"pyrun: {error.code}: {error}") from error
     except OSError as error:
         raise SystemExit(f"pyrun: operation state unavailable: {error}") from error
 

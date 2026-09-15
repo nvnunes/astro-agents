@@ -389,6 +389,12 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     _entry_arguments(delete)
     _mutation_argument(delete)
     delete.add_argument("--cid", required=True)
+    release = actions.add_parser(
+        "release", help="Release abandoned ordinary execution reservations"
+    )
+    _entry_arguments(release)
+    _mutation_argument(release)
+    release.add_argument("--cid", required=True)
     listed = actions.add_parser("list", help="List command recipes and policies")
     _entry_arguments(listed)
     verify = actions.add_parser(
@@ -415,17 +421,9 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
         return _run_command_verification(args)
     if args.action == "show":
         return _show_command_diagnostic(args)
-    if args.action in {"rename", "delete", "list"}:
-        from . import command_lifecycle
-
+    if args.action in {"rename", "delete", "list", "release"}:
         entry = resolve_entry(resolve_log(args.path), args.entry)
-        if args.action == "rename":
-            return command_lifecycle.rename(
-                entry, args.old_id, args.new_id, dry_run=args.dry_run
-            )
-        if args.action == "delete":
-            return command_lifecycle.delete(entry, args.cid, dry_run=args.dry_run)
-        return command_lifecycle.list_commands(entry)
+        return _dispatch_command_lifecycle(entry, args)
     from .command_sync import sync_command
 
     return sync_command(
@@ -442,6 +440,33 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
             execution_deletions=tuple(args.delete_execution),
             dry_run=args.dry_run,
         ),
+    )
+
+
+def _dispatch_command_lifecycle(
+    entry: EntryContext, args: argparse.Namespace
+) -> ActionResult:
+    from . import command_lifecycle
+
+    if args.action == "rename":
+        return command_lifecycle.rename(
+            entry, args.old_id, args.new_id, dry_run=args.dry_run
+        )
+    if args.action == "delete":
+        return command_lifecycle.delete(entry, args.cid, dry_run=args.dry_run)
+    if args.action == "list":
+        return command_lifecycle.list_commands(entry)
+    from research_log_reservations import release_abandoned
+
+    from .context import resolve_project_root
+
+    count = release_abandoned(
+        resolve_project_root(entry.root), entry.root, args.cid, dry_run=args.dry_run
+    )
+    return ActionResult(
+        "command.release",
+        "dry-run" if args.dry_run else "changed" if count else "unchanged",
+        "command.released", bool(count), records=({"reservations": count},),
     )
 
 

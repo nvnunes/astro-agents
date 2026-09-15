@@ -568,7 +568,7 @@ Ordinary `pyrun` publishes only after:
    completely; and
 4. the new execution passes the production decoder, identity, and output-set
    checks, and its outputs do not overlap any other owner in the validated
-   initial state.
+   freshly read publication state.
 
 A successful identical recipe atomically replaces its observed state. A
 successful new recipe whose output set overlaps another execution owner is
@@ -583,13 +583,53 @@ ownership remain with the `pyrun.json` writer. Multi-output promotion keeps its
 operation-owned displacement and rollback sequence; it is not delegated to a
 generic transaction layer.
 
-Ordinary `pyrun` strictly loads the complete existing file once under the entry
-lock and retains that validated object through execution and publication.
-Publication validates the new execution without decoding unchanged records a
-second time. Direct edits to `pyrun.json` during the locked command are
-unsupported: publication does not reload, merge, or detect them. External read
-boundaries and coordinated operations that construct complete state continue
-to apply the complete production decoder and ownership checks.
+Ordinary `pyrun` strictly reads existing state in a short entry transaction,
+then hashes and executes without holding entry/log OS locks. It verifies the
+selected Markdown command, participating data declarations, and recorded recipe
+authority before launch and again in the short completion transaction. Relevant
+changes reject execution/publication with a review-and-rerun diagnostic. Completion
+reloads validated state and merges only the successful execution, preserving
+other commands' concurrent updates. A concurrent change to that execution is
+rejected rather than overwritten. Script/input/helper observations are rechecked
+unlocked after reservation and after execution. Direct edits do not bypass
+these checks or become an ordinary workflow.
+
+### Ordinary Artifact Reservations
+
+An ordinary invocation reserves its declared physical read/write boundaries
+under a brief project-local `artifact-reservations.lock`. Readers may share an
+input; a writer excludes overlapping readers/writers, including directory
+ancestors/descendants and capture files. The worker registers its process group
+before executing user code. No OS lock spans execution. A conflict reports
+`artifact.reservation.conflict`, entry/CID, paths, and process owners. Authoring
+must not relocate or change the identity of a boundary in use. Reservations do
+not stage outputs or roll back bytes written by a failed script.
+
+Generated reservation records live in the owning project's
+`.cache/research-log-operations/ordinary-execution-UUID.json`. Their schema is
+`research-log-artifact-reservation/1`; fields are `schema`, 32-character lowercase
+hex `identity`, absolute `entry`, full `cid`, absolute path arrays `reads` and
+`writes`, positive integer `parent_pid`, and nullable positive integer
+`worker_pid`. Readers reject malformed records, records over 64 KiB, or more than
+1,000 records. A successful/failed launcher removes its reservation only after
+its worker group is gone. Killing the launcher does not unprotect a surviving
+worker. Detached work escaping that group is not a supported script lifecycle;
+scripts finish every consumer before returning.
+
+Abandoned reservations never expire automatically. Explicit cleanup is:
+
+```text
+log command release [--path LOG] --entry ENTRY --cid CID [--dry-run]
+```
+
+It selects only that entry/full CID, refuses any live parent or worker group,
+and removes only abandoned generated reservation records. Dry-run writes no
+content. It does not edit execution state or retained artifacts, certify
+partial outputs, or grant permission to rerun the research. PID reuse is treated
+conservatively as a live owner. Validation/reproduction locking and scheduling
+contracts remain unchanged.
+
+### Ordinary Publication Metadata
 
 `last_run_at` records the completion time of the latest successful atomic
 ordinary `pyrun` publication. Historically reconstructed state retains `null`

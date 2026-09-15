@@ -988,7 +988,7 @@ class PyrunOutputSupportTests(unittest.TestCase):
             )
             self.assertEqual(len(execution_records(entry)), 1)
 
-    def test_execution_and_output_publication_hold_the_stable_entry_lock(self) -> None:
+    def test_execution_releases_the_stable_entry_and_log_locks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1036,7 +1036,7 @@ Path(a.results).write_text(','.join(states), encoding='utf-8')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 (entry / "data/lock-state.txt").read_text(encoding="utf-8"),
-                "locked,locked",
+                "unlocked,unlocked",
             )
 
     def test_ordinary_role_rejects_material_token_before_execution(self) -> None:

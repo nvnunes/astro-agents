@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, Union
 
 NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 SAFE_LITERAL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/+,:=@%-]*\Z")
@@ -58,7 +58,7 @@ class StaticGroup:
     commands: tuple[StaticCommand | StaticFailure | StaticGroup, ...]
 
 
-StaticItem = StaticCommand | StaticFailure | StaticGroup
+StaticItem = Union[StaticCommand, StaticFailure, StaticGroup]
 
 
 @dataclass(frozen=True)
@@ -179,9 +179,7 @@ def _expand_block(
             continue
         if array is not None:
             array_values = dict(current.arrays)
-            array_values[array.group("name")] = _literals(
-                array.group("values"), budget
-            )
+            array_values[array.group("name")] = _literals(array.group("values"), budget)
             current = _Bindings(current.scalars, array_values)
             budget.add_binding()
             index += 1
@@ -265,15 +263,19 @@ def _expand_loop_body(
         loop = FOR_RE.fullmatch(lines[index])
         if loop is not None:
             end = _matching_end(lines, index, "done")
-            items.append(StaticGroup(_expand_loop(
-                loop,
-                lines[index + 1 : end],
-                current,
-                budget,
-                _ExpansionScope(
-                    loop_depth + 1, (*projection, f"loop:{lines[index]}")
-                ),
-            )))
+            items.append(
+                StaticGroup(
+                    _expand_loop(
+                        loop,
+                        lines[index + 1 : end],
+                        current,
+                        budget,
+                        _ExpansionScope(
+                            loop_depth + 1, (*projection, f"loop:{lines[index]}")
+                        ),
+                    )
+                )
+            )
             index = end + 1
             continue
         expanded, current = _expand_block(
@@ -325,18 +327,14 @@ def _apply_case(
     array = CASE_ARRAY_RE.fullmatch(assignments[0])
     if array is not None:
         array_values = dict(bindings.arrays)
-        array_values[array.group("name")] = _literals(
-            array.group("values"), budget
-        )
+        array_values[array.group("name")] = _literals(array.group("values"), budget)
         budget.add_binding()
         return _Bindings(bindings.scalars, array_values)
     scalar = CASE_SCALAR_RE.fullmatch(assignments[0])
     if scalar is None:
         raise ValueError("unsupported static case assignment")
     scalar_values = dict(bindings.scalars)
-    scalar_values[scalar.group("name")] = _one_literal(
-        scalar.group("value"), budget
-    )
+    scalar_values[scalar.group("name")] = _one_literal(scalar.group("value"), budget)
     budget.add_binding()
     return _Bindings(scalar_values, bindings.arrays)
 
@@ -378,9 +376,7 @@ def _safe(value: str) -> bool:
 def _substitute(line: str, bindings: _Bindings) -> str:
     if _substitution_failure(line):
         raise ValueError(_substitution_failure(line))
-    line = COMMAND_ARRAY_REFERENCE_RE.sub(
-        lambda match: _array(match, bindings), line
-    )
+    line = COMMAND_ARRAY_REFERENCE_RE.sub(lambda match: _array(match, bindings), line)
     result: list[str] = []
     for quote, value in _quote_segments(line):
         if quote == "'":
@@ -464,8 +460,7 @@ def _mask_operators(value: str) -> tuple[str, Mapping[str, str]]:
     if any("\ue000" <= char <= "\uf8ff" for char in value):
         raise ValueError("unsupported private-use shell character")
     markers = {
-        char: chr(0xE000 + i)
-        for i, char in enumerate(sorted(OPERATOR_CHARACTERS))
+        char: chr(0xE000 + i) for i, char in enumerate(sorted(OPERATOR_CHARACTERS))
     }
     replacements = {marker: char for char, marker in markers.items()}
     result: list[str] = []

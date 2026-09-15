@@ -21,6 +21,7 @@ from validation.operation_state import (
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import load_pyrun_state
 
+from .authoring_transactions import data_publication_transaction
 from .context import EntryContext, resolve_project_root
 from .materials import inspect_log_materials
 from .model import ActionError
@@ -286,6 +287,13 @@ def publish_updates(
 ) -> None:
     """Publish coupled registry changes using existing per-entry residue guards."""
 
+    with data_publication_transaction(entries, updates):
+        _publish_updates_locked(entries, updates)
+
+
+def _publish_updates_locked(
+    entries: tuple[EntryContext, ...], updates: Mapping[Path, str | None]
+) -> None:
     residues = []
     try:
         for entry in entries:

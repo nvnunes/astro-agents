@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from difflib import unified_diff
 from pathlib import Path
@@ -20,6 +21,7 @@ from research_log_data import (
     normalize_input_location,
     observe_fingerprint,
 )
+from research_log_reservations import artifact_transaction, require_artifact_access
 from validation.commands import (
     CommandDeclaration,
     CommandDeclarationContext,
@@ -51,6 +53,12 @@ from validation.pyrun_state import (
     validated_pyrun_serialization,
 )
 
+from .authoring_transactions import (
+    data_change_paths,
+    merge_data,
+    require_unchanged,
+    resource_authority,
+)
 from .context import (
     EntryContext,
     parse_entry_document_name,
@@ -68,7 +76,7 @@ from .data_assertions import (
 )
 from .model import ActionError, ActionResult, CommandSyncArguments
 from .retention import require_unretained_paths
-from .storage import PublicationError, atomic_write_texts, entry_lock, entry_locks
+from .storage import PublicationError, atomic_write_texts, entry_locks
 
 
 @dataclass(frozen=True)
@@ -81,6 +89,17 @@ class _LocalDeclarationAssertions:
     origin: bool
 
 
+@dataclass(frozen=True)
+class _PreparedCommand:
+    """Unlocked command preparation, with only relevant state retained."""
+
+    before: DataFile | None
+    candidate: DataFile | None
+    declarations: tuple[CommandDeclaration, ...]
+    invocations: tuple[Invocation, ...]
+    failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
+
+
 def sync_command(
     entry: EntryContext,
     arguments: CommandSyncArguments,
@@ -89,8 +108,6 @@ def sync_command(
 
     project = resolve_project_root(entry.root)
     try:
-        if arguments.dry_run:
-            return _sync_locked(entry, project, arguments)
         source_ids = tuple(
             dict.fromkeys(
                 _mapping(value, "--add-from-entry")[1]
@@ -102,11 +119,14 @@ def sync_command(
         referenced_entries = tuple(
             resolve_entry(entry.log, source_id) for source_id in source_ids
         )
-        if referenced_entries:
-            with entry_locks(entry.log, (entry, *referenced_entries)):
-                return _sync_locked(entry, project, arguments)
-        with entry_lock(entry):
-            return _sync_locked(entry, project, arguments)
+        prepared = _prepare_command(entry, project, arguments)
+        if arguments.dry_run:
+            return _finish_command(entry, project, arguments, prepared)
+        with (
+            entry_locks(entry.log, (entry, *referenced_entries), timeout_seconds=10),
+            artifact_transaction(project),
+        ):
+            return _finish_command(entry, project, arguments, prepared)
     except ActionError:
         raise
     except DataContractError as error:
@@ -126,13 +146,18 @@ def sync_command(
         raise ActionError("command.sync.unavailable", str(error)) from error
 
 
-def _sync_locked(
+def _prepare_command(
     entry: EntryContext,
     project: Path,
     arguments: CommandSyncArguments,
-) -> ActionResult:
-    current_data = _load_data(entry)
-    indexed = _index_entry(entry, project, current_data)
+) -> _PreparedCommand:
+    with (
+        nullcontext()
+        if arguments.dry_run
+        else entry_locks(entry.log, (entry,), timeout_seconds=10)
+    ):
+        current_data = _load_data(entry)
+        indexed = _index_entry(entry, project, current_data)
     selected = _selected_declarations(indexed, arguments.cid)
     candidate_data = _candidate_data(
         entry,
@@ -218,6 +243,50 @@ def _sync_locked(
         ),
     )
 
+    return _PreparedCommand(
+        current_data, candidate_data, selected, selected_invocations, failures
+    )
+
+
+def _finish_command(
+    entry: EntryContext,
+    project: Path,
+    arguments: CommandSyncArguments,
+    prepared: _PreparedCommand,
+) -> ActionResult:
+    names = {
+        parts[0]
+        for declaration in prepared.declarations
+        for value in declaration.tokens
+        if (parts := input_token_parts(value)) is not None
+    }
+    data = merge_data(
+        prepared.before, prepared.candidate, _load_data(entry), names=names, entry=entry
+    )
+    indexed = _index_entry(entry, project, data)
+    selected = _selected_declarations(indexed, arguments.cid)
+    require_unchanged(
+        tuple((item.document, item.parsed) for item in prepared.declarations),
+        tuple((item.document, item.parsed) for item in selected),
+        f"{entry.id}/{arguments.cid} Markdown command",
+    )
+    for raw in arguments.add_from_entries:
+        name, source_id = _mapping(raw, "--add-from-entry")
+        source = _load_data(resolve_entry(entry.log, source_id))
+        expected = data.by_name[name] if data else None
+        require_unchanged(
+            resource_authority(
+                replace(expected, reference_entry=None) if expected else None
+            ),
+            resource_authority(source.by_name.get(name) if source else None),
+            f"{source_id}/{name} source declaration",
+        )
+    invocations, failures = _materialize(indexed, data)
+    selected_invocations = tuple(
+        item for item in invocations if item.cid == arguments.cid
+    )
+    _require_output_safety(indexed, invocations, selected_invocations)
+    _require_generated_boundaries(entry, prepared.before, data, arguments, invocations)
     pyrun_text = _candidate_pyrun_text(
         entry,
         project,
@@ -225,14 +294,11 @@ def _sync_locked(
         selected_invocations,
         arguments.execution_deletions,
     )
-    data_text = candidate_data.canonical_json() if candidate_data is not None else None
-    return _publish_candidates(
-        entry,
-        data_text,
-        pyrun_text,
-        failures,
-        dry_run=arguments.dry_run,
-    )
+    data_text = data.canonical_json() if data is not None else None
+    require_artifact_access(project, writes=data_change_paths(prepared.before, data))
+    if arguments.dry_run:
+        return _publish_candidates(entry, data_text, pyrun_text, failures, dry_run=True)
+    return _publish_candidates(entry, data_text, pyrun_text, failures, dry_run=False)
 
 
 def _candidate_pyrun_text(

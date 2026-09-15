@@ -66,7 +66,9 @@ def entry_lock(entry: EntryContext) -> Iterator[None]:
 
 
 @contextmanager
-def entry_locks(log: LogContext, entries: Iterable[EntryContext]) -> Iterator[None]:
+def entry_locks(
+    log: LogContext, entries: Iterable[EntryContext], *, timeout_seconds: float = 0
+) -> Iterator[None]:
     """Hold the shared log lock and several entry locks in stable order."""
 
     selected = sorted(entries, key=lambda item: item.id)
@@ -78,15 +80,21 @@ def entry_locks(log: LogContext, entries: Iterable[EntryContext]) -> Iterator[No
         stack.enter_context(operation_lock(log.root, "log.lock", mode="shared"))
         for entry in selected:
             require_mutation_ready(log.root, entry_id=entry.id)
-            stack.enter_context(entry_lock_under_log(entry))
+            stack.enter_context(
+                entry_lock_under_log(entry, timeout_seconds=timeout_seconds)
+            )
         yield
 
 
 @contextmanager
-def entry_lock_under_log(entry: EntryContext) -> Iterator[None]:
+def entry_lock_under_log(
+    entry: EntryContext, *, timeout_seconds: float = 0
+) -> Iterator[None]:
     """Hold one entry lock while the caller already owns the log lock."""
 
-    with operation_lock(entry.log.root, f"entry-{entry.id}.lock"):
+    with operation_lock(
+        entry.log.root, f"entry-{entry.id}.lock", timeout_seconds=timeout_seconds
+    ):
         yield
 
 

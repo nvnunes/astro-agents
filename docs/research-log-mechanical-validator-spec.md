@@ -3703,6 +3703,9 @@ unique across the entry's owned documents. Invalid unrelated evidence markers
 or definitions do not block the operation; whole-document evidence validation
 belongs to `log validate`.
 
+Summary refresh validates and updates only references forwarding the selected
+evidence. Malformed references to unrelated evidence remain untouched.
+
 The ID-scoped add forms have the same ensure behavior as command sync and must
 be consumed by the candidate evidence definition. Evidence may add a file or
 directory origin or a same-name cross-entry reference. It cannot create a
@@ -3806,6 +3809,9 @@ delete` fails with every remaining use and never deletes material from disk.
 Existing material left disconnected is reported for a subsequent retention or
 filesystem decision.
 
+Data rename validates Markdown evidence definitions only for records using the
+renamed declaration. Unrelated invalid evidence does not block the rename.
+
 `data list` exposes maintained semantic declaration properties needed for
 Record and Repair: name, direct or cross-entry form, target or source entry,
 kind, boundary, directory identity, Git revision, and
@@ -3850,6 +3856,11 @@ log evidence list [--path LOG] --entry ENTRY
 For rename, the agent edits the Markdown CID or EID first. The lifecycle action
 verifies that the old identity is gone and the new identity is present before
 updating normalized state and references.
+
+Evidence rename and delete validate only markers and summary references for
+their selected IDs. Unrelated invalid markers, definitions, and references do
+not block either action. Registry files must still satisfy their data contracts
+before publication; focused edits do not repair unrelated records.
 
 For evidence deletion, the agent removes the presentation and marker first.
 The delete action removes only the evidence record and reports newly unused

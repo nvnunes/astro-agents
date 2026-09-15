@@ -961,14 +961,38 @@ def _require_presentation_bound(value: str, subject: str) -> None:
         )
 
 
-def index_summary_references(text: str) -> tuple[SummaryReference, ...]:
-    """Parse exact inline summary references without value search."""
+def index_summary_references(
+    text: str, *, selected: frozenset[tuple[str, str]] | None = None
+) -> tuple[SummaryReference, ...]:
+    """Parse exact inline summary references without value search.
+
+    When ``selected`` is supplied, validate only comments naming those
+    ``(entry, evidence_id)`` pairs, including malformed adjacent references.
+    The default validates every summary reference.
+    """
 
     references: list[SummaryReference] = []
     consumed: set[tuple[int, int]] = set()
-    lines = text.splitlines()
+    selected_offsets = (
+        None
+        if selected is None
+        else _selected_summary_reference_offsets(text, selected)
+    )
+    observed: list[tuple[int, int]] = []
+    offset = 0
+    lines = text.splitlines(keepends=True)
     for number, line in enumerate(lines, 1):
+        observed.extend(
+            (number, match.start())
+            for match in SUMMARY_CANDIDATE_RE.finditer(line)
+            if selected_offsets is None or offset + match.start() in selected_offsets
+        )
         for match in SUMMARY_LINE_RE.finditer(line):
+            if (
+                selected_offsets is not None
+                and offset + match.start("reference") not in selected_offsets
+            ):
+                continue
             raw = match.group("reference")
             reference = SUMMARY_REFERENCE_RE.fullmatch(raw)
             if (
@@ -994,11 +1018,7 @@ def index_summary_references(text: str) -> tuple[SummaryReference, ...]:
                 )
             )
             consumed.add((number, match.start("reference")))
-    observed = [
-        (number, match.start())
-        for number, line in enumerate(lines, 1)
-        for match in SUMMARY_CANDIDATE_RE.finditer(line)
-    ]
+        offset += len(line)
     if any(marker not in consumed for marker in observed):
         _fail(
             "summary.reference.invalid",
@@ -1007,6 +1027,31 @@ def index_summary_references(text: str) -> tuple[SummaryReference, ...]:
             "V2 Summary Evidence References",
         )
     return tuple(references)
+
+
+def _selected_summary_reference_offsets(
+    text: str, selected: frozenset[tuple[str, str]]
+) -> frozenset[int]:
+    """Select by declared identities before enforcing the exact comment grammar.
+
+    Stop at the next comment so a malformed unrelated comment cannot absorb a
+    later selected reference. Inspect all identity fields to reject ambiguous
+    comments mentioning a selected pair rather than silently ignoring them.
+    """
+
+    offsets = set()
+    boundaries = [match.start() for match in re.finditer(r"<!--|-->", text)]
+    boundaries.append(len(text))
+    for marker in SUMMARY_CANDIDATE_RE.finditer(text):
+        end = boundaries[bisect_right(boundaries, marker.start())]
+        raw = text[marker.start() : end]
+        entries = re.findall(r"(?:^|[\s;])entry\s*=\s*([^\s;>]+)", raw, re.I)
+        ids = re.findall(r"(?:^|[\s;])eid\s*=\s*([^\s;>]+)", raw, re.I)
+        if any(
+            (entry, record_id) in selected for entry in entries for record_id in ids
+        ):
+            offsets.add(marker.start())
+    return frozenset(offsets)
 
 
 def associate_presentations(

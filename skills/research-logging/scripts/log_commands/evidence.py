@@ -86,12 +86,16 @@ def rename(
             raise ActionError("evidence.record.conflict", new_id)
         marker_ids = {
             item.id
-            for item in index_entry_presentations_all(entry.root, entry.log.root)
+            for selected_id in (old_id, new_id)
+            for item in index_entry_presentations_all(
+                entry.root, entry.log.root, record_id=selected_id
+            )
         }
         summary_ids = {
             item.evidence_id
             for item in index_summary_references(
-                entry.log.summary.read_text(encoding="utf-8")
+                entry.log.summary.read_text(encoding="utf-8"),
+                selected=frozenset(((entry.id, old_id), (entry.id, new_id))),
             )
             if item.entry == entry.id
         }
@@ -157,10 +161,13 @@ def remove(entry: EntryContext, record_id: str, *, dry_run: bool) -> ActionResul
             return _result("delete", "absent", False)
         marker_ids = {
             item.id
-            for item in index_entry_presentations_all(entry.root, entry.log.root)
+            for item in index_entry_presentations_all(
+                entry.root, entry.log.root, record_id=record_id
+            )
         }
         references = index_summary_references(
-            entry.log.summary.read_text(encoding="utf-8")
+            entry.log.summary.read_text(encoding="utf-8"),
+            selected=frozenset(((entry.id, record_id),)),
         )
         if record_id in marker_ids or any(
             item.entry == entry.id and item.evidence_id == record_id

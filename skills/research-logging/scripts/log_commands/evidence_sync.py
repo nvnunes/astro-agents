@@ -30,6 +30,7 @@ from validation.evidence import (
     evidence_file_from_records,
     evidence_record_from_fields,
     index_entry_presentations,
+    index_summary_references,
     load_evidence_file,
     require_markdown_definition,
 )
@@ -658,11 +659,12 @@ def _refresh_summary(
 ) -> str | None:
     original = entry.log.summary.read_text(encoding="utf-8")
     selected = {(edit.entry.id, edit.record.id): edit for edit in edits}
+    index_summary_references(original, selected=frozenset(selected))
 
     def replace_reference(match: Any) -> str:
         reference = SUMMARY_REFERENCE_RE.fullmatch(match["reference"])
         if reference is None:
-            raise ActionError("summary.reference.invalid", match["reference"])
+            return match[0]
         edit = selected.get((reference["entry"], reference["id"]))
         if edit is None:
             return match[0]

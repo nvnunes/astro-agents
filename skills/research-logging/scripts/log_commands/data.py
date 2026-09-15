@@ -358,7 +358,9 @@ def _require_evidence_definitions(
         item = next(
             (
                 item
-                for item in index_entry_presentations(text, document=record.document)
+                for item in index_entry_presentations(
+                    text, document=record.document, record_id=record.id
+                )
                 if item.id == record.id
             ),
             None,

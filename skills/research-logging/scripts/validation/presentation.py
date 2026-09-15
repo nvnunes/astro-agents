@@ -92,7 +92,9 @@ def find_entry_presentation(
 
     matches = [
         item
-        for item in index_entry_presentations_all(entry_root, log_root)
+        for item in index_entry_presentations_all(
+            entry_root, log_root, record_id=record_id
+        )
         if item.id == record_id
     ]
     if len(matches) != 1:
@@ -106,9 +108,9 @@ def find_entry_presentation(
 
 
 def index_entry_presentations_all(
-    entry_root: Path, log_root: Path
+    entry_root: Path, log_root: Path, *, record_id: str | None = None
 ) -> tuple[PresentedItem, ...]:
-    """Index all bounded entry-root Markdown presentation markers."""
+    """Index bounded entry-root Markdown, optionally validating only one ID."""
 
     documents = sorted(
         path
@@ -127,7 +129,9 @@ def index_entry_presentations_all(
         relative = document.relative_to(log_root).as_posix()
         matches.extend(
             index_entry_presentations(
-                document.read_text(encoding="utf-8"), document=relative
+                document.read_text(encoding="utf-8"),
+                document=relative,
+                record_id=record_id,
             )
         )
     return tuple(matches)

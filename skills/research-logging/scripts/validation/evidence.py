@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import urllib.parse
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
@@ -60,7 +61,7 @@ SYNTHESIS_SECTION_LABELS = SECTION_LABELS - {
 RECORD_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 EID_COMMENT_RE = re.compile(
     r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)"
-    r"(?P<definition>(?: (?!-->)[^\r\n]*?)?) -->"
+    r"(?P<definition>(?:[ \r\n](?:(?!-->)[\s\S])*?)?) -->"
 )
 EID_CANDIDATE_RE = re.compile(r"<!--\s*[Ee][Ii][Dd](?::|\s|=)")
 EID_LINE_RE = re.compile(
@@ -503,7 +504,7 @@ def index_entry_presentations(
 ) -> tuple[PresentedItem, ...]:
     """Index exact v2 entry markers and their structurally adjacent items."""
 
-    lines = text.splitlines()
+    lines, source_lines, marker_lines = _presentation_lines(text)
     contexts = _line_contexts(lines)
     fenced = _fenced_lines(lines)
     items: list[PresentedItem] = []
@@ -514,7 +515,14 @@ def index_entry_presentations(
         found, consumed = _presentations_on_line(
             lines, contexts, number, line, document
         )
-        items.extend(found)
+        for item in found:
+            first, last = marker_lines[item.id]
+            source_line = (
+                first
+                if item.presentation_form in {"inline-code", "link", "image"}
+                else last + 1
+            )
+            items.append(replace(item, line=source_line))
         consumed_markers.update(consumed)
     observed_markers = [
         (number, match.start())
@@ -522,11 +530,16 @@ def index_entry_presentations(
         if not fenced[number - 1]
         for match in EID_CANDIDATE_RE.finditer(line)
     ]
-    if any(marker not in consumed_markers for marker in observed_markers):
+    unresolved_markers = [
+        (source_lines[number - 1], column)
+        for number, column in observed_markers
+        if (number, column) not in consumed_markers
+    ]
+    if unresolved_markers:
         _fail(
             "presentation.marker.invalid",
             document,
-            {"markers": observed_markers},
+            {"markers": unresolved_markers},
             "V2 Entry Presentation Markers",
         )
     ids = [item.id for item in items]
@@ -538,6 +551,29 @@ def index_entry_presentations(
             "V2 Entry Presentation Markers",
         )
     return _bind_markdown_definitions(text, items)
+
+
+def _presentation_lines(
+    text: str,
+) -> tuple[list[str], list[int], dict[str, tuple[int, int]]]:
+    """Join complete definition comments only for structural line indexing.
+
+    Definition parsing and replacement regions still use the original text.
+    Retain the original line of each projected line for presentation locations.
+    """
+
+    lines = text.splitlines()
+    source_lines = list(range(1, len(lines) + 1))
+    line_starts = [0, *(match.end() for match in re.finditer("\n", text))]
+    marker_lines = {}
+    for marker in reversed(authored_eid_comments(text)):
+        start = bisect_right(line_starts, marker.start()) - 1
+        end = bisect_right(line_starts, marker.end()) - 1
+        marker_lines[marker["id"]] = (start + 1, end + 1)
+        if start != end:
+            lines[start : end + 1] = [" ".join(lines[start : end + 1])]
+            del source_lines[start + 1 : end + 1]
+    return lines, source_lines, marker_lines
 
 
 def _bind_markdown_definitions(
@@ -567,7 +603,10 @@ def authored_eid_comments(text: str) -> tuple[re.Match[str], ...]:
     markers: list[re.Match[str]] = []
     for line, inside_fence in zip(lines, fenced):
         if not inside_fence:
-            markers.extend(EID_COMMENT_RE.finditer(text, offset, offset + len(line)))
+            for candidate in EID_CANDIDATE_RE.finditer(line):
+                marker = EID_COMMENT_RE.match(text, offset + candidate.start())
+                if marker is not None:
+                    markers.append(marker)
         offset += len(line)
     return tuple(markers)
 

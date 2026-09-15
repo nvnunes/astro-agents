@@ -3697,6 +3697,12 @@ comment. Compare shows only that EID and its exact before and after presented
 Markdown. Sync validates and normalizes the definition into `evidence.json`,
 evaluates it, and replaces the adjacent placeholder or prior presentation.
 
+ID-scoped compare and sync validate only the selected evidence item's markers,
+definition, presentation, and surrounding Markdown context. Its marker must be
+unique across the entry's owned documents. Invalid unrelated evidence markers
+or definitions do not block the operation; whole-document evidence validation
+belongs to `log validate`.
+
 The ID-scoped add forms have the same ensure behavior as command sync and must
 be consumed by the candidate evidence definition. Evidence may add a file or
 directory origin or a same-name cross-entry reference. It cannot create a

@@ -63,7 +63,10 @@ EID_COMMENT_RE = re.compile(
     r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)"
     r"(?P<definition>(?:[ \r\n](?:(?!-->)[\s\S])*?)?) -->"
 )
-EID_CANDIDATE_RE = re.compile(r"<!--\s*[Ee][Ii][Dd](?::|\s|=)")
+EID_CANDIDATE_RE = re.compile(
+    r"<!--\s*[Ee][Ii][Dd](?::|\s|=)"
+    r"(?:\s*[:=]?\s*(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*))?"
+)
 EID_LINE_RE = re.compile(
     r"(?P<code>`(?P<value>[^`\r\n]*)`)"
     r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)(?: (?!-->)[^\r\n]*?)? -->"
@@ -501,8 +504,14 @@ def index_entry_presentations(
     text: str,
     *,
     document: str,
+    record_id: str | None = None,
 ) -> tuple[PresentedItem, ...]:
-    """Index exact v2 entry markers and their structurally adjacent items."""
+    """Index exact entry markers and their structurally adjacent items.
+
+    With ``record_id``, validate only that ID's markers and definitions while
+    retaining document context and source locations. The default validates all
+    evidence presentations in the document.
+    """
 
     lines, source_lines, marker_lines = _presentation_lines(text)
     contexts = _line_contexts(lines)
@@ -513,7 +522,7 @@ def index_entry_presentations(
         if fenced[number - 1]:
             continue
         found, consumed = _presentations_on_line(
-            lines, contexts, number, line, document
+            lines, contexts, number, document, record_id
         )
         for item in found:
             first, last = marker_lines[item.id]
@@ -529,6 +538,7 @@ def index_entry_presentations(
         for number, line in enumerate(lines, 1)
         if not fenced[number - 1]
         for match in EID_CANDIDATE_RE.finditer(line)
+        if record_id is None or match["id"] == record_id
     ]
     unresolved_markers = [
         (source_lines[number - 1], column)
@@ -550,7 +560,7 @@ def index_entry_presentations(
             {"ids": ids},
             "V2 Entry Presentation Markers",
         )
-    return _bind_markdown_definitions(text, items)
+    return _bind_markdown_definitions(text, items, record_id)
 
 
 def _presentation_lines(
@@ -577,12 +587,14 @@ def _presentation_lines(
 
 
 def _bind_markdown_definitions(
-    text: str, items: Sequence[PresentedItem]
+    text: str, items: Sequence[PresentedItem], record_id: str | None = None
 ) -> tuple[PresentedItem, ...]:
     from .evidence_markdown import read_markdown_evidence
 
     definitions = {}
     for match in authored_eid_comments(text):
+        if record_id is not None and match["id"] != record_id:
+            continue
         if match["definition"].strip():
             marker = read_markdown_evidence(text, match["id"])
             definitions[marker.id] = {
@@ -682,13 +694,16 @@ def _presentations_on_line(
     lines: Sequence[str],
     contexts: Sequence[_LineContext],
     number: int,
-    line: str,
     document: str,
+    record_id: str | None = None,
 ) -> tuple[list[PresentedItem], set[tuple[int, int]]]:
+    line = lines[number - 1]
     context = contexts[number - 1]
     experimental = context.classification == "experimental"
     items = []
     for match in EID_LINE_RE.finditer(line):
+        if record_id is not None and match["id"] != record_id:
+            continue
         value = match.group("value")
         _require_presentation_bound(value, f"{document}:{number}")
         items.append(
@@ -709,15 +724,18 @@ def _presentations_on_line(
     consumed = {
         (number, match.start("code") + len(match.group("code")))
         for match in EID_LINE_RE.finditer(line)
+        if record_id is None or match["id"] == record_id
     }
     document_path = PurePosixPath(_normalized_relative(document, document))
     if experimental and context.under_results:
         for link in MARKDOWN_LINK_RE.finditer(line):
-            normalized = _artifact_target(link.group("target"), document_path)
-            if normalized is None:
-                continue
             marker = EID_COMMENT_RE.match(line, link.end())
             if marker is None:
+                continue
+            if record_id is not None and marker["id"] != record_id:
+                continue
+            normalized = _artifact_target(link.group("target"), document_path)
+            if normalized is None:
                 continue
             items.append(
                 PresentedItem(
@@ -738,7 +756,7 @@ def _presentations_on_line(
             )
             consumed.add((number, link.end()))
     marker = EID_COMMENT_RE.fullmatch(line.strip())
-    if marker is None:
+    if marker is None or (record_id is not None and marker["id"] != record_id):
         return items, consumed
     consumed.add((number, line.index("<!--")))
     block = _block_presentation(

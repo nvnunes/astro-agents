@@ -27,7 +27,6 @@ from validation.evidence import (
     SUMMARY_REFERENCE_RE,
     EvidenceRecord,
     PresentedItem,
-    authored_eid_comments,
     evidence_file_from_records,
     evidence_record_from_fields,
     index_entry_presentations,
@@ -209,12 +208,14 @@ def _owned_marker(
         ):
             continue
         text = document.read_text(encoding="utf-8")
-        if not any(match["id"] == record_id for match in authored_eid_comments(text)):
+        presentations = index_entry_presentations(
+            text,
+            document=document.relative_to(entry.log.root).as_posix(),
+            record_id=record_id,
+        )
+        if not presentations:
             continue
         marker = read_markdown_evidence(text, record_id)
-        presentations = index_entry_presentations(
-            text, document=document.relative_to(entry.log.root).as_posix()
-        )
         found = [item for item in presentations if item.id == record_id]
         if len(found) != 1 or not found[0].context_valid:
             raise ActionError(
@@ -489,7 +490,9 @@ def _validate_rendering(
     document, marker, _ = owned
     before = document.read_text(encoding="utf-8")
     candidate = before[: marker.start] + after + before[marker.end :]
-    items = index_entry_presentations(candidate, document=record.document)
+    items = index_entry_presentations(
+        candidate, document=record.document, record_id=record.id
+    )
     item = next((item for item in items if item.id == record.id), None)
     if item is None:
         raise ActionError(

@@ -1,17 +1,23 @@
-"""Typed authoring diagnostic slot contracts."""
+"""Rejected-producer command diagnostic replacement contracts."""
 
 import tempfile
 import unittest
 from pathlib import Path
 
-from log_commands.inspection_queries import Query, inspect_result
-from validation.result_storage import publish_diagnostic_commands
+from research_log_result_store import result_transaction
+from validation.command_diagnostics import (
+    load_command_diagnostic,
+    publish_command_diagnostic,
+)
 
 
 class RejectedProducerTests(unittest.TestCase):
     def test_diagnostic_slot_replaces_prior_commands(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
+            root.mkdir(exist_ok=True)
+            with result_transaction(root):
+                pass
             a = {
                 "identity": "cmd:one",
                 "entry": "e001",
@@ -21,13 +27,12 @@ class RejectedProducerTests(unittest.TestCase):
                 "script": "x.py",
             }
             b = {**a, "identity": "cmd:two"}
-            publish_diagnostic_commands(root, "study.md", "producer.missing", [a])
-            second = publish_diagnostic_commands(
+            publish_command_diagnostic(root, "study.md", "producer.missing", [a])
+            second = publish_command_diagnostic(
                 root, "study.md", "producer.missing", [b]
             )
             self.assertEqual(
-                inspect_result(root, Query(action="list", kind="diagnostic"))["items"][
-                    0
-                ]["result_id"],
+                load_command_diagnostic(root)["diagnostic_id"],
                 second,
             )
+            self.assertEqual(load_command_diagnostic(root)["records"], [b])

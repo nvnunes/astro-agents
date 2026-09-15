@@ -163,6 +163,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             entry_validation = run_log(
                 project,
                 "validate",
+                "run",
                 "--path",
                 str(log),
                 "--entry",
@@ -176,27 +177,34 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             entry_result = payload(entry_validation)
             entry_findings = run_log(
                 project,
-                "results",
-                "show",
+                "validate",
+                "list",
+                "findings",
                 "--path",
                 str(log),
-                "--id",
-                str(entry_result["result_id"]),
-                "--view",
-                "findings",
+                "--entry",
+                "e001",
                 "--format",
                 "json",
             )
             self.assertEqual(
-                entry_result["status"],
-                "complete_clear",
+                entry_result["outcome"],
+                "clear",
                 entry_findings.stdout,
             )
+            self.assertTrue(entry_result["saved"])
+            self.assertEqual(payload(entry_findings)["total"], 0)
             full_validation = run_log(
-                project, "validate", "--path", str(log), "--format", "json"
+                project,
+                "validate",
+                "run",
+                "--path",
+                str(log),
+                "--format",
+                "json",
             )
             self.assertEqual(full_validation.returncode, 0, full_validation.stderr)
-            self.assertEqual(payload(full_validation)["status"], "complete_clear")
+            self.assertEqual(payload(full_validation)["outcome"], "clear")
             self.assertTrue((log / ".cache/results.sqlite").is_file())
             self.assertTrue((log / "validation.md").is_file())
             self.assertEqual(document.read_bytes(), document_before)
@@ -335,10 +343,16 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(final_evidence.returncode, 0, final_evidence.stderr)
             second_clear = run_log(
-                project, "validate", "--path", str(log), "--format", "json"
+                project,
+                "validate",
+                "run",
+                "--path",
+                str(log),
+                "--format",
+                "json",
             )
             self.assertEqual(second_clear.returncode, 0, second_clear.stderr)
-            self.assertEqual(payload(second_clear)["status"], "complete_clear")
+            self.assertEqual(payload(second_clear)["outcome"], "clear")
 
             source_v2 = entry / "data" / "source-v2.csv"
             source_v2.write_text("value\n2\n", encoding="utf-8")
@@ -380,45 +394,43 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 fresh_downstream.returncode, 0, fresh_downstream.stderr
             )
             stale_validation = run_log(
-                project, "validate", "--path", str(log), "--format", "json"
+                project,
+                "validate",
+                "run",
+                "--path",
+                str(log),
+                "--format",
+                "json",
             )
             self.assertEqual(stale_validation.returncode, 0, stale_validation.stderr)
             stale_result = payload(stale_validation)
-            self.assertEqual(stale_result["status"], "complete_findings")
-            retained_results = run_log(
+            self.assertEqual(stale_result["outcome"], "findings")
+            self.assertEqual(
+                stale_result["finding_counts_by_type"],
+                {
+                    "conformance": 0,
+                    "evidence": 0,
+                    "orphan": 1,
+                    "provenance": 0,
+                },
+            )
+            self.assertEqual(stale_result["blocked_check_count"], 0)
+            blocked = run_log(
                 project,
-                "results",
+                "validate",
                 "list",
+                "blocked",
                 "--path",
                 str(log),
-                "--kind",
-                "full",
                 "--format",
                 "json",
             )
-            self.assertEqual(retained_results.returncode, 0, retained_results.stderr)
-            latest_result_id = payload(retained_results)["items"][0]["result_id"]
-            findings = run_log(
-                project,
-                "results",
-                "show",
-                "--path",
-                str(log),
-                "--id",
-                str(latest_result_id),
-                "--view",
-                "findings",
-                "--format",
-                "json",
+            self.assertEqual(
+                blocked.returncode,
+                0,
+                blocked.stderr,
             )
-            self.assertEqual(findings.returncode, 0, findings.stderr)
-            finding_payload = payload(findings)
-            self.assertTrue(
-                any(
-                    item["scope"] == "provenance"
-                    for item in finding_payload["items"]
-                )
-            )
+            self.assertEqual(payload(blocked)["total"], 0)
             self.assertEqual(document.read_bytes(), immutable_before_change["document"])
             self.assertEqual(
                 (entry / "evidence.json").read_bytes(),
@@ -444,7 +456,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             self.assertEqual(plan.returncode, 0, plan.stderr)
             plan_payload = payload(plan)
             self.assertEqual(
-                plan_payload["schema"], "research-log-reproduction-plan/10"
+                plan_payload["schema"], "research-log-reproduction-plan/11"
             )
             self.assertEqual(plan_payload["executions"], [])
             self.assertEqual(
@@ -454,6 +466,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             batch = run_log(
                 project,
                 "validate",
+                "run",
                 "--root",
                 str(project),
                 "--dry-run",
@@ -461,15 +474,13 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 "json",
             )
             self.assertEqual(batch.returncode, 0, batch.stderr)
-            self.assertEqual(len(payload(batch)["results"]), 1)
+            self.assertEqual(len(payload(batch)["rows"]), 1)
             rendered = run_log(
                 project,
-                "results",
+                "validate",
                 "render",
                 "--path",
                 str(log),
-                "--kind",
-                "validation",
             )
             self.assertEqual(rendered.returncode, 0, rendered.stderr)
             self.assertIn("Validation", (log / "validation.md").read_text())

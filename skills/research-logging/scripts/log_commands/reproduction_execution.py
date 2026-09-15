@@ -181,7 +181,7 @@ class ExecutionAttempt:
 
 @dataclass(frozen=True)
 class IsolatedExecutionResult:
-    """In-memory execution result for a retained, non-job repair check."""
+    """In-memory execution result for retained, non-job command verification."""
 
     attempt: ExecutionAttempt
     output_paths: Mapping[str, Path]
@@ -1421,7 +1421,7 @@ def _clear_isolated_seatbelt_profiles(root: Path) -> None:
 
     for path in root.glob("seatbelt-*.sb"):
         if path.is_symlink() or not path.is_file():
-            raise ActionError("repair_check.diagnostics.invalid", str(path))
+            raise ActionError("command.verify.diagnostics.invalid", str(path))
         path.unlink()
 
 
@@ -1467,10 +1467,10 @@ def preflight_isolated_invocation(
 
 
 def _isolated_workspace(entry: EntryContext, root: Path) -> ReproductionWorkspace:
-    """Return the write-free workspace layout reserved for one repair check."""
+    """Return the write-free workspace layout for one command verification."""
 
     return ReproductionWorkspace(
-        "repair-check",
+        "command-verification",
         root,
         resolve_project_root(entry.log.root),
         root / "outputs",
@@ -1484,7 +1484,7 @@ def _isolated_current_invocation(
     invocation: AcceptedInvocation,
     observations: Mapping[str, Fingerprint] | None,
 ) -> AcceptedInvocation:
-    """Bind repair execution to current direct-input observations only."""
+    """Bind verification to current direct-input observations only."""
 
     if observations is None:
         return invocation

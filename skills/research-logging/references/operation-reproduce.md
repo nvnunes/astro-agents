@@ -8,7 +8,7 @@ run folder, compares them with retained artifacts, and publishes generated
 reproduction state. Completed executions clear their reproduction requirement.
 After successful publication, the CLI
 does not invoke validation. Run Validate explicitly when a current validation
-result is required; reproduction does not copy the project into the run folder.
+outcome is required; reproduction does not copy the project into the run folder.
 
 Read `references/file-reproduction-records.md` before launching or reporting a
 run. When an admission failure or requested repair requires interpreting the
@@ -20,10 +20,14 @@ read-only.
 
 - Treat the maintained summary, entries, commands, scripts, retained artifacts,
   `data.json`, `evidence.json`, `retention.json`, and authored prose as
-  read-only. Reproduce writes its generated job, result, and report paths and
-  may change only `requires_reproduction: true` to `requires_reproduction:
-  false` for a completed execution in `pyrun.json`. A later explicit
-  validation owns its own generated files.
+  read-only. Dry-run preparation evaluates without publishing validation. A
+  non-dry launch first publishes the fresh completed validation snapshot under
+  the normal validation locks, then accepts and runs the reproduction plan.
+  After that preparation publication, Reproduce writes only its generated job,
+  result, and report paths and may change only `requires_reproduction: true` to
+  `requires_reproduction: false` for a completed execution in `pyrun.json`.
+  There is no automatic post-run validation; a later explicit Validate owns any
+  subsequent validation publication.
 - Do not interpret Markdown as execution authority, select commands, repair a
   recipe, judge scientific meaning, or decide whether a changed artifact should
   replace retained research material.
@@ -70,7 +74,7 @@ remain boundaries; the CLI never widens the run by executing commands from
 another entry or log.
 
 For explicitly requested verification after a script or recorded local-code
-repair, use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID`.
+repair, use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID`.
 It is synchronous and isolated, retains private outputs and diagnostics, and
 preserves `pyrun.json` and all generated records. It has no admission,
 automatic-policy, run, resume, report, validation, publication, or promotion
@@ -103,11 +107,14 @@ State whether the preview or launch uses incremental or recheck selection.
 
 Treat a valid partial plan as useful work. Fresh preparation evaluates the log
 once under the log lock and derives admission from that evaluation, not from a
-previously published validation bundle. A pre-existing changed or missing
+previously published validation snapshot. Dry run keeps that evaluation
+in-memory; non-dry launch publishes it before plan acceptance. A pre-existing changed or missing
 script, participating code file, direct input, retained boundary, or comparison
 baseline fails only its owning execution when the planner can identify it;
-dependants are skipped and independent executions remain runnable. Do not
-repair or reinterpret any of these findings during reproduction.
+dependants are skipped and independent executions remain runnable. These are
+Reproduce planning conditions; currentness mismatches remain Reproduce-owned,
+while missing required research material may independently be a validation
+finding. Do not conflate or reinterpret the two during reproduction.
 
 The default run first classifies a current execution with
 `requires_reproduction: false` as reproduction not needed, even when
@@ -263,9 +270,9 @@ It does not move or discard the run folder.
 
 `log reproduce` accepts only whole-log or stable-entry targets. It has no
 one-command repair mode, and run-ID single-execution presentation is removed.
-Each current run stores one immutable plan/10 and mutable checkpoint
+Each current run stores one immutable plan/11 and mutable checkpoint
 state in its run-local `state.sqlite`; stopped work resumes only that accepted
-plan. Use `log repair-check` for one current invocation. Historical result/11
+plan. Use `log command verify` for one current invocation. Historical result/11
 execution rows remain read-only. Canonical historical JSON jobs without
 `state.sqlite` are unsupported and left unchanged; start a new run instead of
 asking Reproduce to migrate or repair one.

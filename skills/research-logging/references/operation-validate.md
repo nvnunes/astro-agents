@@ -1,171 +1,119 @@
 # Validate Operation Instructions
 
-Use this operation for independent mechanical validation of one or more
-maintained research logs and for researcher-requested read-only diagnosis of
-named mechanical-validation findings. Run Validate as a separate operation
-after Record. A validation run is read-only for research-owned material but
-normally writes generated validation state; use `--dry-run` to publish no
-result or cache changes beyond the generated coordination lock. A diagnosis
-does not rerun validation unless the researcher separately requests it. The
-same agent may perform either path, but must not edit or repair research-owned
-material. A research-log finding requires a later, separately authorized
-Repair operation. `unsupported_metadata` is instead a validation-state
-blocker: report its paths and stop. Before rerunning, ask the user to authorize
-a separate action that archives the reported generated paths outside the
-active log or removes them. Do not route that status to Record or resolve it
-during Validate. Successful execution or inspection during Record is not
-validation.
+Use this operation for independent mechanical validation of maintained research
+logs and read-only diagnosis of saved validation findings or repair batches.
+Validation reads research-owned material and normally publishes generated
+validation state. It does not edit research material, execute research
+commands, judge scientific meaning, or perform reproduction. A later Repair
+operation must be separately authorized.
 
 Read `references/file-validation-records.md` before invoking the canonical
 tool.
 
 ## Boundaries
 
-- Treat the maintained summary, entries, commands, scripts, artifacts,
-  `data.json`, `retention.json`, evidence records, and prose as read-only.
+- Treat summaries, entries, commands, scripts, artifacts, registries, evidence
+  records, retention declarations, and prose as read-only.
 - Write only the generated paths owned by
   `references/file-validation-records.md`.
-- Validate the files on disk without consulting commits, branches, diffs, or
-  other source-control state. The nearest Git worktree marker is used only to
-  establish project scope for the shared generated cache.
-- Do not execute research commands, inspect script internals for hidden
-  associations, make semantic judgments, or attempt reproduction.
-- Report findings precisely. Do not edit research content or generated records
-  by hand.
+- Validate current files on disk without consulting source-control history.
+- Report exact findings, blocked checks, and validator failures. Do not infer
+  missing relationships or repair anything during Validate.
+- Keep Reproduce currentness separate. A reproduction requirement or stale
+  execution signature is not a validation finding or blocker.
 
-Use the research project's required Python interpreter or launcher. Do not
-silently substitute system Python when the project defines an environment with
-the required artifact readers.
+Use the research project's required Python interpreter or launcher.
 
 ## Run
 
-Resolve the extensionless `scripts/log` entrypoint from this skill package and
-run one-log validation against the logical log path:
+Resolve the extensionless `scripts/log` entrypoint from this skill package.
 
 ```bash
-<skill>/scripts/log validate --path <log>
+<skill>/scripts/log validate run --path <log>
+<skill>/scripts/log validate run --path <log> --entry eNNN
+<skill>/scripts/log validate run --root <project-root>
 ```
 
-For repo-wide or multi-log validation, run the bounded all-log operation:
+`--path` validates one logical log. `--entry` creates or replaces only that
+entry's scoped snapshot. `--root` uses canonical bounded discovery and
+validates every discovered log independently. Do not construct the log set
+with filename globs.
+
+Use `--dry-run` to evaluate without publishing snapshots, reports, or caches.
+Use `--recompute-validation` to bypass evidence-selection reuse,
+`--recompute-fingerprints` to bypass fingerprint reuse, or `--recompute` for
+both.
+
+Each applicable validation check has exactly one outcome:
+
+- `pass`: the rule was evaluated and satisfied;
+- `finding`: the rule identified an authored validation defect;
+- `blocked`: the rule could not run because a finding or failed check blocked
+  it; and
+- `failed`: the validator could not complete that localized check reliably.
+
+Rules excluded by applicability create no check and no count. Reproduction
+currentness also creates no validation check.
+
+A completed snapshot is `clear`, `findings`, or `failed`. Blocked checks do not
+choose the snapshot outcome independently. Localized failed checks are saved,
+independent checks continue, and their dependents are blocked. Capacity or
+resource exhaustion, source mutation across the operation boundary, and other
+whole-operation failures publish no new snapshot and preserve the prior one.
+
+A one-log run exits 0 for `clear` or `findings`, 3 for `failed`, including a
+nonpublishing dry run, and 2 for an operation failure. A nondry completed run
+saves its snapshot. A root run uses precedence 2, then 3, then 0. If another
+operation owns the log lock, report its supplied metadata
+once and stop; do not retry, poll, or alter generated state.
+
+## Saved Views And Report
+
+Saved views never reevaluate research files:
 
 ```bash
-<skill>/scripts/log validate --root <project-root>
+<skill>/scripts/log validate show --path <log>
+<skill>/scripts/log validate show --root <project-root>
+<skill>/scripts/log validate list findings --path <log> [--entry eNNN] [--type TYPE]
+<skill>/scripts/log validate list batches --path <log> [--entry eNNN]
+<skill>/scripts/log validate list blocked --path <log> [--entry eNNN]
+<skill>/scripts/log validate list failed --path <log> [--entry eNNN]
+<skill>/scripts/log validate detail finding --path <log> [--entry eNNN] --id FINDING_ID
+<skill>/scripts/log validate detail batch --path <log> [--entry eNNN] --id BATCH_ID
+<skill>/scripts/log validate render --path <log>
 ```
 
-It uses the same canonical discovery contract as
-`<skill>/scripts/log discover --root <project-root>` and returns one bounded
-batch result. Its default text is the complete finished Markdown comparison
-for every discovered log, including concise explanations for incomplete,
-blocked, or operationally failed rows. Present it unchanged; do not open
-generated reports or interpret the structured collections to reconstruct it.
-Do not build the log set with filename globs, and do not exclude a candidate
-because its basename is `validation.md`. Discovery recognizes a regular summary
-only from its regular sibling log root and that root's regular `entries/`
-directory; it does not read Markdown. Validation owns every discovered
-candidate's content defects.
+Request `--format json` explicitly for structured output. Follow the exact
+continuation command printed by a bounded text view.
 
-Use `--date YYYY-MM-DD` only when the result date must be explicit. Use
-`--dry-run` to evaluate without writing generated files. Use
-`--recompute-validation` to bypass only per-log evidence-selection reuse, or
-`--recompute-fingerprints` to bypass only the project-level fingerprint cache.
-The two flags may be combined. `--recompute` remains shorthand for both: it
-evaluates every check from current research material and rebuilds both generated
-caches during a writable run. A dry run never writes either cache; a bypassed
-cache is not opened for reuse.
+The single-log summary reports finding counts under Conformance, Evidence,
+Provenance, and Orphans, plus batches, blocked checks, and failed checks. The
+cross-log table shows only finding-type and batch counts. It reports aggregate
+Blocked and Failed counts below the table and marks those totals partial if a
+discovered log lacks a readable full snapshot. Root text uses final directory
+names and compact `Mon D` UTC dates; JSON retains canonical paths and exact
+timestamps.
 
-Interpret `status` as follows:
+One finding check produces one finding at its natural subject.
+Graph fan-out belongs in repair context, not the finding count. Every finding
+belongs to one deterministic repair batch; batches may cross finding types.
+Only residual singleton Orphans findings may be consolidated by exact entry
+and orphan code.
 
-- `complete_clear`: the mechanical evaluation completed without findings;
-- `complete_findings`: the mechanical evaluation completed and precisely
-  identified one or more findings;
-- `unsupported_metadata`: the target contains recognized unsupported generated
-  metadata that prevents evaluation under the current contract; nothing was
-  written;
-- `incomplete`: a required mechanical observation was unavailable, so no new
-  generated bundle was published.
-
-For one-log validation, the first three statuses exit zero because the
-requested evaluation or preflight completed; `incomplete` exits nonzero. A
-`--root` batch exits nonzero when `failures` is non-empty or any result is
-`incomplete`, even though standard error can be empty. A top-level tool failure
-that prevents a structured result also exits nonzero and prints a precise error
-to standard error. If a conflicting research operation owns the log lock,
-report the supplied owner metadata once and stop. Do not retry, poll, inspect
-process tables, work around the lock, or alter generated state.
-
-## Report
-
-Present the returned text report unchanged for one-log and `--root`
-validation. The tool also returns available cached result IDs and inspection
-commands. JSON consumers must explicitly request `--format json`. Do not
-reconstruct, reformat, supplement, or reconcile the report against
-the structured fields or generated files. The report already contains the
-shared human area wording, publication links or `Not published`, and concise
-explanations for incomplete or blocked results. The batch report likewise
-includes every discovered log and every exceptional explanation even when the
-command exits nonzero.
-
-In the cross-log table, Structure counts primary repair batches as chains,
-structural batches, and inspection groups. Related chain links do not add work;
-inspection groups establish no common cause. `—` marks incomplete Structure
-evaluation; completed zero counts remain `Clear`.
-
-Structured fields remain available with `--format json`; they are not an
-additional agent reporting task. Use `results show --path <log> --id <result-id>`
-for saved observations. If producer stdout is lost, list candidates with
-`results list --path <log> --kind full` without rerunning validation. Match the
-result's scope and evaluation time to the invocation before using its ID;
-a failed run can leave an older result. If the match is uncertain, report the
-outcome as unknown.
-
-For `unsupported_metadata`, stop after presenting the report and request separate
-user authorization before archiving or removing the identified generated
-paths. Do not route the blocker to Record. When an invocation returns no
-structured result at all, report the precise operational error from standard
-error.
-
-Do not invent item-specific repair guidance. A separately authorized Repair
-operation resolves a reported condition from its exact target
-and progressively loads only the applicable contract.
+`log validate render` rebuilds `validation.md` from the saved snapshot without
+reevaluation. Never query or edit generated storage directly.
 
 ## Diagnose Named Findings
 
-When the researcher asks to inspect, explain, triage, or determine the cause of
-a named mechanical finding or bounded finding group, keep the work within
-Validate and do not rerun validation unless requested.
+Use finding detail for one atomic defect and batch detail for a complete repair
+packet. Finding detail includes the saved issue title and explanation, exact
+rule and subject, source locations, containing batch, and complete bounded
+diagnostic. For comparison defects, read its labelled reason, actual state,
+and expected state before opening source files; inspect only the affected
+research files and enough surrounding metadata to confirm or further explain
+the deterministic defect.
+Diagnosis is read-only and does not authorize a repair, semantic review, or
+reproduction.
 
-Use the supplied result ID. Only when none is supplied, obtain one with
-`<skill>/scripts/log results show --path <log> --latest --kind full`.
-Pin that ID for subsequent views:
-
-```text
-<skill>/scripts/log results show --path <log> --id <result-id> --view findings \
-  [--entry <entry>] [--code <code>]
-<skill>/scripts/log results finding --path <log> --id <result-id> --finding <check-id>
-```
-
-Request only missing command, artifact, collection, or value detail through
-`results` commands. Do not duplicate queryable output in files or parse JSON to
-reconstruct reports. For current publications without a cached result, use
-`log findings list` or `log findings show` with exact selectors; cache absence
-does not authorize another validation. Cached results are historical and can
-be superseded or cleared; record conclusions independently of their IDs.
-
-Use exact filters and inspect only the affected research files
-and enough surrounding metadata or recorded commands to explain the
-deterministic failed relationship. Do not parse generated validation files,
-inspect script internals, execute research commands, make semantic judgments,
-or select Review lenses. Report the mechanical cause and affected scope in
-plain language without Review finding classes or independence statements.
-
-Diagnosis is read-only. Do not apply a correction or choose among plausible
-repairs. Begin Repair only after the researcher explicitly asks to correct the
-finding.
-
-Entry validation is a bounded inspection operation. Use
-`log validate --path <log> --entry eNNN` to assess an affected stable entry,
-then run full validation when complete-log clearance is required. It never
-publishes a full validation bundle or substitutes for full validation.
-
-Mechanical validation does not continue into semantic review or reproduction.
-Those are separate workflows with separate ownership.
+Entry selectors use stable physical entry IDs such as `e004`; split document
+stems are not CLI entry selectors.

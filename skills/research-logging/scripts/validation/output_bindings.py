@@ -92,7 +92,7 @@ def project_output_bindings(
     """Derive one closed output-to-occurrence projection without Markdown.
 
     One canonicalizable alias remains mechanically resolvable and is exposed in
-    ``aliases`` for the validator's Structure conclusion. Missing, repeated, or
+    ``aliases`` for the validator's Conformance conclusion. Missing, repeated, or
     otherwise ambiguous occurrences fail here for every consumer.
     """
 

@@ -71,20 +71,20 @@ The initial implementation must use these versions:
 | Execution identity | `pyrun-exec/v2:<sha256>` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=15`; the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-results) |
+| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=19`; versions 17 and 18 are recognized only as replacement-required validation state, and the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-snapshots) |
 | Reproduction result projection | `research-log-reproduction-result/11` |
 | Per-log summary | `research-log-reproduction-summary/5` |
 | Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run store | run-local `state.sqlite`, SQLite `user_version=2` |
+| Durable run store | run-local `state.sqlite`, SQLite `user_version=3` |
 | Run status projection | `research-log-reproduction-status/7` |
-| Accepted plan | `research-log-reproduction-plan/10` |
+| Accepted plan | `research-log-reproduction-plan/11` |
 | Command list | `research-log-reproduction-command-list/3` |
 | Command detail | `research-log-reproduction-command/3` |
 | Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=2` |
 | Comparison dispatch | `research-log-reproduction-comparison/1` |
 | Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
 | Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
-| Isolated repair-check result | `research-log-repair-check-result/1` |
+| Isolated command-verification result | `research-log-command-verification-result/1` |
 
 Reproduction uses durable run-local state, status/7, and the consolidated
 result-store schema. Older job files are
@@ -247,7 +247,7 @@ The operational authority is:
 | `evidence.json` | Reproduction roots and exact retained evidence-source identity |
 | `data.json` | Named material location, declaration identity, and origin/generated classification |
 | `pyrun.json` | Current executable recipes and observed execution state |
-| `.cache/results.sqlite` validation domain | Reproduction admission result and per-chain projection |
+| `.cache/results.sqlite` validation domain | Retained validation snapshots and report projection; Reproduce does not read this domain for admission |
 | `validation.md` | Source-controlled human validation projection only |
 | `.cache/results.sqlite` reproduction domain | Disposable local reproduction results and run projection |
 | Durable run directory and `state.sqlite` | Active, stopped, failed, and staged run-specific operational state |
@@ -431,10 +431,10 @@ value, including the value after the first `=` in an equals-delimited option.
 The same canonical output in more than one occurrence is ambiguous, even if
 only one occurrence carried an output role during ingestion. An output in the
 map with no occurrence is missing. Either condition is invalid for execution
-and a Structure failure during validation.
+and a Conformance finding during validation.
 
 A single noncanonical spelling that resolves to the output identity remains
-mechanically bindable but is also a Structure failure. This lets `pyrun`
+mechanically bindable but is also a Conformance finding. This lets `pyrun`
 record the completed live invocation without inventing a second identity while
 requiring the authored command to use the canonical spelling before
 reproduction. The binding projection is derived wholly from `parameters` and
@@ -734,57 +734,62 @@ consume it. Status and resume retain the accepted limit and do not accept an
 override.
 
 Log and entry targets retain their existing evidence and command selection.
-Use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID` for one
-current repaired invocation. It is isolated and synchronous, does not create a
+Use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID` for one
+current recorded invocation. It is isolated and synchronous, does not create a
 run, does not apply automatic-policy admission, cannot resume or publish, and
 never changes execution metadata, validation, results, or promotion state.
 
 ### Admission Gate
 
 Before accepting or previewing work, reproduction evaluates the current log
-once under the ordinary log lock. Incomplete evaluation or an unresolved global
-admission blocker rejects preparation. Published validation files are neither
-read nor freshness tokens. Current findings are admitted per connected
-same-entry command chain: Structure, Evidence, and failed Provenance findings
-exclude only their affected batches. Independent batches remain eligible, and
-ordinary dependency propagation prevents admitted downstream work from running
-when it depends on an excluded upstream batch.
+once under the ordinary log lock. Admission consumes that evaluation's fresh,
+complete `ValidationSnapshot`, its shared live `ResearchGraph`, and the exact
+selected executions. It never reads retained validation rows or published
+validation files. A whole-operation evaluation error, a completed validation
+snapshot containing failed checks, or an unresolved log-owned blocker rejects
+preparation. The failed-snapshot case reports `reproduction.validation.failed`;
+validation has no incomplete outcome.
 
-Provenance and Hygiene findings caused only by a pending reproduction
-requirement do not block reproduction. Runnable recipes with that requirement
-are deliberately eligible so reproduction can clear it.
+Each selected persisted execution must bind to exactly one command through a
+`COMMAND_EXECUTION` edge and that command must account for the execution's
+complete canonical output set. An absent, multiple, or partial binding fails
+closed as `reproduction.validation.scope_unresolved`.
 
-The validation subsystem's persisted batch projection determines finding
-membership and admission through validation-owned `none`, `chain`, `entry`,
-and `log` effects with exact affected identities. Reproduction must not
-reconstruct groups or classify raw check failures independently. `none` remains
-reportable without affecting executable work; `chain` excludes one projected
-chain; `entry` excludes runnable work in one physical entry; and `log` refuses
-the complete plan. A selected execution output must map to exactly one
-projected chain; an absent or ambiguous execution-to-chain mapping remains a
-whole-run integrity failure. Summary provenance that depends on
-`provenance.output.reproduction_required` remains a non-failing dependent check and
-does not create an additional admission blocker. A summary-only unresolved
-reference with no association to evidence, registered data, execution state,
-or runnable material has effect `none`; its reporting does not block unrelated
-execution.
+Admission is finding-owned. Conformance, Evidence, and Provenance findings
+block according to their typed owner and graph context: log-owned
+findings reject the complete plan; entry-owned findings exclude selected work
+in that physical entry; and command-, execution-, material-, or record-attached
+findings exclude only attached selected executions. An unanchored blocking
+finding fails closed unless it is explicitly an unrelated missing-producer or
+unresolved-summary finding. Independent work remains eligible. After direct
+decisions, execution dependencies propagate upstream blockers to selected
+downstream work.
 
-Projected chain and entry-scoped unresolved-group `entry` values are exact
-entry-document IDs. Reproduction resolves each through the canonical entry
-document grammar to its owning physical stable entry before matching selected
-executions or recording batch admission. Split documents such as `e001a` and
-`e001b` therefore share the `e001` execution owner without changing their
-published chain identities. A chain matches an execution only when one of its
-authored commands directly produces the execution's complete output set;
-input-only, registry, and general artifact presence do not establish
-production. Missing, invalid, absent, or multiply matching scopes still fail
-closed, and batch admission records the physical stable entry ID. Existing
-same-ID documents retain the identical mapping.
+All Orphans findings are nonblocking. Reproduce obtains output-currentness and
+pending-work conclusions directly from the shared evaluation path; those
+conditions are not validation findings. Runnable recipes with pending
+reproduction work are deliberately eligible. Repair batches may combine
+validation findings of different types, but they carry no
+admission authority and cannot widen or suppress a finding's effect. The
+accepted plan records one admitted or excluded decision per selected execution,
+including its blocking finding IDs. A global blocker rejects preparation and is
+therefore never persisted in an accepted plan. The closed admission record has
+exactly `schema`, `validation_snapshot_id`, `rules_version`, `evaluated_at`, and
+`executions`; each execution record has exactly `entry`, `cid`, `execution_id`,
+`disposition`, and `blocking_finding_ids`.
+
+Validation normalizes split documents such as `e001a` and `e001b` to their
+physical stable `e001` entry owner while building the graph. Existing same-ID
+documents retain the identical mapping.
 
 ### Graph Construction
 
-Reproduction constructs a bounded graph only from current `evidence.json`,
-`data.json`, and `pyrun.json`:
+Validation constructs one bounded neutral `ResearchGraph` from the current
+`evidence.json`, `data.json`, and `pyrun.json` observations it has already
+loaded. Reproduction consumes that graph for exact binding, dependency
+traversal, and admission. It retains ownership of target selection and
+scheduling, but does not reconstruct a second graph or consume validation
+chains. Graph construction:
 
 1. resolve every target evidence source to its declared data item;
 2. stop at `origin: true` inputs;
@@ -943,7 +948,7 @@ names and outcomes. The fixtures execute no maintained research command.
 `--dry-run` applies the same admission, discovery, graph construction, automatic
 policy, incremental-or-recheck selection, and safety preflight as a real
 launch. By default, it emits one
-deterministic `research-log-reproduction-plan/10` projection with exactly
+deterministic `research-log-reproduction-plan/11` projection with exactly
 `schema`, `summary`, `target`, `include_all`, `jobs`,
 `execution_timeout_seconds`, `admission`, `commands`, `comparison_context`,
 `cases`, `executions`, `boundaries`, and `failures`.
@@ -990,9 +995,12 @@ result/11 execution targets are passive rows with exactly `kind`, `entry`,
 are sorted artifact projections with exactly
 `entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
 
-`admission` records the fresh evaluation identity, rules version, operation
-date, and each admitted or excluded chain decision. It explains acceptance; it
-is not a live freshness token and names no published validation file. `commands`
+`admission` records the fresh validation snapshot identity, rules version,
+evaluation time, and one admitted or excluded decision for every selected
+execution. Each decision is keyed by `{entry, cid,
+execution_id}` and records its exact blocking finding IDs. It explains
+acceptance; it is not a live freshness token and names no published validation
+file. `commands`
 is the immutable selection and accounting inventory. Each compound `{entry,
 cid, execution_id}` record retains its recipe, policy, selection reason, working
 directory, and accepted execution observations. `executions` references those
@@ -1031,7 +1039,7 @@ A non-dry launch with no selected executions normally performs a no-op
 reproduction reconciliation. It creates no run ID, run folder, worker,
 reproduction-result write, or reproduction-report write. Like every non-dry
 launch, it first evaluates and publishes current mechanical validation under
-the normal locks; that validation result and `validation.md` are separate from
+the normal locks; that validation snapshot and `validation.md` are separate from
 reproduction state. The sole exception after that validation publication is
 explicitly launched empty-target whole-log recheck recovery of unsupported
 generated reproduction results, as specified in
@@ -1083,7 +1091,7 @@ membership. Resume cannot add commands or change any accepted setting; current
 runs have no one-execution target.
 
 The `runs` row owns immutable run metadata and paths. The normalized
-`accepted_*` rows are the single accepted plan/10 authority: admission,
+`accepted_*` rows are the single accepted plan/11 authority: admission,
 commands, recipes, materials, dependencies, outputs, claims, cases,
 boundaries, failures, and comparison definitions. They are inserted once and
 are not lifecycle history.
@@ -1287,9 +1295,10 @@ generated paths.
 Every ordinary declared output must bind unambiguously to exactly one recorded
 child-parameter occurrence. Runner-owned captures are direct bindings. Before
 execution, the executor substitutes each binding with the corresponding path
-inside the run workspace. Current clean Structure validation is an admission
-requirement and therefore prevents a recipe with a missing, ambiguous, or
-noncanonical binding from reaching execution. The executor consumes the same
+inside the run workspace. Blocking output-binding Conformance findings attached
+to a selected execution exclude that execution and therefore prevent a recipe
+with a missing, ambiguous, or noncanonical binding from reaching execution.
+Unrelated selected work remains eligible. The executor consumes the same
 shared binding projection defensively; an unexpected projection failure means
 an accepted invocation observation changed or an implementation invariant failed,
 not a separate artifact outcome or user-facing binding check.
@@ -1331,7 +1340,7 @@ precedence outside that shared component. Its retained stdout/stderr
 diagnostics and declared captures are required destinations: a write, durable
 flush, or bounded-drain failure stops the supervised tree and records
 `capture_failed` unless incomplete worker cleanup has precedence. The isolated
-repair check uses this same reproduction execution path without durable-job
+command verification uses this same reproduction execution path without durable-job
 state.
 
 Both runners create fresh, unique scratch directories under `/private/tmp`
@@ -1575,7 +1584,7 @@ queryable reproduction results. The reproduction domain stores normalized
 artifact, execution, command, and terminal-run projection rows keyed by their
 stable identities. It has no maintained aggregate JSON encoding.
 
-In consolidated store schema v15, each retained run has a positive internal
+In consolidated store schema v19, each retained run has a positive internal
 `run_pk`; the public `run_id` remains the only run identity exposed by reports,
 queries, exports, or producing-run fields. Run-command and run-execution
 junctions use `WITHOUT ROWID` composite primary keys. A historical command row
@@ -1584,7 +1593,9 @@ bounded `details_json` list and one bounded `recipe_json` object. Historical
 execution rows and command-to-execution relationships are CID-qualified. There
 is no `detail_json` copy of those same values, and the unchanged public
 command-detail object is reconstructed only for a selected row or explicit
-export.
+export. A version-17 or version-18 store is never translated as validation input; its
+reproduction-domain rows survive the first successful version-19 validation
+replacement transaction unchanged.
 
 Cumulative publication and explicit export enforce the 64 MiB domain ceiling
 with a canonical incremental encoder over normalized rows. The encoder stops
@@ -2197,8 +2208,8 @@ and Reproduce require `pyrun.json`; neither executes legacy
 legacy validation Reproduction section is not a current report surface.
 
 Parallel scheduling uses `research-log-pyrun/v6`. A current reproduction job
-uses run-local SQLite `user_version=2`, one accepted
-`research-log-reproduction-plan/10`, and the public
+uses run-local SQLite `user_version=3`, one accepted
+`research-log-reproduction-plan/11`, and the public
 `research-log-reproduction-status/7` projection. JSON
 `research-log-reproduction-run/7` and every earlier accepted reproduction job
 format are unsupported immutable history: no current consumer decodes them
@@ -2263,21 +2274,31 @@ entry-level cutover evaluation are complete. Full maintained-corpus
 reproduction remains gated by the reproduction plan. The frozen result and
 status fixtures remain the compatibility boundary.
 
-## Part 3.C Current Repair Boundary
+Validation admission reaches Reproduce through finding-owned per-execution
+decisions over validation's shared live `ResearchGraph`. Reproduce reads no
+retained validation projection and reconstructs no second owner/dependency
+graph. Repair batches have no admission authority.
 
-The current isolated repair operation is `log repair-check --path LOG --entry
-ENTRY --cid CID --execution-id ID`. It uses current declarations and retained output
+## Part 3.C Current Command Verification Boundary
+
+The current isolated verification operation is:
+
+```text
+log command verify --path LOG --entry ENTRY --cid CID --execution-id ID [--execution-timeout-seconds SECONDS] [--format text|json]
+```
+
+It uses current declarations and retained output
 baselines in an isolated synchronous workspace. It never creates a run or
 changes generated results, reports, validation, promotion, or execution
 metadata. Bare reproduction targets are only log or entry. Current accepted
-plans are plan/10, their mutable lifecycle lives in run-local SQLite
-`user_version=2`, and status/7 is a derived public projection. State rows bind
+plans are plan/11, their mutable lifecycle lives in run-local SQLite
+`user_version=3`, and status/7 is a derived public projection. State rows bind
 each planned command and execution to its stable CID. JSON run/7 is
 unsupported historical job state, not a current mutable record. Earlier plans
 are rejected without migration. Result/11 retains passive read-only rendering
 of historical one-command rows.
 
-`repair-check` requires one exact stable entry, one stable CID, and one complete
+`command-verification` requires one exact stable entry, one stable CID, and one complete
 lowercase `pyrun-exec/v2:<64 hexadecimal digits>` identity. It resolves exactly one
 current Markdown invocation whose recorded recipe remains identical. Unknown,
 malformed, absent, ambiguous, or changed-recipe selections fail before a
@@ -2306,7 +2327,7 @@ recipe, declaration, participating-code observation, input observation, or
 evidence rule.
 
 After preflight, the retained workspace is
-`<project>/tmp/repair-check/YYYY-MM-DD/repair-check-<log>-<entry>-<random>/`.
+`<project>/tmp/command-verification/YYYY-MM-DD/command-verification-<log>-<entry>-<random>/`.
 Private outputs and stdout/stderr diagnostics remain there for inspection.
 After workspace creation, it is retained for every terminal outcome, including
 unavailable and cancelled calls. Selector, authority, input, baseline, and
@@ -2315,15 +2336,16 @@ The operation confines child outputs to that workspace and must not modify
 retained research inputs, baselines, `pyrun.json`, reproduction cache,
 generated report, validation cache, requirement flags, or promotion state.
 
-Its only machine result is one `research-log-repair-check-result/1` object.
+Its only machine result is one `research-log-command-verification-result/1` object.
 It has exactly `schema`, `summary`, `entry`, `cid`, `execution_id`, `status`,
 `exit_status`, `published:false`, nullable `workspace`, `execution`, `inputs`,
 `outputs`, `diagnostics`, and `limitations`. `execution` reports return code,
 checkpoint state, failure, recorded policy fields, and current source records;
 `inputs` report recorded and current fingerprints plus historical difference;
 `outputs` report isolated paths and comparison outcomes; diagnostics carry
-stdout/stderr text and paths. `limitations` includes `selected_repair_only`.
+stdout/stderr text and paths. `limitations` includes `selected_command_only`.
 No result has a run ID, plan, publication, or promotion field.
+Text is the default presentation; `--format json` emits the machine result.
 
 `matched` exits 0; `different` exits 1; `worker_cleanup_incomplete` exits 2;
 and `execution_failed`, `comparison_unavailable`, and `unavailable` exit 3.

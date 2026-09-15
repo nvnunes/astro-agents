@@ -27,6 +27,7 @@ from validation.pyrun_state import (
     PyrunCommand,
     PyrunExecution,
     PyrunFile,
+    associate_exact_execution,
     compare_command,
     execution_id,
     pending_execution,
@@ -579,6 +580,59 @@ class CommandComparisonTests(unittest.TestCase):
             ObservedExecution(None, (), (), ()),
             invocation.exclusive,
         )
+
+    def test_exact_association_compares_the_complete_canonical_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = _context(root)
+            invocation = _discover_exact(
+                "./pyrun --cid build --capture-stdout data/result.csv "
+                "-- scripts/run.py --mode exact",
+                context,
+            ).invocations[0]
+            current = self._stored(invocation, root, context.entry_root)
+            identity = execution_id(current.recipe)
+            exact = PyrunFile(
+                context.entry_root / PYRUN_FILENAME,
+                context.entry_root,
+                {"build": PyrunCommand({identity: current})},
+            )
+            self.assertIsNotNone(
+                associate_exact_execution(exact, invocation, project_root=root)
+            )
+
+            mismatches = (
+                (
+                    "environment",
+                    replace(current.recipe, environment=(("MODE", "new"),)),
+                ),
+                ("inputs", replace(current.recipe, inputs=("catalog",))),
+                (
+                    "output-kind",
+                    replace(
+                        current.recipe,
+                        outputs=((current.recipe.outputs[0][0], "directory"),),
+                    ),
+                ),
+            )
+            for label, recipe in mismatches:
+                with self.subTest(label=label):
+                    state = PyrunFile(
+                        context.entry_root / PYRUN_FILENAME,
+                        context.entry_root,
+                        {
+                            "build": PyrunCommand(
+                                {identity: replace(current, recipe=recipe)}
+                            )
+                        },
+                    )
+                    self.assertIsNone(
+                        associate_exact_execution(
+                            state,
+                            invocation,
+                            project_root=root,
+                        )
+                    )
 
     def test_comparison_categories_are_disjoint_and_parameter_first(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

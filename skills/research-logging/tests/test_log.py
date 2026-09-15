@@ -327,18 +327,28 @@ print(json.dumps({{
 
 
 class LogValidationRouteTests(unittest.TestCase):
-    def test_public_routes_preserve_one_log_discovery_and_batch_results(self) -> None:
+    def test_public_routes_preserve_one_log_discovery_and_root_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, _ = fixture(root)
-            common = ("--date", "2026-09-03", "--dry-run", "--recompute")
+            common = ("--dry-run", "--recompute")
             current = run(
-                root, "validate", "--format", "json", "--path", str(logical), *common
+                root,
+                "validate",
+                "run",
+                "--format",
+                "json",
+                "--path",
+                str(logical),
+                *common,
             )
             self.assertEqual(current.returncode, 0, current.stderr)
             current_payload = json.loads(current.stdout)
-            self.assertEqual(current_payload["status"], "complete_findings")
-            self.assertFalse(current_payload["published"])
+            self.assertEqual(current_payload["outcome"], "findings")
+            self.assertFalse(current_payload["saved"])
+            self.assertEqual(
+                current_payload["schema"], "research-log-validation-run/1"
+            )
 
             new_discovery = run(root, "discover", "--root", str(root))
             self.assertEqual(new_discovery.returncode, 0, new_discovery.stderr)
@@ -347,38 +357,26 @@ class LogValidationRouteTests(unittest.TestCase):
                 [logical.with_suffix(".md").resolve().as_posix()],
             )
 
-            batch = run(
-                root, "validate", "--format", "json", "--root", str(root), *common
+            root_run = run(
+                root,
+                "validate",
+                "run",
+                "--format",
+                "json",
+                "--root",
+                str(root),
+                *common,
             )
-            self.assertEqual(batch.returncode, current.returncode, batch.stderr)
-            batch_payload = json.loads(batch.stdout)
-            batch_result = batch_payload["results"][0]
             self.assertEqual(
-                set(batch_result["metrics"]),
-                set(json.loads(current.stdout)["metrics"]),
+                root_run.returncode, current.returncode, root_run.stderr
             )
-            batch_result.pop("metrics")
-            expected = json.loads(current.stdout)
-            expected.pop("metrics")
-            self.assertEqual(batch_payload["results"], [expected])
+            root_payload = json.loads(root_run.stdout)
+            self.assertEqual(root_payload["rows"], [current_payload])
             self.assertEqual(
-                batch_payload["schema"], "research-log-validation-batch-result/1"
+                root_payload["schema"], "research-log-validation-root-run/1"
             )
-            self.assertEqual(batch_payload["failures"], [])
-            self.assertIn(
-                "| Research log | Structure | Evidence | Reproduction | Report |",
-                batch_payload["report"],
-            )
-            self.assertIn(
-                f"[Study](<{logical.with_suffix('.md').resolve()}>)",
-                batch_payload["report"],
-            )
-            self.assertIn("| 2 inspection | 1 | Clear |", batch_payload["report"])
-            self.assertNotIn(
-                "Study: 2 structural groups could not be assigned to command chains.",
-                batch_payload["report"],
-            )
-            self.assertIn("Not published", batch_payload["report"])
+            self.assertEqual(root_payload["findings_count"], 1)
+            self.assertEqual(root_payload["error_count"], 0)
 
     def test_validation_does_not_load_mutation_families(self) -> None:
         script_root = LOG.parent
@@ -388,7 +386,7 @@ import sys
 sys.path.insert(0, {str(script_root)!r})
 from log_commands.dispatcher import main
 try:
-    main([\"validate\", \"--path\", \"missing\", \"--dry-run\"])
+    main([\"validate\", \"run\", \"--path\", \"missing\", \"--dry-run\"])
 except Exception:
     pass
 print(json.dumps({{
@@ -439,11 +437,18 @@ class LogLockTests(unittest.TestCase):
                     "data/new.txt",
                 )
                 publishing = run_log_process(
-                    root, "validate", "--format", "json", "--path", str(logical)
+                    root,
+                    "validate",
+                    "run",
+                    "--format",
+                    "json",
+                    "--path",
+                    str(logical),
                 )
                 dry_run = run_log_process(
                     root,
                     "validate",
+                    "run",
                     "--format",
                     "json",
                     "--path",
@@ -458,9 +463,14 @@ class LogLockTests(unittest.TestCase):
                     check=False,
                 )
 
-            for result in (authoring, publishing, dry_run):
+            self.assertEqual(authoring.returncode, 2, authoring.stderr)
+            self.assertIn("operation", authoring.stderr)
+            for result in (publishing, dry_run):
                 self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("operation", result.stderr)
+                self.assertIn(
+                    "operation", json.loads(result.stdout)["error"]["message"]
+                )
+                self.assertEqual(result.stderr, "")
             self.assertEqual(runner.returncode, 1, runner.stderr)
             self.assertIn("operation conflict", runner.stderr)
             self.assertEqual(

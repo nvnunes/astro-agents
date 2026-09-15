@@ -12,8 +12,8 @@ from typing import Any, Iterable, Mapping, Sequence, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 from validation.evidence_comparison import EVIDENCE_COMPARISON_RESULT_CONTRACT
-from validation.human_projection import ReportContext
 from validation.pyrun_state import PYRUN_EXECUTION_RE
+from validation.report_context import ReportContext
 
 from .context import ENTRY_ID_RE
 from .reproduction_contract import (

@@ -31,13 +31,10 @@ FAMILIES = (
     "data",
     "discover",
     "evidence",
-    "findings",
     "init",
-    "repair-check",
     "reproduce",
     "reorganize",
     "retention",
-    "results",
     "validate",
 )
 AUTHORING_FAMILIES = frozenset(
@@ -64,17 +61,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         _top_parser().error(f"unknown task family: {family}")
     selected_task = (
         f"{family}.{arguments[0]}"
-        if family in {"command", "data", "evidence", "reorganize", "retention"}
+        if family
+        in {"command", "data", "evidence", "reorganize", "retention", "validate"}
         and arguments
         else family
     )
     try:
         read_only_dispatch = {
             "discover": _dispatch_discover,
-            "findings": _dispatch_findings,
             "reproduce": _dispatch_reproduce,
-            "repair-check": _dispatch_repair_check,
-            "results": _dispatch_results,
             "validate": _dispatch_validate,
         }
         if family in read_only_dispatch:
@@ -161,10 +156,13 @@ def _top_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _entry_arguments(parser: argparse.ArgumentParser) -> None:
+def _entry_arguments(
+    parser: argparse.ArgumentParser, *, path_required: bool = False
+) -> None:
     parser.add_argument(
         "--path",
         type=Path,
+        required=path_required,
         help="logical log base whose summary is PATH.md (never the summary file)",
     )
     parser.add_argument("--entry", required=True, help="stable entry ID")
@@ -425,7 +423,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     return result
 
 
-def _dispatch_command(arguments: Sequence[str]) -> ActionResult:
+def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     parser = _AuthoringParser(prog="log command")
     actions = parser.add_subparsers(dest="action", required=True)
     sync = actions.add_parser(
@@ -441,7 +439,30 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult:
     sync.add_argument("--remove", action="append", default=[], metavar="NAME")
     sync.add_argument("--retire", action="append", default=[], metavar="EXECUTION_ID")
     _mutation_argument(sync)
+    verify = actions.add_parser(
+        "verify", help="Run one current recorded command in an isolated workspace"
+    )
+    _entry_arguments(verify, path_required=True)
+    verify.add_argument("--cid", required=True)
+    verify.add_argument("--execution-id", required=True)
+    from .reproduction_contract import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+
+    verify.add_argument(
+        "--execution-timeout-seconds",
+        type=int,
+        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+    )
+    verify.add_argument("--format", choices=("text", "json"), default="text")
+    show = actions.add_parser("show", help="Show the latest command diagnostic")
+    show.add_argument("--path", required=True, type=Path)
+    show.add_argument("--id")
+    show.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
+    if args.action == "verify":
+        return _run_command_verification(args)
+    if args.action == "show":
+        return _show_command_diagnostic(args)
     from .command_sync import sync_command
 
     return sync_command(
@@ -456,6 +477,82 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult:
             dry_run=args.dry_run,
         ),
     )
+
+
+def _run_command_verification(args: argparse.Namespace) -> int:
+    """Run one isolated current command without creating reproduction state."""
+
+    from .command_verification import CommandVerificationRequest, verify_command
+
+    result = verify_command(
+        resolve_log(args.path),
+        CommandVerificationRequest(
+            args.entry,
+            args.cid,
+            args.execution_id,
+            args.execution_timeout_seconds,
+        ),
+    )
+    if args.format == "json":
+        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"{result.status}: {result.execution_id}\nworkspace: {result.workspace}")
+        policy_value = result.execution.get("policy", {})
+        policy = policy_value if isinstance(policy_value, Mapping) else {}
+        print(
+            "policy: "
+            f"auto_reproduce={policy.get('auto_reproduce')} "
+            f"requires_reproduction={policy.get('requires_reproduction')}"
+        )
+        sources = result.execution.get("sources", [])
+        for source in sources if isinstance(sources, list) else []:
+            if isinstance(source, Mapping):
+                print(
+                    "source: "
+                    f"{source.get('name')} current={source.get('current')} "
+                    f"recorded={source.get('recorded')} "
+                    f"differs={source.get('differs_from_recorded')}"
+                )
+        for item in result.inputs:
+            print(
+                "input: "
+                f"{item.get('name')} current={item.get('current')} "
+                f"recorded={item.get('recorded')} "
+                f"differs={item.get('differs_from_recorded')}"
+            )
+        for output in result.outputs:
+            print(
+                f"output: {output.get('artifact')} {output.get('kind')} "
+                f"{output.get('path')} "
+                f"{output.get('outcome')} {output.get('reason') or ''}".rstrip()
+            )
+        print(f"stdout: {result.diagnostics.get('stdout_path', '')}")
+        print(result.diagnostics.get("stdout", ""), end="")
+        print(f"stderr: {result.diagnostics.get('stderr_path', '')}")
+        print(result.diagnostics.get("stderr", ""), end="")
+    return result.exit_status
+
+
+def _show_command_diagnostic(args: argparse.Namespace) -> int:
+    """Show one retained command-owned diagnostic without validation."""
+
+    from validation.command_diagnostics import load_command_diagnostic
+
+    log = resolve_log(args.path)
+    value = load_command_diagnostic(log.root, diagnostic_id=args.id)
+    if args.format == "json":
+        print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"Diagnostic: {value['diagnostic_id']}")
+    print(f"Saved: {value['stored_at']}")
+    print(f"Operation: {value['operation']}")
+    print(f"Code: {value['code']}")
+    if value.get("entry"):
+        print(f"Entry: {value['entry']}")
+    records = value["records"]
+    for record in records if isinstance(records, list) else []:
+        print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _add_data_input_parsers(
@@ -695,104 +792,15 @@ def _dispatch_discover(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="log discover")
     parser.add_argument("--root", required=True, type=Path)
     args = parser.parse_args(arguments)
-    from .validation_adapter import run_discover
+    from .validation_run import run_discover
 
     return run_discover(args.root)
 
 
 def _dispatch_validate(arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="log validate")
-    selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--path", type=Path)
-    selection.add_argument("--root", type=Path)
-    parser.add_argument("--entry", help="stable physical entry ID")
-    parser.add_argument("--date")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--recompute", action="store_true")
-    parser.add_argument("--recompute-validation", action="store_true")
-    parser.add_argument("--recompute-fingerprints", action="store_true")
-    parser.add_argument("--format", choices=("text", "json"), default="text")
-    args = parser.parse_args(arguments)
-    from .validation_adapter import ValidationOptions, run_validate
+    from .validation_cli import run_validate_cli
 
-    return run_validate(
-        path=args.path,
-        root=args.root,
-        output_format=args.format,
-        options=ValidationOptions(
-            result_date=args.date,
-            dry_run=args.dry_run,
-            recompute_validation=(args.recompute or args.recompute_validation),
-            recompute_fingerprints=(args.recompute or args.recompute_fingerprints),
-        ),
-        entry=args.entry,
-    )
-
-
-def _dispatch_repair_check(arguments: Sequence[str]) -> int:
-    """Run one isolated repaired invocation without creating a reproduction run."""
-
-    from .repair_check import RepairCheckRequest, run_repair_check
-    from .reproduction_contract import DEFAULT_EXECUTION_TIMEOUT_SECONDS
-
-    parser = argparse.ArgumentParser(prog="log repair-check")
-    parser.add_argument("--path", required=True, type=Path)
-    parser.add_argument("--entry", required=True)
-    parser.add_argument("--cid", required=True)
-    parser.add_argument("--execution-id", required=True)
-    parser.add_argument(
-        "--execution-timeout-seconds",
-        type=int,
-        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-        metavar="SECONDS",
-    )
-    parser.add_argument("--format", choices=("text", "json"), default="text")
-    args = parser.parse_args(arguments)
-    result = run_repair_check(
-        resolve_log(args.path),
-        RepairCheckRequest(
-            args.entry, args.cid, args.execution_id, args.execution_timeout_seconds
-        ),
-    )
-    if args.format == "json":
-        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
-    else:
-        print(f"{result.status}: {result.execution_id}\nworkspace: {result.workspace}")
-        policy_value = result.execution.get("policy", {})
-        policy = policy_value if isinstance(policy_value, Mapping) else {}
-        print(
-            "policy: "
-            f"auto_reproduce={policy.get('auto_reproduce')} "
-            f"requires_reproduction={policy.get('requires_reproduction')}"
-        )
-        sources = result.execution.get("sources", [])
-        for source in sources if isinstance(sources, list) else []:
-            if not isinstance(source, Mapping):
-                continue
-            print(
-                "source: "
-                f"{source.get('name')} current={source.get('current')} "
-                f"recorded={source.get('recorded')} "
-                f"differs={source.get('differs_from_recorded')}"
-            )
-        for item in result.inputs:
-            print(
-                "input: "
-                f"{item.get('name')} current={item.get('current')} "
-                f"recorded={item.get('recorded')} "
-                f"differs={item.get('differs_from_recorded')}"
-            )
-        for output in result.outputs:
-            print(
-                f"output: {output.get('artifact')} {output.get('kind')} "
-                f"{output.get('path')} "
-                f"{output.get('outcome')} {output.get('reason') or ''}".rstrip()
-            )
-        print(f"stdout: {result.diagnostics.get('stdout_path', '')}")
-        print(result.diagnostics.get("stdout", ""), end="")
-        print(f"stderr: {result.diagnostics.get('stderr_path', '')}")
-        print(result.diagnostics.get("stderr", ""), end="")
-    return result.exit_status
+    return run_validate_cli(arguments)
 
 
 def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
@@ -1074,61 +1082,3 @@ def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
         )
     print(output, end="")
     return 0
-
-
-def _dispatch_findings(arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="log findings")
-    actions = parser.add_subparsers(dest="action", required=True)
-    listing = actions.add_parser("list", help="List complete published finding batches")
-    listing.add_argument("--path", required=True, type=Path)
-    listing.add_argument("--entry", action="append", default=[])
-    listing.add_argument("--validation-area", action="append", default=[])
-    listing.add_argument("--code", action="append", default=[])
-    listing.add_argument("--family", action="append", default=[])
-    listing.add_argument("--subject", action="append", default=[])
-    listing.add_argument("--command", action="append", default=[])
-    batch = actions.add_parser("batch", help="Show one complete finding batch")
-    batch.add_argument("--path", required=True, type=Path)
-    batch.add_argument("--validation", required=True)
-    batch.add_argument("--entry", required=True)
-    batch.add_argument("--chain", required=True)
-    showing = actions.add_parser("show", help="Show one published finding")
-    showing.add_argument("--path", required=True, type=Path)
-    showing.add_argument("--id", required=True)
-    for subparser in (listing, batch, showing):
-        subparser.add_argument("--format", choices=("text", "json"), default="text")
-    args = parser.parse_args(arguments)
-    from .findings import FindingFilters, batch_findings, list_findings, show_finding
-
-    log = resolve_log(args.path)
-    if args.action == "list":
-        result = list_findings(
-            log,
-            filters=FindingFilters(
-                entries=args.entry,
-                areas=args.validation_area,
-                codes=args.code,
-                families=args.family,
-                subjects=args.subject,
-                commands=args.command,
-            ),
-        )
-    elif args.action == "batch":
-        result = batch_findings(
-            log,
-            validation_id=args.validation,
-            entry=args.entry,
-            chain_id=args.chain,
-        )
-    else:
-        result = show_finding(log, check_id=args.id)
-    from .inspection_cli import print_findings
-
-    print_findings(result, log.root, args.format)
-    return 0
-
-
-def _dispatch_results(arguments: Sequence[str]) -> int:
-    from .inspection_cli import run_results
-
-    return run_results(arguments)

@@ -43,7 +43,7 @@ Choose the core operation:
   authority; after acceptance, the immutable plan in run-local `state.sqlite`
   owns durable execution, resume, and job state. `results.sqlite` owns only
   disposable query results. Reproduce never becomes Record, Review, or Validate.
-- Explicit correction of a research-log finding, causal group, finding class,
+- Explicit correction of a research-log finding, repair batch, finding type,
   malformed or legacy state, transaction residue, or other identified log
   defect: read `references/operation-repair.md`. Correction language such as
   repair, fix, resolve, correct, clean up, or remove authorizes Repair when the
@@ -87,8 +87,8 @@ A request to inspect, explain, triage, or determine the cause of named
 mechanical-validation findings routes to Validate's read-only diagnosis path,
 not Review or Repair. It does not authorize a validation rerun or correction.
 If the same request also asks to correct the diagnosed condition, route it
-directly to Repair and use the narrowest named finding, causal group, or
-finding class as its scope. A hypothetical question about how one might fix a
+directly to Repair and use the narrowest named finding, repair batch, or
+finding type as its scope. A hypothetical question about how one might fix a
 condition remains diagnosis. When several corrected states are plausible, ask
 which state the researcher intends before editing.
 
@@ -113,10 +113,13 @@ state does not start Repair without an explicit correction request.
   and authored prose as research-owned. Research operations never edit
   generated validation files; Validate reads research files and writes
   only the generated files defined in `references/file-validation-records.md`.
-- Treat generated reproduction jobs, the disposable `.cache/results.sqlite`
-  result store, and `reproduction.md` as
-  Reproduce-owned. Other operations preserve them and never edit them by hand;
-  their exact paths and mutation boundaries are defined in
+- Treat `.cache/results.sqlite` as a shared disposable store with separately
+  owned domains: Validate owns validation snapshots, recorded-command
+  operations own command diagnostics, and Reproduce owns reproduction results.
+  Reproduce also owns generated reproduction jobs and `reproduction.md`.
+  Operations preserve domains they do not own and never edit the store by hand;
+  exact paths and mutation boundaries are defined in
+  `references/file-validation-records.md` and
   `references/file-reproduction-records.md`.
 - Treat reports as derived, nonauthoritative surfaces. `log init` and entry
   scaffolding create no result store, empty result rows, or placeholder
@@ -132,9 +135,9 @@ state does not start Repair without an explicit correction request.
 - Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.
 
-## Repair Checks
+## Command Verification
 
-Use `log repair-check` only for a synchronous isolated check of one explicit
+Use `log command verify` only for a synchronous isolated check of one explicit
 current `(entry, CID, execution ID)`. Do not use reproduction execution selectors or
 the removed repair reproduction mode: reproduction plans log- or entry-scoped
 work only.

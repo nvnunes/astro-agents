@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import importlib
 import json
 import tempfile
 import unittest
@@ -9,321 +7,9 @@ from pathlib import Path
 
 from research_log_cli_test_support import run_log
 from research_log_validation_test_support import mechanical_log
-from validation.batch_projection import build_batch_projection
-from validation.repair_batches import build_repair_batches
-from validation.result_storage import (
-    ValidationPublicationRequest,
-    load_mechanical_record,
-    publish_validation_result,
-)
-
-RESULTS = importlib.import_module("validation.mechanical_results")
-OPERATION_STATE = importlib.import_module("validation.operation_state")
 
 
 class FindingsCliTests(unittest.TestCase):
-    def test_projection_owns_none_entry_and_log_admission_effects(self) -> None:
-
-        checks = (
-            RESULTS.MechanicalCheck(
-                "summary:reference:missing",
-                RESULTS.CheckScope.EVIDENCE,
-                RESULTS.CheckStatus.FAIL,
-                "docs/study.md",
-                failure=RESULTS.FailurePayload(
-                    "summary.reference.unresolved",
-                    "docs/study.md",
-                    {},
-                    "Summary References",
-                ),
-            ),
-            RESULTS.MechanicalCheck(
-                "entry:e001:output:missing",
-                RESULTS.CheckScope.CONFORMANCE,
-                RESULTS.CheckStatus.FAIL,
-                "entries/e001.md",
-                failure=RESULTS.FailurePayload(
-                    "command.output.invalid",
-                    "entries/e001.md",
-                    {},
-                    "Recorded Commands",
-                ),
-            ),
-            RESULTS.MechanicalCheck(
-                "global:authority:invalid",
-                RESULTS.CheckScope.CONFORMANCE,
-                RESULTS.CheckStatus.FAIL,
-                "docs/study.md",
-                failure=RESULTS.FailurePayload(
-                    "validation.authority.invalid",
-                    "docs/study.md",
-                    {},
-                    "Validation Authority",
-                ),
-            ),
-        )
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md", "test-rules", "2026-09-09", checks
-        )
-
-        projection = build_batch_projection(
-            record, invocations=(), registries=(), source_identity="source"
-        )
-
-        effects = {
-            finding["identity"]: (
-                finding["admission_effect"],
-                finding["affected_entries"],
-            )
-            for group in projection["unresolved"]
-            for finding in group["findings"]
-        }
-        self.assertEqual(
-            effects,
-            {
-                "summary:reference:missing": ("none", []),
-                "entry:e001:output:missing": ("entry", ["e001"]),
-                "global:authority:invalid": ("log", []),
-            },
-        )
-
-    def test_projection_groups_only_unique_same_entry_producer_edges(self) -> None:
-        from validation.commands import Invocation, MaterialRelationship
-
-        def invocation(
-            identity: str,
-            *,
-            entry: str = "e001",
-            inputs: tuple[str, ...] = (),
-            outputs: tuple[str, ...] = (),
-            ordinal: int,
-        ) -> Invocation:
-            return Invocation(
-                identity=identity,
-                cid=identity,
-                document=f"entries/{entry}.md",
-                entry=entry,
-                fence=1,
-                ordinal=ordinal,
-                sequence=ordinal,
-                tokens=("./pyrun",),
-                executable="./pyrun",
-                script_argument="scripts/run.py",
-                parameters=(),
-                script="scripts/run.py",
-                script_identity=None,
-                inputs=tuple(
-                    MaterialRelationship(path, "input", "option") for path in inputs
-                ),
-                outputs=tuple(
-                    MaterialRelationship(path, "output", "option") for path in outputs
-                ),
-                collections=(),
-                candidates=(),
-                material_owner=entry,
-            )
-
-        invocations = (
-            invocation("producer", outputs=("/x",), ordinal=1),
-            invocation("consumer", inputs=("/x",), outputs=("/y",), ordinal=2),
-            invocation("writer-a", outputs=("/shared",), ordinal=3),
-            invocation("writer-b", outputs=("/shared",), ordinal=4),
-            invocation("cross-entry", entry="e002", inputs=("/y",), ordinal=1),
-        )
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "/project/study.md",
-            "test-rules",
-            "2026-09-08",
-            (
-                RESULTS.MechanicalCheck(
-                    "producer",
-                    RESULTS.CheckScope.CONFORMANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    "/x",
-                    failure=RESULTS.FailurePayload(
-                        "command.output.invalid",
-                        "/x",
-                        {"owner": "e001", "path": "/x"},
-                        "Recorded Commands",
-                    ),
-                ),
-            ),
-        )
-
-        projection = build_batch_projection(
-            record,
-            invocations=invocations,
-            registries=(),
-            source_identity="source",
-        )
-        reversed_projection = build_batch_projection(
-            record,
-            invocations=tuple(reversed(invocations)),
-            registries=(),
-            source_identity="source",
-        )
-
-        memberships = {
-            (chain["entry"], tuple(item["identity"] for item in chain["commands"]))
-            for chain in projection["chains"]
-        }
-        self.assertEqual(
-            memberships,
-            {
-                ("e001", ("consumer", "producer")),
-                ("e001", ("writer-a",)),
-                ("e001", ("writer-b",)),
-                ("e002", ("cross-entry",)),
-            },
-        )
-        self.assertEqual(
-            projection["validation_id"], reversed_projection["validation_id"]
-        )
-        self.assertTrue(
-            any(chain["findings"] for chain in projection["chains"]), projection
-        )
-        attached = next(chain for chain in projection["chains"] if chain["findings"])
-        self.assertEqual(attached["findings"][0]["admission_effect"], "chain")
-        self.assertEqual(
-            attached["findings"][0]["affected_chains"], [attached["chain_id"]]
-        )
-        self.assertEqual(attached["findings"][0]["affected_entries"], ["e001"])
-
-    def test_projection_preserves_directory_root_without_false_fan_out(self) -> None:
-        from validation.commands import (
-            Invocation,
-            MaterialCollection,
-            MaterialRelationship,
-        )
-
-        producer = Invocation(
-            identity="producer",
-            cid="producer",
-            document="entries/e001.md",
-            entry="e001",
-            fence=1,
-            ordinal=1,
-            sequence=1,
-            tokens=("./pyrun",),
-            executable="./pyrun",
-            script_argument="scripts/run.py",
-            parameters=(),
-            script="scripts/run.py",
-            script_identity=None,
-            inputs=(),
-            outputs=(
-                MaterialRelationship("/out/a.csv", "output", "directory"),
-                MaterialRelationship("/out/b.csv", "output", "directory"),
-            ),
-            collections=(
-                MaterialCollection(
-                    "output",
-                    "directory",
-                    "--output-dir",
-                    ("/out/a.csv", "/out/b.csv"),
-                    "/out",
-                ),
-            ),
-            candidates=(),
-            material_owner="e001",
-        )
-        consumer = Invocation(
-            identity="consumer",
-            cid="consumer",
-            document="entries/e001.md",
-            entry="e001",
-            fence=1,
-            ordinal=2,
-            sequence=2,
-            tokens=("./pyrun",),
-            executable="./pyrun",
-            script_argument="scripts/use.py",
-            parameters=(),
-            script="scripts/use.py",
-            script_identity=None,
-            inputs=(MaterialRelationship("/out", "input", "directory"),),
-            outputs=(),
-            collections=(),
-            candidates=(),
-            material_owner="e001",
-        )
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "/project/study.md", "test-rules", "2026-09-08", ()
-        )
-
-        projection = build_batch_projection(
-            record,
-            invocations=(producer, consumer),
-            registries=(),
-            source_identity="source",
-        )
-
-        self.assertEqual(len(projection["chains"]), 1)
-        chain = projection["chains"][0]
-        self.assertEqual(chain["artifacts"], ["/out", "/out/a.csv", "/out/b.csv"])
-        self.assertEqual(chain["edges"][0]["artifact"], "/out")
-        self.assertIn("directory", chain["signals"])
-        self.assertNotIn("fan_out", chain["signals"])
-
-    def test_projection_marks_cross_entry_registry_context_read_only(self) -> None:
-        from research_log_data import DataFile, Fingerprint, InputResource
-        from validation.commands import Invocation, MaterialRelationship
-
-        resource = InputResource(
-            "shared",
-            "file",
-            "../producer/data/shared.csv",
-            Fingerprint("sha256", digest="0" * 64),
-            False,
-            "/project/shared.csv",
-            reference_entry="e001",
-        )
-        invocation = Invocation(
-            identity="consumer",
-            cid="consumer",
-            document="entries/e002.md",
-            entry="e002",
-            fence=1,
-            ordinal=1,
-            sequence=1,
-            tokens=("./pyrun",),
-            executable="./pyrun",
-            script_argument="scripts/use.py",
-            parameters=(),
-            script="scripts/use.py",
-            script_identity=None,
-            inputs=(
-                MaterialRelationship(
-                    "/project/shared.csv",
-                    "input",
-                    "named-input",
-                    named_input="shared",
-                    input_resource=resource,
-                ),
-            ),
-            outputs=(),
-            collections=(),
-            candidates=(),
-            material_owner="e002",
-        )
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "/project/study.md", "test-rules", "2026-09-08", ()
-        )
-        data = DataFile(
-            Path("/project/e002/data.json"), Path("/project/e002"), (resource,)
-        )
-
-        projection = build_batch_projection(
-            record,
-            invocations=(invocation,),
-            registries=(("e002", data),),
-            source_identity="source",
-        )
-
-        registry = projection["chains"][0]["registry"]
-        self.assertEqual(registry[0]["from_entry"], "e001")
-        self.assertIs(registry[0]["read_only"], True)
-
     def test_list_and_show_read_one_published_finding_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -331,6 +17,7 @@ class FindingsCliTests(unittest.TestCase):
             completed = run_log(
                 root,
                 "validate",
+                "run",
                 "--format",
                 "json",
                 "--path",
@@ -342,8 +29,9 @@ class FindingsCliTests(unittest.TestCase):
 
             listed = run_log(
                 root,
-                "findings",
+                "validate",
                 "list",
+                "findings",
                 "--format",
                 "json",
                 "--path",
@@ -352,162 +40,63 @@ class FindingsCliTests(unittest.TestCase):
 
             self.assertEqual(listed.returncode, 0, listed.stderr)
             payload = json.loads(listed.stdout)
-            self.assertEqual(payload["schema"], "research-log-findings-list/2")
-            self.assertGreater(payload["matched_chains"], 0)
-            selected = payload["chains"][0]
-            narrowed = run_log(
-                root,
-                "findings",
-                "list",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-                "--entry",
-                selected["entry"],
-                "--subject",
-                selected["subjects"][0],
+            self.assertEqual(
+                payload["schema"], "research-log-validation-finding-list/1"
             )
-            self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
-            narrowed_payload = json.loads(narrowed.stdout)
-            self.assertTrue(narrowed_payload["chains"])
-            self.assertTrue(
-                all(
-                    item["entry"] == selected["entry"]
-                    for item in narrowed_payload["chains"]
-                )
-            )
-
-            batched = run_log(
-                root,
-                "findings",
-                "batch",
-                "--format",
-                "json",
-                "--path",
-                str(summary.with_suffix("")),
-                "--validation",
-                payload["validation_id"],
-                "--entry",
-                selected["entry"],
-                "--chain",
-                selected["chain_id"],
-            )
-            self.assertEqual(batched.returncode, 0, batched.stderr)
-            batch_payload = json.loads(batched.stdout)
-            self.assertEqual(batch_payload["schema"], "research-log-findings-batch/1")
-            check_id = batch_payload["batch"]["findings"][0]["identity"]
+            self.assertGreater(payload["total"], 0)
+            selected = payload["items"][0]
 
             shown = run_log(
                 root,
-                "findings",
-                "show",
+                "validate",
+                "detail",
+                "finding",
                 "--format",
                 "json",
                 "--path",
                 str(summary.with_suffix("")),
                 "--id",
-                check_id,
+                selected["finding_id"],
             )
 
             self.assertEqual(shown.returncode, 0, shown.stderr)
             finding = json.loads(shown.stdout)
-            self.assertEqual(finding["schema"], "research-log-finding/1")
-            self.assertEqual(finding["finding"]["identity"], check_id)
+            self.assertEqual(
+                finding["schema"], "research-log-validation-finding-detail/1"
+            )
+            self.assertEqual(
+                finding["finding"]["finding_id"], selected["finding_id"]
+            )
             self.assertEqual(result_path.read_bytes(), before)
 
-    def test_list_returns_every_matching_chain_without_a_fifty_group_cap(self) -> None:
+    def test_list_returns_every_finding_without_a_fifty_item_cap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _ = mechanical_log(root)
-            checks = []
-            for number in range(51):
-                subject = f"data/item-{number:03}.csv"
-                checks.append(
-                    RESULTS.MechanicalCheck(
-                        f"orphan:e001:{number:03}",
-                        RESULTS.CheckScope.ORPHAN,
-                        RESULTS.CheckStatus.FAIL,
-                        subject,
-                        failure=RESULTS.FailurePayload(
-                            "orphan.material.unused", subject, {}, "Hygiene"
-                        ),
-                    )
-                )
-            record = RESULTS.MechanicalGeneratedRecord.build(
-                summary.resolve().as_posix(),
-                "test-rules",
-                "2026-09-05",
-                checks,
-            )
-            unresolved = [
-                {
-                    "chain_id": f"unresolved-{number:03}",
-                    "entry": "e001",
-                    "findings": [
-                        {
-                            "admission_effect": "none",
-                            "affected_chains": [],
-                            "affected_entries": [],
-                            "code": "orphan.material.unused",
-                            "dependencies": [],
-                            "identity": f"orphan:e001:{number:03}",
-                            "observed": {},
-                            "rule": "Hygiene",
-                            "scope": "orphan",
-                            "status": "fail",
-                            "subject": f"data/item-{number:03}.csv",
-                        }
-                    ],
-                    "reason": "finding_scope_unresolved",
-                }
-                for number in range(51)
-            ]
-            projection = {
-                "chains": [],
-                "record_identity": hashlib.sha256(
-                    record.canonical_json().encode("utf-8")
-                ).hexdigest(),
-                "result_date": record.result_date,
-                "rules_version": record.rules_version,
-                "schema": "research-log-published-validation/2",
-                "source_identity": "source",
-                "summary": record.summary,
-                "unresolved": unresolved,
-            }
-            projection["repair_batches"] = build_repair_batches(record, [])
-            projection["validation_id"] = hashlib.sha256(
-                json.dumps(
-                    projection,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode("utf-8")
-            ).hexdigest()
-            publish_validation_result(
-                ValidationPublicationRequest(
-                    summary.with_suffix(""),
-                    record,
-                    projection,
-                    source_identity="source",
-                )
-            )
+            root = Path(directory) / "study"
+            root.mkdir()
+            (root / "entries").mkdir()
+            root.with_suffix(".md").write_text("# Study\n", encoding="utf-8")
+            from test_validation_read_model import _publish, _synthetic_snapshot
+
+            _publish(root, _synthetic_snapshot(root, 51))
 
             completed = run_log(
-                root,
-                "findings",
+                Path(directory),
+                "validate",
                 "list",
+                "findings",
                 "--format",
                 "json",
                 "--path",
-                str(summary.with_suffix("")),
+                str(root),
+                "--limit",
+                "100",
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             payload = json.loads(completed.stdout)
-            self.assertEqual(payload["matched_chains"], 51)
-            self.assertEqual(len(payload["chains"]), 51)
-            self.assertEqual(payload["chains"][0]["subjects"], ["data/item-000.csv"])
+            self.assertEqual(payload["total"], 51)
+            self.assertEqual(len(payload["items"]), 51)
+            self.assertEqual(payload["items"][0]["subject"], "subject-000")
 
     def test_expected_query_failures_use_precise_codes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -516,115 +105,82 @@ class FindingsCliTests(unittest.TestCase):
             log_path = str(summary.with_suffix(""))
 
             missing = run_log(
-                root, "findings", "list", "--format", "json", "--path", log_path
+                root,
+                "validate",
+                "list",
+                "findings",
+                "--format",
+                "json",
+                "--path",
+                log_path,
             )
             self.assertEqual(missing.returncode, 2)
-            self.assertIn("findings.result.missing", missing.stderr)
+            self.assertEqual(
+                json.loads(missing.stdout)["error"]["code"],
+                "validation.store.missing",
+            )
 
             cold = run_log(
-                root, "findings", "list", "--format", "json", "--path", log_path
-            )
-            self.assertEqual(cold.returncode, 2)
-            self.assertIn("findings.result.missing", cold.stderr)
-
-    def test_full_result_export_uses_explicit_normalized_entity_maps(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            summary, _ = mechanical_log(root)
-            log_path = str(summary.with_suffix(""))
-            completed = run_log(
-                root, "validate", "--format", "json", "--path", log_path
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            # Explicit export is reconstructed from normalized rows; it contains
-            # no retained aggregate projection wrapper.
-            exported = run_log(
                 root,
-                "results",
-                "export",
+                "validate",
+                "detail",
+                "finding",
                 "--format",
                 "json",
                 "--path",
                 log_path,
                 "--id",
-                json.loads(
-                    run_log(
-                        root,
-                        "results",
-                        "list",
-                        "--format",
-                        "json",
-                        "--path",
-                        log_path,
-                        "--kind",
-                        "full",
-                    ).stdout
-                )["items"][0]["result_id"],
+                "missing",
             )
-            self.assertEqual(exported.returncode, 0, exported.stderr)
-            value = json.loads(exported.stdout)
-            self.assertEqual(value["schema"], "research-log-retained-result/2")
+            self.assertEqual(cold.returncode, 2)
             self.assertEqual(
-                set(value),
-                {
-                    "schema",
-                    "result_id",
-                    "metadata",
-                    "checks",
-                    "findings",
-                    "chains",
-                    "commands",
-                    "artifacts",
-                    "batches",
-                    "codes",
-                },
-            )
-            self.assertNotIn("projection", value)
-            self.assertNotIn("record", value)
-            self.assertEqual(
-                {
-                    finding_id
-                    for values in value["codes"].values()
-                    for finding_id in values
-                },
-                set(value["findings"]),
+                json.loads(cold.stdout)["error"]["code"],
+                "validation.store.missing",
             )
 
-    def test_show_distinguishes_duplicate_unknown_and_nonfinding_ids(self) -> None:
+    def test_generic_result_export_is_removed_from_the_public_surface(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, _ = mechanical_log(root)
             log_path = str(summary.with_suffix(""))
             completed = run_log(
-                root, "validate", "--format", "json", "--path", log_path
+                root, "validate", "run", "--format", "json", "--path", log_path
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            result_id = json.loads(
-                run_log(
-                    root,
-                    "results",
-                    "list",
-                    "--format",
-                    "json",
-                    "--path",
-                    log_path,
-                    "--kind",
-                    "full",
-                ).stdout
-            )["items"][0]["result_id"]
-            payload = load_mechanical_record(
-                summary.with_suffix(""), result_id
-            ).as_dict()
-            passing = next(
-                check["identity"]
-                for check in payload["checks"]
-                if check["status"] == "pass"
+            exported = run_log(root, "results", "export")
+            self.assertEqual(exported.returncode, 2)
+            listed = run_log(
+                root,
+                "validate",
+                "list",
+                "findings",
+                "--format",
+                "json",
+                "--path",
+                log_path,
             )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            value = json.loads(listed.stdout)
+            self.assertNotIn("result_id", value)
+            self.assertNotIn("record", value)
+
+    def test_detail_distinguishes_unknown_ids_without_exposing_passing_checks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, _ = mechanical_log(root)
+            log_path = str(summary.with_suffix(""))
+            completed = run_log(
+                root, "validate", "run", "--format", "json", "--path", log_path
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
             unknown = run_log(
                 root,
-                "findings",
-                "show",
+                "validate",
+                "detail",
+                "finding",
                 "--format",
                 "json",
                 "--path",
@@ -633,25 +189,23 @@ class FindingsCliTests(unittest.TestCase):
                 "absent",
             )
             self.assertEqual(unknown.returncode, 2)
-            self.assertIn("findings.id.unknown", unknown.stderr)
-            not_finding = run_log(
+            self.assertEqual(
+                json.loads(unknown.stdout)["error"]["code"],
+                "validation.finding.missing",
+            )
+            self.assertEqual(unknown.stderr, "")
+            listed = run_log(
                 root,
+                "validate",
+                "list",
                 "findings",
-                "show",
                 "--format",
                 "json",
                 "--path",
                 log_path,
-                "--id",
-                passing,
             )
-            self.assertEqual(not_finding.returncode, 2)
-            self.assertIn("findings.id.not_finding", not_finding.stderr)
-
-            self.assertEqual(
-                len({check["identity"] for check in payload["checks"]}),
-                len(payload["checks"]),
-            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertEqual(json.loads(listed.stdout)["total"], 0)
 
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ from research_log_paths import REPRODUCTION_REPORT, RESULTS_STORE
 from research_log_result_store import (
     clear_reproduction_results,
     clear_result_store,
-    clear_validation_results,
+    clear_validation_snapshots,
     result_generation,
     result_snapshot,
     result_transaction,
@@ -2537,7 +2537,7 @@ class ReproductionJobTests(unittest.TestCase):
             fingerprint_cache, selection_cache = _populate_generated_caches(
                 project, fixture.log_root, entry.root / "pyrun.json"
             )
-            clear_validation_results(fixture.log_root)
+            clear_validation_snapshots(fixture.log_root)
             with result_snapshot(fixture.log_root) as db:
                 self.assertIsNotNone(
                     db.execute(
@@ -2563,7 +2563,7 @@ class ReproductionJobTests(unittest.TestCase):
                 summary="docs/study.md",
                 updated_at="2030-01-01T00:00:12Z",
             )
-            clear_validation_results(fixture.log_root)
+            clear_validation_snapshots(fixture.log_root)
             clear_reproduction_results(fixture.log_root)
             assert_stopped_state_retained()
             clear_result_store(fixture.log_root)
@@ -2739,7 +2739,7 @@ class ReproductionJobTests(unittest.TestCase):
             fingerprint_cache, selection_cache = _populate_generated_caches(
                 project, fixture.log_root, entry.root / "pyrun.json"
             )
-            clear_validation_results(fixture.log_root)
+            clear_validation_snapshots(fixture.log_root)
             assert_publication_retry_state_retained()
             clear_reproduction_results(fixture.log_root)
             assert_publication_retry_state_retained()
@@ -2831,7 +2831,7 @@ class ReproductionJobTests(unittest.TestCase):
                 )
             )
 
-    def test_dry_run_keeps_validation_result_state_absent(self) -> None:
+    def test_dry_run_keeps_validation_snapshot_state_absent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             (project / ".git").mkdir()
@@ -2856,7 +2856,11 @@ class ReproductionJobTests(unittest.TestCase):
 
             plan = dry_run_reproduction(fixture.log, entry=entry.id, include_all=False)
 
-            self.assertEqual(plan.admission["validation_result_id"], "provisional")
+            self.assertTrue(plan.admission["validation_snapshot_id"])
+            self.assertEqual(
+                plan.admission["schema"],
+                "research-log-reproduction-admission/1",
+            )
             self.assertFalse((fixture.log_root / ".cache" / "results.sqlite").exists())
             self.assertFalse((fixture.log_root / "validation.md").exists())
 
@@ -2888,19 +2892,15 @@ class ReproductionJobTests(unittest.TestCase):
                 launch_reproduction(fixture.log, entry=entry.id, include_all=False)
             run_root = handoff.call_args.args[1]
             plan = load_accepted_plan(run_root)
-            self.assertNotEqual(plan.admission["validation_result_id"], "provisional")
+            self.assertTrue(plan.admission["validation_snapshot_id"])
             self.assertTrue((fixture.log_root / "validation.md").is_file())
             generation = result_generation(fixture.log_root, "validation")
             fixture.summary.write_text("# Changed\n", encoding="utf-8")
-            from log_commands.inspection_cli import _render
-            from validation.result_storage import load_validation_report_projection
+            from log_commands.validation_cli import render_validation
+            from validation.snapshot_storage import load_validation_snapshot
 
-            _render(fixture.log, "validation")
-            projection = load_validation_report_projection(fixture.log_root)
-            self.assertEqual(
-                projection.stored.result_id,
-                plan.admission["validation_result_id"],
-            )
+            render_validation(fixture.log)
+            load_validation_snapshot(fixture.log_root)
             self.assertEqual(
                 result_generation(fixture.log_root, "validation"), generation
             )

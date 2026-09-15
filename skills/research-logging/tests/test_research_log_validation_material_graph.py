@@ -4,6 +4,7 @@ import importlib
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from research_log_data import (  # noqa: E402
@@ -14,6 +15,7 @@ from research_log_validation_test_support import unittest, write
 
 COMMAND = importlib.import_module("validation.commands")
 GRAPH = importlib.import_module("validation.material_graph")
+RESEARCH_GRAPH = importlib.import_module("validation.research_graph")
 RETENTION = importlib.import_module("validation.retention")
 
 
@@ -152,18 +154,75 @@ def _request(
             and collection.mechanism == "directory"
             and collection.root is not None
         )
-    return GRAPH.MaterialGraphRequest(
+    entry = SimpleNamespace(
+        entry_id="e001",
+        material_owner="entries/entry",
+        entry_root=entry_root,
+        document=entry_root / "e001.md",
+        data=data_file,
+        retention=retention_files[0] if retention_files else None,
+        pyrun=None,
+    )
+    graph = RESEARCH_GRAPH.build_evaluation_graph(
+        RESEARCH_GRAPH.EvaluationGraphInputs(
+            entries=(entry,),
+            invocations=tuple(invocations),
+            evidence_connections=evidence,
+            code_inputs=code_inputs or {},
+            supported_output_directories=supported_output_directories,
+        )
+    )
+    return GRAPH.MaterialClassificationRequest(
+        graph=graph,
         entry_roots={"e001": entry_root},
-        evidence=evidence,
-        invocations=invocations,
-        retention_files=retention_files,
-        input_registries=(GRAPH.InputRegistrySurface("entries/entry", data_file),),
-        supported_output_directories=supported_output_directories,
-        code_inputs=code_inputs or {},
     )
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_evidence_edge_is_authoritative_for_material_reachability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            reached = (entry_root / "data/reached.csv").resolve().as_posix()
+            request = _request(
+                entry_root,
+                data_file,
+                invocations,
+                evidence=(
+                    GRAPH.EvidenceConnection(
+                        "e001", "result", "e001.md:eid:result", (reached,)
+                    ),
+                ),
+            )
+            connected = GRAPH.classify_research_graph_materials(request)
+            material_id = RESEARCH_GRAPH.ResearchNode(
+                RESEARCH_GRAPH.NodeKind.MATERIAL,
+                reached,
+            ).node_id
+            without_evidence_edge = RESEARCH_GRAPH.ResearchGraph(
+                request.graph.nodes,
+                tuple(
+                    edge
+                    for edge in request.graph.edges
+                    if not (
+                        edge.kind is RESEARCH_GRAPH.EdgeKind.DECLARATION
+                        and edge.target == material_id
+                        and request.graph.node(edge.source).kind
+                        is RESEARCH_GRAPH.NodeKind.EVIDENCE_RECORD
+                    )
+                ),
+                request.graph.ambiguities,
+            )
+            disconnected = GRAPH.classify_research_graph_materials(
+                GRAPH.MaterialClassificationRequest(
+                    without_evidence_edge,
+                    request.entry_roots,
+                )
+            )
+
+            self.assertIn(reached, connected.orphan.connected)
+            self.assertNotIn(reached, disconnected.orphan.connected)
+            self.assertIn(reached, disconnected.orphan.orphaned)
+
     def test_reached_invocation_connects_each_code_input_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))
@@ -172,7 +231,7 @@ class MaterialGraphTests(unittest.TestCase):
             output = (entry_root / "data/reached.csv").resolve().as_posix()
             invocation = invocations[0]
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -191,7 +250,7 @@ class MaterialGraphTests(unittest.TestCase):
                 )
             )
 
-            code_edges = [edge for edge in result.edges if edge.kind == "code"]
+            code_edges = [edge for edge in result.trace.edges if edge.kind == "code"]
             self.assertEqual(len(code_edges), 1)
             self.assertEqual(code_edges[0].source.identity, helper.resolve().as_posix())
             self.assertEqual(code_edges[0].target.identity, invocation.identity)
@@ -211,13 +270,83 @@ class MaterialGraphTests(unittest.TestCase):
                 (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
             }
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, source_only, invocations)
             )
 
             self.assertIn(bundle, result.orphan.orphaned)
             self.assertTrue(members.isdisjoint(result.orphan.orphaned))
             self.assertFalse(result.orphan.unused_input_names)
+
+    def test_member_producer_conflict_prevents_atomic_directory_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root, entry_root, data_file, _ = _bundle_surface(root)
+            write(entry_root / "scripts/conflict.py", "# conflict\n")
+            context = COMMAND.CommandContext(
+                log_id="docs/log",
+                entry="e001",
+                document="entries/entry/e001.md",
+                entry_root=entry_root,
+                log_root=log_root,
+                project_root=root,
+                data_file=data_file,
+                require_experimental_context=False,
+            )
+            invocations = COMMAND.discover_commands(
+                "```bash\n"
+                "./pyrun --cid build -- scripts/build.py --input-data '<source>' "
+                "--output-dir data/bundle\n"
+                "./pyrun --cid conflict -- scripts/conflict.py "
+                "--output-data data/bundle/model.pt\n"
+                "```\n",
+                context,
+            ).invocations
+            model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
+            metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+
+            result = GRAPH.classify_research_graph_materials(
+                _request(entry_root, data_file, invocations)
+            )
+
+            self.assertNotIn(bundle, result.orphan.orphaned)
+            self.assertTrue({model, metrics}.issubset(result.orphan.orphaned))
+
+    def test_overlapping_directory_producer_prevents_atomic_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_root, entry_root, data_file, _ = _bundle_surface(root)
+            write(entry_root / "scripts/conflict.py", "# conflict\n")
+            write(entry_root / "data/bundle/nested/value.csv", "value\n3\n")
+            context = COMMAND.CommandContext(
+                log_id="docs/log",
+                entry="e001",
+                document="entries/entry/e001.md",
+                entry_root=entry_root,
+                log_root=log_root,
+                project_root=root,
+                data_file=data_file,
+                require_experimental_context=False,
+            )
+            invocations = COMMAND.discover_commands(
+                "```bash\n"
+                "./pyrun --cid build -- scripts/build.py --input-data '<source>' "
+                "--output-dir data/bundle\n"
+                "./pyrun --cid conflict -- scripts/conflict.py "
+                "--output-dir data/bundle/nested\n"
+                "```\n",
+                context,
+            ).invocations
+            bundle = (entry_root / "data/bundle").resolve().as_posix()
+            nested = (entry_root / "data/bundle/nested").resolve().as_posix()
+
+            result = GRAPH.classify_research_graph_materials(
+                _request(entry_root, data_file, invocations)
+            )
+
+            self.assertNotIn(bundle, result.orphan.orphaned)
+            self.assertNotIn(nested, result.orphan.orphaned)
 
     def test_output_directory_without_matching_support_is_not_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -228,7 +357,7 @@ class MaterialGraphTests(unittest.TestCase):
                 (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
             }
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -251,7 +380,7 @@ class MaterialGraphTests(unittest.TestCase):
                 (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
             }
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -274,7 +403,9 @@ class MaterialGraphTests(unittest.TestCase):
                 result.orphan.connected,
             )
             input_materials = {
-                edge.source.identity for edge in result.edges if edge.kind == "input"
+                edge.source.identity
+                for edge in result.trace.edges
+                if edge.kind == "input"
             }
             self.assertTrue(members.issubset(input_materials))
             self.assertNotIn(bundle, input_materials)
@@ -332,7 +463,7 @@ class MaterialGraphTests(unittest.TestCase):
                 context,
             ).invocations
             final = (output_data / "final.csv").resolve().as_posix()
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -367,7 +498,7 @@ class MaterialGraphTests(unittest.TestCase):
             model = (entry_root / "data/bundle/model.pt").resolve().as_posix()
             metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -381,7 +512,9 @@ class MaterialGraphTests(unittest.TestCase):
             )
 
             input_materials = {
-                edge.source.identity for edge in result.edges if edge.kind == "input"
+                edge.source.identity
+                for edge in result.trace.edges
+                if edge.kind == "input"
             }
             self.assertIn(model, input_materials)
             self.assertNotIn(metrics, input_materials)
@@ -394,7 +527,7 @@ class MaterialGraphTests(unittest.TestCase):
             metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
             bundle = (entry_root / "data/bundle").resolve().as_posix()
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -415,7 +548,7 @@ class MaterialGraphTests(unittest.TestCase):
             self.assertIn(metrics, result.orphan.connected)
             evidence_sources = {
                 edge.target.identity
-                for edge in result.edges
+                for edge in result.trace.edges
                 if edge.kind == "evidence-source"
             }
             self.assertEqual(evidence_sources, {model})
@@ -423,7 +556,7 @@ class MaterialGraphTests(unittest.TestCase):
                 ("membership", model, bundle),
                 {
                     (edge.kind, edge.source.identity, edge.target.identity)
-                    for edge in result.edges
+                    for edge in result.trace.edges
                 },
             )
 
@@ -436,7 +569,7 @@ class MaterialGraphTests(unittest.TestCase):
                 (entry_root / "data/bundle/metrics.csv").resolve().as_posix(),
             }
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, data_file, invocations)
             )
 
@@ -466,9 +599,9 @@ class MaterialGraphTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                GRAPH.MaterialGraphV2Error, "retention.declaration.invalid"
+                GRAPH.MaterialClassificationError, "retention.declaration.invalid"
             ):
-                GRAPH.compose_material_graph(
+                GRAPH.classify_research_graph_materials(
                     _request(
                         entry_root,
                         data_file,
@@ -509,7 +642,7 @@ class MaterialGraphTests(unittest.TestCase):
                 entry_root / "retention.json", entry_root=entry_root
             )
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -532,7 +665,7 @@ class MaterialGraphTests(unittest.TestCase):
             metrics = (entry_root / "data/bundle/metrics.csv").resolve().as_posix()
             bundle = (entry_root / "data/bundle").resolve().as_posix()
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -551,27 +684,27 @@ class MaterialGraphTests(unittest.TestCase):
             self.assertEqual(
                 sum(
                     node.kind == "material" and node.identity == bundle
-                    for node in result.nodes
+                    for node in result.trace.nodes
                 ),
                 1,
             )
             self.assertEqual(
                 {
                     edge.source.identity
-                    for edge in result.edges
+                    for edge in result.trace.edges
                     if edge.kind == "membership" and edge.target.identity == bundle
                 },
                 {model, metrics},
             )
             self.assertEqual(result.metrics["graph_bundle_expansions"], 1)
 
-    def test_directory_lineage_uses_one_indexed_lookup(self) -> None:
+    def test_directory_lineage_uses_shared_graph_membership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_root, data_file, invocations, final = _bundle_consumer_surface(
                 Path(directory), "<bundle>"
             )
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -584,7 +717,10 @@ class MaterialGraphTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(result.metrics["graph_directory_producer_lookups"], 1)
+            self.assertIn(invocations[0].script, result.orphan.connected)
+            self.assertTrue(
+                any(edge.kind == "membership" for edge in result.trace.edges)
+            )
 
     def test_repeated_evidence_material_reuses_graph_path_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -605,7 +741,7 @@ class MaterialGraphTests(unittest.TestCase):
                 for index in range(20)
             )
 
-            single = GRAPH.compose_material_graph(
+            single = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -613,7 +749,7 @@ class MaterialGraphTests(unittest.TestCase):
                     evidence=single_evidence,
                 )
             )
-            repeated = GRAPH.compose_material_graph(
+            repeated = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -637,7 +773,7 @@ class MaterialGraphTests(unittest.TestCase):
             _, entry_root, data_file, invocations = _surface(Path(directory))
             reached = (entry_root / "data" / "reached.csv").resolve().as_posix()
             sibling = (entry_root / "data" / "sibling.csv").resolve().as_posix()
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -667,10 +803,10 @@ class MaterialGraphTests(unittest.TestCase):
             with (
                 mock.patch.object(GRAPH, "MAX_GRAPH_DEPTH", -1),
                 self.assertRaisesRegex(
-                    GRAPH.MaterialGraphV2Error, "provenance.resource.too_large"
+                    GRAPH.MaterialClassificationError, "provenance.resource.too_large"
                 ),
             ):
-                GRAPH.compose_material_graph(
+                GRAPH.classify_research_graph_materials(
                     _request(
                         entry_root,
                         data_file,
@@ -686,7 +822,7 @@ class MaterialGraphTests(unittest.TestCase):
     def test_unreached_command_connects_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, data_file, invocations)
             )
 
@@ -705,7 +841,9 @@ class MaterialGraphTests(unittest.TestCase):
     def test_unused_input_is_separate_from_artifact_orphans(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, _ = _surface(Path(directory))
-            result = GRAPH.compose_material_graph(_request(entry_root, data_file, ()))
+            result = GRAPH.classify_research_graph_materials(
+                _request(entry_root, data_file, ())
+            )
 
             self.assertEqual(
                 result.orphan.unused_input_names, ("entries/entry:source",)
@@ -717,7 +855,7 @@ class MaterialGraphTests(unittest.TestCase):
             _, entry_root, data_file, _ = _surface(Path(directory))
             source = (entry_root / "data/source.csv").resolve().as_posix()
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -752,7 +890,7 @@ class MaterialGraphTests(unittest.TestCase):
                 entry_root / "retention.json", entry_root=entry_root
             )
             reached = (entry_root / "data" / "reached.csv").resolve().as_posix()
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(
                     entry_root,
                     data_file,
@@ -783,9 +921,9 @@ class MaterialGraphTests(unittest.TestCase):
                 entry_root / "retention.json", entry_root=entry_root
             )
             with self.assertRaisesRegex(
-                GRAPH.MaterialGraphV2Error, "retention.declaration.invalid"
+                GRAPH.MaterialClassificationError, "retention.declaration.invalid"
             ):
-                GRAPH.compose_material_graph(
+                GRAPH.classify_research_graph_materials(
                     _request(
                         entry_root,
                         data_file,
@@ -811,7 +949,7 @@ class MaterialGraphTests(unittest.TestCase):
             )
             for path in ignored:
                 write(path, "cache\n")
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, data_file, invocations)
             )
             for path in ignored:
@@ -835,7 +973,7 @@ class MaterialGraphTests(unittest.TestCase):
             nested = entry_root / "data/pyrun-outputs.json.bak"
             write(nested, "ordinary nested material\n")
 
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, data_file, invocations)
             )
 
@@ -854,7 +992,7 @@ class MaterialGraphTests(unittest.TestCase):
             )
             for path in eligible:
                 write(path, "research material\n")
-            result = GRAPH.compose_material_graph(
+            result = GRAPH.classify_research_graph_materials(
                 _request(entry_root, data_file, invocations)
             )
             for path in eligible:

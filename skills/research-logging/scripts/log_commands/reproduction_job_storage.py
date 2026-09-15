@@ -33,7 +33,7 @@ from .reproduction_paths import (
     project_tmp_relative,
 )
 
-JOB_STORE_VERSION = 2
+JOB_STORE_VERSION = 3
 MAX_JOB_STORE_BYTES = 256 * 1024 * 1024
 MAX_STATUS_BYTES = 64 * 1024 * 1024
 MAX_CHECKPOINT_OUTPUTS = 256
@@ -128,19 +128,20 @@ CREATE TABLE run_state (
 );
 CREATE TABLE accepted_admission (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE RESTRICT,
-    validation_id TEXT NOT NULL,
-    validation_result_id TEXT NOT NULL,
+    validation_snapshot_id TEXT NOT NULL,
     rules_version TEXT NOT NULL,
     evaluated_at TEXT NOT NULL
 );
-CREATE TABLE accepted_admission_groups (
+CREATE TABLE accepted_admission_executions (
     run_id TEXT NOT NULL,
-    disposition TEXT NOT NULL CHECK(disposition IN ('admitted', 'excluded')),
     position INTEGER NOT NULL CHECK(position >= 0),
     entry TEXT NOT NULL,
-    group_id TEXT NOT NULL,
+    cid TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition IN ('admitted', 'excluded')),
     decision_json TEXT NOT NULL,
-    PRIMARY KEY(run_id, disposition, position),
+    PRIMARY KEY(run_id, position),
+    UNIQUE(run_id, entry, cid, execution_id),
     FOREIGN KEY(run_id) REFERENCES accepted_admission(run_id) ON DELETE RESTRICT
 ) WITHOUT ROWID;
 CREATE TABLE accepted_commands (
@@ -2876,33 +2877,28 @@ def _insert_admission(
     db: sqlite3.Connection, run_id: str, admission: Mapping[str, object]
 ) -> None:
     db.execute(
-        "INSERT INTO accepted_admission VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO accepted_admission VALUES (?, ?, ?, ?)",
         (
             run_id,
-            admission["validation_id"],
-            admission["validation_result_id"],
+            admission["validation_snapshot_id"],
             admission["rules_version"],
             admission["evaluated_at"],
         ),
     )
-    batch = cast(Mapping[str, object], admission["batch_admission"])
-    for disposition in ("admitted", "excluded"):
-        decisions = cast(Sequence[Mapping[str, object]], batch[disposition])
-        for position, decision in enumerate(decisions):
-            group_id = decision.get("chain_id", decision.get("group_id"))
-            if not isinstance(group_id, str):
-                raise JobStoreInvariantError("admission decision has no group identity")
-            db.execute(
-                "INSERT INTO accepted_admission_groups VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    run_id,
-                    disposition,
-                    position,
-                    decision["entry"],
-                    group_id,
-                    _canonical_json(decision),
-                ),
-            )
+    decisions = cast(Sequence[Mapping[str, object]], admission["executions"])
+    for position, decision in enumerate(decisions):
+        db.execute(
+            "INSERT INTO accepted_admission_executions VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                position,
+                decision["entry"],
+                decision["cid"],
+                decision["execution_id"],
+                decision["disposition"],
+                _canonical_json(decision),
+            ),
+        )
 
 
 def _insert_commands(
@@ -3450,25 +3446,31 @@ def _load_commands(
 
 def _load_admission(db: sqlite3.Connection, run_id: str) -> Mapping[str, object]:
     row = _sole_row(db, "SELECT * FROM accepted_admission WHERE run_id=?", (run_id,))
-    groups: dict[str, list[object]] = {"admitted": [], "excluded": []}
-    for group in db.execute(
-        "SELECT disposition, position, decision_json FROM accepted_admission_groups "
-        "WHERE run_id=? ORDER BY disposition, position",
-        (run_id,),
+    executions: list[dict[str, object]] = []
+    for execution in db.execute(
+            "SELECT position, entry, cid, execution_id, disposition, decision_json "
+            "FROM accepted_admission_executions "
+            "WHERE run_id=? ORDER BY position",
+            (run_id,),
     ):
-        groups[cast(str, group["disposition"])].append(
-            _decode_json(group["decision_json"], dict)
+        decision = cast(
+            dict[str, object],
+            _decode_json(execution["decision_json"], dict),
         )
+        if any(
+            decision.get(field) != execution[field]
+            for field in ("entry", "cid", "execution_id", "disposition")
+        ):
+            raise JobStoreInvariantError(
+                "accepted admission decision disagrees with its indexed columns"
+            )
+        executions.append(decision)
     return {
-        "batch_admission": {
-            "admitted": groups["admitted"],
-            "excluded": groups["excluded"],
-            "schema": "research-log-reproduction-batch-admission/2",
-        },
         "evaluated_at": row["evaluated_at"],
+        "executions": executions,
         "rules_version": row["rules_version"],
-        "validation_id": row["validation_id"],
-        "validation_result_id": row["validation_result_id"],
+        "schema": "research-log-reproduction-admission/1",
+        "validation_snapshot_id": row["validation_snapshot_id"],
     }
 
 

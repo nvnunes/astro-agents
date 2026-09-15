@@ -1,16 +1,22 @@
-"""Evidence-rooted material graph, artifact orphans, and currentness."""
+"""Shared-graph material reachability, orphan detection, and currentness."""
 
 from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass, field
+from bisect import bisect_left
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
-from research_log_data import DataFile
-
-from .commands import Invocation, MaterialRelationship
+from .domain import (
+    AdmissionOwner,
+    GraphReference,
+    IssueContext,
+    RepairKey,
+    RepairKeyKind,
+    SourceLocation,
+)
 from .entry_materials import (
     ENTRY_MATERIAL_DIRECTORY_NAMES,
     EntryMaterialPathError,
@@ -19,10 +25,18 @@ from .entry_materials import (
 from .errors import MechanicalContractError
 from .filesystem import BoundedTraversalError, bounded_descendants
 from .json_codec import canonical_json
-from .provenance import ProducerIndex, build_producer_index
 from .pyrun_outputs import PYRUN_OUTPUTS_BACKUP_RE
 from .pyrun_state import PYRUN_BACKUP_RE
-from .retention import MAX_RETENTION_DESCENDANTS, RetentionFile, RetentionRecord
+from .research_graph import (
+    AmbiguityKind,
+    EdgeKind,
+    NodeKind,
+    ResearchEdge,
+    ResearchGraph,
+    ResearchGraphBounds,
+    ResearchNode,
+    extend_graph_materials,
+)
 
 MAX_GRAPH_NODES = 1_000_000
 MAX_GRAPH_EDGES = 4_000_000
@@ -44,25 +58,27 @@ IGNORED_FILE_NAMES = frozenset(
 )
 
 
-class MaterialGraphV2Error(MechanicalContractError):
-    """One precise material-graph or retention conformance failure."""
+class MaterialClassificationError(MechanicalContractError):
+    """One precise material-classification or retention conformance failure."""
+
+    issue_context: IssueContext | None = None
 
 
 @dataclass(frozen=True, order=True)
-class GraphNode:
-    """One canonical node on the mechanically established graph."""
+class _ReachNode:
+    """One node retained only in the currentness reachability trace."""
 
     kind: str
     identity: str
 
 
 @dataclass(frozen=True, order=True)
-class GraphEdge:
-    """One successful mechanical relationship between canonical nodes."""
+class _ReachEdge:
+    """One edge retained only in the currentness reachability trace."""
 
     kind: str
-    source: GraphNode
-    target: GraphNode
+    source: _ReachNode
+    target: _ReachNode
 
 
 @dataclass(frozen=True)
@@ -76,14 +92,7 @@ class EvidenceConnection:
     dependencies: tuple[str, ...] = ()
     origin_materials: frozenset[str] = frozenset()
     input_names: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class InputRegistrySurface:
-    """One material-owner-local input registry."""
-
-    owner: str
-    data_file: DataFile
+    owner: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,123 +116,91 @@ class OrphanResult:
 
 
 @dataclass(frozen=True)
-class MaterialGraphResult:
-    """Complete successful graph plus independent orphan classification."""
+class ReachabilityTrace:
+    """Private evidence-closure trace used only for deterministic currentness."""
 
-    nodes: tuple[GraphNode, ...]
-    edges: tuple[GraphEdge, ...]
+    nodes: tuple[_ReachNode, ...]
+    edges: tuple[_ReachEdge, ...]
+
+
+@dataclass(frozen=True)
+class MaterialClassification:
+    """Material conclusions computed from the canonical shared research graph."""
+
+    graph: ResearchGraph
+    trace: ReachabilityTrace
     orphan: OrphanResult
     dependency_projection: str
     metrics: Mapping[str, float | int]
 
 
 @dataclass(frozen=True)
-class MaterialGraphRequest:
-    """Complete bounded inputs for one material-graph composition."""
+class MaterialClassificationRequest:
+    """Complete bounded inputs for shared-graph material classification."""
 
+    graph: ResearchGraph
     entry_roots: Mapping[str, Path]
-    evidence: Sequence[EvidenceConnection]
-    invocations: Sequence[Invocation]
-    retention_files: Sequence[RetentionFile]
-    input_registries: Sequence[InputRegistrySurface] = ()
-    producer_index: ProducerIndex | None = None
-    supported_output_directories: frozenset[str] = frozenset()
-    code_inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    bounds: ResearchGraphBounds = ResearchGraphBounds()
 
 
-@dataclass
-class _GraphState:
-    roots: Mapping[str, tuple[Path, ...]]
-    producer_index: ProducerIndex
-    outputs: Mapping[str, tuple[Invocation, ...]]
-    code_inputs: Mapping[str, tuple[str, ...]]
-    bundles_by_material: Mapping[str, _AtomicOutputBundle]
-    nodes: set[GraphNode]
-    edges: set[GraphEdge]
-    connected: set[str]
-    dependencies: list[object]
-    canonical_materials: dict[str, str]
-    material_nodes: dict[tuple[str, bool], GraphNode]
-    local_materials: dict[str, bool]
-    directory_producers: dict[tuple[str, int], Invocation | None]
-    expanded_bundles: set[str]
-    expanded_invocations: set[str]
-    visiting: set[str]
-    directory_producer_lookups: int = 0
-
-
-def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult:
-    """Compose the evidence closure, then classify entry-owned material."""
+def classify_research_graph_materials(
+    request: MaterialClassificationRequest,
+) -> MaterialClassification:
+    """Classify evidence reachability and orphan state from the shared graph."""
 
     roots = {entry: root.resolve() for entry, root in request.entry_roots.items()}
-    producer_index = request.producer_index or build_producer_index(
-        request.invocations
-    )
-    bundles = _atomic_output_bundles(
-        request.invocations,
-        producer_index,
-        request.supported_output_directories,
-    )
-    state = _GraphState(
-        roots=_connection_roots(roots),
-        producer_index=producer_index,
-        outputs=producer_index.outputs,
-        code_inputs=request.code_inputs or {},
-        bundles_by_material=_bundle_material_index(bundles),
-        nodes=set(),
-        edges=set(),
-        connected=set(),
-        dependencies=[],
-        canonical_materials={},
-        material_nodes={},
-        local_materials={},
-        directory_producers={},
-        expanded_bundles=set(),
-        expanded_invocations=set(),
-        visiting=set(),
-    )
+    connection_roots = _connection_roots(roots)
+    bundles = _graph_atomic_output_bundles(request.graph)
     graph_started = time.perf_counter()
-    _add_evidence(request.evidence, state)
-    _bound_graph(state.nodes, state.edges)
+    trace, connected = _trace_authoritative_graph(
+        request.graph,
+        connection_roots,
+        bundles,
+    )
     graph_seconds = time.perf_counter() - graph_started
 
     orphan_started = time.perf_counter()
     inventory = _inventory(roots)
-    retained = _retained_material(
-        request.retention_files, roots, inventory, state.connected
+    graph = extend_graph_materials(
+        request.graph,
+        tuple(inventory),
+        bounds=request.bounds,
     )
-    unused_names = _unused_input_names(
-        request.input_registries,
-        request.invocations,
-        request.evidence,
+    retained = _graph_retained_material(
+        graph,
+        roots,
+        inventory,
+        connected,
     )
+    unused_names = _graph_unused_input_names(graph)
     orphan = _orphan_result(
-        inventory, state.connected, retained, unused_names, bundles
+        inventory, connected, retained, unused_names, bundles
     )
     orphan_seconds = time.perf_counter() - orphan_started
 
     currentness_started = time.perf_counter()
     graph_projection = {
-        "dependencies": state.dependencies,
-        "edges": [_edge_projection(edge) for edge in sorted(state.edges)],
-        "nodes": [_node_projection(node) for node in sorted(state.nodes)],
+        "edges": [_edge_projection(edge) for edge in trace.edges],
+        "nodes": [_node_projection(node) for node in trace.nodes],
         "orphan": orphan.dependency_projection,
         "version": "input-registry-2",
     }
     dependency_projection = _digest(graph_projection)
     currentness_seconds = time.perf_counter() - currentness_started
-    return MaterialGraphResult(
-        tuple(sorted(state.nodes)),
-        tuple(sorted(state.edges)),
+    return MaterialClassification(
+        graph,
+        trace,
         orphan,
         dependency_projection,
         {
             "currentness_seconds": currentness_seconds,
             "graph_seconds": graph_seconds,
-            "graph_bundle_expansions": len(state.expanded_bundles),
-            "graph_directory_producer_lookups": state.directory_producer_lookups,
-            "graph_local_material_classifications": len(state.local_materials),
-            "graph_material_canonicalizations": len(state.canonical_materials),
+            "graph_bundle_expansions": len(bundles),
+            "graph_directory_producer_lookups": 0,
+            "graph_local_material_classifications": len(connected),
+            "graph_material_canonicalizations": sum(
+                node.kind is NodeKind.MATERIAL for node in graph.nodes
+            ),
             "orphan_seconds": orphan_seconds,
             "inventory_files": len(inventory),
             "orphan_artifacts": len(orphan.orphaned),
@@ -231,190 +208,419 @@ def compose_material_graph(request: MaterialGraphRequest) -> MaterialGraphResult
     )
 
 
-def _add_evidence(
-    connections: Sequence[EvidenceConnection], state: _GraphState
-) -> None:
-    for connection in connections:
-        record = _node(
-            state.nodes, "evidence", f"{connection.entry}:{connection.record}"
-        )
-        presentation = _node(state.nodes, "presentation", connection.presentation)
-        state.edges.add(GraphEdge("presentation", record, presentation))
-        for raw in connection.materials:
-            origin = raw in connection.origin_materials
-            material = _material_node(state, raw)
-            state.edges.add(GraphEdge("evidence-source", record, material))
-            _connect_material(material, state)
-            if not origin:
-                _trace_material(material.identity, None, state, depth=0)
-        state.dependencies.append(_evidence_projection(connection))
+@dataclass
+class _TraceState:
+    graph: ResearchGraph
+    roots: Mapping[str, tuple[Path, ...]]
+    bundles_by_material: Mapping[str, _AtomicOutputBundle]
+    nodes: dict[str, ResearchNode]
+    incoming: Mapping[str, tuple[ResearchEdge, ...]]
+    outgoing: Mapping[str, tuple[ResearchEdge, ...]]
+    trace_nodes: set[_ReachNode]
+    trace_edges: set[_ReachEdge]
+    connected: set[str]
+    expanded_commands: set[str]
+    visiting_materials: set[str]
 
 
-def _trace_material(
-    material: str,
-    consumer: Invocation | None,
-    state: _GraphState,
+def _trace_authoritative_graph(
+    graph: ResearchGraph,
+    roots: Mapping[str, tuple[Path, ...]],
+    bundles: Sequence[_AtomicOutputBundle],
+) -> tuple[ReachabilityTrace, set[str]]:
+    """Trace evidence closure using only established ResearchGraph edges."""
+
+    incoming: dict[str, list[ResearchEdge]] = {}
+    outgoing: dict[str, list[ResearchEdge]] = {}
+    for edge in graph.edges:
+        incoming.setdefault(edge.target, []).append(edge)
+        outgoing.setdefault(edge.source, []).append(edge)
+    state = _TraceState(
+        graph,
+        roots,
+        _bundle_material_index(bundles),
+        {node.node_id: node for node in graph.nodes},
+        {key: tuple(value) for key, value in incoming.items()},
+        {key: tuple(value) for key, value in outgoing.items()},
+        set(),
+        set(),
+        set(),
+        set(),
+        set(),
+    )
+    for record in graph.nodes:
+        if record.kind is not NodeKind.EVIDENCE_RECORD:
+            continue
+        for edge in state.outgoing.get(record.node_id, ()):
+            target = state.nodes[edge.target]
+            if target.kind is not NodeKind.MATERIAL or edge.kind not in {
+                EdgeKind.DECLARATION,
+                EdgeKind.ORIGIN,
+            }:
+                continue
+            _trace_edge("evidence-source", edge, state)
+            _connect_graph_material(target, state)
+            if edge.kind is EdgeKind.DECLARATION:
+                _trace_graph_material(target, None, state, depth=0)
+    _bound_graph(state.trace_nodes, state.trace_edges)
+    return (
+        ReachabilityTrace(
+            tuple(sorted(state.trace_nodes)),
+            tuple(sorted(state.trace_edges)),
+        ),
+        state.connected,
+    )
+
+
+def _trace_graph_material(
+    material: ResearchNode,
+    consumer_sequence: int | None,
+    state: _TraceState,
     *,
     depth: int,
 ) -> None:
-    """Add only the unambiguous producer portion of one reached branch."""
-
     if depth > MAX_GRAPH_DEPTH:
         _fail(
             "provenance.resource.too_large",
-            material,
+            material.identity,
             {"depth": depth, "limit": MAX_GRAPH_DEPTH},
         )
-    candidates = tuple(
-        invocation
-        for invocation in state.outputs.get(material, ())
-        if consumer is None or invocation.sequence < consumer.sequence
-    )
-    if not candidates:
-        matches = state.producer_index.lookup(
-            material,
-            before_sequence=consumer.sequence if consumer is not None else None,
-        )
-        directory_owners = {
-            match.producer.identity: match.producer
-            for match in matches
-            if match.overlapping_directory
-        }
-        if len(directory_owners) == 1:
-            candidates = (next(iter(directory_owners.values())),)
+    if material.node_id in state.visiting_materials:
+        return
+    candidates = _graph_producer_candidates(material, consumer_sequence, state)
     if len(candidates) != 1:
         return
-    producer = candidates[0]
-    if producer.identity in state.visiting:
+    command, path_edges = candidates[0]
+    for edge in path_edges:
+        _trace_edge(
+            "membership" if edge.kind is EdgeKind.MEMBERSHIP else "output",
+            edge,
+            state,
+        )
+    _connect_graph_material(material, state)
+    if command.node_id in state.expanded_commands:
         return
-    command = _node(state.nodes, "invocation", producer.identity)
-    output = _material_node(state, material)
-    state.edges.add(GraphEdge("output", command, output))
-    _connect_material(output, state)
-    if producer.identity in state.expanded_invocations:
-        return
-    state.expanded_invocations.add(producer.identity)
-    state.visiting.add(producer.identity)
-    if producer.script is not None and producer.script_identity is not None:
-        script = _material_node(state, producer.script)
-        state.edges.add(GraphEdge("script", command, script))
-        _connect_material(script, state)
-    for path in state.code_inputs.get(producer.identity, ()):
-        code = _material_node(state, path)
-        state.edges.add(GraphEdge("code", code, command))
-        _connect_material(code, state)
-    for relationship in producer.inputs:
-        _add_reached_input(relationship, producer, command, state, depth=depth)
-    state.visiting.remove(producer.identity)
-    state.dependencies.append(_invocation_projection(producer))
-
-
-def _add_reached_input(
-    relationship: MaterialRelationship,
-    consumer: Invocation,
-    command: GraphNode,
-    state: _GraphState,
-    *,
-    depth: int,
-) -> None:
-    resource = relationship.input_resource
-    material = _material_node(
-        state,
-        relationship.path,
-        path_based=resource is None or resource.kind != "git-repository",
-    )
-    state.edges.add(GraphEdge("input", material, command))
-    if resource is None or resource.kind != "git-repository":
-        _connect_material(material, state)
-    if resource is not None:
-        declaration = _node(
-            state.nodes,
-            "input-declaration",
-            f"{consumer.material_owner}:{resource.name}",
-        )
-        state.edges.add(GraphEdge("declared-input", declaration, material))
-    prior = _reached_prior_producer(relationship, consumer, state)
-    if prior is None:
-        return
-    _trace_material(relationship.path, consumer, state, depth=depth + 1)
-
-
-def _reached_prior_producer(
-    relationship: MaterialRelationship,
-    consumer: Invocation,
-    state: _GraphState,
-) -> Invocation | None:
-    if relationship.origin:
-        return None
-    resource = relationship.input_resource
-    if resource is None or resource.kind == "file":
-        earlier = tuple(
-            invocation
-            for invocation in state.outputs.get(relationship.path, ())
-            if invocation.sequence < consumer.sequence
-        )
-        return earlier[0] if len(earlier) == 1 else None
-    key = (resource.canonical_target, consumer.sequence)
-    if key not in state.directory_producers:
-        state.directory_producer_lookups += 1
-        matches = state.producer_index.lookup(
-            resource.canonical_target,
-            before_sequence=consumer.sequence,
-        )
-        exact = tuple(match.producer for match in matches if match.exact_directory)
-        exact_ids = {invocation.identity for invocation in exact}
-        producers_within = {
-            match.producer.identity for match in matches if match.member_output
-        }
-        overlapping = {
-            match.producer.identity for match in matches if match.overlapping_directory
-        }
-        conflicts = (producers_within - exact_ids) | overlapping
-        state.directory_producers[key] = (
-            exact[0] if len(exact) == 1 and not conflicts else None
-        )
-    owner = state.directory_producers[key]
-    if owner is None or owner not in state.outputs.get(relationship.path, ()):
-        return None
-    return owner
-
-
-def _atomic_output_bundles(
-    invocations: Sequence[Invocation],
-    producer_index: ProducerIndex,
-    supported_output_directories: frozenset[str],
-) -> tuple[_AtomicOutputBundle, ...]:
-    """Derive unambiguous atomic roots from command-owned output support."""
-
-    bundles: list[_AtomicOutputBundle] = []
-    for invocation in invocations:
-        for collection in invocation.collections:
-            if (
-                collection.direction != "output"
-                or collection.mechanism != "directory"
-                or collection.root is None
-                or collection.root not in supported_output_directories
-            ):
-                continue
-            matches = producer_index.lookup(collection.root)
-            exact = tuple(match for match in matches if match.exact_directory)
-            if (
-                len(exact) != 1
-                or exact[0].producer.identity != invocation.identity
-                or any(
-                    match.overlapping_directory
-                    or (
-                        match.producer.identity != invocation.identity
-                        and (match.exact_directory or match.member_output)
-                    )
-                    for match in matches
-                )
-            ):
-                continue
-            bundles.append(
-                _AtomicOutputBundle(collection.root, tuple(collection.members))
+    state.expanded_commands.add(command.node_id)
+    state.visiting_materials.add(material.node_id)
+    for edge in state.incoming.get(command.node_id, ()):
+        source = state.nodes[edge.source]
+        if edge.kind in {EdgeKind.SCRIPT_USE, EdgeKind.CODE_USE}:
+            _trace_edge(
+                "script" if edge.kind is EdgeKind.SCRIPT_USE else "code",
+                edge,
+                state,
             )
-    return tuple(sorted(bundles, key=lambda bundle: bundle.root))
+            _connect_graph_identity(source.identity, state)
+            continue
+        if source.kind is not NodeKind.MATERIAL or edge.kind not in {
+            EdgeKind.CONSUMPTION,
+            EdgeKind.ORIGIN,
+        }:
+            continue
+        _trace_edge("input", edge, state)
+        _trace_data_declaration(source, state)
+        _connect_graph_material(source, state)
+        if edge.kind is EdgeKind.CONSUMPTION:
+            _trace_graph_material(
+                source,
+                _node_sequence(command),
+                state,
+                depth=depth + 1,
+            )
+    state.visiting_materials.remove(material.node_id)
+
+
+def _graph_producer_candidates(
+    material: ResearchNode,
+    consumer_sequence: int | None,
+    state: _TraceState,
+) -> tuple[tuple[ResearchNode, tuple[ResearchEdge, ...]], ...]:
+    candidates: dict[str, tuple[ResearchNode, tuple[ResearchEdge, ...]]] = {}
+    for edge in state.incoming.get(material.node_id, ()):
+        source = state.nodes[edge.source]
+        paths: list[tuple[ResearchNode, tuple[ResearchEdge, ...]]] = []
+        if edge.kind is EdgeKind.PRODUCTION and source.kind is NodeKind.COMMAND:
+            paths.append((source, (edge,)))
+        elif edge.kind is EdgeKind.MEMBERSHIP and source.kind is NodeKind.COLLECTION:
+            for producer_edge in state.incoming.get(source.node_id, ()):
+                command = state.nodes[producer_edge.source]
+                if (
+                    producer_edge.kind is EdgeKind.PRODUCTION
+                    and command.kind is NodeKind.COMMAND
+                ):
+                    paths.append((command, (producer_edge, edge)))
+        for command, path_edges in paths:
+            if (
+                consumer_sequence is None
+                or _node_sequence(command) < consumer_sequence
+            ):
+                candidates[command.node_id] = (command, path_edges)
+    return tuple(candidates[key] for key in sorted(candidates))
+
+
+def _trace_data_declaration(material: ResearchNode, state: _TraceState) -> None:
+    for edge in state.incoming.get(material.node_id, ()):
+        source = state.nodes[edge.source]
+        if edge.kind is EdgeKind.DECLARATION and source.kind is NodeKind.DATA_RECORD:
+            _trace_edge("declared-input", edge, state)
+
+
+def _trace_edge(label: str, edge: ResearchEdge, state: _TraceState) -> None:
+    source = state.nodes[edge.source]
+    target = state.nodes[edge.target]
+    source_trace = _ReachNode(source.kind.value, source.identity)
+    target_trace = _ReachNode(target.kind.value, target.identity)
+    state.trace_nodes.update((source_trace, target_trace))
+    state.trace_edges.add(_ReachEdge(label, source_trace, target_trace))
+
+
+def _connect_graph_material(material: ResearchNode, state: _TraceState) -> None:
+    identities = {material.identity}
+    bundle = state.bundles_by_material.get(material.identity)
+    if bundle is not None:
+        identities.update((bundle.root, *bundle.members))
+        root = _ReachNode(NodeKind.MATERIAL.value, bundle.root)
+        state.trace_nodes.add(root)
+        for member in bundle.members:
+            if member == bundle.root:
+                continue
+            member_node = _ReachNode(NodeKind.MATERIAL.value, member)
+            state.trace_nodes.add(member_node)
+            state.trace_edges.add(_ReachEdge("membership", member_node, root))
+    for identity in identities:
+        _connect_graph_identity(identity, state)
+
+
+def _connect_graph_identity(identity: str, state: _TraceState) -> None:
+    path = Path(identity)
+    if any(
+        _within(path, root)
+        for owned_roots in state.roots.values()
+        for root in owned_roots
+    ):
+        state.connected.add(path.resolve().as_posix())
+
+
+def _node_sequence(node: ResearchNode) -> int:
+    value = node.attributes.get("sequence")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise MaterialClassificationError(
+            "provenance.observation.unavailable",
+            node.identity,
+            {"reason": "missing_command_sequence"},
+            "Shared Research Graph",
+            outcome="unavailable",
+        )
+    return value
+
+
+def _graph_atomic_output_bundles(
+    graph: ResearchGraph,
+) -> tuple[_AtomicOutputBundle, ...]:
+    bundles: list[_AtomicOutputBundle] = []
+    roots: dict[str, int] = {}
+    nodes = {node.node_id: node for node in graph.nodes}
+    incoming: dict[str, list[ResearchEdge]] = {}
+    outgoing: dict[str, list[ResearchEdge]] = {}
+    for edge in graph.edges:
+        incoming.setdefault(edge.target, []).append(edge)
+        outgoing.setdefault(edge.source, []).append(edge)
+    conflicts = {
+        observation.subject
+        for observation in graph.ambiguities
+        if observation.kind is AmbiguityKind.MULTIPLE_PRODUCERS
+    }
+    for collection in graph.nodes:
+        if (
+            collection.kind is not NodeKind.COLLECTION
+            or collection.attributes.get("mechanism") != "directory"
+            or collection.attributes.get("supported") is not True
+        ):
+            continue
+        root = collection.attributes.get("root")
+        if not isinstance(root, str):
+            continue
+        producers = {
+            edge.source
+            for edge in incoming.get(collection.node_id, ())
+            if edge.kind is EdgeKind.PRODUCTION
+            and nodes[edge.source].kind is NodeKind.COMMAND
+        }
+        members = tuple(
+            sorted(
+                nodes[edge.target].identity
+                for edge in outgoing.get(collection.node_id, ())
+                if edge.kind is EdgeKind.MEMBERSHIP
+                and nodes[edge.target].kind is NodeKind.MATERIAL
+            )
+        )
+        member_ids = {
+            edge.target
+            for edge in outgoing.get(collection.node_id, ())
+            if edge.kind is EdgeKind.MEMBERSHIP
+        }
+        if (
+            len(producers) == 1
+            and collection.node_id not in conflicts
+            and not member_ids & conflicts
+        ):
+            bundles.append(_AtomicOutputBundle(root, members))
+            roots[root] = roots.get(root, 0) + 1
+    return tuple(bundle for bundle in bundles if roots[bundle.root] == 1)
+
+
+def _graph_retained_material(
+    graph: ResearchGraph,
+    roots: Mapping[str, Path],
+    inventory: set[str],
+    connected: set[str],
+) -> set[str]:
+    nodes = {node.node_id: node for node in graph.nodes}
+    outgoing: dict[str, list[ResearchEdge]] = {}
+    for edge in graph.edges:
+        outgoing.setdefault(edge.source, []).append(edge)
+    inventory_index = tuple(sorted(inventory))
+    retained: set[str] = set()
+    for record in graph.nodes:
+        if record.kind is not NodeKind.RETENTION_RECORD:
+            continue
+        covered, targets = _retention_coverage_from_graph(
+            record,
+            nodes,
+            outgoing,
+            inventory,
+            inventory_index,
+        )
+        _require_valid_retention_coverage(
+            record,
+            roots,
+            inventory,
+            connected,
+            retained,
+            covered,
+            targets,
+        )
+        retained.update(covered)
+    return retained
+
+
+def _retention_coverage_from_graph(
+    record: ResearchNode,
+    nodes: Mapping[str, ResearchNode],
+    outgoing: Mapping[str, Sequence[ResearchEdge]],
+    inventory: set[str],
+    inventory_index: Sequence[str],
+) -> tuple[set[str], set[str]]:
+    targets = {
+        nodes[edge.target].identity
+        for edge in outgoing.get(record.node_id, ())
+        if edge.kind is EdgeKind.RETENTION
+    }
+    if record.attributes.get("directory") is not True:
+        return targets & inventory, targets
+    covered: set[str] = set()
+    for target in targets:
+        prefix = target.rstrip("/") + "/"
+        start = bisect_left(inventory_index, prefix)
+        stop = bisect_left(inventory_index, prefix + "\uffff")
+        covered.update(inventory_index[start:stop])
+    return covered, targets
+
+
+def _require_valid_retention_coverage(  # noqa: PLR0913 -- explicit set contract
+    record: ResearchNode,
+    roots: Mapping[str, Path],
+    inventory: set[str],
+    connected: set[str],
+    retained: set[str],
+    covered: set[str],
+    targets: set[str],
+) -> None:
+    if record.entry not in roots:
+        _fail(
+            "retention.declaration.invalid",
+            record.identity,
+            {"reason": "unknown_entry"},
+        )
+    invalid = (
+        set()
+        if record.attributes.get("directory") is True
+        else targets - inventory
+    )
+    if not covered:
+        invalid.update(targets)
+    overlap = covered & retained
+    redundant = covered & connected
+    if not (invalid or overlap or redundant):
+        return
+    source = str(record.attributes.get("source", record.identity))
+    record_id = record.identity.rsplit(":", 1)[-1]
+    _fail(
+        "retention.declaration.invalid",
+        f"{source}:{record_id}",
+        {
+            "connected": sorted(redundant),
+            "ineligible": sorted(invalid),
+            "overlap": sorted(overlap),
+        },
+        issue_context=_retention_issue_context(
+            record,
+            source,
+            record_id,
+            targets,
+        ),
+    )
+
+
+def _retention_issue_context(
+    record: ResearchNode,
+    source: str,
+    record_id: str,
+    targets: set[str],
+) -> IssueContext:
+    return IssueContext(
+        entry=record.entry,
+        source_locations=(SourceLocation(source),),
+        repair_keys=(
+            RepairKey(
+                RepairKeyKind.RECORD,
+                f"{record.entry}:retention:{record_id}",
+                record.entry,
+            ),
+        ),
+        context_nodes=(
+            record.reference,
+            *(
+                GraphReference(NodeKind.MATERIAL.value, target)
+                for target in sorted(targets)
+            ),
+        ),
+        admission_owner=AdmissionOwner.ENTRY,
+    )
+
+
+def _graph_unused_input_names(graph: ResearchGraph) -> set[str]:
+    nodes = {node.node_id: node for node in graph.nodes}
+    used_records: set[str] = set()
+    for edge in graph.edges:
+        source = nodes[edge.source]
+        target = nodes[edge.target]
+        if (
+            source.kind is NodeKind.DATA_RECORD
+            and target.kind in {NodeKind.COMMAND, NodeKind.EVIDENCE_RECORD}
+            and edge.kind is EdgeKind.DECLARATION
+        ):
+            used_records.add(source.node_id)
+    unused: set[str] = set()
+    for record in graph.nodes:
+        if record.kind is not NodeKind.DATA_RECORD:
+            continue
+        if record.node_id in used_records:
+            continue
+        owner = str(record.attributes["owner"])
+        name = str(record.attributes["name"])
+        unused.add(f"{owner}:{name}")
+    return unused
 
 
 def _bundle_material_index(
@@ -473,66 +679,6 @@ def _atomic_orphans(
         result.difference_update(eligible)
         result.add(bundle.root)
     return result
-
-
-def _node(nodes: set[GraphNode], kind: str, identity: str) -> GraphNode:
-    node = GraphNode(kind, identity)
-    nodes.add(node)
-    return node
-
-
-def _material_node(
-    state: _GraphState, value: str, *, path_based: bool = True
-) -> GraphNode:
-    """Return one validation-scoped material node with bounded canonicalization."""
-
-    key = (value, path_based)
-    node = state.material_nodes.get(key)
-    if node is not None:
-        return node
-    identity = _canonical_material(value, state) if path_based else value
-    node = _node(state.nodes, "material", identity)
-    state.material_nodes[key] = node
-    return node
-
-
-def _connect_material(material: GraphNode, state: _GraphState) -> None:
-    """Connect one exact material and its atomic bundle ownership boundary."""
-
-    _connect_local(material.identity, state)
-    bundle = state.bundles_by_material.get(material.identity)
-    if bundle is None:
-        return
-    if bundle.root not in state.expanded_bundles:
-        state.expanded_bundles.add(bundle.root)
-        for member in bundle.members:
-            _connect_local(member, state)
-    bundle_node = _material_node(state, bundle.root)
-    if material != bundle_node:
-        state.edges.add(GraphEdge("membership", material, bundle_node))
-
-
-def _connect_local(material: str, state: _GraphState) -> None:
-    canonical = _canonical_material(material, state)
-    local = state.local_materials.get(canonical)
-    if local is None:
-        path = Path(canonical)
-        local = any(
-            _within(path, root)
-            for owned_roots in state.roots.values()
-            for root in owned_roots
-        )
-        state.local_materials[canonical] = local
-    if local:
-        state.connected.add(canonical)
-
-
-def _canonical_material(material: str, state: _GraphState) -> str:
-    canonical = state.canonical_materials.get(material)
-    if canonical is None:
-        canonical = Path(material).resolve().as_posix()
-        state.canonical_materials[material] = canonical
-    return canonical
 
 
 def _connection_roots(roots: Mapping[str, Path]) -> dict[str, tuple[Path, ...]]:
@@ -638,138 +784,11 @@ def _excluded(relative: Path) -> bool:
     )
 
 
-def _retained_material(
-    files: Sequence[RetentionFile],
-    roots: Mapping[str, Path],
-    inventory: set[str],
-    connected: set[str],
-) -> set[str]:
-    retained: set[str] = set()
-    for retention_file in files:
-        if retention_file.entry_root.resolve() not in roots.values():
-            _fail(
-                "retention.declaration.invalid",
-                str(retention_file.path),
-                {"entry_root": str(retention_file.entry_root)},
-            )
-        for record in retention_file.records:
-            covered = _retention_coverage(record, retention_file.entry_root.resolve())
-            invalid = covered - inventory
-            overlap = covered & retained
-            redundant = covered & connected
-            if invalid or overlap or redundant:
-                _fail(
-                    "retention.declaration.invalid",
-                    f"{retention_file.path}:{record.id}",
-                    {
-                        "connected": sorted(redundant),
-                        "ineligible": sorted(invalid),
-                        "overlap": sorted(overlap),
-                    },
-                )
-            retained.update(covered)
-    return retained
-
-
-def _retention_coverage(record: RetentionRecord, root: Path) -> set[str]:
-    if record.paths:
-        return {(root / path).resolve().as_posix() for path in record.paths}
-    assert record.directory is not None
-    directory = (root / record.directory).resolve()
-    try:
-        descendants = bounded_descendants(
-            directory, maximum_entries=MAX_RETENTION_DESCENDANTS
-        )
-    except BoundedTraversalError as error:
-        _fail(
-            "retention.declaration.invalid",
-            str(directory),
-            {
-                "limit": error.limit,
-                "observed": error.observed,
-                "reason": error.reason,
-            },
-        )
-    return {
-        path.resolve().as_posix()
-        for path in descendants
-        if path.is_file()
-        and not path.is_symlink()
-        and not _excluded(Path(record.directory) / path.relative_to(directory))
-    }
-
-
-def _unused_input_names(
-    surfaces: Sequence[InputRegistrySurface],
-    invocations: Sequence[Invocation],
-    evidence: Sequence[EvidenceConnection],
-) -> set[str]:
-    used = {
-        f"{invocation.material_owner}:{relationship.input_resource.name}"
-        for invocation in invocations
-        for relationship in (*invocation.inputs, *invocation.outputs)
-        if relationship.input_resource is not None
-    }
-    used.update(name for connection in evidence for name in connection.input_names)
-    declared = {
-        f"{surface.owner}:{resource.name}"
-        for surface in surfaces
-        for resource in surface.data_file.inputs
-    }
-    return declared - used
-
-
-def _evidence_projection(connection: EvidenceConnection) -> object:
-    return {
-        "dependencies": list(connection.dependencies),
-        "entry": connection.entry,
-        "origin_materials": sorted(connection.origin_materials),
-        "input_names": sorted(connection.input_names),
-        "materials": sorted(connection.materials),
-        "presentation": connection.presentation,
-        "record": connection.record,
-    }
-
-
-def _invocation_projection(invocation: Invocation) -> object:
-    return {
-        "collections": [
-            {
-                "direction": item.direction,
-                "mechanism": item.mechanism,
-                "members": list(item.members),
-                "root": item.root,
-                "target": item.target,
-            }
-            for item in invocation.collections
-        ],
-        "identity": invocation.identity,
-        "inputs": [_relationship_projection(item) for item in invocation.inputs],
-        "outputs": [_relationship_projection(item) for item in invocation.outputs],
-        "parameters": list(invocation.parameters),
-        "script_argument": invocation.script_argument,
-        "script_identity": invocation.script_identity,
-    }
-
-
-def _relationship_projection(relationship: MaterialRelationship) -> object:
-    resource = relationship.input_resource
-    return {
-        "direction": relationship.direction,
-        "origin": relationship.origin,
-        "input_identity": resource.content_identity if resource is not None else None,
-        "named_input": relationship.named_input,
-        "path": relationship.path,
-        "proof": relationship.proof,
-        "target": relationship.target,
-    }
-
-
-def _node_projection(node: GraphNode) -> object:
+def _node_projection(node: _ReachNode) -> object:
     return {"identity": node.identity, "kind": node.kind}
 
 
-def _edge_projection(edge: GraphEdge) -> object:
+def _edge_projection(edge: _ReachEdge) -> object:
     return {
         "kind": edge.kind,
         "source": _node_projection(edge.source),
@@ -777,11 +796,11 @@ def _edge_projection(edge: GraphEdge) -> object:
     }
 
 
-def _bound_graph(nodes: set[GraphNode], edges: set[GraphEdge]) -> None:
+def _bound_graph(nodes: set[_ReachNode], edges: set[_ReachEdge]) -> None:
     if len(nodes) > MAX_GRAPH_NODES or len(edges) > MAX_GRAPH_EDGES:
         _fail(
             "provenance.resource.too_large",
-            "material graph",
+            "material reachability trace",
             {
                 "edges": len(edges),
                 "edge_limit": MAX_GRAPH_EDGES,
@@ -803,10 +822,18 @@ def _digest(value: object) -> str:
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
-def _fail(code: str, subject: str, observed: object) -> NoReturn:
+def _fail(
+    code: str,
+    subject: str,
+    observed: object,
+    *,
+    issue_context: IssueContext | None = None,
+) -> NoReturn:
     rule = (
         "Evidence-rooted Orphans"
         if code.startswith("retention") or code.startswith("orphan")
         else "Producer And Lineage Semantics"
     )
-    raise MaterialGraphV2Error(code, subject, observed, rule)
+    error = MaterialClassificationError(code, subject, observed, rule)
+    error.issue_context = issue_context
+    raise error

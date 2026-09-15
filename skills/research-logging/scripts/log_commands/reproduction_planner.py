@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Mapping, Sequence, cast
+from typing import Literal, Mapping, Sequence, cast
 
 from research_log_data import (
     DataFile,
@@ -22,24 +22,36 @@ from research_log_paths import RESULTS_STORE
 from validation.engine import RULES_VERSION, EvaluationEntryMaterial, EvaluationResult
 from validation.evidence import EvidenceFile, load_evidence_file
 from validation.evidence_comparison import evidence_comparison_identity
-from validation.mechanical_results import CompletionState
+from validation.provenance import ProducerCurrentness
 from validation.pyrun_outputs import code_target_path, output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
     PyrunFile,
+    associate_execution,
     empty_pyrun_state,
     load_pyrun_state,
     script_target_path,
+)
+from validation.research_graph import (
+    AmbiguityKind,
+    EdgeKind,
+    NodeKind,
+    ResearchGraph,
+    ResearchNode,
 )
 
 from .context import (
     EntryContext,
     LogContext,
     parse_entry_directory_name,
-    parse_entry_document_name,
     resolve_project_root,
 )
 from .model import ActionError
+from .reproduction_admission import (
+    ExecutionAdmission,
+    SelectedExecution,
+    evaluate_reproduction_admission,
+)
 from .reproduction_contract import (
     MAX_EXECUTION_TIMEOUT_SECONDS,
     ReproductionPlan,
@@ -47,9 +59,6 @@ from .reproduction_contract import (
     canonical_execution_source_digest,
     canonical_record_digest,
 )
-
-if TYPE_CHECKING:
-    from validation.result_storage import ValidationAdmission
 
 MAX_REACHABLE_EXECUTIONS = 2_048
 MAX_ARTIFACT_CASES = 10_000
@@ -82,29 +91,23 @@ class ReproductionCommandInventory:
 
 @dataclass(frozen=True)
 class PreparedReproductionContext:
-    """One full evaluation and its accepted, stored admission decision."""
+    """One fresh complete evaluation used directly for planning."""
 
     evaluation: EvaluationResult
-    admission: "ValidationAdmission"
 
 
 def prepare_reproduction_context(
     evaluation: EvaluationResult,
-    admission: "ValidationAdmission",
 ) -> PreparedReproductionContext:
-    """Bind planning to the exact full validation result just published."""
+    """Bind planning to one fresh complete canonical validation snapshot."""
 
-    if evaluation.record.completion is CompletionState.INCOMPLETE:
+    if evaluation.snapshot.failed_checks:
         raise ActionError(
-            "reproduction.validation.incomplete", "prepared evaluation is incomplete"
+            "reproduction.validation.failed", "prepared validation has failed checks"
         )
-    if evaluation.record.rules_version != RULES_VERSION:
+    if evaluation.attempt.rules_version != RULES_VERSION:
         raise ActionError("reproduction.validation.invalid", "prepared rules are stale")
-    if admission.validation_id == "" or admission.result_id == "":
-        raise ActionError(
-            "reproduction.validation.invalid", "stored validation is invalid"
-        )
-    return PreparedReproductionContext(evaluation, admission)
+    return PreparedReproductionContext(evaluation)
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,30 @@ class _Owner:
         """Return the entry-qualified identity of this physical execution."""
 
         return self.entry.context.id, self.cid, self.execution_id
+
+
+@dataclass
+class _GraphOwnerProjection:
+    """Indexed shared-graph state used to retain established owner payloads."""
+
+    payloads: Mapping[str, Mapping[str, _Owner]]
+    execution_by_command: Mapping[str, set[str]]
+    nodes: Mapping[str, ResearchNode]
+    found: dict[str, dict[tuple[ExecutionKey, str], _Owner]] = field(
+        default_factory=lambda: defaultdict(dict)
+    )
+
+    def retain(self, command_id: str, target_id: str) -> None:
+        executions = self.execution_by_command.get(command_id, set())
+        target = self.nodes[target_id]
+        if len(executions) != 1 or target.kind not in {
+            NodeKind.MATERIAL,
+            NodeKind.COLLECTION,
+        }:
+            return
+        owner = self.payloads.get(next(iter(executions)), {}).get(target.identity)
+        if owner is not None:
+            self.found[target.identity][(owner.key, owner.output)] = owner
 
 
 @dataclass(frozen=True)
@@ -162,10 +189,16 @@ class _PlanningState:
     execution_timeout_seconds: int
     selection_policy: SelectionPolicy
     entries: Mapping[str, _EntryState]
+    graph: ResearchGraph
+    command_owners: Mapping[ExecutionKey, _Owner]
     owners: Mapping[str, tuple[_Owner, ...]]
+    currentness: Mapping[ExecutionKey, tuple[ProducerCurrentness, ...]]
     selected: dict[ExecutionKey, _Owner] = field(default_factory=dict)
     dependencies: dict[ExecutionKey, set[ExecutionKey]] = field(
         default_factory=lambda: defaultdict(set)
+    )
+    requested_dependencies: set[tuple[ExecutionKey, ExecutionKey]] = field(
+        default_factory=set
     )
     cases: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
     boundaries: dict[tuple[str, str, str], dict[str, object]] = field(
@@ -186,8 +219,7 @@ class _PlanningState:
         default_factory=dict
     )
     authority_paths: set[Path] = field(default_factory=set)
-    admitted_batches: set[tuple[str, str]] = field(default_factory=set)
-    excluded_batches: dict[tuple[str, str], tuple[str, ...]] = field(
+    admission_decisions: dict[ExecutionKey, ExecutionAdmission] = field(
         default_factory=dict
     )
     command_digests: dict[ExecutionKey, str] = field(default_factory=dict)
@@ -311,9 +343,9 @@ def plan_reproduction(  # noqa: PLR0913
             "--execution-timeout-seconds must be between 1 and "
             f"{MAX_EXECUTION_TIMEOUT_SECONDS}",
         )
-    if prepared.evaluation.record.completion is CompletionState.INCOMPLETE:
+    if prepared.evaluation.snapshot.failed_checks:
         raise ActionError(
-            "reproduction.validation.incomplete", "prepared evaluation is incomplete"
+            "reproduction.validation.failed", "prepared validation has failed checks"
         )
     project_root = resolve_project_root(log.root)
     entries = _prepared_entries(
@@ -332,11 +364,19 @@ def plan_reproduction(  # noqa: PLR0913
         runtime.execution_timeout_seconds,
         selection.policy,
         entries,
-        _owner_index(entries, project_root),
+        prepared.evaluation.context.graph,
+        _command_owner_index(entries, project_root),
+        _graph_owner_index(
+            entries,
+            project_root,
+            prepared.evaluation.context.graph,
+        ),
+        _currentness_by_execution(prepared.evaluation, entries, project_root),
     )
     _trace_selected_evidence(selected_ids, entries, state)
     _trace_queued_commands(state)
-    _apply_validation_admission(state, prepared.admission)
+    _apply_graph_dependencies(state)
+    _apply_validation_admission(state, prepared.evaluation)
     _apply_cycle_and_dependency_failures(state)
     retained_commands = dict(
         _load_prior_results(log, replace_outdated=selection.policy == RECHECK_SELECTION)
@@ -350,6 +390,39 @@ def plan_reproduction(  # noqa: PLR0913
     )
     plan.serialized()
     return plan
+
+
+def _currentness_by_execution(
+    evaluation: EvaluationResult,
+    entries: Mapping[str, _EntryState],
+    project_root: Path,
+) -> Mapping[ExecutionKey, tuple[ProducerCurrentness, ...]]:
+    """Resolve shared evaluator conclusions to current execution units."""
+
+    invocations = {
+        invocation.identity: invocation for invocation in evaluation.context.invocations
+    }
+    required: dict[ExecutionKey, dict[str, ProducerCurrentness]] = defaultdict(dict)
+    for conclusion in evaluation.context.currentness:
+        producer = conclusion.anchor.producer_identity
+        invocation = invocations.get(producer) if producer is not None else None
+        if invocation is None:
+            continue
+        entry = entries.get(invocation.entry)
+        if entry is None:
+            continue
+        association = associate_execution(
+            entry.pyrun,
+            invocation,
+            project_root=project_root,
+        )
+        if association is not None:
+            key = (invocation.entry, association.cid, association.identity)
+            required[key][canonical_record_digest(conclusion.as_dict())] = conclusion
+    return {
+        key: tuple(values[identity] for identity in sorted(values))
+        for key, values in sorted(required.items())
+    }
 
 
 def _trace_selected_evidence(
@@ -387,13 +460,7 @@ def _trace_selected_evidence(
 def _trace_queued_commands(state: _PlanningState) -> None:
     """Trace every authorized command, including commands outside evidence roots."""
 
-    owners: dict[ExecutionKey, _Owner] = {}
-    for candidates in state.owners.values():
-        for owner in candidates:
-            owners.setdefault(owner.key, owner)
-    for key, owner in sorted(owners.items()):
-        if key[0] not in state.selected_entries:
-            continue
+    for key, owner in _target_owners(state).items():
         if not owner.execution.auto_reproduce and not state.include_all:
             continue
         _trace_execution(
@@ -402,6 +469,16 @@ def _trace_queued_commands(state: _PlanningState) -> None:
             depth=0,
             trace_inputs=True,
         )
+
+
+def _target_owners(state: _PlanningState) -> dict[ExecutionKey, _Owner]:
+    """Return one representative owner for every command in the exact target."""
+
+    return {
+        key: owner
+        for key, owner in state.command_owners.items()
+        if key[0] in state.selected_entries
+    }
 
 
 def _require_selection_policy(selection_policy: SelectionPolicy) -> None:
@@ -653,6 +730,78 @@ def _owner_index(
     }
 
 
+def _command_owner_index(
+    entries: Mapping[str, _EntryState], project_root: Path
+) -> dict[ExecutionKey, _Owner]:
+    """Index loaded execution payloads without assigning graph ownership."""
+
+    commands: dict[ExecutionKey, _Owner] = {}
+    for owners in _owner_index(entries, project_root).values():
+        for owner in owners:
+            commands.setdefault(owner.key, owner)
+    return dict(sorted(commands.items()))
+
+
+def _graph_owner_index(
+    entries: Mapping[str, _EntryState],
+    project_root: Path,
+    graph: ResearchGraph,
+) -> dict[str, tuple[_Owner, ...]]:
+    """Project established material ownership from the shared research graph."""
+
+    payloads = _graph_execution_payloads(entries, project_root)
+    nodes = {node.node_id: node for node in graph.nodes}
+    execution_by_command = _graph_command_bindings(graph)
+    projection = _GraphOwnerProjection(
+        payloads,
+        execution_by_command,
+        nodes,
+    )
+    for edge in graph.edges:
+        if edge.kind is EdgeKind.PRODUCTION:
+            projection.retain(edge.source, edge.target)
+    for ambiguity in graph.ambiguities:
+        if ambiguity.kind is AmbiguityKind.REJECTED_COMMAND:
+            for command_id in ambiguity.candidates:
+                projection.retain(command_id, ambiguity.subject)
+    return {
+        target: tuple(
+            sorted(
+                owners.values(),
+                key=lambda item: (
+                    item.entry.context.id,
+                    item.execution_id,
+                    item.output,
+                ),
+            )
+        )
+        for target, owners in sorted(projection.found.items())
+    }
+
+
+def _graph_execution_payloads(
+    entries: Mapping[str, _EntryState], project_root: Path
+) -> dict[str, dict[str, _Owner]]:
+    payloads: dict[str, dict[str, _Owner]] = defaultdict(dict)
+    for owners in _owner_index(entries, project_root).values():
+        for owner in owners:
+            execution_node = ResearchNode(
+                NodeKind.EXECUTION,
+                f"{owner.cid}:{owner.execution_id}",
+                owner.entry.context.id,
+            ).node_id
+            payloads[execution_node][owner.target] = owner
+    return payloads
+
+
+def _graph_command_bindings(graph: ResearchGraph) -> dict[str, set[str]]:
+    execution_by_command: dict[str, set[str]] = defaultdict(set)
+    for edge in graph.edges:
+        if edge.kind is EdgeKind.COMMAND_EXECUTION:
+            execution_by_command[edge.source].add(edge.target)
+    return execution_by_command
+
+
 def _resource_owners(
     owners: Mapping[str, tuple[_Owner, ...]], target: str
 ) -> tuple[_Owner, ...]:
@@ -781,8 +930,32 @@ def _trace_resource_producer(
     ):
         return
     if request.consumer is not None:
-        state.dependencies[request.consumer.key].add(producer.key)
+        state.requested_dependencies.add((producer.key, request.consumer.key))
     _trace_execution(producer, state, depth=depth)
+
+
+def _apply_graph_dependencies(state: _PlanningState) -> None:
+    """Project selected execution dependencies from the shared graph."""
+
+    selected_by_node = {
+        ResearchNode(
+            NodeKind.EXECUTION,
+            f"{key[1]}:{key[2]}",
+            key[0],
+        ).node_id: key
+        for key in state.selected
+    }
+    for edge in state.graph.edges:
+        if edge.kind is not EdgeKind.EXECUTION_DEPENDENCY:
+            continue
+        producer = selected_by_node.get(edge.source)
+        consumer = selected_by_node.get(edge.target)
+        if (
+            producer is not None
+            and consumer is not None
+            and (producer, consumer) in state.requested_dependencies
+        ):
+            state.dependencies[consumer].add(producer)
 
 
 def _stop_at_nonautomatic_policy(
@@ -1189,183 +1362,59 @@ def _apply_cycle_and_dependency_failures(state: _PlanningState) -> None:
 
 
 def _apply_validation_admission(
-    state: _PlanningState, admission: "ValidationAdmission"
-) -> None:
-    """Exclude only executions owned by validation-blocked command batches."""
-
-    _validate_stored_admission(admission)
-    blocked = _blocked_validation_batches(admission)
-    entry_blockers = _entry_validation_blockers(admission)
-    _require_resolved_validation_blockers(admission)
-    for key, owner in sorted(state.selected.items()):
-        entry_groups = entry_blockers.get(owner.entry.context.id)
-        if entry_groups:
-            _exclude_entry_execution(state, key, owner, entry_groups)
-            continue
-        _apply_execution_admission(state, key, owner, admission, blocked)
-
-
-def _validate_stored_admission(admission: "ValidationAdmission") -> None:
-    groups = {group.identity: group for group in admission.groups}
-    if len(groups) != len(admission.groups):
-        raise ActionError(
-            "reproduction.validation.scope_unresolved",
-            "validation groups are duplicate",
-        )
-    for command in admission.commands:
-        group = groups.get(command.group_id)
-        if group is None or group.kind != "chain" or command.entry != group.entry:
-            raise ActionError(
-                "reproduction.validation.scope_unresolved",
-                "validation command group is invalid",
-            )
-    for finding in admission.findings:
-        group = groups.get(finding.group_id)
-        if group is None or finding.admission_effect not in {
-            "none",
-            "chain",
-            "entry",
-            "log",
-        }:
-            raise ActionError(
-                "reproduction.validation.scope_unresolved",
-                "validation finding has no supported admission effect",
-            )
-        if group.kind == "chain":
-            if finding.admission_effect not in {"none", "chain"} or (
-                finding.admission_effect == "chain"
-                and (
-                    finding.affected_chains != (group.identity,)
-                    or finding.affected_entries != (_physical_entry(group.entry),)
-                )
-            ):
-                raise ActionError(
-                    "reproduction.validation.scope_unresolved",
-                    "validation chain has inconsistent admission ownership",
-                )
-        elif (
-            finding.admission_effect == "chain"
-            or finding.affected_chains
-            or (
-                finding.admission_effect == "entry"
-                and len(finding.affected_entries) != 1
-            )
-            or (
-                finding.admission_effect in {"none", "log"} and finding.affected_entries
-            )
-        ):
-            raise ActionError(
-                "reproduction.validation.scope_unresolved",
-                "validation finding has inconsistent admission ownership",
-            )
-
-
-def _blocked_validation_batches(
-    admission: "ValidationAdmission",
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    blocked: dict[tuple[str, str], tuple[str, ...]] = {}
-    for group in admission.groups:
-        if group.kind != "chain":
-            continue
-        finding_ids = tuple(
-            sorted(
-                finding.identity
-                for finding in admission.findings
-                if finding.group_id == group.identity
-                and finding.admission_effect == "chain"
-            )
-        )
-        if finding_ids:
-            blocked[(_physical_entry(group.entry), group.identity)] = finding_ids
-    return blocked
-
-
-def _require_resolved_validation_blockers(admission: "ValidationAdmission") -> None:
-    if any(finding.admission_effect == "log" for finding in admission.findings):
-        raise ActionError(
-            "reproduction.validation.scope_unresolved",
-            "a blocking validation finding has no safe batch scope",
-        )
-
-
-def _entry_validation_blockers(
-    admission: "ValidationAdmission",
-) -> dict[str, tuple[tuple[str, tuple[str, ...]], ...]]:
-    result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
-    groups = {group.identity: group for group in admission.groups}
-    for finding in admission.findings:
-        if finding.admission_effect != "entry":
-            continue
-        for entry in finding.affected_entries:
-            result.setdefault(entry, []).append(
-                (groups[finding.group_id].identity, (finding.identity,))
-            )
-    return {entry: tuple(groups) for entry, groups in sorted(result.items())}
-
-
-def _exclude_entry_execution(
     state: _PlanningState,
-    key: ExecutionKey,
-    owner: _Owner,
-    blockers: Sequence[tuple[str, tuple[str, ...]]],
+    evaluation: EvaluationResult,
 ) -> None:
-    finding_ids = tuple(
-        sorted({finding for _chain, findings in blockers for finding in findings})
-    )
-    state.blocked.add(key)
-    for chain_id, findings in blockers:
-        state.excluded_batches[(owner.entry.context.id, chain_id)] = findings
-    for output, _kind in owner.execution.recipe.outputs:
-        _record_failure(
-            state,
-            _Failure(
-                owner.entry.context.id,
-                output,
-                owner.execution_id,
-                "validation_blocked",
-                finding_ids,
-                owner.cid,
+    """Apply finding-owned per-execution admission from the live graph."""
+
+    snapshot = evaluation.snapshot
+    if snapshot is None:
+        raise ActionError(
+            "reproduction.validation.incomplete",
+            "prepared evaluation has no completed snapshot",
+        )
+    selected = tuple(
+        SelectedExecution(
+            owner.entry.context.id,
+            owner.cid,
+            owner.execution_id,
+            tuple(
+                output_target_path(
+                    output,
+                    entry_root=owner.entry.context.root,
+                    project_root=state.project_root,
+                )
+                .resolve()
+                .as_posix()
+                for output, _kind in owner.execution.recipe.outputs
             ),
         )
-
-
-def _apply_execution_admission(
-    state: _PlanningState,
-    key: ExecutionKey,
-    owner: _Owner,
-    admission: "ValidationAdmission",
-    blocked: Mapping[tuple[str, str], tuple[str, ...]],
-) -> None:
-    targets = {
-        output_target_path(
-            output,
-            entry_root=owner.entry.context.root,
-            project_root=state.project_root,
-        )
-        .resolve()
-        .as_posix()
-        for output, _kind in owner.execution.recipe.outputs
-    }
-    groups = {group.identity: group for group in admission.groups}
-    matches = {
-        command.group_id
-        for command in admission.commands
-        if _physical_entry(groups[command.group_id].entry) == owner.entry.context.id
-        and targets <= set(command.outputs)
-    }
-    if len(matches) != 1:
+        for owner in _target_owners(state).values()
+    )
+    admission = evaluate_reproduction_admission(
+        snapshot,
+        evaluation.context.graph,
+        selected,
+    )
+    if admission.global_blocking_finding_ids:
         raise ActionError(
             "reproduction.validation.scope_unresolved",
-            f"execution has {len(matches)} projected batch matches: {key[2]}",
+            "blocking validation findings have no safe execution scope: "
+            + ", ".join(admission.global_blocking_finding_ids),
         )
-    group_id = next(iter(matches))
-    batch_key = (owner.entry.context.id, group_id)
-    blockers = blocked.get(batch_key)
-    if not blockers:
-        state.admitted_batches.add(batch_key)
-        return
+    state.admission_decisions = {item.key: item for item in admission.executions}
+    for key, decision in sorted(state.admission_decisions.items()):
+        if decision.disposition == "excluded" and key in state.selected:
+            _exclude_validation_execution(state, key, decision)
+
+
+def _exclude_validation_execution(
+    state: _PlanningState,
+    key: ExecutionKey,
+    decision: ExecutionAdmission,
+) -> None:
+    owner = state.selected[key]
     state.blocked.add(key)
-    state.excluded_batches[batch_key] = blockers
     for output, _kind in owner.execution.recipe.outputs:
         _record_failure(
             state,
@@ -1374,7 +1423,7 @@ def _apply_execution_admission(
                 output,
                 owner.execution_id,
                 "validation_blocked",
-                blockers,
+                decision.blocking_finding_ids,
                 owner.cid,
             ),
         )
@@ -1384,18 +1433,6 @@ def _sequence_items(value: object) -> Sequence[object]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return value
     return ()
-
-
-def _physical_entry(value: str) -> str:
-    """Resolve the stored entry-document identity to its physical entry owner."""
-
-    identity = parse_entry_document_name(f"{value}.md")
-    if identity is None:
-        raise ActionError(
-            "reproduction.validation.scope_unresolved",
-            f"stored validation group has invalid entry scope: {value}",
-        )
-    return identity.id
 
 
 def _string_items(value: object) -> tuple[str, ...]:
@@ -1427,7 +1464,8 @@ def _select_and_order(
         and state.selection_policy != RECHECK_SELECTION
         and key not in needs_run
         and key not in state.blocked
-        and (not state.selected[key].execution.requires_reproduction)
+        and not state.selected[key].execution.requires_reproduction
+        and key not in state.currentness
     }
     unchanged = {
         key
@@ -1471,7 +1509,10 @@ def _initial_work(
     return {
         key
         for key in runnable
-        if state.selected[key].execution.requires_reproduction
+        if (
+            state.selected[key].execution.requires_reproduction
+            or key in state.currentness
+        )
         and not _command_result_current(prior.get(key), state.command_digests[key])
     }
 
@@ -1596,6 +1637,10 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
             "cid": owner.cid,
             "execution": canonical_execution_source_digest(owner.execution.as_dict()),
             "execution_id": owner.execution_id,
+            "currentness": [
+                conclusion.as_dict()
+                for conclusion in state.currentness.get(key, ())
+            ],
             "materials": materials,
             "outputs": outputs,
         }
@@ -1673,26 +1718,17 @@ def _project_plan(
     boundaries = tuple(state.boundaries[key] for key in sorted(state.boundaries))
     failures = tuple(state.failures[key] for key in sorted(state.failures))
     comparisons = _project_comparisons(state, runnable)
+    snapshot = prepared.evaluation.snapshot
+    assert snapshot is not None
     admission = {
-        "evaluated_at": prepared.evaluation.record.result_date,
-        "rules_version": prepared.evaluation.record.rules_version,
-        "validation_id": prepared.admission.validation_id,
-        "validation_result_id": prepared.admission.result_id,
-        "batch_admission": {
-            "admitted": [
-                {"chain_id": chain, "entry": entry}
-                for entry, chain in sorted(state.admitted_batches)
-            ],
-            "excluded": [
-                {
-                    "blocking_findings": list(state.excluded_batches[(entry, chain)]),
-                    "chain_id": chain,
-                    "entry": entry,
-                }
-                for entry, chain in sorted(state.excluded_batches)
-            ],
-            "schema": "research-log-reproduction-batch-admission/2",
-        },
+        "evaluated_at": snapshot.finished_at,
+        "executions": [
+            state.admission_decisions[key].as_dict()
+            for key in sorted(state.admission_decisions)
+        ],
+        "rules_version": snapshot.rules_version,
+        "schema": "research-log-reproduction-admission/1",
+        "validation_snapshot_id": snapshot.internal_snapshot_id,
     }
     return ReproductionPlan(
         _canonical_path(state.log.summary, state.project_root),

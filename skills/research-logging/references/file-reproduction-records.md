@@ -68,10 +68,11 @@ Compact reports combine the first three internal categories into one
 Each run also owns a complete immutable command-query projection containing
 the recorded recipe and working directory, initial policy and queue state,
 accepted selection, source digest, planning detail, accounting reason, and
-terminal disposition. Historical command list and show queries use this
-projection without consulting current `pyrun.json`.
+terminal disposition. Historical `log reproduce commands list` and
+`log reproduce commands show` queries use this projection without consulting
+current `pyrun.json`.
 
-Repair checks do not create command details or accepted runs. They preserve all
+Command verification does not create command details or accepted runs. It preserves all
 recorded observations and reproduction requirements and cannot be promoted.
 
 Each evidence-relevant command has one current record keyed by entry, CID, and
@@ -90,16 +91,17 @@ override and does not apply to resume.
 
 The reader accepts only the current result-store schema. An unsupported or
 malformed store is not decoded, migrated, or used by incremental planning or a
-partial publication retry. Command list and show do not reconstruct command rows
-from a retained run directory, published aggregates, or current metadata. A
-run accepted before a schema cutover cannot publish into an unsupported store.
+partial publication retry. `log reproduce commands list` and
+`log reproduce commands show` do not reconstruct command rows from a retained
+run directory, published aggregates, or current metadata. A run accepted before
+a schema cutover cannot publish into an unsupported store.
 
-For a current published command record, command show may supplement immutable
-accounting with the matching retained run checkpoint and bounded stdout and
-stderr tails. Those diagnostics are availability-qualified run-local evidence,
-not fields reconstructed into the cumulative result. Removing the retained run
-directory therefore removes diagnostic access without changing the published
-command outcome.
+For a current published command record, `log reproduce commands show` may
+supplement immutable accounting with the matching retained run checkpoint and
+bounded stdout and stderr tails. Those diagnostics are availability-qualified
+run-local evidence, not fields reconstructed into the cumulative result.
+Removing the retained run directory therefore removes diagnostic access without
+changing the published command outcome.
 
 Each run is a direct child of its acceptance-date directory. Reproduce resolves
 existing runs by run ID alone through a bounded scan of those date directories;
@@ -137,7 +139,7 @@ recording a complete execution comparison, it may atomically clear only the
 `pyrun`-owned reproduction requirement for that execution. It does not replace the
 original execution observation. Reproduction publication never reads or writes
 validation state; after it completes, ordinary validation runs separately and
-owns its own result and report.
+owns its own snapshot and derived report.
 
 The maintained summary owns this stable navigation line:
 

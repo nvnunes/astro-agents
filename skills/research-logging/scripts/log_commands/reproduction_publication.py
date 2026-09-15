@@ -13,8 +13,8 @@ from research_log_paths import (
     REPRODUCTION_REPORT,
     RESULTS_STORE,
 )
-from validation.human_projection import load_report_context
 from validation.operation_state import OperationLockError, operation_lock
+from validation.report_context import load_report_context
 
 from .context import LogContext, resolve_project_root
 from .model import ActionError

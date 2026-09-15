@@ -318,16 +318,21 @@ authorized Repair operation.
 ### Repair
 
 Use Repair only when you explicitly ask to correct a research-owned finding,
-causal group, finding class, malformed or legacy state, or recognized
+batch, finding type, malformed or legacy state, or recognized
 interrupted-transaction residue. Direct correction language such as “fix” or
 “resolve” is enough when the target and corrected state are clear; diagnosis
-alone remains read-only. A campaign works through repair batches: command chains,
-findings linked by a shared structural defect, and small inspection groups whose
-members still need individual diagnosis. A shared defect may affect several
-entries. Each correction preserves presented evidence and tolerances; cases
-requiring new scientific choices remain for your direction. Checks report
-remaining findings or missing coverage without publishing a new full-log
-validation. Full validation remains a separately requested operation.
+alone remains read-only. A campaign works through repair batches formed first
+by mechanically proven shared repair relationships. Related findings may cross
+finding types or entries. A narrow fallback consolidates otherwise-singleton
+Orphans findings with the same exact entry and diagnostic code for repair
+orientation; other findings without a proven shared relationship remain
+singleton batches. The fallback does not establish a shared cause or imply
+that one bulk correction is safe for every member. Each correction preserves
+presented evidence and tolerances; cases requiring new scientific choices
+remain for your direction.
+Verification reports remaining findings or missing coverage without publishing
+a new full-log validation. Full validation remains a separately requested
+operation.
 
 ## Entries and section types
 
@@ -385,7 +390,7 @@ may refer to it.
 Any other label combination is structurally invalid. Validation skips the
 entire invalid section, identifies the entry and heading, and records one
 structural failure so the skipped content cannot coexist with an all-clear
-validation result. It does not infer the intended section type or partially
+validation outcome. It does not infer the intended section type or partially
 validate the section. A separately requested Research-Log Conformance review
 may help explain the misuse; correction remains a separately requested
 operation.
@@ -1022,18 +1027,18 @@ After reproduction results have been cleared, rebuilding that generated result
 domain requires an explicit `--recheck`; an ordinary incremental launch may
 correctly select no execution and leave the result domain absent.
 
-For one current repaired invocation, use `log repair-check --path LOG --entry
+For one current repaired invocation, use `log command verify --path LOG --entry
 ENTRY --cid CID --execution-id ID`. It is isolated and synchronous; automatic policy and
 reproduction admission do not apply, and it neither resumes nor publishes. Its
 workspace and diagnostics are retained for inspection once the workspace has
 been created; an unavailable prerequisite or preflight failure before creation
 reports no workspace. Metadata, results, and promotion state remain unchanged.
 
-After an intentional script or recorded local-code repair, run an isolated
-repair check. For example:
+After an intentional script or recorded local-code repair, run isolated
+command verification. For example:
 
 ```bash
-<skill>/scripts/log repair-check --path <log> --entry <entry-id> \
+<skill>/scripts/log command verify --path <log> --entry <entry-id> \
   --cid <cid> --execution-id <full-id>
 ```
 
@@ -1076,7 +1081,7 @@ A dry run may now be a valid partial plan: an attributable pre-existing source,
 input, boundary, or baseline problem fails only the affected execution and
 skips its dependants, while independent eligible work remains runnable.
 Fresh preparation evaluates the current log once under the ordinary log lock;
-it does not admit work through an earlier published validation bundle.
+it does not admit work through an earlier published validation snapshot.
 Summary-only findings that have no executable association remain visible
 without blocking reproduction. A whole-log refusal is reserved for validation
 or graph authority that cannot be localized safely, unsafe confinement or
@@ -1143,8 +1148,10 @@ details for diagnosis without requiring an agent to parse the generated files.
 
 After reproduction publication completes, no validation runs automatically.
 Run Validate explicitly when current validation is needed. Validation findings
-or an operational validation failure remain visible in validation's own report but do not change
-the completed reproduction result or restore cleared reproduction requirements.
+and localized failed checks remain visible in validation's own saved report. A
+whole-operation validation error is reported directly and leaves the prior
+report unchanged. Neither condition changes the completed reproduction result
+or restores cleared reproduction requirements.
 
 Regenerated files remain together in the dated project `tmp/reproduction` run
 folder. They do not replace retained research automatically. If you decide to
@@ -1164,16 +1171,13 @@ At a high level, validation checks four things:
 - the research log and its supporting metadata are structurally consistent,
   including input declarations, origin boundaries, and intentional retention;
 - presented computational results match their declared retained sources;
-- generated evidence can be traced through current output and script support
-  that does not require reproduction, with exact fingerprints, ordered
-  parameters, and direct-input fingerprints to
-  explicit origins; and
+- generated evidence can be traced through recorded command, output, script,
+  and input support to explicit origins; and
 - retained files and output records are connected to the recorded work,
-  intentionally kept, or reported as Hygiene findings.
+  intentionally kept, or reported as Orphans findings.
 
-These checks are intentionally strict. A missing or ambiguous relationship is
-reported as a concrete finding instead of being guessed. Findings in one area
-do not erase valid results in another.
+Whether a recorded execution remains current belongs to Reproduction and does
+not create validation findings or blocked checks.
 
 ### Running validation
 
@@ -1181,25 +1185,39 @@ Resolve `scripts/log` from the active research-logging skill package and name
 the logical log path:
 
 ```bash
-<skill>/scripts/log validate --path <log>
+<skill>/scripts/log validate run --path <log>
 ```
 
-Use `<skill>/scripts/log validate --root <project-root>` for every maintained
-log returned by canonical bounded discovery beneath one project. The returned
-result includes a ready-to-present Markdown report; the agent presents it
-unchanged rather than recalculating counts from generated files. A cross-log
-report includes one row per discovered log and keeps operational failures,
-`incomplete` results, and `unsupported_metadata` results visible.
+Use `<skill>/scripts/log validate run --root <project-root>` for every maintained
+log returned by canonical bounded discovery beneath one project. The cross-log
+run includes one row per discovered log and isolates operational failures.
 
-A mechanical evaluation reports either that no findings were found or that one
-or more findings need attention. A preliminary validator-state check may
-instead stop before evaluation when it finds incompatible generated validation
-files; this publishes no validation result. These files are not research
-findings. Before validation can run, a researcher or maintainer must separately
-archive them outside the active log or remove them. If the validator cannot
-complete a required observation, it reports an incomplete run rather than
-treating the unchecked area as valid. A reported finding is a successful
-validation result, not a tool failure.
+Use `log validate show --path LOG` for one saved full-log summary or `log
+validate show --root PROJECT` for the project view. Use `log validate list
+findings --path LOG`, `log validate list batches --path LOG`, `log validate
+list blocked --path LOG`, or `log validate list failed --path LOG`. Use
+`log validate detail finding --path LOG --id FINDING_ID` or `log validate
+detail batch --path LOG --id BATCH_ID` for saved diagnosis. These commands do
+not reevaluate research files. Finding detail states the saved issue
+explanation and labels the complete diagnostic, including the actual and
+expected states for a comparison defect, so the problem can be identified
+without inspecting validator source. `log validate render --path LOG` rebuilds
+`validation.md` from the saved snapshot.
+
+Each applicable check is exactly Pass, Finding, Blocked, or Failed. Blocked
+means a validation finding or failed check prevented the rule from running;
+the saved row names those root blockers. Failed means the validator could not
+complete that localized check reliably. Inapplicable rules create no check.
+
+Root-scoped text summaries identify each log by its final directory name. Use
+`Mon D` UTC dates to keep text tables compact. Use JSON when a consumer needs the
+canonical full path or exact timestamp; single-log text views also retain the
+full path.
+
+A completed snapshot is Clear, Findings, or Failed. Localized failed checks are
+saved and independent checks continue. Whole-operation failures such as
+capacity exhaustion or a source change across the operation boundary publish
+nothing and preserve the prior snapshot.
 
 One completed evaluation reports every independently checkable failure in the
 bounded evidence-rooted graph. A missing or ambiguous relationship stops only
@@ -1207,16 +1225,33 @@ the affected edge; validation continues through the graph's other inputs,
 evidence artifacts, and entries. This avoids requiring successive validation
 runs merely to reveal deeper unchanged problems.
 
+A shared provenance defect is one finding at its natural material or
+relationship subject, even when several evidence records consume it. The
+research graph retains those consumers for impact and repair context; they do
+not multiply the finding inventory. Different unsatisfied rules or different
+subjects remain distinct findings.
+
+Every finding belongs to one deterministic repair batch. Batches may cross
+finding types when findings share a concrete repair relationship. Residual
+singleton Orphans findings may be grouped only when they share the exact entry
+and orphan code.
+
 A completed published mechanical evaluation writes the human-facing
 `<log>/validation.md` report. It shows when mechanical validation last
-completed, summarizes the four check areas, and groups findings by entry and
-human-readable issue type. Each group shows at most ten targets and states when
-more were omitted. Reproduction publishes its separate
+completed, records the saved outcome, counts atomic findings under
+Conformance, Evidence, Provenance, and Orphans, and presents flat finding
+sections plus canonical repair-batch summaries. It also reports blocked and
+failed counts with their list commands. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
+
+The single-log summary includes blocked and failed counts. The cross-log table
+keeps only finding-type and batch counts, then reports aggregate Blocked and
+Failed totals below it. If any discovered log lacks a readable snapshot, those
+totals are marked partial and name how many logs contributed.
 
 The Markdown reports are derived human surfaces. The tools maintain their
 detailed, rebuildable query state in `<log>/.cache/results.sqlite`; a fresh
-checkout or cleared result domain requires validation or reproduction to rebuild
+checkout or cleared generated query state requires validation or reproduction to rebuild
 it. Clearing it does not disturb a durable reproduction run or `pyrun.json`.
 Ask the agent
 to inspect a finding rather than editing generated files. Validation reads the
@@ -1225,34 +1260,35 @@ research record but changes only its own generated output.
 ### Resolving findings
 
 Validation identifies problems; it does not repair the research record. A
-separately authorized Repair operation corrects the named finding or group of
-findings without changing presented evidence or choosing new scientific content.
+separately authorized Repair operation corrects the named finding or repair
+batch without changing presented evidence or choosing new scientific content.
 
-You can ask the agent to explain a finding using saved diagnostic details,
+You can ask the agent to explain a finding using saved finding details,
 without rerunning validation. If those details are unavailable, the agent
-reports that limitation rather than inferring what an earlier check established.
+reports that limitation rather than inferring what an earlier evaluation
+established.
 
-After an authorized repair, the agent checks the affected scope. This preserves
-the published validation report and does not replace full-log validation.
-Incomplete checks leave the affected questions unresolved.
+After an authorized repair, the agent validates the affected target. Entry
+validation preserves the published full-log report and does not replace
+full-log validation. A final full-log run is required for whole-log clearance.
 
-Saved diagnostic details may be replaced or cleared. Keep important conclusions
-in the research record rather than relying on those temporary results.
+Saved finding details may be replaced or cleared. Keep important conclusions
+in the research record rather than relying on that temporary generated state.
 
-If incompatible generated files prevent validation from running, the agent
-explains the blocker and requests separate permission to archive or remove
-those files.
+Recognized obsolete generated-validation files are ordinary Orphans findings.
+Validation reports them without interpreting, archiving, removing, or allowing
+them to block otherwise independent evaluation.
 
 Research changes do not automatically trigger validation, semantic review,
 reproduction, or summary updates. The report represents the latest completed
-validation run, while the next run determines which prior checks remain current
-and which must be evaluated again.
+validation run; the next run determines which prior observations remain
+reusable and evaluates everything affected by current research state.
 
-## Repair Checks
+## Command Verification
 
-Use `log repair-check --path LOG --entry ENTRY --cid CID --execution-id ID` to test one
+Use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID` to test one
 current repaired invocation. It is isolated and synchronous: it writes only its
-temporary repair-check workspace and lock state, never a reproduction run,
+temporary command-verification workspace and lock state, never a reproduction run,
 result, report, requirement flag, or promoted artifact. Bare `log reproduce`
 plans only log or entry work; former repair reproduction and run-ID
 single-execution presentation are removed. Available current direct inputs are

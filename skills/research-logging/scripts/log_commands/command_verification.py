@@ -1,4 +1,4 @@
-"""Isolated current-source checking for one recorded repair."""
+"""Isolated current-source verification for one recorded command."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ from .storage import log_lock, reproduction_log_reservation
 
 
 @dataclass(frozen=True)
-class RepairCheckRequest:
+class CommandVerificationRequest:
     entry: str
     cid: str
     execution_id: str
@@ -71,7 +71,7 @@ class RepairCheckRequest:
 
 
 @dataclass(frozen=True)
-class RepairCheckResult:
+class CommandVerificationResult:
     summary: str
     entry: str
     cid: str
@@ -83,11 +83,11 @@ class RepairCheckResult:
     inputs: tuple[dict[str, object], ...]
     outputs: tuple[dict[str, object], ...]
     diagnostics: dict[str, str]
-    limitations: tuple[str, ...] = ("selected_repair_only",)
+    limitations: tuple[str, ...] = ("selected_command_only",)
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema": "research-log-repair-check-result/1",
+            "schema": "research-log-command-verification-result/1",
             "summary": self.summary,
             "entry": self.entry,
             "cid": self.cid,
@@ -105,7 +105,7 @@ class RepairCheckResult:
 
 
 @dataclass(frozen=True)
-class _RepairAuthority:
+class _VerificationAuthority:
     entry: EntryContext
     project: Path
     invocation: AcceptedInvocation
@@ -115,21 +115,23 @@ class _RepairAuthority:
     sources: tuple[dict[str, object], ...]
 
 
-def run_repair_check(log: LogContext, request: RepairCheckRequest) -> RepairCheckResult:
+def verify_command(
+    log: LogContext, request: CommandVerificationRequest
+) -> CommandVerificationResult:
     """Return an unavailable result for runtime prerequisites, never publish state."""
 
     if not 1 <= request.execution_timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS:
         raise ActionError(
-            "repair_check.timeout.invalid",
+            "command.verify.timeout.invalid",
             "--execution-timeout-seconds must be between 1 and 604800",
         )
     if PYRUN_EXECUTION_RE.fullmatch(request.execution_id) is None:
         raise ActionError(
-            "repair_check.execution.invalid",
+            "command.verify.execution.invalid",
             "--execution-id requires a full pyrun-exec/v2 ID",
         )
     try:
-        return _run_repair_check(log, request)
+        return _verify_command(log, request)
     except (
         DataContractError,
         EvidenceContractError,
@@ -138,7 +140,7 @@ def run_repair_check(log: LogContext, request: RepairCheckRequest) -> RepairChec
         return _unavailable_result(
             log,
             request,
-            ActionError("repair_check.authority.unavailable", str(error)),
+            ActionError("command.verify.authority.unavailable", str(error)),
         )
     except ActionError as error:
         if _runtime_unavailable(error):
@@ -146,19 +148,19 @@ def run_repair_check(log: LogContext, request: RepairCheckRequest) -> RepairChec
         raise
 
 
-def _run_repair_check(
-    log: LogContext, request: RepairCheckRequest
-) -> RepairCheckResult:
+def _verify_command(
+    log: LogContext, request: CommandVerificationRequest
+) -> CommandVerificationResult:
     """Execute and compare one selected current invocation without job state."""
 
     if not 1 <= request.execution_timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS:
         raise ActionError(
-            "repair_check.timeout.invalid",
+            "command.verify.timeout.invalid",
             "--execution-timeout-seconds must be between 1 and 604800",
         )
     if PYRUN_EXECUTION_RE.fullmatch(request.execution_id) is None:
         raise ActionError(
-            "repair_check.execution.invalid",
+            "command.verify.execution.invalid",
             "--execution-id requires a full pyrun-exec/v2 ID",
         )
     with reproduction_log_reservation(log):
@@ -166,10 +168,13 @@ def _run_repair_check(
             authority = _load_authority(log, request)
         root = (
             resolve_project_tmp(authority.project)
-            / "repair-check"
+            / "command-verification"
             / date.today().isoformat()
         )
-        name = f"repair-check-{log.root.name}-{request.entry}-{secrets.token_hex(8)}"
+        random_identity = secrets.token_hex(8)
+        name = (
+            f"command-verification-{log.root.name}-{request.entry}-{random_identity}"
+        )
         workspace = root / name
         # All selector, input, binding, path, and confinement failures happen
         # before this retained workspace exists.
@@ -204,7 +209,7 @@ def _run_repair_check(
                     return _unavailable_result(
                         log,
                         request,
-                        ActionError("repair_check.authority.unavailable", str(error)),
+                        ActionError("command.verify.authority.unavailable", str(error)),
                         workspace=workspace,
                         diagnostics=_workspace_diagnostics(workspace),
                         received=received,
@@ -273,24 +278,26 @@ def _run_repair_check(
                 signal.signal(kind, handler)
 
 
-def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuthority:
+def _load_authority(
+    log: LogContext, request: CommandVerificationRequest
+) -> _VerificationAuthority:
     """Load one complete current authority while the caller owns the log lock."""
     entry = resolve_entry(log, request.entry)
     project = resolve_project_root(log.root)
     try:
         data = load_data_file(entry.root / "data.json", entry_root=entry.root)
     except (DataContractError, OSError, ValueError) as error:
-        # A current repair check has no authority to normalize a malformed or
+        # Command verification has no authority to normalize a malformed or
         # unsafe declaration.  Surface it as an unobservable runtime input so
         # the selected child is never launched.
-        raise ActionError("repair_check.input.unavailable", str(error)) from error
+        raise ActionError("command.verify.input.unavailable", str(error)) from error
     state = load_pyrun_state(
         entry.root / "pyrun.json", entry_root=entry.root, project_root=project
     )
     execution = state.execution(request.cid, request.execution_id)
     if execution is None:
         raise ActionError(
-            "repair_check.execution.unknown",
+            "command.verify.execution.unknown",
             f"unknown execution in {entry.id}: {request.execution_id}",
         )
     candidates = [
@@ -304,7 +311,7 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
     ]
     if len(candidates) != 1:
         raise ActionError(
-            "repair_check.execution.unresolved",
+            "command.verify.execution.unresolved",
             "current command selection is absent or ambiguous",
         )
     if (
@@ -314,7 +321,7 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
         != execution.recipe
     ):
         raise ActionError(
-            "repair_check.recipe.changed",
+            "command.verify.recipe.changed",
             "current Markdown recipe differs from recorded execution",
         )
     evidence_path = entry.root / "evidence.json"
@@ -342,13 +349,15 @@ def _load_authority(log: LogContext, request: RepairCheckRequest) -> _RepairAuth
         entry.id, request.cid, request.execution_id, execution, data, {}
     )
     inputs, sources, snapshot = _snapshot(entry, project, invocation, definitions)
-    return _RepairAuthority(
+    return _VerificationAuthority(
         entry, project, invocation, tuple(definitions), snapshot, inputs, sources
     )
 
 
 def _require_authority_unchanged(
-    log: LogContext, request: RepairCheckRequest, expected: _RepairAuthority
+    log: LogContext,
+    request: CommandVerificationRequest,
+    expected: _VerificationAuthority,
 ) -> None:
     """Reload rather than trust a prior object graph at each stability boundary."""
     try:
@@ -356,20 +365,20 @@ def _require_authority_unchanged(
     except ActionError as error:
         if error.code.startswith(
             (
-                "repair_check.baseline.",
+                "command.verify.baseline.",
                 "entry.identity.",
-                "repair_check.execution.unresolved",
+                "command.verify.execution.unresolved",
             )
         ):
             raise ActionError(
-                "repair_check.source.changed",
-                "selected repair sources changed during execution",
+                "command.verify.source.changed",
+                "selected command sources changed during execution",
             ) from error
         raise
     if current.snapshot != expected.snapshot:
         raise ActionError(
-            "repair_check.source.changed",
-            "selected repair sources changed during execution",
+            "command.verify.source.changed",
+            "selected command sources changed during execution",
         )
 
 
@@ -429,13 +438,15 @@ def _snapshot(
     result: list[tuple[str, str]] = []
     for path in roots:
         if path.is_symlink() or not path.is_file():
-            raise ActionError("repair_check.source.unavailable", str(path))
+            raise ActionError("command.verify.source.unavailable", str(path))
         try:
             result.append(
                 (str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
             )
         except (OSError, UnicodeError) as error:
-            raise ActionError("repair_check.source.unavailable", str(error)) from error
+            raise ActionError(
+                "command.verify.source.unavailable", str(error)
+            ) from error
     _snapshot_retained_baselines(entry, project, invocation, result)
     inputs: dict[str, Fingerprint] = {}
     for resource in resources:
@@ -445,7 +456,7 @@ def _snapshot(
             if resource.name in invocation.execution.recipe.inputs:
                 inputs[resource.name] = fingerprint
         except (DataContractError, OSError, ValueError) as error:
-            raise ActionError("repair_check.input.unavailable", str(error)) from error
+            raise ActionError("command.verify.input.unavailable", str(error)) from error
     sources = tuple(
         _source_report(name, recorded, path)
         for name, recorded, path in _source_records(entry, project, invocation)
@@ -493,11 +504,11 @@ def _snapshot_retained_baselines(
             current = observe_output_fingerprint(path, kind)
         except (OSError, ValueError) as error:
             raise ActionError(
-                "repair_check.baseline.unavailable", str(error)
+                "command.verify.baseline.unavailable", str(error)
             ) from error
         if recorded.get(artifact) != current:
             raise ActionError(
-                "repair_check.baseline.changed",
+                "command.verify.baseline.changed",
                 f"retained baseline changed: {artifact}",
             )
         result.append((f"baseline:{artifact}", str(current)))
@@ -512,7 +523,7 @@ def _source_records(
     script = invocation.execution.observed.script
     if script is None:
         raise ActionError(
-            "repair_check.baseline.missing",
+            "command.verify.baseline.missing",
             "selected execution has no retained script observation",
         )
     return (
@@ -544,24 +555,24 @@ def _source_report(name: str, recorded: Fingerprint, path: Path) -> dict[str, ob
 
 def _file_fingerprint(path: Path) -> Fingerprint:
     if path.is_symlink() or not path.is_file():
-        raise ActionError("repair_check.source.unavailable", str(path))
+        raise ActionError("command.verify.source.unavailable", str(path))
     try:
         return Fingerprint(
             "sha256", digest=hashlib.sha256(path.read_bytes()).hexdigest()
         )
     except (OSError, UnicodeError) as error:
-        raise ActionError("repair_check.source.unavailable", str(error)) from error
+        raise ActionError("command.verify.source.unavailable", str(error)) from error
 
 
 def _result(  # noqa: PLR0913
     log: LogContext,
-    authority: _RepairAuthority,
+    authority: _VerificationAuthority,
     attempt: object,
     comparison: ExecutionComparison,
     output_paths: Mapping[str, Path],
     workspace: Path,
     received: list[int] | tuple[int, ...] = (),
-) -> RepairCheckResult:
+) -> CommandVerificationResult:
     from .reproduction_execution import ExecutionAttempt
 
     assert isinstance(attempt, ExecutionAttempt)
@@ -581,7 +592,7 @@ def _result(  # noqa: PLR0913
         status, exit_status = "matched", 0
     else:
         status, exit_status = "different", 1
-    return RepairCheckResult(
+    return CommandVerificationResult(
         log.summary.as_posix(),
         invocation.entry,
         invocation.cid,
@@ -636,10 +647,10 @@ def _runtime_unavailable(error: ActionError) -> bool:
 
     return error.code.startswith(
         (
-            "repair_check.source.",
-            "repair_check.input.",
-            "repair_check.baseline.",
-            "repair_check.source.changed",
+            "command.verify.source.",
+            "command.verify.input.",
+            "command.verify.baseline.",
+            "command.verify.source.changed",
             "reproduction.environment.",
             "reproduction.input.",
             "reproduction.script.",
@@ -656,28 +667,28 @@ def _authority_error(
     return (
         error
         if isinstance(error, ActionError)
-        else ActionError("repair_check.authority.unavailable", str(error))
+        else ActionError("command.verify.authority.unavailable", str(error))
     )
 
 
 def _unavailable_result(  # noqa: PLR0913
     log: LogContext,
-    request: RepairCheckRequest,
+    request: CommandVerificationRequest,
     error: ActionError,
     *,
     workspace: Path | None = None,
     diagnostics: dict[str, str] | None = None,
     received: list[int] | tuple[int, ...] = (),
-) -> RepairCheckResult:
-    """Represent an unobservable repair prerequisite as a non-publishing result."""
+) -> CommandVerificationResult:
+    """Represent an unobservable verification prerequisite without publishing."""
 
     comparison = error.code.startswith(
-        ("repair_check.baseline.", "reproduction.comparison.")
+        ("command.verify.baseline.", "reproduction.comparison.")
     )
     status = "comparison_unavailable" if comparison else "unavailable"
     if received:
         status = "cancelled"
-    return RepairCheckResult(
+    return CommandVerificationResult(
         log.summary.as_posix(),
         request.entry,
         request.cid,
@@ -688,7 +699,13 @@ def _unavailable_result(  # noqa: PLR0913
         {"failure": {"code": error.code, "message": str(error)}},
         (),
         (),
-        diagnostics or {"stdout": "", "stderr": ""},
+        {
+            "stdout": "",
+            "stdout_path": "",
+            "stderr": "",
+            "stderr_path": "",
+            **(diagnostics or {}),
+        },
     )
 
 

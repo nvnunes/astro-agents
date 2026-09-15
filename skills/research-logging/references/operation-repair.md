@@ -33,28 +33,27 @@ implicit in Repair.
 Stop investigating once the correction or a blocking fact or choice is clear.
 Report blockers, continue independent authorized work, and ask the researcher
 when a decision is needed. Reuse a diagnosis only after checking that its cause
-and safety conditions apply; an inspection group alone establishes neither.
+and safety conditions apply; batch membership alone establishes neither.
 
 ## Inspect With The CLI
 
-Run `log` through `<skill>/scripts/log`; `<log>` is the log directory. Use the
-supplied result ID, or obtain the latest full result below. After validation,
-inspect its returned result ID. These queries do not run validation.
+Run `log` through `<skill>/scripts/log`; `<log>` is the log directory. The
+version-19 validation authority uses stable finding and batch identities, with
+batch detail supplying the mechanically relevant repair packet. It has no
+generic result ID, human issue group, command chain, or unresolved-group view.
 
-| Need | Command |
-|---|---|
-| Evaluation scope and remaining work | `log results show --path <log> --latest --kind full` |
-| Matching batches | `log results show --path <log> --id <result-id> --view batches [--entry <entry>] [--code <code>]` |
-| Batch blocker and starting point | `log results batch --path <log> --id <result-id> --batch <batch-id>` |
-| Finding evidence | `log results finding --path <log> --id <result-id> --finding <check-id>` |
-| Commands and material relationships | `log results show --path <log> --id <result-id> --view commands --batch <batch-id>` |
-| Recover lost entry-check stdout | `log results list --path <log> --kind entry --entry <entry-id>` |
+Use `log validate show --path LOG` for orientation, `log validate list batches
+--path LOG` for repair units, and `log validate detail batch --path LOG --id
+BATCH_ID` for the mechanically assembled repair packet. Use finding list/detail
+when diagnosing one atomic finding. Do not use removed generic result
+commands, parse the SQLite store, or reconstruct a repair packet from
+`validation.md`. Do not rerun validation merely to recover inspection output.
 
-Request omitted detail through the printed command; follow cursors only as needed.
-Use `--view chains` for provenance membership. For uncached published findings,
-use `log findings list` or `show`, not another validation. Use `--help` for unfamiliar
-syntax. Match recovered results to the invocation's scope and time; an older result
-does not prove a failed or interrupted invocation completed.
+Most batches share an exact repair key or causal relationship. A batch whose
+rationale starts with `orphan-singletons:` instead collects otherwise-singleton
+Orphans findings with the same entry and exact code for efficient orientation.
+Inspect its member subjects before correction; that fallback does not establish
+a shared cause or make one bulk correction safe for every member.
 
 Inspect validation state through CLI text views. Do not read, parse, or search
 `validation.md`, `.cache/results.sqlite`, or its SQLite companions. JSON output is
@@ -88,33 +87,35 @@ state prevents the owning action, consult the relevant code or field in
 `../../../docs/research-log-mechanical-validator-spec.md` and the needed file
 contract. Remove transaction residue only as identified by its owning contract.
 
-After a failed mutation, inspect its diagnostic. Retry only with a revised,
-evidence-backed correction, never to recover stdout or bypass a precondition.
+After a failed mutation, inspect its diagnostic with the exact recovery command
+printed by the failure: `log command show --path LOG --id DIAGNOSTIC_ID`. Retry
+only with a revised, evidence-backed correction, never to recover stdout or
+bypass a precondition.
 
 ## Check The Correction
 
-For one repaired invocation, use `log repair-check --path LOG --entry ENTRY
---cid CID --execution-id ID`. It is synchronous. Its isolated repair-check workspace is
-the only retained per-check artifact apart from operation-lock state; it never
-creates a reproduction run, changes metadata, clears a requirement, publishes
-a result, or promotes outputs. It compares current declared-input fingerprints
-with their recorded observations and compares isolated regenerated outputs
-with retained output baselines. Source edits during the call are unavailable,
-not adopted.
+The isolated command-verification operation is synchronous. It never creates a
+reproduction run, changes metadata, clears a requirement, publishes a result,
+or promotes outputs. It compares current declared-input fingerprints with their
+recorded observations and compares isolated regenerated outputs with retained
+output baselines. Source edits during the call are unavailable, not adopted.
+Run it with `log command verify --path LOG --entry ENTRY --cid CID
+--execution-id ID`.
 
 | Coverage | Command |
 |---|---|
-| Current repair findings | Validate each affected stable entry with `log validate --path <log> --entry eNNN`, inspect its current groups, then run one final full validation. |
-| Full log and rebuilt report | `log validate --path <log>`; requires full-validation authorization. |
+| Current repair findings | Validate each affected stable entry with `log validate run --path <log> --entry eNNN`; inspect repair batches with `log validate list batches --path <log> --entry eNNN` and `log validate detail batch --path <log> --entry eNNN --id BATCH_ID`, then run one final full validation. |
+| Full log and rebuilt report | `log validate run --path <log>`; requires full-validation authorization. |
 
 Use focused checks while editing, including an owning postcondition or decoder/test.
 Group corrections needing full-log coverage at one authorized full-validation
-checkpoint. An entry result is bounded current inspection, not certification;
+checkpoint. An entry validation outcome is bounded current inspection, not certification;
 defer complete-log assessment to the
 full-validation checkpoint. Do not try overlapping batches or repeat the batch/full
 cycle for each edit needing that coverage. Resolve other evaluation failures before
 judging the repair. Without full-validation authority, report the verification gap.
 
-Reuse applicable completed results; query details instead of rerunning checks.
+Reuse applicable completed evaluations; query saved details instead of rerunning
+validation.
 Claim clearance only when completed evaluation covers the corrected state.
 Structural repair does not clear an execution's reproduction requirement.

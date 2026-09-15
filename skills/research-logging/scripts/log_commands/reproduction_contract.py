@@ -17,7 +17,7 @@ from research_log_data import (
 from validation.evidence import EvidenceRecord
 from validation.pyrun_state import NAME_RE, PyrunExecution
 
-PLAN_SCHEMA = "research-log-reproduction-plan/10"
+PLAN_SCHEMA = "research-log-reproduction-plan/11"
 REPRODUCTION_RESULT_SCHEMA = "research-log-reproduction-result/11"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_PLAN_SUMMARY_ENTRIES = 20
@@ -112,7 +112,7 @@ class ReproductionPlan:
     execution_timeout_seconds: int = DEFAULT_EXECUTION_TIMEOUT_SECONDS
 
     def as_dict(self) -> dict[str, object]:
-        """Return the closed accepted-plan/10 field set."""
+        """Return the closed accepted-plan/11 field set."""
 
         return {
             "boundaries": [dict(value) for value in self.boundaries],
@@ -142,7 +142,7 @@ class ReproductionPlan:
 
     @classmethod
     def from_json(cls, raw: bytes) -> "ReproductionPlan":
-        """Load one bounded, closed accepted-plan/10 JSON document."""
+        """Load one bounded, closed accepted-plan/11 JSON document."""
 
         if len(raw) > MAX_PLAN_BYTES:
             raise ValueError("accepted reproduction plan crossed its byte bound")
@@ -365,19 +365,18 @@ def _validate_nested_plan(plan: ReproductionPlan) -> None:
 
     if set(plan.admission) != {
         "evaluated_at",
+        "executions",
         "rules_version",
-        "validation_id",
-        "validation_result_id",
-        "batch_admission",
+        "schema",
+        "validation_snapshot_id",
     }:
         raise ValueError("accepted reproduction plan admission is invalid")
     if (
         not isinstance(plan.admission["evaluated_at"], str)
         or not isinstance(plan.admission["rules_version"], str)
-        or not all(
-            isinstance(plan.admission[name], str) and plan.admission[name]
-            for name in ("validation_id", "validation_result_id")
-        )
+        or plan.admission.get("schema") != "research-log-reproduction-admission/1"
+        or not isinstance(plan.admission["validation_snapshot_id"], str)
+        or not plan.admission["validation_snapshot_id"]
     ):
         raise ValueError("accepted reproduction plan admission is invalid")
     command_keys = {
@@ -390,6 +389,7 @@ def _validate_nested_plan(plan: ReproductionPlan) -> None:
     }
     for entry, cid, execution_id in sorted(command_keys):
         accepted_invocation(plan, entry, cid, execution_id)
+    _validate_admission(plan.admission, command_keys)
     _validate_plan_collections(plan)
     _validate_comparison_context(plan, command_keys)
 
@@ -397,18 +397,47 @@ def _validate_nested_plan(plan: ReproductionPlan) -> None:
 def _validate_plan_collections(plan: ReproductionPlan) -> None:
     """Validate planner-emitted artifact, boundary, failure, and admission rows."""
 
-    batch = plan.admission["batch_admission"]
-    if not isinstance(batch, Mapping) or set(batch) != {
-        "admitted",
-        "excluded",
-        "schema",
-    }:
-        raise ValueError("accepted reproduction batch admission is invalid")
-    if batch.get("schema") != "research-log-reproduction-batch-admission/2":
-        raise ValueError("accepted reproduction batch admission is invalid")
     _validate_cases(plan.cases)
     _validate_boundaries(plan.boundaries)
     _validate_failures(plan.failures)
+
+
+def _validate_admission(
+    admission: Mapping[str, object],
+    command_keys: set[tuple[str, str, str]],
+) -> None:
+    executions = admission.get("executions")
+    if not isinstance(executions, Sequence) or isinstance(executions, (str, bytes)):
+        raise ValueError("accepted reproduction admission executions are invalid")
+    observed: set[tuple[str, str, str]] = set()
+    for execution in executions:
+        if not isinstance(execution, Mapping) or set(execution) != {
+            "blocking_finding_ids",
+            "cid",
+            "disposition",
+            "entry",
+            "execution_id",
+        }:
+            raise ValueError("accepted reproduction admission execution is invalid")
+        key = tuple(execution.get(name) for name in ("entry", "cid", "execution_id"))
+        if not all(isinstance(item, str) and item for item in key):
+            raise ValueError("accepted reproduction admission execution is invalid")
+        canonical_key = cast(tuple[str, str, str], key)
+        blockers = execution.get("blocking_finding_ids")
+        disposition = execution.get("disposition")
+        if (
+            canonical_key in observed
+            or disposition not in {"admitted", "excluded"}
+            or not isinstance(blockers, Sequence)
+            or isinstance(blockers, (str, bytes))
+            or not all(isinstance(item, str) and item for item in blockers)
+            or list(blockers) != sorted(set(blockers))
+            or (disposition == "admitted") == bool(blockers)
+        ):
+            raise ValueError("accepted reproduction admission execution is invalid")
+        observed.add(canonical_key)
+    if observed != command_keys:
+        raise ValueError("accepted reproduction admission coverage is invalid")
 
 
 def _validate_cases(cases: Sequence[Mapping[str, object]]) -> None:

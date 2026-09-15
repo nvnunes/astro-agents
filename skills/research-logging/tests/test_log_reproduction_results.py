@@ -27,7 +27,7 @@ from log_commands.reproduction_results import (
     reconcile_run_folders,
 )
 from research_log_data import Fingerprint
-from validation.human_projection import (
+from validation.report_context import (
     EntryPresentation,
     ReportContext,
     load_report_context,

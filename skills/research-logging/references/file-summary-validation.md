@@ -20,10 +20,11 @@ do not open, repair, delete, or normalize generated validation files. Validate
 reads the summary but never changes it. Before the first validation, the link
 may resolve to a report that does not yet exist.
 
-`<log>/validation.md` is the validation-only human projection. Its Mechanical
-Validation section shows the latest completed date and compact human area
-results; its bounded Findings section groups affected targets by entry and
-human issue type. Reproduction has the separate summary navigation and report
-defined in `references/file-summary-reproduction.md`. Agents do not parse
-either report for validation or repair. Correct generated records through their
-owning operation, never through summary edits.
+`<log>/validation.md` is the validation-only human projection. It shows the
+saved outcome, counts atomic findings under Conformance, Evidence, Provenance,
+and Orphans, then presents flat finding sections and canonical repair-batch
+summaries. When relevant, it also gives Blocked and Failed counts and their
+saved-list commands. Reproduction has the separate summary navigation and report defined
+in `references/file-summary-reproduction.md`. Agents do not parse either
+report for validation or repair. Correct generated records through their owning
+operation, never through summary edits.

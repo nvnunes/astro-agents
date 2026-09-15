@@ -5,7 +5,8 @@ from __future__ import annotations
 import shlex
 import sys
 
-from validation.result_storage import publish_diagnostic_commands
+from research_log_result_store import ResultStoreError
+from validation.command_diagnostics import publish_command_diagnostic
 
 from .model import ActionError
 
@@ -20,18 +21,17 @@ def report_diagnostic(error: ActionError) -> None:
         print("Diagnostic not cached: log context unavailable.", file=sys.stderr)
         return
     try:
-        identity = publish_diagnostic_commands(
+        identity = publish_command_diagnostic(
             error.diagnostic_log,
             error.diagnostic_log.name + ".md",
             error.code,
             error.records,
         )
-    except (OSError, ValueError):
+    except (OSError, ResultStoreError, ValueError):
         return
     else:
-        path = shlex.quote(str(error.diagnostic_log))
         print(f"Diagnostic: {identity} (authoring failure; no validation performed)")
         print(
-            f"Inspect: log results show --path {path} --id {identity} "
-            "--view commands --limit 5"
+            "Inspect: log command show --path "
+            f"{shlex.quote(str(error.diagnostic_log))} --id {shlex.quote(identity)}"
         )

@@ -473,14 +473,30 @@ def require_artifact_baseline_form(
         raise PresentationEvaluationError(
             "evidence.declaration.invalid",
             record.id,
-            {"presentation_form": presentation.presentation_form},
+            {
+                "actual": {
+                    "artifact_fingerprint_present": False,
+                    "presentation_form": presentation.presentation_form,
+                },
+                "expected": {"artifact_fingerprint_present": True},
+                "reason": "A linked or image artifact must record an artifact "
+                "fingerprint.",
+            },
             "Artifact Evidence Baseline",
         )
     if not path_based and record.artifact_fingerprint_present:
         raise PresentationEvaluationError(
             "evidence.declaration.invalid",
             record.id,
-            {"presentation_form": presentation.presentation_form},
+            {
+                "actual": {
+                    "artifact_fingerprint_present": True,
+                    "presentation_form": presentation.presentation_form,
+                },
+                "expected": {"artifact_fingerprint_present": False},
+                "reason": "An inline artifact is validated from its displayed "
+                "content and must not record an artifact fingerprint.",
+            },
             "Artifact Evidence Baseline",
         )
 

@@ -1,4 +1,4 @@
-"""Current Markdown invocation discovery shared by policy and repair checks."""
+"""Current Markdown invocation discovery shared by policy and command verification."""
 
 from __future__ import annotations
 

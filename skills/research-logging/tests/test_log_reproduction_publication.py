@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Iterator
 from unittest import mock
 
-from log_commands.inspection_cli import _render
 from log_commands.model import ActionError
 from log_commands.reproduction_contract import ReproductionPlan
 from log_commands.reproduction_planner import (
@@ -23,6 +22,7 @@ from log_commands.reproduction_publication import (
     publish_completed_reproduction,
     verify_publication_retry_compatibility,
 )
+from log_commands.reproduction_report_render import render_reproduction_report
 from log_commands.reproduction_result_storage import PublicationCommitQuery
 from log_commands.reproduction_results import RunFolder, RunResult
 from reproduction_fixed_plan_test_support import accepted_plan, publication_run
@@ -199,7 +199,7 @@ class ReproductionPublicationTests(unittest.TestCase):
                             "WHERE kind='reproduction'"
                         ).fetchone()
                     )
-                _render(log, "reproduction")
+                render_reproduction_report(log)
                 self.assertNotEqual(
                     report.read_text(encoding="utf-8"), "prior report\n"
                 )
@@ -242,7 +242,7 @@ class ReproductionPublicationTests(unittest.TestCase):
                         "WHERE kind='reproduction'"
                     ).fetchone()
                 )
-            _render(log, "reproduction")
+            render_reproduction_report(log)
             with result_snapshot(log.root) as db:
                 self.assertIsNotNone(
                     db.execute(

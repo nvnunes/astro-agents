@@ -12,7 +12,7 @@ from typing import Callable, Mapping, cast
 
 from research_log_paths import RESULTS_STORE
 from validation.discovery import discover_summaries
-from validation.human_projection import load_report_context
+from validation.report_context import load_report_context
 
 from .context import LogContext, resolve_log, resolve_project_root
 from .model import ActionError

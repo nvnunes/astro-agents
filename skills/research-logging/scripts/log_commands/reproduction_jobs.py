@@ -25,7 +25,6 @@ from research_log_data import (
     observe_fingerprint,
     parse_fingerprint,
 )
-from validation.batch_projection import build_batch_projection
 from validation.engine import (
     EvaluationRequest,
     FullEvaluationTarget,
@@ -628,65 +627,41 @@ def _prepare_plan(  # noqa: PLR0913
     """Evaluate and plan once while the caller owns the normal log lock."""
 
     accepted_snapshot = research_snapshot(log.summary)
-    evaluation_started = _utc_now()
     result = evaluate_mechanical(
-        EvaluationRequest(log.summary, _utc_now()[:10], FullEvaluationTarget())
+        EvaluationRequest(log.summary, FullEvaluationTarget())
     )
-    evaluation_finished = _utc_now()
     if research_snapshot(log.summary) != accepted_snapshot:
         raise ActionError(
             "reproduction.validation.source_changed",
             "research-owned state changed during validation planning",
         )
     from research_log_result_store import record_report_materialization, results_lock
-    from validation.human_projection import load_report_context
     from validation.records import publish_validation_outputs_locked
-    from validation.report import compose_validation_report
-    from validation.result_storage import (
-        ValidationPublicationRequest,
-        load_validation_admission,
-        load_validation_report_projection,
-        provisional_validation_admission,
-        publish_validation_result,
-        result_metadata_from_evaluation,
+    from validation.snapshot_report import compose_snapshot_report
+    from validation.snapshot_storage import (
+        SnapshotPublicationRequest,
+        entry_relations_from_evaluation,
+        load_validation_snapshot,
+        publish_validation_snapshot,
     )
 
-    source_identity = canonical_record_digest({"source_snapshot": accepted_snapshot})
-    projection = build_batch_projection(
-        result.record,
-        invocations=result.context.invocations,
-        registries=result.context.registries,
-        source_identity=source_identity,
-    )
-    if not publish_validation:
-        admission = provisional_validation_admission(result.record, projection)
-    else:
-        report_context = load_report_context(log.summary)
+    if publish_validation:
         with results_lock(log.root):
-            stored = publish_validation_result(
-                ValidationPublicationRequest(
+            assert result.snapshot is not None
+            stored = publish_validation_snapshot(
+                SnapshotPublicationRequest(
                     log.root,
-                    result.record,
-                    projection,
-                    report_context,
-                    result_metadata_from_evaluation(
-                        result.context, source_identity=source_identity
-                    ),
-                    started_at=evaluation_started,
-                    finished_at=evaluation_finished,
-                    source_identity=source_identity,
+                    result.snapshot,
+                    entry_relations_from_evaluation(result.context),
                 )
             )
             identity = (
-                f"committed validation result {stored.result_id} generation "
+                f"committed validation snapshot {stored.snapshot_id} generation "
                 f"{stored.generation}"
             )
             try:
-                stored_projection = load_validation_report_projection(log.root)
-                report_bytes = compose_validation_report(
-                    stored_projection.record,
-                    context=cast(Any, stored_projection.context),
-                    groups=cast(Any, stored_projection.groups),
+                report_bytes = compose_snapshot_report(
+                    load_validation_snapshot(log.root)
                 ).encode()
             except Exception as error:
                 raise ActionError(
@@ -707,8 +682,7 @@ def _prepare_plan(  # noqa: PLR0913
                     "results.report.write_failed",
                     f"{identity}; report marker is stale: {error}",
                 ) from error
-            admission = load_validation_admission(log.root, stored.result_id)
-    prepared = prepare_reproduction_context(result, admission)
+    prepared = prepare_reproduction_context(result)
     return plan_reproduction(
         log,
         prepared,

@@ -234,10 +234,11 @@ Future validation changes must preserve these invariants:
   other log's graph or adding repository coordination requirements.
 - **Explicit uncertainty:** Missing, inaccessible, or ambiguous evidence must
   remain visible and must not be treated as successful validation.
-- **Completed publication:** Publish a coherent completed mechanical bundle.
-  Incomplete evaluation does not replace the prior completed bundle, and an
-  ordinary publication failure restores it.
-- **Coherent results:** Report completion only when the human-facing result and
+- **Completed publication:** Publish one coherent validation snapshot after a
+  completed operation. Localized validator failures are saved explicitly;
+  capacity exhaustion, operation-boundary source mutation, and publication
+  failure preserve the prior snapshot.
+- **Coherent reporting:** Report completion only when the human-facing report and
   its supporting validation artifacts agree. Missing or stale derived state
   must not make uncertain work appear complete.
 - **Safe reuse:** Reuse a prior passing check only when the current rules,
@@ -247,6 +248,18 @@ Future validation changes must preserve these invariants:
   machinery.
 - **Proportional cost:** Validation time should grow approximately linearly
   with the evidence examined wherever possible.
+- **Canonical finding ownership:** One unsatisfied atomic rule application belongs
+  to its natural record, command, execution, material, graph edge, collection,
+  entry, or log subject. Several consumers of that subject do not create
+  several findings; their impact remains represented by the shared graph.
+- **Linear saved context:** Store the bounded research graph once per completed
+  snapshot. Findings and batches retain only direct anchors, and a selected
+  batch's repair neighborhood is derived from that graph when requested rather
+  than persisted once per batch.
+- **Explicit check outcomes:** Every applicable check is exactly `pass`,
+  `finding`, `blocked`, or `failed`. A blocked check traces to a validation
+  finding or failed check. Inapplicable rules and Reproduce-owned currentness
+  conclusions create no validation check.
 - **On-disk state:** Validation is source-control agnostic and validates the
   research material currently present on disk.
 - **Code-only mechanical scope:** Mechanical validation uses deterministic
@@ -254,12 +267,10 @@ Future validation changes must preserve these invariants:
   separate workflows with separate ownership.
 - **End-to-end Provenance:** A passing evidence-rooted chain identifies the
   retained artifact, reaches explicit origins through unique producers, and
-  matches each generated output to current output and script fingerprints,
-  exact ordered parameters, direct-input fingerprints, and observed log-local
-  Python code fingerprints recorded by `pyrun`. Associated code support joins
-  the material graph independently of confirmation so Hygiene does not
-  duplicate a Provenance failure. This is a bounded support claim, not
-  causation, scientific validity, or reproduction.
+  resolves each generated output to its recorded command and support. Recorded
+  code support joins the shared graph so Orphans does not duplicate a
+  Provenance finding. Whether recorded execution inputs, outputs, parameters,
+  or code remain current belongs to Reproduction, not validation.
 - **Command-owned execution state:** entry-root `pyrun.json` records one stable
   execution identity for each exact command recipe, including its complete
   output set, observed inputs and code, confirmation state, latest run time,

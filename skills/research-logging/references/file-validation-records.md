@@ -1,95 +1,85 @@
 # Generated Validation Record Instructions
 
-Use this file when mechanical validation reads research material and publishes
-its generated result. Entry-root `pyrun.json` is separate `pyrun`-owned
-execution state; validation reads it but never writes or repairs it.
+Use this file when mechanical validation publishes its generated snapshot and
+report. Entry-root `pyrun.json` is separate reproduction-owned execution state;
+validation reads it but never writes or repairs it.
 
 ## Ownership
 
-Mechanical Validate may create or update only these generated paths:
+Mechanical Validate may create or update only:
 
-- `<log>/.cache/results.sqlite` and its safe SQLite companions;
+- `<log>/.cache/results.sqlite` and its SQLite companions;
 - `<log>/validation.md`;
-- `<log>/.cache/research-log-validation.sqlite3` and its journal, WAL, and
-  shared-memory companions;
+- `<log>/.cache/research-log-validation.sqlite3` and its companions;
 - `<log>/.cache/research-log-operations/log.lock`; and
-- `<project>/.cache/research-log-fingerprints.sqlite3` and its journal, WAL,
-  and shared-memory companions.
+- `<project>/.cache/research-log-fingerprints.sqlite3` and its companions.
 
-The validation domain of `.cache/results.sqlite` is the current local
-machine-readable authority. It retains the complete normalized validation
-projection, including provenance chains and primary repair batches. It is
-disposable; ordinary diagnosis and Repair use `log results` and `log findings`
-and do not parse generated files directly. Missing current machine state
-requires validation before queries.
+The validation domain of `results.sqlite` is the current local machine
+authority. It stores the latest completed full-log snapshot and the latest
+scoped snapshot for each stable entry. A full snapshot replaces prior entry
+snapshots. The normalized model contains finding rows, deterministic repair
+batches, blocked checks with root blocker IDs, failed checks with bounded
+diagnostics, and one shared repair-context graph. Passing checks and
+applicability decisions are private evaluation data.
 
-`validation.md` is the concise, source-controlled human projection. Validate
-and Repair do not parse it as machine authority. Reproduction is a separate
-operation with its own domain in `results.sqlite` and `reproduction.md`;
-mechanical validation preserves both.
+Each finding retains its exact rule, subject, bounded diagnostic values, and
+source locations. The snapshot report context retains the stable issue title
+and explanation for every saved finding code. `log validate detail finding`
+combines those saved values directly; comparison defects record explicit
+reason, actual state, and expected state when those distinctions identify the
+violation.
 
-The human report omits run dates and contains one compact Area and Result
-table, and findings grouped by entry and human issue type. Each issue group
-shows at most ten deterministic target details and an overflow command. It
-contains no internal failure codes, check identities, raw observed state,
-dependency mappings, passing totals, or repair instructions. A clear completed
-result says `No mechanical findings.`
+The store does not expose command chains, admission effects, unresolved groups,
+human issue groups, or generic stored-result identities. Ordinary diagnosis
+and Repair use `log validate show`, `list`, and `detail`; never parse the
+database directly.
 
-The validation domain keeps the latest full observation and the latest scoped
-result for each stable entry. A new entry validation replaces only that entry's
-result; a completed full validation replaces the full result and clears prior
-scoped results. Entry validation preserves research-owned state.
-Failed authoring commands may also retain the latest `diagnostic` snapshot per
-log in this domain. Its rejected-command details are not validation evidence.
-New diagnostics preserve full and entry results; full publication clears old
-diagnostics. Use the printed text-inspection command for omitted details.
-Inspection never evaluates research files. A result transaction failure preserves
-the prior completed result; report rendering failure after commit leaves the
-result queryable and is recoverable with `log results render --kind validation`.
+`validation.md` is the concise source-controlled human projection of the same
+saved snapshot. It includes the saved outcome, finding counts and sections,
+repair batches, and counts plus list commands for blocked and failed checks.
+It does not expose passing checks. Reproduction owns separate state and
+`reproduction.md`; validation preserves both.
 
-All files below `.cache/` are disposable generated state. The nearest
-enclosing non-symlink Git worktree owns the project cache. Ignore every
-`.cache/` directory in source control and research-log discovery. `--dry-run`
-publishes no result or cache changes beyond the generated coordination lock.
-`--recompute-validation` bypasses per-log validation reuse,
-`--recompute-fingerprints` bypasses project fingerprint reuse, and
-`--recompute` remains shorthand for bypassing both during that invocation.
+Command diagnostics occupy a separate command-owned domain. `log command show
+--path LOG` reads the latest retained diagnostic. Command-diagnostic replacement
+preserves validation and reproduction state, and validation replacement
+preserves command diagnostics.
+
+All `.cache/` state is disposable. Ignore it in source control and log
+discovery. The nearest enclosing non-symlink Git worktree owns the project
+fingerprint cache.
 
 ## Research Boundary
 
-Treat maintained summaries, entries, scripts, artifacts, `data.json`,
-`retention.json`, evidence records, and authored prose as research-owned.
-Validation reads them but never edits them. Research operations preserve
-generated validation files and do not hand-edit them.
-
-The maintained summary owns this stable navigation line immediately below its
-H1:
+Treat maintained summaries, entries, scripts, artifacts, registries, evidence
+records, retention declarations, and prose as research-owned. Validation reads
+them but never edits them. The maintained summary owns this navigation line
+immediately below its H1:
 
 ```md
 Validation: [latest completed report](<log>/validation.md)
 ```
 
-Validation never adds, removes, or rewrites this line.
+Validation never rewrites that line.
 
 ## Publication Boundary
 
-A writable completed evaluation publishes a coherent generated bundle while
-holding the canonical log lock exclusively. Dry-run validation holds that same
-lock for its complete read-only lifecycle. An incomplete evaluation or
-publication failure does not replace the prior completed bundle. A dry run
-publishes nothing. If another maintained operation owns a conflicting lock,
-report its supplied owner metadata once and stop; do not retry or poll.
+A writable completed evaluation commits the snapshot in one atomic transaction
+while holding the log lock, then atomically renders `validation.md`. A database
+or report failure preserves the prior report bytes; a post-commit report failure
+leaves the new snapshot queryable and marks the materialization stale for
+`log validate render` recovery.
 
-The result store is local cache state; `validation.md` is its derived human
-summary. Removing validation rows does not alter the existing report, but it is
-nonauthoritative and machine queries require validation to rebuild current
-state. Reproduction planning has its own state and does not require the latest
-validation result to remain present after admission. Former validation JSON,
-batch JSON, and inspection-database locations are unsupported after cutover and
-are never read as fallbacks.
+Localized failed checks belong to a completed `failed` snapshot and are
+published. Whole-operation failure—including capacity exhaustion or a source
+change across the operation boundary—publishes nothing and preserves the prior
+snapshot. Dry runs publish nothing. Conflicting lock ownership is reported once
+without retry or polling.
 
-Do not edit generated records by hand. Report unsupported generated metadata
-and request separate authorization before archiving it outside the active log
-or removing it. Mechanical validation does not repair research material,
-request agent judgment, execute research commands, perform semantic review, or
-perform reproduction.
+Store version 19 is a replacement schema. Versions 17 and 18 validation state are never
+migrated or translated; the first successful writable validation replaces only
+the validation domain while preserving reproduction and command-owned state.
+Older generated validation formats are unsupported fallbacks.
+
+Recognized obsolete generated-validation artifacts are ordinary Orphans
+findings. Validation reports them without deleting or interpreting them.

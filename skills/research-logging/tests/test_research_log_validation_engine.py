@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,16 +18,36 @@ from research_log_cli_test_support import fixture_parameter_roles
 from research_log_validation_test_support import mock, unittest, write
 
 ENGINE = importlib.import_module("validation.engine")
-RESULTS = importlib.import_module("validation.mechanical_results")
+DOMAIN = importlib.import_module("validation.domain")
 LOCATOR = importlib.import_module("validation.locator")
 PYRUN_STATE = importlib.import_module("validation.pyrun_state")
 PRESENTATION = importlib.import_module("validation.presentation")
-HUMAN = importlib.import_module("validation.human_projection")
 PROVENANCE = importlib.import_module("validation.provenance")
-REPORT = importlib.import_module("validation.report")
 COMMANDS = importlib.import_module("validation.commands")
+RESEARCH_GRAPH = importlib.import_module("validation.research_graph")
+SNAPSHOT_REPORT = importlib.import_module("validation.snapshot_report")
 
 _EVALUATE_MECHANICAL = ENGINE.evaluate_mechanical
+
+
+def _without_material_production(graph: Any, material: str) -> Any:
+    target = RESEARCH_GRAPH.ResearchNode(
+        RESEARCH_GRAPH.NodeKind.MATERIAL,
+        material,
+    ).node_id
+    return RESEARCH_GRAPH.ResearchGraph(
+        graph.nodes,
+        tuple(
+            edge
+            for edge in graph.edges
+            if not (
+                edge.kind is RESEARCH_GRAPH.EdgeKind.PRODUCTION
+                and edge.target == target
+            )
+        ),
+        graph.ambiguities,
+        graph.limit_observation,
+    )
 
 
 def _evaluate_current_fixture(request: Any) -> Any:
@@ -52,7 +73,111 @@ def _evaluate_current_fixture(request: Any) -> Any:
             current = re.sub(r"\./pyrun (?![^\n]*--cid\b)", add_cid, text)
             if current != text:
                 document.write_text(current, encoding="utf-8")
-    return _EVALUATE_MECHANICAL(request)
+    evaluation = _EVALUATE_MECHANICAL(request)
+    _assert_canonical_projection(evaluation)
+    return evaluation
+
+
+def _assert_canonical_projection(evaluation: Any) -> None:
+    """Prove every finding check becomes exactly one finding."""
+
+    canonical = {check.check_id: check for check in evaluation.attempt.checks}
+    if len(canonical) != len(evaluation.attempt.checks):
+        raise AssertionError("canonical checks are not unique")
+    finding_checks = {
+        check.check_id
+        for check in canonical.values()
+        if check.outcome is DOMAIN.CheckOutcome.FINDING
+    }
+    if (
+        {finding.finding_id for finding in evaluation.attempt.findings}
+        != finding_checks
+    ):
+        raise AssertionError("finding checks and projected findings differ")
+    for finding in evaluation.attempt.findings:
+        if not (
+            finding.source_locations
+            or finding.repair_keys
+            or finding.context_nodes
+            or finding.admission_owner is not None
+        ):
+            raise AssertionError(
+                f"finding lacks typed repair context: {finding.finding_id}"
+            )
+    if evaluation.snapshot is None:
+        raise AssertionError("completed evaluation did not produce a snapshot")
+
+
+def _area_outcomes(attempt: Any) -> dict[Any, Any]:
+    """Aggregate private checks by canonical rule area for focused assertions."""
+
+    aggregated: dict[Any, Any] = {}
+    for area in DOMAIN.RuleArea:
+        outcomes = {check.outcome for check in attempt.checks if check.area is area}
+        if not outcomes or outcomes == {DOMAIN.CheckOutcome.BLOCKED}:
+            outcome = DOMAIN.CheckOutcome.BLOCKED
+        elif DOMAIN.CheckOutcome.FAILED in outcomes:
+            outcome = DOMAIN.CheckOutcome.FAILED
+        elif DOMAIN.CheckOutcome.FINDING in outcomes:
+            outcome = DOMAIN.CheckOutcome.FINDING
+        else:
+            outcome = DOMAIN.CheckOutcome.PASS
+        aggregated[area] = outcome
+    return aggregated
+
+
+def _provenance_finding_checks(
+    attempt: Any, entry_id: str, record_id: str
+) -> tuple[Any, ...]:
+    """Return canonical provenance finding checks behind one record consumer."""
+
+    checks = {check.check_id: check for check in attempt.checks}
+    pending = list(checks[f"provenance:{entry_id}:{record_id}"].dependencies)
+    seen: set[str] = set()
+    finding_checks: list[Any] = []
+    while pending:
+        identity = pending.pop()
+        if identity in seen or identity not in checks:
+            continue
+        seen.add(identity)
+        check = checks[identity]
+        if (
+            check.area is DOMAIN.RuleArea.PROVENANCE
+            and check.outcome is DOMAIN.CheckOutcome.FINDING
+        ):
+            finding_checks.append(check)
+        pending.extend(check.dependencies)
+    return tuple(sorted(finding_checks, key=lambda check: check.check_id))
+
+
+def _single_provenance_finding_check(
+    attempt: Any, entry_id: str, record_id: str
+) -> Any:
+    finding_checks = _provenance_finding_checks(attempt, entry_id, record_id)
+    if len(finding_checks) != 1:
+        raise AssertionError(
+            f"expected one provenance finding check for {entry_id}:{record_id}, "
+            f"observed {[item.check_id for item in finding_checks]}"
+        )
+    return finding_checks[0]
+
+
+def _single_currentness_blocker(
+    evaluation: Any, entry_id: str, record_id: str
+) -> Mapping[str, object]:
+    """Return one Reproduce-owned currentness result outside validation."""
+
+    del entry_id, record_id
+    currentness = evaluation.context.currentness
+    if len(currentness) != 1:
+        raise AssertionError(
+            f"expected one currentness result, observed {currentness}"
+        )
+    return currentness[0].as_dict()
+
+
+def _reproduce_currentness(evaluation: Any) -> tuple[Any, ...]:
+    return evaluation.context.currentness
 
 
 def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]:
@@ -186,7 +311,12 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     return summary, entry
 
 
-def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...]) -> str:
+def _replace_with_pyrun_state(
+    entry_document: Path,
+    parameters: tuple[str, ...],
+    *,
+    requires_reproduction: bool = False,
+) -> str:
     """Replace the legacy fixture registry with one current execution."""
 
     entry = entry_document.parent
@@ -233,7 +363,197 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
         ),
     )
     execution = PYRUN_STATE.PyrunExecution(
-        False,
+        requires_reproduction,
+        True,
+        "2030-01-01T00:00:00Z",
+        PYRUN_STATE.PYRUN_RUNNER,
+        PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,
+        PYRUN_STATE.PYRUN_EXECUTION_CONTRACT,
+        recipe,
+        observed,
+    )
+    identity = PYRUN_STATE.execution_id(recipe)
+    state = PYRUN_STATE.PyrunFile(
+        entry / PYRUN_STATE.PYRUN_FILENAME,
+        entry,
+        {"model": PYRUN_STATE.PyrunCommand({identity: execution})},
+    )
+    write(entry / PYRUN_STATE.PYRUN_FILENAME, state.serialized())
+    return identity
+
+
+def _add_second_result_output(entry_document: Path) -> tuple[str, ...]:
+    """Add a second evidence-consumed output to the fixture command."""
+
+    entry = entry_document.parent
+    second = entry / "data/second.csv"
+    write(second, "success_rate\n0.500\n")
+    data_path = entry / "data.json"
+    data = json.loads(data_path.read_text(encoding="utf-8"))
+    data["inputs"].append(
+        {
+            "name": "second",
+            "kind": "file",
+            "location": "data/second.csv",
+            "identity": {"algorithm": "sha256"},
+            "origin": False,
+        }
+    )
+    write(data_path, json.dumps(data, indent=2) + "\n")
+    evidence_path = entry / "evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    second_record = json.loads(json.dumps(evidence["records"][0]))
+    second_record["id"] = "second-rate"
+    second_record["sources"][0]["source"] = "<second>"
+    evidence["records"].append(second_record)
+    write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+    write(
+        entry_document,
+        entry_document.read_text(encoding="utf-8")
+        .replace(
+            "--output-data '<results>'",
+            "--output-data '<results>' --output-data '<second>'",
+        )
+        .replace(
+            "The success rate was `67.6%`<!-- eid:success-rate -->.",
+            "The success rate was `67.6%`<!-- eid:success-rate -->.\n\n"
+            "The second rate was `50.0%`<!-- eid:second-rate -->.",
+        ),
+    )
+    return (
+        "--input-catalog",
+        "<catalog>",
+        "--output-data",
+        "data/results.csv",
+        "--output-data",
+        "data/second.csv",
+    )
+
+
+def _replace_two_outputs_with_pyrun_state(
+    entry_document: Path, parameters: tuple[str, ...]
+) -> str:
+    """Replace legacy support with one current two-output execution."""
+
+    entry = entry_document.parent
+    (entry / "pyrun-outputs.json").unlink()
+    outputs = (("data/results.csv", "file"), ("data/second.csv", "file"))
+    recipe = PYRUN_STATE.ExecutionRecipe(
+        "scripts/model.py",
+        parameters,
+        (),
+        ("catalog",),
+        outputs,
+        parameter_roles=fixture_parameter_roles(parameters, ("catalog",), outputs),
+    )
+    observed = PYRUN_STATE.ObservedExecution(
+        DATA.Fingerprint(
+            "sha256",
+            digest=hashlib.sha256(
+                (entry / "scripts/model.py").read_bytes()
+            ).hexdigest(),
+        ),
+        (
+            (
+                "catalog",
+                DATA.Fingerprint(
+                    "sha256",
+                    digest=hashlib.sha256(
+                        (entry / "data/catalog.csv").read_bytes()
+                    ).hexdigest(),
+                ),
+            ),
+        ),
+        (),
+        tuple(
+            (
+                output,
+                DATA.Fingerprint(
+                    "sha256",
+                    digest=hashlib.sha256((entry / output).read_bytes()).hexdigest(),
+                ),
+            )
+            for output, _kind in outputs
+        ),
+    )
+    execution = PYRUN_STATE.PyrunExecution(
+        True,
+        True,
+        "2030-01-01T00:00:00Z",
+        PYRUN_STATE.PYRUN_RUNNER,
+        PYRUN_STATE.PYRUN_ENVIRONMENT_PROFILE,
+        PYRUN_STATE.PYRUN_EXECUTION_CONTRACT,
+        recipe,
+        observed,
+    )
+    identity = PYRUN_STATE.execution_id(recipe)
+    state = PYRUN_STATE.PyrunFile(
+        entry / PYRUN_STATE.PYRUN_FILENAME,
+        entry,
+        {"model": PYRUN_STATE.PyrunCommand({identity: execution})},
+    )
+    write(entry / PYRUN_STATE.PYRUN_FILENAME, state.serialized())
+    return identity
+
+
+def _replace_bundle_with_pyrun_state(
+    entry_document: Path, *, requires_reproduction: bool
+) -> str:
+    """Replace legacy bundle support with one current directory execution."""
+
+    entry = entry_document.parent
+    (entry / "pyrun-outputs.json").unlink()
+    parameters = (
+        "--input-catalog",
+        "<catalog>",
+        "--output-dir",
+        "data/bundle",
+    )
+    recipe = PYRUN_STATE.ExecutionRecipe(
+        "scripts/model.py",
+        parameters,
+        (),
+        ("catalog",),
+        (("data/bundle", "directory"),),
+        parameter_roles=fixture_parameter_roles(
+            parameters, ("catalog",), (("data/bundle", "directory"),)
+        ),
+    )
+    bundle_resource = DATA.build_local_input(
+        "bundle",
+        "directory",
+        "data/bundle",
+        entry_root=entry,
+        origin=False,
+    )
+    observed = PYRUN_STATE.ObservedExecution(
+        DATA.Fingerprint(
+            "sha256",
+            digest=hashlib.sha256(
+                (entry / "scripts/model.py").read_bytes()
+            ).hexdigest(),
+        ),
+        (
+            (
+                "catalog",
+                DATA.Fingerprint(
+                    "sha256",
+                    digest=hashlib.sha256(
+                        (entry / "data/catalog.csv").read_bytes()
+                    ).hexdigest(),
+                ),
+            ),
+        ),
+        (),
+        (
+            (
+                "data/bundle",
+                DATA.observe_fingerprint(bundle_resource).fingerprint,
+            ),
+        ),
+    )
+    execution = PYRUN_STATE.PyrunExecution(
+        requires_reproduction,
         True,
         "2030-01-01T00:00:00Z",
         PYRUN_STATE.PYRUN_RUNNER,
@@ -254,10 +574,12 @@ def _replace_with_pyrun_state(entry_document: Path, parameters: tuple[str, ...])
 
 def _evaluate(summary: Path) -> Any:
     evaluation = _evaluate_current_fixture(
-        ENGINE.EvaluationRequest(summary, "2026-08-29")
+        ENGINE.EvaluationRequest(summary)
     )
     return SimpleNamespace(
-        result=evaluation.record,
+        attempt=evaluation.attempt,
+        context=evaluation.context,
+        snapshot=evaluation.snapshot,
         scan={
             "invocations": evaluation.context.invocations,
             "registries": evaluation.context.registries,
@@ -428,59 +750,91 @@ class EngineV2EndToEndTests(unittest.TestCase):
             result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e001", entry.parent),
                 )
             )
             rejected = [
                 check
-                for check in result.record.checks
-                if check.identity == "entry:e001:command:1:1"
+                for check in result.attempt.checks
+                if check.check_id == "entry:e001:command:1:1"
             ]
             self.assertEqual(len(rejected), 1)
-            self.assertEqual(rejected[0].failure.code, "invocation.command.unsupported")
+            self.assertEqual(
+                rejected[0].diagnostic.code, "invocation.command.unsupported"
+            )
 
-    def test_entry_unreadable_declaration_index_is_incomplete_then_recovers(
+    def test_entry_unreadable_declaration_index_fails_then_recovers(
         self,
     ) -> None:
-        """An unavailable declaration read is scoped incomplete and retryable."""
+        """An unavailable declaration read is a localized retryable failure."""
 
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = ENGINE.EvaluationRequest(
+            scoped_request = ENGINE.EvaluationRequest(
                 summary,
-                "2026-08-29",
                 ENGINE.EntryEvaluationTarget("e001", entry.parent),
             )
-            original = ENGINE._read_text
-            with mock.patch.object(
-                ENGINE,
-                "_read_text",
-                side_effect=lambda path, state: (
-                    (_ for _ in ()).throw(OSError("denied"))
-                    if path.name == "e001.md"
-                    else original(path, state)
-                ),
-            ):
-                incomplete = _evaluate_current_fixture(request)
-            self.assertEqual(
-                incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
+            self.assertIs(
+                _evaluate_current_fixture(scoped_request).snapshot.outcome,
+                DOMAIN.SnapshotOutcome.CLEAR,
             )
-            self.assertEqual(
-                _evaluate_current_fixture(request).record.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
+            original = Path.read_text
+
+            def read_text(path: Path, *args: object, **kwargs: object) -> str:
+                if path.name == "e001.md":
+                    raise OSError("denied")
+                return original(path, *args, **kwargs)
+
+            for request in (ENGINE.EvaluationRequest(summary), scoped_request):
+                with mock.patch.object(
+                    Path, "read_text", autospec=True, side_effect=read_text
+                ):
+                    failed = _EVALUATE_MECHANICAL(request)
+                    _assert_canonical_projection(failed)
+                self.assertIs(
+                    failed.snapshot.outcome, DOMAIN.SnapshotOutcome.FAILED
+                )
+                self.assertEqual(len(failed.snapshot.failed_checks), 1)
+                self.assertEqual(
+                    failed.snapshot.failed_checks[0].code,
+                    "association.document_unavailable",
+                )
+                self.assertGreaterEqual(len(failed.snapshot.blocked_checks), 2)
+                self.assertFalse(failed.snapshot.findings)
+                if isinstance(request.target, ENGINE.FullEvaluationTarget):
+                    checks = {
+                        check.check_id: check for check in failed.attempt.checks
+                    }
+                    self.assertIs(
+                        checks["evidence:summary:5"].outcome,
+                        DOMAIN.CheckOutcome.BLOCKED,
+                    )
+                    unmatched = [
+                        check
+                        for check in failed.attempt.checks
+                        if check.check_id.startswith("orphan:unmatched-output:")
+                    ]
+                    self.assertTrue(unmatched)
+                    self.assertTrue(
+                        all(
+                            check.outcome is DOMAIN.CheckOutcome.BLOCKED
+                            for check in unmatched
+                        )
+                    )
+            self.assertIs(
+                _evaluate_current_fixture(scoped_request).snapshot.outcome,
+                DOMAIN.SnapshotOutcome.CLEAR,
             )
 
-    def test_entry_over_bound_declaration_index_is_incomplete_then_recovers(
+    def test_entry_over_bound_declaration_index_fails_then_recovers(
         self,
     ) -> None:
-        """A bounded declaration-index failure is retryable scoped incompleteness."""
+        """A bounded declaration-index failure is localized and retryable."""
 
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             request = ENGINE.EvaluationRequest(
                 summary,
-                "2026-08-29",
                 ENGINE.EntryEvaluationTarget("e001", entry.parent),
             )
             with mock.patch.object(
@@ -494,13 +848,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     outcome="unavailable",
                 ),
             ):
-                incomplete = _evaluate_current_fixture(request)
-            self.assertEqual(
-                incomplete.record.completion, RESULTS.CompletionState.INCOMPLETE
-            )
-            self.assertEqual(
-                _evaluate_current_fixture(request).record.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
+                failed = _evaluate_current_fixture(request)
+            self.assertIs(failed.snapshot.outcome, DOMAIN.SnapshotOutcome.FAILED)
+            self.assertIs(
+                _evaluate_current_fixture(request).snapshot.outcome,
+                DOMAIN.SnapshotOutcome.CLEAR,
             )
 
     def test_command_declaration_index_never_loads_execution_state(self) -> None:
@@ -550,12 +902,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             finding = next(
                 check
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code == "pyrun.policy.mismatch"
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "pyrun.policy.mismatch"
             )
-            self.assertEqual(finding.scope, RESULTS.CheckScope.CONFORMANCE)
-            self.assertIn(identity, finding.identity)
+            self.assertEqual(finding.area, DOMAIN.RuleArea.CONFORMANCE)
+            self.assertIn(identity, finding.check_id)
 
     def test_current_execution_requires_exact_command_association(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -573,15 +925,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            evaluation = _evaluate(summary).result
+            evaluation = _evaluate(summary)
 
-            provenance = next(
-                check
-                for check in evaluation.checks
-                if check.identity == "provenance:e001:success-rate"
+            provenance = _single_provenance_finding_check(
+                evaluation.attempt, "e001", "success-rate"
             )
             self.assertEqual(
-                provenance.failure.code,
+                provenance.diagnostic.code,
                 "provenance.output.execution_unassociated",
             )
 
@@ -597,19 +947,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "# changed model\n", encoding="utf-8"
             )
 
-            evaluation = _evaluate(summary).result
+            evaluation = _evaluate(summary)
 
-            provenance = next(
-                check
-                for check in evaluation.checks
-                if check.identity == "provenance:e001:success-rate"
+            currentness = _single_currentness_blocker(
+                evaluation, "e001", "success-rate"
             )
+            self.assertEqual(currentness["reason"], "signature_mismatch")
             self.assertEqual(
-                provenance.failure.code,
-                "provenance.output.signature_mismatch",
-            )
-            self.assertEqual(
-                provenance.failure.observed["fields"], ["script_fingerprint"]
+                currentness["observed"]["fields"], ["script_fingerprint"]
             )
 
     def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
@@ -624,12 +969,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             failure = next(
                 check
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code
                 == "reproduction.comparison.tolerance_incompatible"
             )
-            self.assertEqual(failure.scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(failure.area, DOMAIN.RuleArea.CONFORMANCE)
 
     def test_evidence_scoped_comparison_requires_applicable_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -646,9 +991,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code.startswith("reproduction.comparison.")
-                    for check in valid.result.checks
+                    check.diagnostic is not None
+                    and check.diagnostic.code.startswith("reproduction.comparison.")
+                    for check in valid.attempt.checks
                 )
             )
 
@@ -659,11 +1004,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
             incompatible = _evaluate(summary)
             self.assertTrue(
                 any(
-                    check.failure is not None
-                    and check.failure.code
+                    check.diagnostic is not None
+                    and check.diagnostic.code
                     == "reproduction.comparison.evidence_incompatible"
-                    and check.scope is RESULTS.CheckScope.CONFORMANCE
-                    for check in incompatible.result.checks
+                    and check.area is DOMAIN.RuleArea.CONFORMANCE
+                    for check in incompatible.attempt.checks
                 )
             )
 
@@ -677,11 +1022,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             failure = next(
                 check
-                for check in invalid.result.checks
-                if check.failure is not None
-                and check.failure.code == "reproduction.comparison.evidence_missing"
+                for check in invalid.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "reproduction.comparison.evidence_missing"
             )
-            self.assertEqual(failure.scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(failure.area, DOMAIN.RuleArea.CONFORMANCE)
 
     def test_pyrun_binding_failure_is_execution_scoped_structure(self) -> None:
         cases = (
@@ -719,24 +1064,24 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
                 binding = next(
                     check
-                    for check in evaluation.result.checks
-                    if check.failure is not None
-                    and check.failure.code == "pyrun.output.binding_invalid"
+                    for check in evaluation.attempt.checks
+                    if check.diagnostic is not None
+                    and check.diagnostic.code == "pyrun.output.binding_invalid"
                 )
-                self.assertEqual(binding.scope, RESULTS.CheckScope.CONFORMANCE)
-                self.assertIn(identity, binding.identity)
-                self.assertEqual(binding.failure.observed["reason"], reason)
+                self.assertEqual(binding.area, DOMAIN.RuleArea.CONFORMANCE)
+                self.assertIn(identity, binding.check_id)
+                self.assertEqual(binding.diagnostic.observed["reason"], reason)
                 self.assertFalse(
                     any(
-                        check.failure is not None
-                        and check.failure.code == "pyrun.state.invalid"
-                        for check in evaluation.result.checks
+                        check.diagnostic is not None
+                        and check.diagnostic.code == "pyrun.state.invalid"
+                        for check in evaluation.attempt.checks
                     )
                 )
                 self.assertTrue(
                     any(
-                        check.identity == "evidence:e001:success-rate"
-                        for check in evaluation.result.checks
+                        check.check_id == "evidence:e001:success-rate"
+                        for check in evaluation.attempt.checks
                     )
                 )
 
@@ -758,9 +1103,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failures = {
-                (check.failure.code, check.failure.subject)
-                for check in evaluation.result.checks
-                if check.failure is not None
+                (check.diagnostic.code, check.diagnostic.subject)
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertIn(
                 ("orphan.material.unused", unexpected.resolve().as_posix()),
@@ -785,18 +1130,18 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 },
             )
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
             provenance = next(
                 check
                 for check in result.checks
-                if check.identity == "provenance:e001:success-rate"
+                if check.check_id == "provenance:e001:success-rate"
             )
 
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject == helper.resolve().as_posix()
                     for check in result.checks
                 )
@@ -819,42 +1164,34 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support_path = entry.parent / "pyrun-outputs.json"
 
             write(helper, "VALUE = 2\n")
-            changed = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in changed.checks
-                if check.identity == "provenance:e001:success-rate"
+            changed = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                changed, "e001", "success-rate"
             )
-            self.assertEqual(
-                provenance.failure.code, "provenance.output.signature_mismatch"
-            )
-            self.assertIn("code", provenance.failure.observed["fields"])
+            self.assertEqual(currentness["reason"], "signature_mismatch")
+            self.assertIn("code", currentness["observed"]["fields"])
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject == helper.resolve().as_posix()
-                    for check in changed.checks
+                    for check in changed.attempt.checks
                 )
             )
 
             support["outputs"]["data/results.csv"]["confirmed"] = False
             write(support_path, json.dumps(support, indent=2) + "\n")
-            unconfirmed = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in unconfirmed.checks
-                if check.identity == "provenance:e001:success-rate"
+            unconfirmed = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                unconfirmed, "e001", "success-rate"
             )
-            self.assertEqual(
-                provenance.failure.code, "provenance.output.reproduction_required"
-            )
+            self.assertEqual(currentness["reason"], "required")
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject == helper.resolve().as_posix()
-                    for check in unconfirmed.checks
+                    for check in unconfirmed.attempt.checks
                 )
             )
 
@@ -879,21 +1216,21 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 },
             )
 
-            duplicate = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in duplicate.checks
-                if check.identity == "provenance:e001:success-rate"
+            duplicate = _evaluate(summary).attempt
+            provenance = _single_provenance_finding_check(
+                duplicate, "e001", "success-rate"
             )
-            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
             self.assertEqual(
-                provenance.failure.observed["reason"],
+                provenance.diagnostic.code, "provenance.output.code_invalid"
+            )
+            self.assertEqual(
+                provenance.diagnostic.observed["reason"],
                 "duplicate_resolved_identity",
             )
             self.assertTrue(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject == helper.resolve().as_posix()
                     for check in duplicate.checks
                 )
@@ -902,26 +1239,28 @@ class EngineV2EndToEndTests(unittest.TestCase):
             alias.unlink()
             helper.unlink()
             _set_code_support(entry, {"scripts/missing.py": fingerprint})
-            missing = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in missing.checks
-                if check.identity == "provenance:e001:success-rate"
+            missing = _evaluate(summary).attempt
+            provenance = _single_provenance_finding_check(
+                missing, "e001", "success-rate"
             )
-            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
-            self.assertEqual(provenance.failure.observed["reason"], "unavailable")
+            self.assertEqual(
+                provenance.diagnostic.code, "provenance.output.code_invalid"
+            )
+            self.assertEqual(provenance.diagnostic.observed["reason"], "unavailable")
 
             code_directory = entry.parent / "scripts/directory.py"
             code_directory.mkdir()
             _set_code_support(entry, {"scripts/directory.py": fingerprint})
-            wrong_kind = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in wrong_kind.checks
-                if check.identity == "provenance:e001:success-rate"
+            wrong_kind = _evaluate(summary).attempt
+            provenance = _single_provenance_finding_check(
+                wrong_kind, "e001", "success-rate"
             )
-            self.assertEqual(provenance.failure.code, "provenance.output.code_invalid")
-            self.assertEqual(provenance.failure.observed["reason"], "not_regular_file")
+            self.assertEqual(
+                provenance.diagnostic.code, "provenance.output.code_invalid"
+            )
+            self.assertEqual(
+                provenance.diagnostic.observed["reason"], "not_regular_file"
+            )
 
     def test_unmatched_code_support_does_not_connect_helper(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -946,14 +1285,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support["outputs"]["data/stale.csv"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
             failures = {
-                (check.failure.code, check.subject)
+                (check.diagnostic.code, check.subject)
                 for check in result.checks
-                if check.failure is not None
+                if check.diagnostic is not None
             }
             self.assertIn(
-                ("hygiene.output.unmatched", stale.resolve().as_posix()), failures
+                ("orphan.output.unmatched", stale.resolve().as_posix()), failures
             )
             self.assertIn(
                 ("orphan.material.unused", helper.resolve().as_posix()), failures
@@ -1022,122 +1361,400 @@ class EngineV2EndToEndTests(unittest.TestCase):
             del support["outputs"]["data/results.csv"]["code"]
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            result = _evaluate(summary).result
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            failures = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "pyrun.outputs.invalid"
+            ]
 
+            self.assertIsNotNone(evaluation.snapshot)
+            self.assertEqual(len(failures), 1)
             self.assertEqual(
-                result.completion, RESULTS.CompletionState.COMPLETE_FINDINGS
+                failures[0].admission_owner,
+                DOMAIN.AdmissionOwner.ENTRY,
             )
-            self.assertIn(
-                "pyrun.outputs.invalid",
-                {
-                    check.failure.code
-                    for check in result.checks
-                    if check.failure is not None
-                },
+            consumer = next(
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
+            )
+            self.assertEqual(consumer.outcome, DOMAIN.CheckOutcome.BLOCKED)
+            self.assertIn(failures[0].finding_id, consumer.dependencies)
+            assert evaluation.snapshot is not None
+            owning_batches = [
+                batch
+                for batch in evaluation.snapshot.batches
+                if failures[0].finding_id in batch.finding_ids
+            ]
+            self.assertEqual(len(owning_batches), 1)
+
+    def test_invalid_directory_output_support_is_one_entry_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            _convert_result_to_bundle(entry)
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            del support["outputs"]["data/bundle"]["code"]
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            failures = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "pyrun.outputs.invalid"
+            ]
+
+            self.assertEqual(len(failures), 1)
+            consumer = next(
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
+            )
+            self.assertEqual(consumer.outcome, DOMAIN.CheckOutcome.BLOCKED)
+            self.assertIn(failures[0].finding_id, consumer.dependencies)
+            assert evaluation.snapshot is not None
+            self.assertEqual(
+                sum(
+                    failures[0].finding_id in batch.finding_ids
+                    for batch in evaluation.snapshot.batches
+                ),
+                1,
             )
 
-    def test_bundle_member_uses_root_support_and_atomic_hygiene(self) -> None:
+    def test_legacy_multi_output_currentness_blocks_validation_without_findings(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            parameters = _add_second_result_output(entry)
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            first = support["outputs"]["data/results.csv"]
+            first["confirmed"] = False
+            first["parameters"] = list(parameters)
+            support["outputs"]["data/second.csv"] = {
+                **first,
+                "fingerprint": {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(
+                        (entry.parent / "data/second.csv").read_bytes()
+                    ).hexdigest(),
+                },
+            }
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            currentness = _reproduce_currentness(evaluation)
+
+            self.assertEqual(len(currentness), 2)
+            self.assertFalse(
+                any(
+                    finding.code.startswith("provenance.output.reproduction")
+                    for finding in evaluation.attempt.findings
+                )
+            )
+            assert evaluation.snapshot is not None
+            self.assertFalse(evaluation.snapshot.blocked_checks)
+            self.assertFalse(evaluation.snapshot.batches)
+            self.assertEqual(
+                evaluation.snapshot.outcome,
+                DOMAIN.SnapshotOutcome.CLEAR,
+            )
+
+    def test_current_multi_output_currentness_is_not_a_repair_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            parameters = _add_second_result_output(entry)
+            _replace_two_outputs_with_pyrun_state(entry, parameters)
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            currentness = _reproduce_currentness(evaluation)
+
+            self.assertEqual(len(currentness), 2)
+            assert evaluation.snapshot is not None
+            self.assertFalse(evaluation.snapshot.blocked_checks)
+            self.assertFalse(evaluation.snapshot.batches)
+
+    def test_distinct_currentness_requirements_remain_separate_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            _add_second_result_output(entry)
+            entry_root = entry.parent
+            second_script = entry_root / "scripts/second.py"
+            write(second_script, "# retained second model\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
+                    "--output-data '<results>' --output-data '<second>'",
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
+                    "--output-data '<results>'\n"
+                    "./pyrun scripts/second.py --input-catalog '<catalog>' "
+                    "--output-data '<second>'",
+                ),
+            )
+            support_path = entry_root / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            first = support["outputs"]["data/results.csv"]
+            first["confirmed"] = False
+            first["parameters"] = [
+                "--input-catalog",
+                "<catalog>",
+                "--output-data",
+                "data/results.csv",
+            ]
+            support["outputs"]["data/second.csv"] = {
+                **json.loads(json.dumps(first)),
+                "fingerprint": {
+                    "algorithm": "sha256",
+                    "digest": hashlib.sha256(
+                        (entry_root / "data/second.csv").read_bytes()
+                    ).hexdigest(),
+                },
+                "parameters": [
+                    "--input-catalog",
+                    "<catalog>",
+                    "--output-data",
+                    "data/second.csv",
+                ],
+                "script": {
+                    "path": "scripts/second.py",
+                    "fingerprint": {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(
+                            second_script.read_bytes()
+                        ).hexdigest(),
+                    },
+                },
+            }
+            write(support_path, json.dumps(support, indent=2) + "\n")
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            currentness = _reproduce_currentness(evaluation)
+
+            self.assertEqual(len(currentness), 2)
+            assert evaluation.snapshot is not None
+            subjects = {
+                item.subject for item in currentness
+            }
+            self.assertEqual(len(subjects), 2)
+            self.assertFalse(
+                any(
+                    finding.code in {
+                        "provenance.output.reproduction_required",
+                        "provenance.output.signature_mismatch",
+                    }
+                    for finding in evaluation.snapshot.findings
+                )
+            )
+
+    def test_malformed_shared_support_does_not_scan_checks_per_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            del support["outputs"]["data/results.csv"]["code"]
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            template = evidence["records"][0]
+            consumer_count = 50
+            evidence["records"] = []
+            presentations = []
+            for index in range(consumer_count):
+                record = json.loads(json.dumps(template))
+                record["id"] = "success-rate" if index == 0 else f"rate-{index}"
+                evidence["records"].append(record)
+                if index:
+                    presentations.append(
+                        f"Rate {index} was `67.6%`<!-- eid:rate-{index} -->."
+                    )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(entry, entry.read_text(encoding="utf-8") + "\n".join(presentations))
+
+            with mock.patch.object(
+                ENGINE,
+                "_checks_by_identity",
+                wraps=ENGINE._checks_by_identity,
+            ) as check_scans:
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary)
+                )
+
+            self.assertEqual(check_scans.call_count, 0)
+            self.assertEqual(
+                sum(
+                    finding.code == "pyrun.outputs.invalid"
+                    for finding in evaluation.attempt.findings
+                ),
+                1,
+            )
+            self.assertEqual(evaluation.metrics["provenance_traversals"], 1)
+            self.assertEqual(
+                evaluation.metrics["provenance_traversals_reused"],
+                consumer_count - 1,
+            )
+
+    def test_bundle_member_uses_root_support_and_atomic_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             bundle, member, sibling = _convert_result_to_bundle(entry)
 
-            complete = _evaluate(summary).result
+            complete = _evaluate(summary).attempt
 
-            self.assertEqual(
-                complete.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
             provenance = next(
                 check
                 for check in complete.checks
-                if check.identity == "provenance:e001:success-rate"
+                if check.check_id == "provenance:e001:success-rate"
             )
-            artifact = provenance.dependencies[0]
-            self.assertEqual(artifact["artifacts"], [member.resolve().as_posix()])
+            artifact = provenance.dependency_evidence[0]
+            self.assertEqual(artifact["artifacts"], (member.resolve().as_posix(),))
             self.assertEqual(
-                provenance.dependencies[1]["material"], member.resolve().as_posix()
+                provenance.dependency_evidence[1]["material"],
+                member.resolve().as_posix(),
             )
 
             support_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(support_path.read_text())
             support["outputs"]["data/bundle"]["parameters"].append("--stale")
             write(support_path, json.dumps(support, indent=2) + "\n")
-            stale = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in stale.checks
-                if check.identity == "provenance:e001:success-rate"
+            stale = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                stale, "e001", "success-rate"
             )
-            self.assertEqual(
-                provenance.failure.code,
-                "provenance.output.signature_mismatch",
-            )
-            self.assertEqual(provenance.failure.subject, bundle.resolve().as_posix())
+            self.assertEqual(currentness["reason"], "signature_mismatch")
+            self.assertEqual(currentness["subject"], bundle.resolve().as_posix())
 
             support["outputs"]["data/bundle"]["parameters"].pop()
             support["outputs"]["data/bundle"]["confirmed"] = False
             write(support_path, json.dumps(support, indent=2) + "\n")
-            unconfirmed = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in unconfirmed.checks
-                if check.identity == "provenance:e001:success-rate"
+            unconfirmed = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                unconfirmed, "e001", "success-rate"
             )
-            self.assertEqual(
-                provenance.failure.code, "provenance.output.reproduction_required"
-            )
-            self.assertEqual(provenance.failure.subject, bundle.resolve().as_posix())
+            self.assertEqual(currentness["reason"], "required")
+            self.assertEqual(currentness["subject"], bundle.resolve().as_posix())
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject
                     in {
                         member.resolve().as_posix(),
                         sibling.resolve().as_posix(),
                     }
-                    for check in unconfirmed.checks
+                    for check in unconfirmed.attempt.checks
                 )
             )
 
             support["outputs"]["data/bundle"]["confirmed"] = True
             write(support_path, json.dumps(support, indent=2) + "\n")
             write(sibling, "changed model\n")
-            modified = _evaluate(summary).result
-            modified_provenance = next(
-                check
-                for check in modified.checks
-                if check.identity == "provenance:e001:success-rate"
+            modified = _evaluate(summary)
+            modified_currentness = _single_currentness_blocker(
+                modified, "e001", "success-rate"
             )
+            self.assertEqual(modified_currentness["reason"], "signature_mismatch")
             self.assertEqual(
-                modified_provenance.failure.code,
-                "provenance.output.signature_mismatch",
-            )
-            self.assertEqual(
-                modified_provenance.failure.subject,
+                modified_currentness["subject"],
                 bundle.resolve().as_posix(),
             )
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "orphan.material.unused"
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
                     and check.subject.startswith(bundle.resolve().as_posix() + "/")
-                    for check in modified.checks
+                    for check in modified.attempt.checks
                 )
             )
 
             shutil.rmtree(bundle)
-            deleted = _evaluate(summary).result
+            deleted = _evaluate(summary).attempt
             missing = [
                 check
                 for check in deleted.checks
-                if check.failure is not None
-                and check.failure.code == "provenance.output.missing"
+                if check.diagnostic is not None
+                and check.diagnostic.code == "provenance.output.missing"
                 and check.subject == bundle.resolve().as_posix()
             ]
             self.assertEqual(len(missing), 1)
 
-    def test_unreached_output_only_bundle_is_one_root_hygiene_finding(self) -> None:
+    def test_directory_output_support_is_owned_by_the_declared_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            bundle, first, _ = _convert_result_to_bundle(entry)
+            second = bundle / "second.csv"
+            write(second, "success_rate\n0.676\n")
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            second_record = dict(evidence["records"][0])
+            second_record["id"] = "second-success-rate"
+            second_record["sources"] = [
+                {
+                    "source": "<results>/second.csv",
+                    "locator": {"select": [["success_rate"]]},
+                }
+            ]
+            evidence["records"].append(second_record)
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8").replace(
+                    "The success rate was `67.6%`<!-- eid:success-rate -->.",
+                    "The success rate was `67.6%`<!-- eid:success-rate -->.\n\n"
+                    "The second rate was `67.6%`<!-- eid:second-success-rate -->.",
+                ),
+            )
+            _replace_bundle_with_pyrun_state(
+                entry, requires_reproduction=True
+            )
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            currentness = _reproduce_currentness(evaluation)
+            bundle_id = bundle.resolve().as_posix()
+
+            self.assertEqual(len(currentness), 1)
+            self.assertEqual(
+                {
+                    item.subject for item in currentness
+                },
+                {bundle_id},
+            )
+            graph = evaluation.context.graph
+            material_ids = {
+                node.identity
+                for node in graph.nodes
+                if node.kind is RESEARCH_GRAPH.NodeKind.MATERIAL
+            }
+            self.assertIn(first.resolve().as_posix(), material_ids)
+            self.assertIn(second.resolve().as_posix(), material_ids)
+            evidence_material_edges = [
+                edge
+                for edge in graph.edges
+                if edge.kind is RESEARCH_GRAPH.EdgeKind.DECLARATION
+                and (
+                    graph.node(edge.source).kind
+                    is RESEARCH_GRAPH.NodeKind.EVIDENCE_RECORD
+                )
+                and (
+                    graph.node(edge.target).kind
+                    is RESEARCH_GRAPH.NodeKind.MATERIAL
+                )
+            ]
+            self.assertGreaterEqual(len(evidence_material_edges), 2)
+            assert evaluation.snapshot is not None
+            self.assertFalse(
+                any(
+                    finding.code in {
+                        "provenance.output.reproduction_required",
+                        "provenance.output.signature_mismatch",
+                    }
+                    for finding in evaluation.snapshot.findings
+                )
+            )
+
+    def test_unreached_output_only_bundle_is_one_root_orphan_finding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             entry_root = entry.parent
@@ -1145,6 +1762,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             members = (bundle / "one.csv", bundle / "two.csv")
             for index, member in enumerate(members, 1):
                 write(member, f"value\n{index}\n")
+            unrelated = entry_root / "data/unrelated.csv"
+            write(unrelated, "value\n3\n")
             write(entry_root / "scripts/bundle.py", "# bundle\n")
             resource = DATA.build_local_input(
                 "bundle",
@@ -1181,13 +1800,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
             bundle_root = bundle.resolve().as_posix()
             bundle_findings = [
                 check
                 for check in result.checks
-                if check.failure is not None
-                and check.failure.code == "orphan.material.unused"
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.material.unused"
                 and (
                     check.subject == bundle_root
                     or check.subject.startswith(bundle_root + "/")
@@ -1199,18 +1818,70 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             support["outputs"]["data/bundle"]["parameters"].append("changed")
             write(support_path, json.dumps(support, indent=2) + "\n")
-            mismatched = _evaluate(summary).result
+            mismatched_evaluation = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(summary)
+            )
+            mismatched = mismatched_evaluation.attempt
             mismatched_subjects = {
                 check.subject
                 for check in mismatched.checks
-                if check.failure is not None
-                and check.failure.code == "orphan.material.unused"
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.material.unused"
             }
             self.assertNotIn(bundle_root, mismatched_subjects)
             self.assertTrue(
                 {member.resolve().as_posix() for member in members}.issubset(
                     mismatched_subjects
                 )
+            )
+            orphan_findings = tuple(
+                finding
+                for finding in mismatched.findings
+                if finding.code == "orphan.material.unused"
+                and finding.subject
+                in {member.resolve().as_posix() for member in members}
+            )
+            self.assertEqual(len(orphan_findings), 2)
+            assert mismatched_evaluation.snapshot is not None
+            batches = [
+                batch
+                for batch in mismatched_evaluation.snapshot.batches
+                if set(batch.finding_ids)
+                & {finding.finding_id for finding in orphan_findings}
+            ]
+            self.assertEqual(len(batches), 1)
+            self.assertEqual(
+                set(batches[0].finding_ids),
+                {finding.finding_id for finding in orphan_findings},
+            )
+            self.assertIn(
+                DOMAIN.RepairKey(
+                    DOMAIN.RepairKeyKind.MATERIAL,
+                    bundle_root,
+                ),
+                batches[0].repair_keys,
+            )
+            unrelated_finding = next(
+                finding
+                for finding in mismatched.findings
+                if finding.code == "orphan.material.unused"
+                and finding.subject == unrelated.resolve().as_posix()
+            )
+            unrelated_batch = next(
+                batch
+                for batch in mismatched_evaluation.snapshot.batches
+                if unrelated_finding.finding_id in batch.finding_ids
+            )
+            self.assertNotEqual(unrelated_batch.batch_id, batches[0].batch_id)
+            residual_ids = {
+                finding.finding_id
+                for finding in mismatched.findings
+                if finding.code == "orphan.material.unused"
+                and finding.finding_id not in batches[0].finding_ids
+            }
+            self.assertEqual(
+                set(unrelated_batch.finding_ids),
+                residual_ids,
             )
 
     def test_unmatched_directory_support_suppresses_descendant_orphans(self) -> None:
@@ -1237,20 +1908,20 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support["outputs"]["data/stale"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
             root = stale.resolve().as_posix()
             findings = [
                 check
                 for check in result.checks
-                if check.failure is not None
+                if check.diagnostic is not None
                 and (check.subject == root or check.subject.startswith(root + "/"))
             ]
 
             self.assertEqual(len(findings), 1)
-            self.assertEqual(findings[0].failure.code, "hygiene.output.unmatched")
+            self.assertEqual(findings[0].diagnostic.code, "orphan.output.unmatched")
             self.assertEqual(findings[0].subject, root)
 
-    def test_project_output_supports_generated_input_without_entering_hygiene(
+    def test_project_output_supports_generated_input_without_entering_orphan(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1278,12 +1949,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support["outputs"]["<project>/artifacts/results.csv"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            complete = _evaluate(summary).result
+            complete = _evaluate(summary).attempt
 
-            self.assertEqual(
-                complete.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
             self.assertFalse(
                 any(
                     check.subject == project_output.as_posix()
@@ -1293,34 +1960,24 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             support["outputs"]["<project>/artifacts/stale.csv"] = record
             write(support_path, json.dumps(support, indent=2) + "\n")
-            self.assertEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertIsNotNone(_evaluate(summary).snapshot)
 
             record["parameters"].append("changed")
             write(support_path, json.dumps(support, indent=2) + "\n")
-            drift = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in drift.checks
-                if check.identity == "provenance:e001:success-rate"
+            drift = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                drift, "e001", "success-rate"
             )
-            self.assertEqual(
-                provenance.failure.code,
-                "provenance.output.signature_mismatch",
-            )
+            self.assertEqual(currentness["reason"], "signature_mismatch")
 
             record["parameters"].pop()
             write(support_path, json.dumps(support, indent=2) + "\n")
             project_output.unlink()
-            missing = _evaluate(summary).result
-            provenance = next(
-                check
-                for check in missing.checks
-                if check.identity == "provenance:e001:success-rate"
+            missing = _evaluate(summary).attempt
+            provenance = _single_provenance_finding_check(
+                missing, "e001", "success-rate"
             )
-            self.assertEqual(provenance.failure.code, "provenance.output.missing")
+            self.assertEqual(provenance.diagnostic.code, "provenance.output.missing")
 
     def test_validation_builds_one_shared_producer_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1340,11 +1997,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state = ENGINE._ScanState(root / "study.md", root, root)
-            invocation = mock.Mock(identity="entry:e001:execution:one")
+            invocation = mock.Mock(
+                identity="entry:e001:execution:one", collections=()
+            )
             support = {"output": "data/result.csv"}
 
             with mock.patch.object(
-                ENGINE, "_evaluate_output_support", return_value=support
+                ENGINE, "_evaluate_output_support", return_value=(support, None)
             ) as evaluate:
                 first = ENGINE._validate_output_support(invocation, "result", state)
                 second = ENGINE._validate_output_support(invocation, "result", state)
@@ -1366,9 +2025,78 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     with self.assertRaises(ENGINE.MechanicalContractError) as raised:
                         ENGINE._validate_output_support(invocation, "failed", state)
                     self.assertEqual(raised.exception.code, failure.code)
-                    self.assertEqual(raised.exception.observed, failure.observed)
 
             self.assertEqual(evaluate.call_count, 1)
+
+    def test_distinct_directory_output_bindings_remain_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            state = ENGINE._ScanState(root / "study.md", root, root)
+            first_root = root / "first/shared"
+            second_root = root / "second/shared"
+            first = SimpleNamespace(
+                identity="producer:first",
+                collections=(
+                    COMMANDS.MaterialCollection(
+                        "output",
+                        "directory",
+                        "first",
+                        ((first_root / "one.csv").as_posix(),),
+                        first_root.as_posix(),
+                    ),
+                ),
+            )
+            second = SimpleNamespace(
+                identity="producer:second",
+                collections=(
+                    COMMANDS.MaterialCollection(
+                        "output",
+                        "directory",
+                        "second",
+                        ((second_root / "one.csv").as_posix(),),
+                        second_root.as_posix(),
+                    ),
+                ),
+            )
+
+            def current(invocation: Any, subject: str, scan: Any) -> Any:
+                del scan
+                return ({"output": subject}, PROVENANCE.ProducerCurrentness(
+                    "required",
+                    subject,
+                    {"producer": invocation.identity},
+                    PROVENANCE.ProvenanceAnchor(
+                        "material", subject, invocation.identity
+                    ),
+                ))
+
+            with mock.patch.object(
+                ENGINE, "_evaluate_output_support", side_effect=current
+            ) as evaluate:
+                for invocation, member in (
+                    (first, first_root / "one.csv"),
+                    (second, second_root / "one.csv"),
+                ):
+                    ENGINE._validate_output_support(
+                        invocation, member.as_posix(), state
+                    )
+
+            self.assertEqual(evaluate.call_count, 2)
+            self.assertEqual(
+                set(state.output_support_conclusions),
+                {
+                    (first.identity, first_root.as_posix()),
+                    (second.identity, second_root.as_posix()),
+                },
+            )
+            self.assertEqual(
+                {
+                    conclusion.currentness.anchor.identity
+                    for conclusion in state.output_support_conclusions.values()
+                    if conclusion.currentness is not None
+                },
+                {first_root.as_posix(), second_root.as_posix()},
+            )
 
     def test_provenance_findings_prepare_ordering_and_blockers_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1380,13 +2108,18 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             findings = (
                 PROVENANCE.ProvenanceFinding(
-                    "lineage.missing", subject, {"consumer": "two"}, "Lineage"
+                    "lineage.missing",
+                    subject,
+                    {"consumer": "two"},
+                    "Lineage",
+                    PROVENANCE.ProvenanceAnchor("material", subject),
                 ),
                 PROVENANCE.ProvenanceFinding(
                     "provenance.output.reproduction_required",
                     subject,
                     {"producer": "one"},
                     "Output Support",
+                    PROVENANCE.ProvenanceAnchor("material", subject),
                 ),
             )
             encoder = ENGINE.canonical_json
@@ -1419,7 +2152,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 check = ENGINE._provenance_finding_check(
                     "provenance:e001:test", prepared[-1], dependencies=()
                 )
-            self.assertEqual(check.status, RESULTS.CheckStatus.NOT_APPLICABLE)
+            self.assertEqual(check.outcome, DOMAIN.CheckOutcome.BLOCKED)
 
     def test_output_support_parameter_change_breaks_provenance_until_replaced(
         self,
@@ -1434,19 +2167,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ),
             )
 
-            changed = _evaluate(summary).result
+            changed = _evaluate(summary)
 
-            provenance = next(
-                check
-                for check in changed.checks
-                if check.identity == "provenance:e001:success-rate"
+            currentness = _single_currentness_blocker(
+                changed, "e001", "success-rate"
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
-            assert provenance.failure is not None
-            self.assertEqual(
-                provenance.failure.code, "provenance.output.signature_mismatch"
-            )
-            self.assertEqual(provenance.failure.observed["fields"], ["parameters"])
+            self.assertEqual(currentness["reason"], "signature_mismatch")
+            self.assertEqual(currentness["observed"]["fields"], ["parameters"])
 
             output_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(output_path.read_text())
@@ -1459,10 +2186,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "data/results.csv",
             ]
             write(output_path, json.dumps(support, indent=2) + "\n")
-            self.assertEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertIsNotNone(_evaluate(summary).snapshot)
 
     def test_recursive_chain_requires_each_link_and_uses_byte_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1542,10 +2266,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             write(support_path, json.dumps(support, indent=2) + "\n")
 
-            self.assertEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertIsNotNone(_evaluate(summary).snapshot)
             complete_document = entry.read_text(encoding="utf-8")
             result_record["confirmed"] = False
             write(support_path, json.dumps(support, indent=2) + "\n")
@@ -1559,44 +2280,38 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ),
             )
 
-            collected = _evaluate(summary).result
-            provenance = [
-                check
-                for check in collected.checks
-                if check.identity.startswith("provenance:e001:success-rate")
-            ]
-            self.assertEqual(
-                {check.failure.code for check in provenance if check.failure},
-                {"lineage.missing", "provenance.output.reproduction_required"},
-            )
-            primary = next(
-                check
-                for check in provenance
-                if check.identity == "provenance:e001:success-rate"
-            )
-            self.assertEqual(primary.failure.code, "lineage.missing")
-            self.assertEqual(
-                HUMAN.provenance_artifact_counts(collected)[
-                    RESULTS.CheckStatus.FAIL.value
-                ],
-                1,
+            collected = _evaluate(summary).attempt
+            provenance = _provenance_finding_checks(
+                collected, "e001", "success-rate"
             )
             self.assertEqual(
-                HUMAN.provenance_artifact_counts(collected)[
-                    RESULTS.CheckStatus.UNAVAILABLE.value
-                ],
-                0,
+                {check.diagnostic.code for check in provenance if check.diagnostic},
+                {"lineage.missing"},
+            )
+            self.assertTrue(_reproduce_currentness(_evaluate(summary)))
+            canonical = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(summary)
+            )
+            self.assertEqual(
+                {
+                    finding.code
+                    for finding in canonical.attempt.findings
+                    if finding.type is DOMAIN.RuleArea.PROVENANCE
+                },
+                {"lineage.missing"},
             )
 
             result_record["confirmed"] = True
             write(support_path, json.dumps(support, indent=2) + "\n")
-            confirmed = _evaluate(summary).result
+            confirmed = _evaluate(summary).attempt
             self.assertEqual(
                 {
-                    check.failure.code
+                    check.diagnostic.code
                     for check in confirmed.checks
-                    if check.identity.startswith("provenance:e001:success-rate")
-                    and check.failure
+                    if check in _provenance_finding_checks(
+                        confirmed, "e001", "success-rate"
+                    )
+                    and check.diagnostic
                 },
                 {"lineage.missing"},
             )
@@ -1605,20 +2320,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             original = catalog.read_bytes()
             write(catalog, "id\n2\n")
-            self.assertNotEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertTrue(_reproduce_currentness(_evaluate(summary)))
             catalog.write_bytes(original)
-            self.assertEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertFalse(_evaluate(summary).attempt.findings)
             write(entry_root / "scripts" / "preprocess.py", "# changed\n")
-            self.assertNotEqual(
-                _evaluate(summary).result.completion,
-                RESULTS.CompletionState.COMPLETE_CLEAR,
-            )
+            self.assertTrue(_reproduce_currentness(_evaluate(summary)))
 
     def test_unconfirmed_and_missing_output_records_fail_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1628,24 +2334,66 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support["outputs"]["data/results.csv"]["confirmed"] = False
             write(output_path, json.dumps(support) + "\n")
 
-            unconfirmed = _evaluate(summary).result
-            check = next(
-                item
-                for item in unconfirmed.checks
-                if item.identity == "provenance:e001:success-rate"
+            unconfirmed = _evaluate(summary)
+            currentness = _single_currentness_blocker(
+                unconfirmed, "e001", "success-rate"
             )
-            self.assertEqual(
-                check.failure.code, "provenance.output.reproduction_required"
-            )
+            self.assertEqual(currentness["reason"], "required")
 
             output_path.unlink()
-            unrecorded = _evaluate(summary).result
-            check = next(
-                item
-                for item in unrecorded.checks
-                if item.identity == "provenance:e001:success-rate"
+            unrecorded = _evaluate(summary).attempt
+            check = _single_provenance_finding_check(
+                unrecorded, "e001", "success-rate"
             )
-            self.assertEqual(check.failure.code, "provenance.output.unrecorded")
+            self.assertEqual(check.diagnostic.code, "provenance.output.unrecorded")
+
+    def test_origin_support_ignores_reproduce_currentness(self) -> None:
+        invocation = SimpleNamespace(material_owner="entry-owner")
+        state = ENGINE._ScanState(
+            Path("/project/study.md"), Path("/project/study"), Path("/project")
+        )
+        state.execution_states["entry-owner"] = object()
+        state.execution_output_owners["entry-owner"] = object()
+        association = SimpleNamespace(
+            execution=SimpleNamespace(requires_reproduction=True)
+        )
+        with (
+            mock.patch.object(ENGINE, "associate_execution", return_value=object()),
+            mock.patch.object(
+                ENGINE,
+                "resolve_execution_output",
+                return_value=SimpleNamespace(association=association),
+            ),
+        ):
+            self.assertTrue(
+                ENGINE._has_structural_output_record(
+                    invocation, "/project/result.csv", state
+                )
+            )
+
+        state.execution_states.clear()
+        state.output_files["entry-owner"] = object()
+        for confirmed in (True, False):
+            with (
+                self.subTest(legacy_confirmed=confirmed),
+                mock.patch.object(
+                    ENGINE,
+                    "resolve_output_support",
+                    return_value=SimpleNamespace(
+                        record=SimpleNamespace(confirmed=confirmed)
+                    ),
+                ),
+                mock.patch.object(
+                    ENGINE,
+                    "_entry_root_for_owner",
+                    return_value=Path("/project/study/entries/entry-owner"),
+                ),
+            ):
+                self.assertTrue(
+                    ENGINE._has_structural_output_record(
+                        invocation, "/project/result.csv", state
+                    )
+                )
 
     def test_missing_output_takes_precedence_with_or_without_a_record(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1653,22 +2401,18 @@ class EngineV2EndToEndTests(unittest.TestCase):
             output = entry.parent / "data/results.csv"
             output.unlink()
 
-            recorded = _evaluate(summary).result
-            check = next(
-                item
-                for item in recorded.checks
-                if item.identity == "provenance:e001:success-rate"
+            recorded = _evaluate(summary).attempt
+            check = _single_provenance_finding_check(
+                recorded, "e001", "success-rate"
             )
-            self.assertEqual(check.failure.code, "provenance.output.missing")
+            self.assertEqual(check.diagnostic.code, "provenance.output.missing")
 
             (entry.parent / "pyrun-outputs.json").unlink()
-            unrecorded = _evaluate(summary).result
-            check = next(
-                item
-                for item in unrecorded.checks
-                if item.identity == "provenance:e001:success-rate"
+            unrecorded = _evaluate(summary).attempt
+            check = _single_provenance_finding_check(
+                unrecorded, "e001", "success-rate"
             )
-            self.assertEqual(check.failure.code, "provenance.output.missing")
+            self.assertEqual(check.diagnostic.code, "provenance.output.missing")
 
     def test_missing_graph_output_outside_evidence_closure_fails_provenance(
         self,
@@ -1686,19 +2430,105 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ),
             )
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
 
             missing = [
                 check
                 for check in result.checks
-                if check.failure is not None
-                and check.failure.code == "provenance.output.missing"
+                if check.diagnostic is not None
+                and check.diagnostic.code == "provenance.output.missing"
                 and check.subject.endswith("/data/missing.csv")
             ]
             self.assertEqual(len(missing), 1)
-            self.assertEqual(missing[0].scope, RESULTS.CheckScope.PROVENANCE)
+            self.assertEqual(missing[0].area, DOMAIN.RuleArea.PROVENANCE)
 
-    def test_unmatched_record_is_one_hygiene_finding_not_an_orphan_duplicate(
+    def test_missing_output_conclusion_uses_authoritative_production_edge(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            write(
+                entry,
+                entry.read_text().replace(
+                    "```\n\n`Results:",
+                    "./pyrun scripts/model.py --input-catalog '<catalog>' "
+                    "--output-data data/missing.csv\n```\n\n`Results:",
+                ),
+            )
+            missing = (entry.parent / "data/missing.csv").resolve().as_posix()
+            original = ENGINE.build_evaluation_graph
+
+            def without_edge(inputs: Any, *, bounds: Any) -> Any:
+                return _without_material_production(
+                    original(inputs, bounds=bounds),
+                    missing,
+                )
+
+            baseline = _evaluate(summary).attempt
+            with mock.patch.object(
+                ENGINE,
+                "build_evaluation_graph",
+                side_effect=without_edge,
+            ):
+                disconnected = _evaluate(summary).attempt
+
+            self.assertTrue(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "provenance.output.missing"
+                    and check.subject == missing
+                    for check in baseline.checks
+                )
+            )
+            self.assertFalse(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "provenance.output.missing"
+                    and check.subject == missing
+                    for check in disconnected.checks
+                )
+            )
+
+    def test_unmatched_output_conclusion_uses_authoritative_production_edge(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            output = (entry.parent / "data/results.csv").resolve().as_posix()
+            original = ENGINE.build_evaluation_graph
+
+            def without_edge(inputs: Any, *, bounds: Any) -> Any:
+                return _without_material_production(
+                    original(inputs, bounds=bounds),
+                    output,
+                )
+
+            baseline = _evaluate(summary).attempt
+            with mock.patch.object(
+                ENGINE,
+                "build_evaluation_graph",
+                side_effect=without_edge,
+            ):
+                disconnected = _evaluate(summary).attempt
+
+            self.assertFalse(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.output.unmatched"
+                    and check.subject == output
+                    for check in baseline.checks
+                )
+            )
+            self.assertTrue(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.output.unmatched"
+                    and check.subject == output
+                    for check in disconnected.checks
+                )
+            )
+
+    def test_unmatched_record_is_one_orphan_finding_not_an_orphan_duplicate(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1716,15 +2546,17 @@ class EngineV2EndToEndTests(unittest.TestCase):
             }
             write(output_path, json.dumps(support) + "\n")
 
-            result = _evaluate(summary).result
+            result = _evaluate(summary).attempt
             stale_findings = [
                 check
                 for check in result.checks
                 if check.subject == stale.resolve().as_posix()
-                and check.failure is not None
+                and check.diagnostic is not None
             ]
             self.assertEqual(len(stale_findings), 1)
-            self.assertEqual(stale_findings[0].failure.code, "hygiene.output.unmatched")
+            self.assertEqual(
+                stale_findings[0].diagnostic.code, "orphan.output.unmatched"
+            )
 
     def test_input_verification_dependencies_include_the_entry_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1745,10 +2577,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             exact = (root / "exact.csv").as_posix()
             managed = (root / "managed").as_posix()
             exact_check = ENGINE._pass_check(
-                "entry:e001:input:exact-declaration", RESULTS.CheckScope.PROVENANCE
+                "entry:e001:input:exact-declaration", DOMAIN.RuleArea.PROVENANCE
             )
             directory_check = ENGINE._pass_check(
-                "entry:e001:input:managed-declaration", RESULTS.CheckScope.PROVENANCE
+                "entry:e001:input:managed-declaration", DOMAIN.RuleArea.PROVENANCE
             )
             state = ENGINE._ScanState(root / "study.md", root, root)
             state.input_prerequisite_files[exact] = [exact_check]
@@ -1842,17 +2674,15 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(evaluation.snapshot)
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertFalse(
-                any("e005" in check.identity for check in evaluation.result.checks)
+                any("e005" in check.check_id for check in evaluation.attempt.checks)
             )
 
     def test_symlinked_entry_root_is_rejected_lexically(self) -> None:
@@ -1868,12 +2698,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             failure = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:declaration"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:declaration"
             )
-            self.assertEqual(failure.status, RESULTS.CheckStatus.FAIL)
-            assert failure.failure is not None
-            self.assertEqual(failure.failure.code, "evidence.declaration.invalid")
+            self.assertEqual(failure.outcome, DOMAIN.CheckOutcome.FINDING)
+            assert failure.diagnostic is not None
+            self.assertEqual(failure.diagnostic.code, "evidence.declaration.invalid")
 
     def test_invalid_entry_evidence_does_not_block_valid_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1897,25 +2727,59 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
             invalid = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e002:evidence-declaration"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e002:evidence-declaration"
             )
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
-            self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
-            self.assertEqual(invalid.failure.code, "evidence.json.schema_invalid")
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertEqual(invalid.area, DOMAIN.RuleArea.CONFORMANCE)
+            self.assertEqual(invalid.diagnostic.code, "evidence.json.schema_invalid")
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "association.declaration_missing"
-                    and "e002" in check.identity
-                    for check in evaluation.result.checks
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "association.declaration_missing"
+                    and "e002" in check.check_id
+                    for check in evaluation.attempt.checks
                 )
             )
+
+    def test_invalid_evidence_does_not_block_unmatched_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            extra = entry.parent / "data/extra.csv"
+            write(extra, "value\n1\n")
+            support_path = entry.parent / "pyrun-outputs.json"
+            support = json.loads(support_path.read_text(encoding="utf-8"))
+            recorded = json.loads(
+                json.dumps(support["outputs"]["data/results.csv"])
+            )
+            recorded["fingerprint"]["digest"] = hashlib.sha256(
+                extra.read_bytes()
+            ).hexdigest()
+            support["outputs"]["data/extra.csv"] = recorded
+            write(support_path, json.dumps(support, indent=2) + "\n")
+            write(entry.parent / "evidence.json", "{\n")
+
+            evaluation = _evaluate(summary)
+
+            evidence = next(
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:evidence-declaration"
+            )
+            unmatched = next(
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id.endswith(":data/extra.csv")
+                and check.check_id.startswith("orphan:unmatched-output:")
+            )
+            self.assertIs(evidence.outcome, DOMAIN.CheckOutcome.FINDING)
+            self.assertIs(unmatched.outcome, DOMAIN.CheckOutcome.FINDING)
+            self.assertEqual(unmatched.diagnostic.code, "orphan.output.unmatched")
 
     def test_invalid_retention_preserves_commands_and_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1926,17 +2790,88 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             invalid = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:retention-declaration"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:retention-declaration"
             )
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(invalid.failure.code, "retention.declaration.invalid")
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(invalid.diagnostic.code, "retention.declaration.invalid")
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 1)
+
+    def test_redundant_retention_is_a_contextualized_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            retention_path = entry.parent / "retention.json"
+            write(
+                retention_path,
+                json.dumps(
+                    {
+                        "schema": "research-log-retention/v1",
+                        "records": [{"id": "result", "paths": ["data/results.csv"]}],
+                    }
+                )
+                + "\n",
+            )
+
+            evaluation = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(summary)
+            )
+            finding = next(
+                item
+                for item in evaluation.attempt.findings
+                if item.code == "retention.declaration.invalid"
+            )
+
+            self.assertIsNotNone(evaluation.snapshot)
+            self.assertEqual(
+                finding.source_locations,
+                (DOMAIN.SourceLocation(retention_path.resolve().as_posix()),),
+            )
+            self.assertTrue(finding.context_nodes)
+
+    def test_command_discovery_exception_has_explicit_entry_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            error = ENGINE.EngineV2Error(
+                "invocation.command.unsupported",
+                entry.as_posix(),
+                {"reason": "test_failure"},
+                "Recorded-Command Provenance And Material Graph",
+            )
+
+            with mock.patch.object(
+                ENGINE,
+                "_discover_entry_invocations",
+                side_effect=error,
+            ):
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary)
+                )
+
+            finding = next(
+                item
+                for item in evaluation.attempt.findings
+                if item.finding_id == "entry:e001:command"
+            )
+            self.assertEqual(finding.entry, "e001")
+            self.assertEqual(
+                finding.source_locations,
+                (DOMAIN.SourceLocation(entry.resolve().as_posix()),),
+            )
+            self.assertEqual(
+                finding.context_nodes,
+                (
+                    DOMAIN.GraphReference(
+                        "document",
+                        entry.resolve().as_posix(),
+                        "e001",
+                    ),
+                ),
+            )
 
     def test_origin_ignores_confirmed_producer_from_another_log(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2021,10 +2956,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             provenance = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "provenance:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
 
     def test_invalid_input_preserves_unrelated_inputs_and_commands(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2048,10 +2983,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 1)
 
     def test_invalid_command_input_blocks_its_provenance_without_cascade(self) -> None:
@@ -2062,30 +2997,33 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             command = checks["entry:e001:command:1:1:output:1"]
             provenance = checks["provenance:e001:success-rate"]
-            self.assertEqual(command.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(command.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertEqual(
-                checks["evidence:e001:success-rate"].status,
-                RESULTS.CheckStatus.PASS,
+                checks["evidence:e001:success-rate"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
             failure_codes = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("producer.missing", failure_codes)
 
     def test_invalid_data_file_blocks_dependent_checks_without_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            write(entry.parent / "data.json", "{\n")
+            data_path = entry.parent / "data.json"
+            write(data_path, "{\n")
 
-            evaluation = _evaluate(summary)
+            evaluation = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(summary)
+            )
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             declaration = checks["entry:e001:data-declaration"]
             for identity in (
                 "entry:e001:command:1:1",
@@ -2093,18 +3031,60 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "provenance:e001:success-rate",
             ):
                 self.assertEqual(
-                    checks[identity].status, RESULTS.CheckStatus.NOT_APPLICABLE
+                    checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED
                 )
                 self.assertIn(
-                    {"dependency": declaration.identity}, checks[identity].dependencies
+                    {"dependency": declaration.check_id},
+                    checks[identity].dependency_evidence,
                 )
             failure_codes = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("data.input.undeclared", failure_codes)
             self.assertNotIn("orphan.material.unused", failure_codes)
+            finding = next(
+                item
+                for item in evaluation.attempt.findings
+                if item.finding_id == "entry:e001:data-declaration"
+            )
+            self.assertEqual(finding.context_nodes, ())
+            self.assertEqual(
+                finding.source_locations,
+                (DOMAIN.SourceLocation(data_path.resolve().as_posix()),),
+            )
+
+            scoped = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(
+                    summary,
+                    ENGINE.EntryEvaluationTarget("e001", entry.parent),
+                )
+            )
+            self.assertFalse(scoped.snapshot.failed_checks)
+            self.assertEqual(
+                {
+                    (item.finding_id, item.code)
+                    for item in evaluation.snapshot.findings
+                },
+                {
+                    (item.finding_id, item.code)
+                    for item in scoped.snapshot.findings
+                },
+            )
+            self.assertEqual(
+                {item.code for item in scoped.snapshot.findings},
+                {"data.declaration.invalid"},
+            )
+            unmatched = [
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id.startswith("orphan:unmatched-output:")
+            ]
+            self.assertTrue(unmatched)
+            self.assertTrue(
+                all(check.outcome is DOMAIN.CheckOutcome.BLOCKED for check in unmatched)
+            )
 
     def test_invalid_evidence_file_blocks_owner_orphan_classification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2118,19 +3098,23 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             declaration = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:evidence-declaration"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:evidence-declaration"
             )
             orphan_checks = [
                 check
-                for check in evaluation.result.checks
-                if check.scope is RESULTS.CheckScope.ORPHAN
+                for check in evaluation.attempt.checks
+                if check.area is DOMAIN.RuleArea.ORPHAN
             ]
             self.assertTrue(orphan_checks)
             for check in orphan_checks:
-                self.assertEqual(check.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-                self.assertIn({"dependency": declaration.identity}, check.dependencies)
-            self.assertFalse(any(check.failure is not None for check in orphan_checks))
+                self.assertEqual(check.outcome, DOMAIN.CheckOutcome.BLOCKED)
+                self.assertIn(
+                    {"dependency": declaration.check_id}, check.dependency_evidence
+                )
+            self.assertFalse(
+                any(check.diagnostic is not None for check in orphan_checks)
+            )
 
     def test_conflicted_input_blocks_consumers_without_undeclared_cascade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2182,11 +3166,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             conflict = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity.startswith("conformance:data-conflict:")
+                for check in evaluation.attempt.checks
+                if check.check_id.startswith("conformance:data-conflict:")
             )
             for identity in (
                 "entry:e001:command:1:1",
@@ -2194,19 +3178,28 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "provenance:e001:success-rate",
             ):
                 self.assertEqual(
-                    checks[identity].status, RESULTS.CheckStatus.NOT_APPLICABLE
+                    checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED
                 )
                 self.assertIn(
-                    {"dependency": conflict.identity}, checks[identity].dependencies
+                    {"dependency": conflict.check_id},
+                    checks[identity].dependency_evidence,
                 )
             failure_codes = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("data.input.undeclared", failure_codes)
             self.assertNotIn("orphan.input.unused", failure_codes)
-            self.assertIn("hygiene.output.unmatched", failure_codes)
+            unmatched = next(
+                check
+                for check in evaluation.attempt.checks
+                if check.check_id.startswith("orphan:unmatched-output:")
+            )
+            self.assertIs(unmatched.outcome, DOMAIN.CheckOutcome.BLOCKED)
+            self.assertIn(
+                {"dependency": conflict.check_id}, unmatched.dependency_evidence
+            )
 
     def test_cross_entry_data_conflict_does_not_block_unrelated_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2266,18 +3259,18 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             conflict = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity.startswith("conformance:data-conflict:")
+                for check in evaluation.attempt.checks
+                if check.check_id.startswith("conformance:data-conflict:")
             )
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(conflict.status, RESULTS.CheckStatus.FAIL)
-            assert conflict.failure is not None
-            self.assertEqual(conflict.failure.code, "data.declaration.conflict")
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(conflict.outcome, DOMAIN.CheckOutcome.FINDING)
+            assert conflict.diagnostic is not None
+            self.assertEqual(conflict.diagnostic.code, "data.declaration.conflict")
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertEqual(evaluation.metrics["invocations"], 3)
 
     def test_invalid_entry_command_does_not_block_valid_entry(self) -> None:
@@ -2305,17 +3298,17 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
             invalid = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity.startswith("entry:e002:command")
+                for check in evaluation.attempt.checks
+                if check.check_id.startswith("entry:e002:command")
             )
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
-            self.assertEqual(invalid.scope, RESULTS.CheckScope.CONFORMANCE)
-            self.assertEqual(invalid.failure.code, "invocation.command.unsupported")
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertEqual(invalid.area, DOMAIN.RuleArea.CONFORMANCE)
+            self.assertEqual(invalid.diagnostic.code, "invocation.command.unsupported")
 
     def test_split_entry_loads_shared_root_surfaces_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2352,6 +3345,74 @@ class EngineV2EndToEndTests(unittest.TestCase):
             data_loader.assert_called_once()
             self.assertIs(entries[0].evidence_file, entries[1].evidence_file)
             self.assertIs(entries[0].data_file, entries[1].data_file)
+
+    def test_split_document_summary_reference_uses_authored_document_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            split = entry.with_name("e001a.md")
+            entry.rename(split)
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                .replace("e001.md", "e001a.md")
+                .replace("ref entry = e001;", "ref entry = e001a;"),
+            )
+            evidence_path = split.parent / "evidence.json"
+            write(
+                evidence_path,
+                evidence_path.read_text(encoding="utf-8").replace(
+                    "e001.md", "e001a.md"
+                ),
+            )
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            summary_failures = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code.startswith("summary.reference.")
+            ]
+
+            self.assertEqual(summary_failures, [])
+            self.assertEqual(evaluation.context.materials[0].entry_id, "e001")
+            self.assertTrue(
+                any(
+                    check.check_id == "evidence:e001:success-rate"
+                    for check in evaluation.attempt.checks
+                )
+            )
+
+    def test_invalid_split_document_summary_reference_remains_one_finding(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            split = entry.with_name("e001a.md")
+            entry.rename(split)
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                .replace("e001.md", "e001a.md")
+                .replace("ref entry = e001;", "ref entry = e001b;"),
+            )
+            evidence_path = split.parent / "evidence.json"
+            write(
+                evidence_path,
+                evidence_path.read_text(encoding="utf-8").replace(
+                    "e001.md", "e001a.md"
+                ),
+            )
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            failures = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "summary.reference.target_invalid"
+            ]
+
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0].subject, "summary:5")
 
     def test_split_entry_commands_are_discovered_once_per_listed_document(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2426,9 +3487,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failures = [
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertNotIn("orphan.input.unused", failures)
             self.assertEqual(evaluation.metrics["invocations"], 2)
@@ -2481,13 +3542,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failures = [
-                check.failure
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code == "association.presentation_missing"
+                check.diagnostic
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "association.presentation_missing"
             ]
             self.assertEqual(len(failures), 1)
-            self.assertEqual(failures[0].observed["ids"], ["unlisted-value"])
+            self.assertEqual(failures[0].observed["ids"], ("unlisted-value",))
 
     def test_complete_log_is_mechanically_clear(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2495,27 +3556,21 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
+            self.assertIsNotNone(evaluation.snapshot)
+            scopes = _area_outcomes(evaluation.attempt)
+            self.assertEqual(scopes[DOMAIN.RuleArea.EVIDENCE], DOMAIN.CheckOutcome.PASS)
             self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
+                scopes[DOMAIN.RuleArea.PROVENANCE], DOMAIN.CheckOutcome.PASS
             )
-            scopes = {item.scope: item.status for item in evaluation.result.scopes}
-            self.assertEqual(
-                scopes[RESULTS.CheckScope.EVIDENCE], RESULTS.CheckStatus.PASS
-            )
-            self.assertEqual(
-                scopes[RESULTS.CheckScope.PROVENANCE], RESULTS.CheckStatus.PASS
-            )
-            self.assertEqual(
-                scopes[RESULTS.CheckScope.ORPHAN], RESULTS.CheckStatus.PASS
-            )
+            self.assertEqual(scopes[DOMAIN.RuleArea.ORPHAN], DOMAIN.CheckOutcome.PASS)
             self.assertEqual(evaluation.metrics["source_evaluations"], 1)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
             self.assertEqual(evaluation.metrics["script_hashes"], 1)
             self.assertEqual(evaluation.metrics["markdown_reads"], 2)
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
             self.assertIn(
                 {
@@ -2525,7 +3580,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         "under_results": True,
                     }
                 },
-                evidence.dependencies,
+                evidence.dependency_evidence,
             )
 
     def test_repeated_evidence_source_reuses_provenance_traversal(self) -> None:
@@ -2533,6 +3588,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"].append(
+                {
+                    "source": "<catalog>",
+                    "locator": {"select": [["id"]]},
+                }
+            )
             duplicate = json.loads(json.dumps(evidence["records"][0]))
             duplicate["id"] = "success-rate-copy"
             evidence["records"].append(duplicate)
@@ -2554,6 +3615,248 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(evaluation.metrics["provenance_traversals"], 1)
             self.assertEqual(evaluation.metrics["provenance_traversals_reused"], 1)
 
+    def test_repeated_evidence_source_reuses_one_currentness_conclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"].append(
+                {
+                    "source": "<catalog>",
+                    "locator": {"select": [["id"]]},
+                }
+            )
+            duplicate = json.loads(json.dumps(evidence["records"][0]))
+            duplicate["id"] = "success-rate-copy"
+            evidence["records"].append(duplicate)
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(
+                entry,
+                entry.read_text(encoding="utf-8")
+                + "\nThe copied rate was `67.6%`"
+                "<!-- eid:success-rate-copy -->.\n",
+            )
+            write(entry.parent / "scripts/model.py", "# changed model\n")
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+
+            failed_checks = [
+                check
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "provenance.output.signature_mismatch"
+            ]
+            findings = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "provenance.output.signature_mismatch"
+            ]
+            self.assertFalse(failed_checks)
+            self.assertFalse(findings)
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
+            for record_id in ("success-rate", "success-rate-copy"):
+                consumer = checks[f"provenance:e001:{record_id}"]
+                self.assertEqual(consumer.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertEqual(len(evaluation.context.currentness), 1)
+
+            result_path = (entry.parent / "data/results.csv").resolve().as_posix()
+            material_node = f"material:{result_path}"
+            declaration_sources = {
+                edge.source
+                for edge in evaluation.context.graph.edges
+                if edge.kind is RESEARCH_GRAPH.EdgeKind.DECLARATION
+                and edge.target == material_node
+            }
+            self.assertTrue(
+                {
+                    "evidence_record:e001:e001:success-rate",
+                    "evidence_record:e001:e001:success-rate-copy",
+                }
+                <= declaration_sources,
+                declaration_sources,
+            )
+
+    def test_restricted_provenance_scales_with_material_not_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            entry_root = entry.parent
+            write(entry_root / "data/catalog.csv", "success_rate\n0.676\n")
+            data_path = entry_root / "data.json"
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+            catalog = next(
+                item for item in data["inputs"] if item["name"] == "catalog"
+            )
+            catalog["origin"] = False
+            write(data_path, json.dumps(data, indent=2) + "\n")
+            evidence_path = entry_root / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            template = evidence["records"][0]
+            records = []
+            presentations = []
+            consumer_count = 25
+            for index in range(consumer_count):
+                record = json.loads(json.dumps(template))
+                record["id"] = (
+                    "success-rate" if index == 0 else f"catalog-rate-{index}"
+                )
+                record["sources"][0]["source"] = "<catalog>"
+                records.append(record)
+                if index:
+                    presentations.append(
+                        f"The catalog rate was `67.6%`"
+                        f"<!-- eid:catalog-rate-{index} -->."
+                    )
+            evidence["records"] = records
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(entry, entry.read_text(encoding="utf-8") + "\n".join(presentations))
+            builder = ENGINE.build_producer_index
+
+            with (
+                mock.patch.object(
+                    ENGINE, "build_producer_index", wraps=builder
+                ) as indexed,
+                mock.patch.object(
+                    ENGINE,
+                    "evaluate_complete_provenance",
+                    wraps=ENGINE.evaluate_complete_provenance,
+                ) as evaluate,
+            ):
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary)
+                )
+
+            failures = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "producer.missing"
+                and finding.subject
+                == (entry_root / "data/catalog.csv").resolve().as_posix()
+            ]
+            self.assertEqual(
+                len(failures),
+                1,
+                [
+                    (finding.code, finding.subject)
+                    for finding in evaluation.attempt.findings
+                ],
+            )
+            self.assertEqual(indexed.call_count, 2)
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(evaluation.metrics["provenance_traversals"], 1)
+            self.assertEqual(
+                evaluation.metrics["provenance_traversals_reused"],
+                consumer_count - 1,
+            )
+
+    def test_provenance_check_identity_preserves_distinct_finding_conditions(
+        self,
+    ) -> None:
+        root = Path("/project")
+        state = ENGINE._ScanState(root / "study.md", root / "study", root)
+        findings = (
+            PROVENANCE.ProvenanceFinding(
+                "producer.missing",
+                "/project/one.csv",
+                {},
+                "Producer",
+                PROVENANCE.ProvenanceAnchor("material", "/project/one.csv"),
+            ),
+            PROVENANCE.ProvenanceFinding(
+                "producer.missing",
+                "/project/two.csv",
+                {},
+                "Producer",
+                PROVENANCE.ProvenanceAnchor("material", "/project/two.csv"),
+            ),
+            PROVENANCE.ProvenanceFinding(
+                "lineage.missing",
+                "/project/one.csv",
+                {},
+                "Lineage",
+                PROVENANCE.ProvenanceAnchor("material", "/project/one.csv"),
+            ),
+        )
+        prepared = tuple(
+            ENGINE._PreparedProvenanceFinding(
+                finding,
+                ENGINE.canonical_json(finding.identity_dict()),
+                (),
+            )
+            for finding in findings
+        )
+
+        checks = ENGINE._register_provenance_checks(prepared, state)
+
+        self.assertEqual(len(checks), 3)
+        self.assertEqual(len({check.check_id for check in checks}), 3)
+        self.assertEqual(
+            {(check.diagnostic.code, check.subject) for check in checks},
+            {
+                ("producer.missing", "/project/one.csv"),
+                ("producer.missing", "/project/two.csv"),
+                ("lineage.missing", "/project/one.csv"),
+            },
+        )
+
+    def test_same_named_provenance_findings_keep_natural_material_owners(
+        self,
+    ) -> None:
+        root = Path("/project")
+        first = "/project/entry-a/catalog.csv"
+        second = "/project/entry-b/catalog.csv"
+        state = ENGINE._ScanState(root / "study.md", root / "study", root)
+        state.invocations = (
+            SimpleNamespace(
+                inputs=(SimpleNamespace(path=first),),
+                outputs=(),
+            ),
+            SimpleNamespace(
+                inputs=(SimpleNamespace(path=second),),
+                outputs=(),
+            ),
+        )
+        findings = tuple(
+            PROVENANCE.ProvenanceFinding(
+                "data.origin.invalid",
+                "catalog",
+                {"producer": "producer"},
+                "Origin boundary",
+                PROVENANCE.ProvenanceAnchor("material", material),
+            )
+            for material in (first, second)
+        )
+
+        prepared = ENGINE._ordered_provenance_findings(findings, state)
+        checks = ENGINE._register_provenance_checks(prepared, state)
+        attempt = DOMAIN.ValidationAttempt.build(
+            target=DOMAIN.ValidationTarget(DOMAIN.TargetKind.LOG, "/project/study.md"),
+            source_identity="source",
+            rules_version="rules",
+            started_at="start",
+            finished_at="finish",
+            checks=checks,
+        )
+
+        self.assertEqual(len(attempt.findings), 2)
+        self.assertEqual(len(DOMAIN.build_batches(attempt.findings)), 2)
+        self.assertEqual(
+            {
+                (
+                    finding.repair_keys[0].value,
+                    finding.context_nodes[0].node_id,
+                )
+                for finding in attempt.findings
+            },
+            {
+                (f"material:{first}", f"material:{first}"),
+                (f"material:{second}", f"material:{second}"),
+            },
+        )
+
     def test_named_output_rejects_an_origin_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -2565,16 +3868,16 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             command = checks["entry:e001:command:1:1"]
             evidence = checks["evidence:e001:success-rate"]
             provenance = checks["provenance:e001:success-rate"]
-            self.assertEqual(command.status, RESULTS.CheckStatus.FAIL)
-            self.assertEqual(command.failure.code, "data.output.declaration_invalid")
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(command.outcome, DOMAIN.CheckOutcome.FINDING)
+            self.assertEqual(command.diagnostic.code, "data.output.declaration_invalid")
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
 
-    def test_origin_evidence_is_valid_but_unrelated_output_is_hygiene(self) -> None:
+    def test_origin_evidence_is_valid_but_unrelated_output_is_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             data_path = entry.parent / "data.json"
@@ -2598,23 +3901,20 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
+            self.assertIsNotNone(evaluation.snapshot)
             self.assertEqual(
-                evaluation.result.completion,
-                RESULTS.CompletionState.COMPLETE_FINDINGS,
+                checks["evidence:e001:success-rate"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
             self.assertEqual(
-                checks["evidence:e001:success-rate"].status,
-                RESULTS.CheckStatus.PASS,
-            )
-            self.assertEqual(
-                checks["provenance:e001:success-rate"].status,
-                RESULTS.CheckStatus.PASS,
+                checks["provenance:e001:success-rate"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
             failure_codes = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("orphan.input.unused", failure_codes)
 
@@ -2627,20 +3927,20 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             evidence = checks["evidence:e001:success-rate"]
             provenance = checks["provenance:e001:success-rate"]
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.FAIL)
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
-            assert provenance.failure is not None
-            self.assertEqual(
-                provenance.failure.code,
-                "provenance.output.signature_mismatch",
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.FINDING)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertTrue(evaluation.context.currentness)
+            currentness = _single_currentness_blocker(
+                evaluation, "e001", "success-rate"
             )
+            self.assertEqual(currentness["reason"], "signature_mismatch")
             failure_codes = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("data.input.undeclared", failure_codes)
             self.assertNotIn("orphan.input.unused", failure_codes)
@@ -2677,15 +3977,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(evaluation.snapshot)
             evidence_check = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            record = evidence_check.dependencies[0]["record"]
+            record = evidence_check.dependency_evidence[0]["record"]
             self.assertIsInstance(record, str)
             self.assertIn('"value":0.676', record)
 
@@ -2704,21 +4002,21 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             invalid = [
                 check
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code == "association.context_invalid"
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "association.context_invalid"
             ]
             self.assertEqual(len(invalid), 1)
-            self.assertEqual(invalid[0].scope, RESULTS.CheckScope.CONFORMANCE)
+            self.assertEqual(invalid[0].area, DOMAIN.RuleArea.CONFORMANCE)
             self.assertEqual(
-                invalid[0].failure.observed["heading"], "Incomplete appendix"
+                invalid[0].diagnostic.observed["heading"], "Incomplete appendix"
             )
             evidence = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
 
     def test_association_syntax_and_context_failures_are_conformance(self) -> None:
         for code in (
@@ -2728,8 +4026,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             with self.subTest(code=code):
                 error = ENGINE.EngineV2Error(code, "entry", {}, "rule")
                 self.assertEqual(
-                    ENGINE._error_scope(error, RESULTS.CheckScope.EVIDENCE),
-                    RESULTS.CheckScope.CONFORMANCE,
+                    ENGINE._error_scope(error, DOMAIN.RuleArea.EVIDENCE),
+                    DOMAIN.RuleArea.CONFORMANCE,
                 )
 
     def test_symlinked_entry_material_root_is_mechanically_clear(self) -> None:
@@ -2746,13 +4044,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
+            self.assertIsNotNone(evaluation.snapshot)
+            scopes = _area_outcomes(evaluation.attempt)
             self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
-            scopes = {item.scope: item.status for item in evaluation.result.scopes}
-            self.assertEqual(
-                scopes[RESULTS.CheckScope.ORPHAN],
-                RESULTS.CheckStatus.PASS,
+                scopes[DOMAIN.RuleArea.ORPHAN],
+                DOMAIN.CheckOutcome.PASS,
             )
 
     def test_cross_entry_source_uses_the_consuming_entry_registry(self) -> None:
@@ -2849,20 +4145,20 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            checks = {check.identity: check for check in evaluation.result.checks}
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             self.assertIn(
                 "evidence:e002:prior-success-rate",
                 checks,
                 [
-                    (check.identity, check.failure)
-                    for check in evaluation.result.checks
-                    if "e002" in check.identity
+                    (check.check_id, check.diagnostic)
+                    for check in evaluation.attempt.checks
+                    if "e002" in check.check_id
                 ],
             )
             evidence = checks["evidence:e002:prior-success-rate"]
-            self.assertEqual(evidence.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evidence.outcome, DOMAIN.CheckOutcome.PASS)
             provenance = checks["provenance:e002:prior-success-rate"]
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
 
             second_evidence_path = second_root / "evidence.json"
             second_payload = json.loads(
@@ -2879,12 +4175,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             log_relative_evaluation = _evaluate(summary)
             declaration = next(
                 check
-                for check in log_relative_evaluation.result.checks
-                if check.identity == "entry:e002:evidence-declaration"
+                for check in log_relative_evaluation.attempt.checks
+                if check.check_id == "entry:e002:evidence-declaration"
             )
-            self.assertEqual(declaration.scope, RESULTS.CheckScope.CONFORMANCE)
-            assert declaration.failure is not None
-            self.assertEqual(declaration.failure.code, "evidence.declaration.invalid")
+            self.assertEqual(declaration.area, DOMAIN.RuleArea.CONFORMANCE)
+            assert declaration.diagnostic is not None
+            self.assertEqual(
+                declaration.diagnostic.code, "evidence.declaration.invalid"
+            )
 
     def test_evidence_directory_requires_one_exact_regular_file_member(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2921,27 +4219,29 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             declaration = next(
                 check
-                for check in bare.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in bare.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
-            self.assertEqual(declaration.status, RESULTS.CheckStatus.FAIL)
-            assert declaration.failure is not None
-            self.assertEqual(declaration.failure.code, "evidence.declaration.invalid")
+            self.assertEqual(declaration.outcome, DOMAIN.CheckOutcome.FINDING)
+            assert declaration.diagnostic is not None
+            self.assertEqual(
+                declaration.diagnostic.code, "evidence.declaration.invalid"
+            )
 
             evidence["records"][0]["sources"][0]["source"] = "<results-dir>/results.csv"
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
 
             member = _evaluate(summary)
 
-            checks = {check.identity: check for check in member.result.checks}
+            checks = {check.check_id: check for check in member.attempt.checks}
             self.assertEqual(
-                checks["evidence:e001:success-rate"].status,
-                RESULTS.CheckStatus.PASS,
+                checks["evidence:e001:success-rate"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
             failure_codes = {
-                check.failure.code
-                for check in member.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in member.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("orphan.input.unused", failure_codes)
 
@@ -2970,9 +4270,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(evaluation.snapshot)
             self.assertEqual(evaluation.metrics["source_evaluations"], 2)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
 
@@ -3041,29 +4339,41 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
+            self.assertIsNotNone(evaluation.snapshot)
+            checks = {check.check_id: check for check in evaluation.attempt.checks}
             self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
-            checks = {check.identity: check for check in evaluation.result.checks}
-            self.assertEqual(
-                checks["evidence:e001:retained-report"].status,
-                RESULTS.CheckStatus.PASS,
+                checks["evidence:e001:retained-report"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
             self.assertEqual(
-                checks["provenance:e001:retained-report"].status,
-                RESULTS.CheckStatus.PASS,
+                checks["provenance:e001:retained-report"].outcome,
+                DOMAIN.CheckOutcome.PASS,
             )
             evidence["records"][-1]["artifact_fingerprint"] = None
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             inline_baseline = _evaluate(summary)
             inline_check = next(
                 check
-                for check in inline_baseline.result.checks
-                if check.identity == "evidence:e001:retained-report"
+                for check in inline_baseline.attempt.checks
+                if check.check_id == "evidence:e001:retained-report"
             )
-            self.assertEqual(inline_check.scope, RESULTS.CheckScope.CONFORMANCE)
-            assert inline_check.failure is not None
-            self.assertEqual(inline_check.failure.code, "evidence.declaration.invalid")
+            self.assertEqual(inline_check.area, DOMAIN.RuleArea.CONFORMANCE)
+            assert inline_check.diagnostic is not None
+            self.assertEqual(
+                inline_check.diagnostic.code, "evidence.declaration.invalid"
+            )
+            self.assertEqual(
+                inline_check.diagnostic.observed,
+                {
+                    "actual": {
+                        "artifact_fingerprint_present": True,
+                        "presentation_form": "inline-text",
+                    },
+                    "expected": {"artifact_fingerprint_present": False},
+                    "reason": "An inline artifact is validated from its displayed "
+                    "content and must not record an artifact fingerprint.",
+                },
+            )
 
     def test_unmarked_artifact_requires_an_evidence_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3080,9 +4390,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failures = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertIn("association.declaration_missing", failures)
 
@@ -3130,13 +4440,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(evaluation.snapshot)
             failures = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertNotIn("producer.missing", failures)
             self.assertNotIn("orphan.input.unused", failures)
@@ -3145,45 +4453,59 @@ class EngineV2EndToEndTests(unittest.TestCase):
             replacement = _evaluate(summary)
             artifact = next(
                 check
-                for check in replacement.result.checks
-                if check.identity == "evidence:e001:historical-report"
+                for check in replacement.attempt.checks
+                if check.check_id == "evidence:e001:historical-report"
             )
-            self.assertEqual(artifact.status, RESULTS.CheckStatus.FAIL)
-            assert artifact.failure is not None
+            self.assertEqual(artifact.outcome, DOMAIN.CheckOutcome.FINDING)
+            assert artifact.diagnostic is not None
             self.assertEqual(
-                artifact.failure.code, "association.artifact.fingerprint_mismatch"
+                artifact.diagnostic.code, "association.artifact.fingerprint_mismatch"
             )
             provenance = next(
                 check
-                for check in replacement.result.checks
-                if check.identity == "provenance:e001:historical-report"
+                for check in replacement.attempt.checks
+                if check.check_id == "provenance:e001:historical-report"
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.PASS)
 
             evidence["records"][-1].pop("artifact_fingerprint")
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             missing = _evaluate(summary)
             missing_check = next(
                 check
-                for check in missing.result.checks
-                if check.identity == "evidence:e001:historical-report"
+                for check in missing.attempt.checks
+                if check.check_id == "evidence:e001:historical-report"
             )
-            self.assertEqual(missing_check.scope, RESULTS.CheckScope.CONFORMANCE)
-            assert missing_check.failure is not None
-            self.assertEqual(missing_check.failure.code, "evidence.declaration.invalid")
+            self.assertEqual(missing_check.area, DOMAIN.RuleArea.CONFORMANCE)
+            assert missing_check.diagnostic is not None
+            self.assertEqual(
+                missing_check.diagnostic.code, "evidence.declaration.invalid"
+            )
+            self.assertEqual(
+                missing_check.diagnostic.observed,
+                {
+                    "actual": {
+                        "artifact_fingerprint_present": False,
+                        "presentation_form": "link",
+                    },
+                    "expected": {"artifact_fingerprint_present": True},
+                    "reason": "A linked or image artifact must record an artifact "
+                    "fingerprint.",
+                },
+            )
 
             evidence["records"][-1]["artifact_fingerprint"] = None
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             unrecorded = _evaluate(summary)
             unrecorded_check = next(
                 check
-                for check in unrecorded.result.checks
-                if check.identity == "evidence:e001:historical-report"
+                for check in unrecorded.attempt.checks
+                if check.check_id == "evidence:e001:historical-report"
             )
-            self.assertEqual(unrecorded_check.scope, RESULTS.CheckScope.EVIDENCE)
-            assert unrecorded_check.failure is not None
+            self.assertEqual(unrecorded_check.area, DOMAIN.RuleArea.EVIDENCE)
+            assert unrecorded_check.diagnostic is not None
             self.assertEqual(
-                unrecorded_check.failure.code,
+                unrecorded_check.diagnostic.code,
                 "association.artifact.fingerprint_unrecorded",
             )
 
@@ -3236,12 +4558,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             check = next(
                 item
-                for item in evaluation.result.checks
-                if item.identity == "evidence:e001:first-image"
+                for item in evaluation.attempt.checks
+                if item.check_id == "evidence:e001:first-image"
             )
-            self.assertEqual(check.status, RESULTS.CheckStatus.FAIL)
-            assert check.failure is not None
-            self.assertEqual(check.failure.code, "association.artifact.source_mismatch")
+            self.assertEqual(check.outcome, DOMAIN.CheckOutcome.FINDING)
+            assert check.diagnostic is not None
+            self.assertEqual(
+                check.diagnostic.code, "association.artifact.source_mismatch"
+            )
 
     def test_inline_artifact_source_obeys_the_presentation_byte_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3272,12 +4596,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             check = next(
                 item
-                for item in evaluation.result.checks
-                if item.identity == "evidence:e001:results-diff"
+                for item in evaluation.attempt.checks
+                if item.check_id == "evidence:e001:results-diff"
             )
-            self.assertEqual(check.scope, RESULTS.CheckScope.CONFORMANCE)
-            assert check.failure is not None
-            self.assertEqual(check.failure.code, "association.resource.too_large")
+            self.assertEqual(check.area, DOMAIN.RuleArea.CONFORMANCE)
+            assert check.diagnostic is not None
+            self.assertEqual(check.diagnostic.code, "association.resource.too_large")
 
     def test_unmarked_diff_fence_requires_an_evidence_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3293,10 +4617,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failures = [
-                check.failure
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code == "association.declaration_missing"
+                check.diagnostic
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "association.declaration_missing"
             ]
             self.assertTrue(failures)
             self.assertEqual(failures[0].observed["kind"], "artifact")
@@ -3316,15 +4640,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             ):
                 evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.INCOMPLETE
-            )
+            self.assertIs(evaluation.snapshot.outcome, DOMAIN.SnapshotOutcome.FAILED)
             self.assertIn(
                 "locator.reader.unavailable",
                 [
-                    check.failure.code
-                    for check in evaluation.result.checks
-                    if check.failure is not None
+                    check.diagnostic.code
+                    for check in evaluation.attempt.checks
+                    if check.diagnostic is not None
                 ],
             )
 
@@ -3333,24 +4655,21 @@ class EngineV2EndToEndTests(unittest.TestCase):
             with mock.patch.object(LOCATOR, "MAX_TEXT_OR_JSON_BYTES", 4):
                 evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion,
-                RESULTS.CompletionState.COMPLETE_FINDINGS,
-            )
+            self.assertIsNotNone(evaluation.snapshot)
             self.assertIn(
                 "locator.source.too_large",
                 [
-                    check.failure.code
-                    for check in evaluation.result.checks
-                    if check.failure is not None
+                    check.diagnostic.code
+                    for check in evaluation.attempt.checks
+                    if check.diagnostic is not None
                 ],
             )
 
     def test_log_level_record_marker_and_summary_bounds_are_composed(self) -> None:
         limits = (
-            ("MAX_RECORDS_PER_LOG", RESULTS.CheckScope.CONFORMANCE),
-            ("MAX_PRESENTATIONS_PER_LOG", RESULTS.CheckScope.CONFORMANCE),
-            ("MAX_SUMMARY_REFERENCES_PER_LOG", RESULTS.CheckScope.CONFORMANCE),
+            ("MAX_RECORDS_PER_LOG", DOMAIN.RuleArea.CONFORMANCE),
+            ("MAX_PRESENTATIONS_PER_LOG", DOMAIN.RuleArea.CONFORMANCE),
+            ("MAX_SUMMARY_REFERENCES_PER_LOG", DOMAIN.RuleArea.CONFORMANCE),
         )
         for constant, scope in limits:
             with self.subTest(constant=constant):
@@ -3360,12 +4679,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
                         evaluation = _evaluate(summary)
                 failures = [
                     check
-                    for check in evaluation.result.checks
-                    if check.failure is not None
-                    and check.failure.code == "association.resource.too_large"
+                    for check in evaluation.attempt.checks
+                    if check.diagnostic is not None
+                    and check.diagnostic.code == "association.resource.too_large"
                 ]
                 self.assertTrue(failures)
-                self.assertEqual(failures[0].scope, scope)
+                self.assertEqual(failures[0].area, scope)
 
     def test_evidence_passes_while_missing_producer_fails_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3381,21 +4700,42 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            scopes = {item.scope: item.status for item in evaluation.result.scopes}
+            scopes = _area_outcomes(evaluation.attempt)
+            self.assertEqual(scopes[DOMAIN.RuleArea.EVIDENCE], DOMAIN.CheckOutcome.PASS)
             self.assertEqual(
-                scopes[RESULTS.CheckScope.EVIDENCE], RESULTS.CheckStatus.PASS
-            )
-            self.assertEqual(
-                scopes[RESULTS.CheckScope.PROVENANCE], RESULTS.CheckStatus.FAIL
+                scopes[DOMAIN.RuleArea.PROVENANCE], DOMAIN.CheckOutcome.FINDING
             )
             failures = [
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertIn("producer.missing", failures)
 
-    def test_failed_command_candidates_block_dependent_graph_findings(self) -> None:
+    def test_repeated_evidence_source_builds_unique_repair_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            evidence_path = entry.parent / "evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["records"][0]["sources"].append(
+                {
+                    "source": "<results>",
+                    "locator": {"select": [["success_rate"]]},
+                }
+            )
+            write(evidence_path, json.dumps(evidence, indent=2) + "\n")
+            write(entry.parent / "data/results.csv", "success_rate\n0.700\n")
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+
+            self.assertIsNotNone(evaluation.snapshot)
+            for finding in evaluation.attempt.findings:
+                self.assertEqual(
+                    len(finding.context_nodes),
+                    len(set(finding.context_nodes)),
+                )
+
+    def test_rejected_command_candidates_block_dependent_graph_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory), output_option="results")
             scratch = entry.parent / "data/scratch.csv"
@@ -3412,30 +4752,86 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             command = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:command:1:1"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:command:1:1"
             )
             provenance = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "provenance:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
             )
             scratch_orphan = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity.endswith("data/scratch.csv")
-                and check.scope is RESULTS.CheckScope.ORPHAN
+                for check in evaluation.attempt.checks
+                if check.check_id.endswith("data/scratch.csv")
+                and check.area is DOMAIN.RuleArea.ORPHAN
             )
             unused_input = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity.endswith(":catalog")
+                for check in evaluation.attempt.checks
+                if check.check_id.endswith(":catalog")
             )
-            self.assertEqual(command.status, RESULTS.CheckStatus.FAIL)
-            self.assertEqual(command.failure.code, "material.candidate.unresolved")
-            for dependent in (provenance, scratch_orphan, unused_input):
-                self.assertEqual(dependent.status, RESULTS.CheckStatus.NOT_APPLICABLE)
-                self.assertIn({"dependency": command.identity}, dependent.dependencies)
+            self.assertEqual(command.outcome, DOMAIN.CheckOutcome.FINDING)
+            self.assertEqual(command.diagnostic.code, "material.candidate.unresolved")
+            for dependent in (scratch_orphan, unused_input):
+                self.assertEqual(dependent.outcome, DOMAIN.CheckOutcome.BLOCKED)
+                self.assertIn(
+                    {"dependency": command.check_id}, dependent.dependency_evidence
+                )
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.BLOCKED)
+            by_id = {check.check_id: check for check in evaluation.attempt.checks}
+            provenance_rule = by_id[provenance.dependencies[0]]
+            self.assertEqual(
+                provenance_rule.outcome, DOMAIN.CheckOutcome.BLOCKED
+            )
+            self.assertIn(
+                {"dependency": command.check_id}, provenance_rule.dependency_evidence
+            )
+
+    def test_repair_context_keeps_complete_rejected_command_neighborhood(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            (entry.parent / "data/catalog.csv").unlink()
+
+            evaluation = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(summary)
+            )
+
+            assert evaluation.snapshot is not None
+            context = evaluation.snapshot.repair_context
+            nodes = tuple(context["nodes"])
+            node_ids = {str(node["node_id"]) for node in nodes}
+            rejected = [
+                node
+                for node in nodes
+                if node["kind"] == "command"
+                and node["attributes"].get("rejected") is True
+            ]
+            self.assertEqual(len(rejected), 1)
+            command_id = str(rejected[0]["node_id"])
+            script = (entry.parent / "scripts/model.py").resolve().as_posix()
+            script_id = DOMAIN.GraphReference("script", script, "e001").node_id
+            self.assertIn(script_id, node_ids)
+            self.assertIn(
+                {
+                    "kind": "script_use",
+                    "source": script_id,
+                    "target": command_id,
+                },
+                context["relationships"],
+            )
+            rejected_ambiguities = [
+                item
+                for item in context["ambiguities"]
+                if item["kind"] == "rejected_command"
+                and command_id in item["candidates"]
+            ]
+            self.assertTrue(rejected_ambiguities)
+            for ambiguity in context["ambiguities"]:
+                self.assertIn(ambiguity["subject"], node_ids)
+                self.assertLessEqual(set(ambiguity["candidates"]), node_ids)
 
     def test_invalid_command_makes_the_whole_fence_unusable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3452,19 +4848,19 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             command_failure = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "entry:e001:command:1:1"
+                for check in evaluation.attempt.checks
+                if check.check_id == "entry:e001:command:1:1"
             )
             provenance = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "provenance:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
             )
-            self.assertEqual(command_failure.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(command_failure.outcome, DOMAIN.CheckOutcome.FINDING)
             self.assertEqual(
-                command_failure.failure.code, "invocation.command.unsupported"
+                command_failure.diagnostic.code, "invocation.command.unsupported"
             )
-            self.assertEqual(provenance.status, RESULTS.CheckStatus.FAIL)
+            self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.BLOCKED)
 
     def test_adjacent_comment_cannot_supply_a_material_role(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3479,10 +4875,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion,
-                RESULTS.CompletionState.COMPLETE_FINDINGS,
-            )
+            self.assertIsNotNone(evaluation.snapshot)
 
     def test_pyrun_other_roles_are_shared_with_static_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3500,9 +4893,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            self.assertEqual(
-                evaluation.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(evaluation.snapshot)
 
     def test_missing_summary_reference_is_precise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3517,12 +4908,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
             missing = _evaluate(summary)
 
             failures = [
-                (check.scope, check.failure.code)
-                for check in missing.result.checks
-                if check.failure is not None
+                (check.area, check.diagnostic.code)
+                for check in missing.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertIn(
-                (RESULTS.CheckScope.EVIDENCE, "summary.reference.missing"), failures
+                (DOMAIN.RuleArea.EVIDENCE, "summary.reference.missing"), failures
             )
 
     def test_changed_script_bytes_break_execution_linked_provenance(self) -> None:
@@ -3533,21 +4924,22 @@ class EngineV2EndToEndTests(unittest.TestCase):
             second = _evaluate(summary)
 
             first_provenance = [
-                check.status
-                for check in first.result.checks
-                if check.scope is RESULTS.CheckScope.PROVENANCE
+                check.outcome
+                for check in first.attempt.checks
+                if check.area is DOMAIN.RuleArea.PROVENANCE
             ]
             second_provenance = [
-                check.status
-                for check in second.result.checks
-                if check.scope is RESULTS.CheckScope.PROVENANCE
+                check.outcome
+                for check in second.attempt.checks
+                if check.area is DOMAIN.RuleArea.PROVENANCE
             ]
             self.assertTrue(
-                all(status is RESULTS.CheckStatus.PASS for status in first_provenance)
+                all(status is DOMAIN.CheckOutcome.PASS for status in first_provenance)
             )
             self.assertTrue(
-                any(status is RESULTS.CheckStatus.FAIL for status in second_provenance)
+                all(status is DOMAIN.CheckOutcome.PASS for status in second_provenance)
             )
+            self.assertTrue(_reproduce_currentness(second))
 
     def test_input_changed_during_validation_is_unavailable_without_cache(
         self,
@@ -3557,8 +4949,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             catalog = entry.parent / "data" / "catalog.csv"
             original_compose = ENGINE._compose_graph
 
-            def change_after_graph(state: Any) -> None:
-                original_compose(state)
+            def change_after_graph(state: Any, request: Any) -> None:
+                original_compose(state, request)
                 write(catalog, "id\n2\n")
 
             with mock.patch.object(
@@ -3567,9 +4959,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evaluation = _evaluate(summary)
 
             failures = {
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             }
             self.assertIn("provenance.observation.unavailable", failures)
 
@@ -3596,9 +4988,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             recognized = _evaluate(summary)
 
-            self.assertEqual(
-                recognized.result.completion, RESULTS.CompletionState.COMPLETE_CLEAR
-            )
+            self.assertIsNotNone(recognized.snapshot)
 
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
@@ -3612,9 +5002,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             untyped = _evaluate(summary)
 
             codes = [
-                check.failure.code
-                for check in untyped.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in untyped.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertNotIn("provenance.root.missing", codes)
             self.assertIn("orphan.input.unused", codes)
@@ -3633,9 +5023,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             codes = [
-                check.failure.code
-                for check in evaluation.result.checks
-                if check.failure is not None
+                check.diagnostic.code
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertIn("data.input.undeclared", codes)
 
@@ -3685,16 +5075,16 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evidence_check = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "evidence:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "evidence:e001:success-rate"
             )
             provenance_check = next(
                 check
-                for check in evaluation.result.checks
-                if check.identity == "provenance:e001:success-rate"
+                for check in evaluation.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
             )
-            self.assertEqual(evidence_check.status, RESULTS.CheckStatus.PASS)
-            self.assertEqual(provenance_check.status, RESULTS.CheckStatus.PASS)
+            self.assertEqual(evidence_check.outcome, DOMAIN.CheckOutcome.PASS)
+            self.assertEqual(provenance_check.outcome, DOMAIN.CheckOutcome.PASS)
             self.assertEqual(evaluation.metrics["source_reads"], 1)
 
     def test_unsupported_command_has_complete_precise_failure_payload(self) -> None:
@@ -3711,10 +5101,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             evaluation = _evaluate(summary)
 
             failure = next(
-                check.failure
-                for check in evaluation.result.checks
-                if check.failure is not None
-                and check.failure.code == "invocation.command.unsupported"
+                check.diagnostic
+                for check in evaluation.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "invocation.command.unsupported"
             )
             self.assertTrue(failure.subject)
             self.assertTrue(failure.observed)
@@ -3768,7 +5158,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
-                        "2026-08-29",
                         ENGINE.EntryEvaluationTarget("e001", entry.parent),
                     )
                 )
@@ -3794,20 +5183,19 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e001", entry.parent),
                 )
             )
 
             full_checks = {
-                check.identity: check
-                for check in full.record.checks
-                if check.identity
+                check.check_id: check
+                for check in full.attempt.checks
+                if check.check_id
                 not in {
                     "evidence:summary:5",
                     "orphan:log",
@@ -3815,33 +5203,36 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 }
             }
             self.assertEqual(
-                {check.identity: check for check in scoped.record.checks},
+                {check.check_id: check for check in scoped.attempt.checks},
                 full_checks,
             )
 
-    def test_fixed_clock_full_record_metrics_projection_and_report_are_invariant(
+    def test_fixed_clock_full_attempt_snapshot_and_report_are_invariant(
         self,
     ) -> None:
-        """Fixed time leaves the complete full-validation result reproducible."""
+        """Fixed time leaves the full attempt, snapshot, and report reproducible."""
 
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            request = ENGINE.EvaluationRequest(summary, "2026-08-29")
-            with mock.patch("validation.engine.time.perf_counter", return_value=1.0):
+            request = ENGINE.EvaluationRequest(summary)
+            with (
+                mock.patch(
+                    "validation.engine._utc_timestamp",
+                    return_value="2026-08-29T00:00:00.000000+00:00",
+                ),
+                mock.patch("validation.engine.time.perf_counter", return_value=1.0),
+            ):
                 first = _evaluate_current_fixture(request)
                 second = _evaluate_current_fixture(request)
-            first_projection = HUMAN.project_findings(
-                first.record, HUMAN.load_report_context(summary)
-            )
-            second_projection = HUMAN.project_findings(
-                second.record, HUMAN.load_report_context(summary)
-            )
-            self.assertEqual(first.record, second.record)
+            self.assertEqual(first.attempt, second.attempt)
             self.assertEqual(first.metrics, second.metrics)
-            self.assertEqual(first_projection, second_projection)
+            self.assertEqual(first.attempt, second.attempt)
+            self.assertEqual(first.snapshot, second.snapshot)
+            self.assertIsNotNone(first.snapshot)
+            self.assertIsNotNone(second.snapshot)
             self.assertEqual(
-                REPORT.compose_validation_report(first.record),
-                REPORT.compose_validation_report(second.record),
+                SNAPSHOT_REPORT.compose_snapshot_report(first.snapshot),
+                SNAPSHOT_REPORT.compose_snapshot_report(second.snapshot),
             )
 
     def test_entry_closure_reaches_a_producer_listed_after_its_presentation(
@@ -3941,7 +5332,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
             result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e002", consumer_root),
                 )
             )
@@ -4029,18 +5419,18 @@ class EngineV2EndToEndTests(unittest.TestCase):
             result = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e002", consumer_root),
                 )
             )
-            checks = {check.identity: check for check in result.record.checks}
+            checks = {check.check_id: check for check in result.attempt.checks}
             self.assertEqual(
-                checks["evidence:e002:shared"].status, RESULTS.CheckStatus.PASS
+                checks["evidence:e002:shared"].outcome, DOMAIN.CheckOutcome.PASS
             )
             self.assertEqual(result.context.dependency_entries, ("e001",))
-            self.assertIn(
-                "provenance.output.signature_mismatch",
-                [check.failure.code for check in result.record.checks if check.failure],
+            blockers = _reproduce_currentness(result)
+            self.assertTrue(blockers)
+            self.assertTrue(
+                any(item.reason == "signature_mismatch" for item in blockers)
             )
 
     def test_entry_data_conflict_prerequisites_match_full_when_relevant_only(
@@ -4099,42 +5489,41 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(summary, summary.read_text() + "\n" + "\n".join(links) + "\n")
 
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e001", selected_root),
                 )
             )
             full_conflicts = {
-                check.identity
-                for check in full.record.checks
-                if check.identity.startswith("conformance:data-conflict:")
+                check.check_id
+                for check in full.attempt.checks
+                if check.check_id.startswith("conformance:data-conflict:")
             }
             scoped_conflicts = {
-                check.identity
-                for check in scoped.record.checks
-                if check.identity.startswith("conformance:data-conflict:")
+                check.check_id
+                for check in scoped.attempt.checks
+                if check.check_id.startswith("conformance:data-conflict:")
             }
             self.assertTrue(scoped_conflicts <= full_conflicts)
             self.assertEqual(len(scoped_conflicts), 1)
             self.assertEqual(len(full_conflicts), 2)
-            full_checks = {check.identity: check for check in full.record.checks}
-            scoped_checks = {check.identity: check for check in scoped.record.checks}
+            full_checks = {check.check_id: check for check in full.attempt.checks}
+            scoped_checks = {check.check_id: check for check in scoped.attempt.checks}
             conflict_id = next(iter(scoped_conflicts))
             self.assertEqual(scoped_checks[conflict_id], full_checks[conflict_id])
             selected_prerequisites = {
-                check.identity
-                for check in scoped.record.checks
-                if check.identity.startswith("evidence:e001:")
+                check.check_id
+                for check in scoped.attempt.checks
+                if check.check_id.startswith("evidence:e001:")
             }
             self.assertIn("evidence:e001:success-rate", selected_prerequisites)
             for identity in selected_prerequisites:
                 self.assertEqual(
-                    scoped_checks[identity].dependencies,
-                    full_checks[identity].dependencies,
+                    scoped_checks[identity].dependency_evidence,
+                    full_checks[identity].dependency_evidence,
                 )
 
     def test_reached_conflict_prerequisite_matches_full_producer_blocking(self):
@@ -4229,24 +5618,23 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
             )
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e002", consumer_root),
                 )
             )
-            full_checks = {check.identity: check for check in full.record.checks}
-            scoped_checks = {check.identity: check for check in scoped.record.checks}
+            full_checks = {check.check_id: check for check in full.attempt.checks}
+            scoped_checks = {check.check_id: check for check in scoped.attempt.checks}
             producer_command = "entry:e001:command:1:1"
             self.assertEqual(
                 scoped_checks[producer_command], full_checks[producer_command]
             )
             self.assertEqual(
-                scoped_checks[producer_command].status,
-                RESULTS.CheckStatus.NOT_APPLICABLE,
+                scoped_checks[producer_command].outcome,
+                DOMAIN.CheckOutcome.BLOCKED,
             )
             self.assertEqual(
                 scoped_checks["provenance:e002:shared"],
@@ -4375,34 +5763,29 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-31-e002-consumer/e002.md)\n",
             )
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e002", consumer_root),
                 )
             )
             self.assertEqual(
                 scoped.context.dependency_entries, ("e001", "e003", "e004")
             )
-            full_check = next(
-                check
-                for check in full.record.checks
-                if check.identity == "provenance:e002:shared"
+            full_check = _single_provenance_finding_check(
+                full.attempt, "e002", "shared"
             )
-            scoped_check = next(
-                check
-                for check in scoped.record.checks
-                if check.identity == "provenance:e002:shared"
+            scoped_check = _single_provenance_finding_check(
+                scoped.attempt, "e002", "shared"
             )
             self.assertEqual(scoped_check, full_check)
-            self.assertEqual(scoped_check.failure.code, "producer.ambiguous")
+            self.assertEqual(scoped_check.diagnostic.code, "producer.ambiguous")
             producer_entries = {
                 item.identity: item.entry for item in scoped.context.invocations
             }
-            ambiguous_producers = scoped_check.failure.observed["producers"]
+            ambiguous_producers = scoped_check.diagnostic.observed["producers"]
             self.assertEqual(
                 [producer_entries[item] for item in ambiguous_producers],
                 ["e001", "e004"],
@@ -4412,9 +5795,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertFalse(
                 any(
-                    check.failure is not None
-                    and check.failure.code == "directory.producer.conflict"
-                    for check in scoped.record.checks
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "directory.producer.conflict"
+                    for check in scoped.attempt.checks
                 )
             )
 
@@ -4515,12 +5898,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Later](study/entries/2026-08-29-e001-study/e001b.md)\n",
             )
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
-                    "2026-08-29",
                     ENGINE.EntryEvaluationTarget("e002", consumer_root),
                 )
             )
@@ -4541,13 +5923,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             full_check = next(
                 check
-                for check in full.record.checks
-                if check.identity == "provenance:e002:shared"
+                for check in full.attempt.checks
+                if check.check_id == "provenance:e002:shared"
             )
             scoped_check = next(
                 check
-                for check in scoped.record.checks
-                if check.identity == "provenance:e002:shared"
+                for check in scoped.attempt.checks
+                if check.check_id == "provenance:e002:shared"
             )
             self.assertEqual(scoped_check, full_check)
 
@@ -4658,7 +6040,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Unrelated](study/entries/2026-08-31-e003-unrelated/e003.md)\n",
             )
             full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
             with (
                 mock.patch.object(
@@ -4688,7 +6070,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
-                        "2026-08-29",
                         ENGINE.EntryEvaluationTarget("e002", consumer_root),
                     )
                 )
@@ -4699,19 +6080,19 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
             )
             self.assertFalse(
-                any("unrelated" in check.identity for check in result.record.checks)
+                any("unrelated" in check.check_id for check in result.attempt.checks)
             )
             self.assertEqual(result.context.selected_documents, ("e002",))
             self.assertEqual(result.context.dependency_entries, ("e001",))
             full_check = next(
                 check
-                for check in full.record.checks
-                if check.identity == "evidence:e002:shared"
+                for check in full.attempt.checks
+                if check.check_id == "evidence:e002:shared"
             )
             scoped_check = next(
                 check
-                for check in result.record.checks
-                if check.identity == "evidence:e002:shared"
+                for check in result.attempt.checks
+                if check.check_id == "evidence:e002:shared"
             )
             self.assertEqual(scoped_check, full_check)
             for name, loader in (
@@ -4744,13 +6125,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(
                 next(
                     check
-                    for check in result.record.checks
-                    if check.identity == "provenance:e002:shared"
+                    for check in result.attempt.checks
+                    if check.check_id == "provenance:e002:shared"
                 ),
                 next(
                     check
-                    for check in full.record.checks
-                    if check.identity == "provenance:e002:shared"
+                    for check in full.attempt.checks
+                    if check.check_id == "provenance:e002:shared"
                 ),
             )
 
@@ -4829,7 +6210,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 result = _evaluate_current_fixture(
                     ENGINE.EvaluationRequest(
                         summary,
-                        "2026-08-29",
                         ENGINE.EntryEvaluationTarget("e002", consumer_root),
                     )
                 )
@@ -4839,9 +6219,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     self.assertIn(
                         "invocation.command.unsupported",
                         [
-                            check.failure.code
-                            for check in result.record.checks
-                            if check.failure
+                            check.diagnostic.code
+                            for check in result.attempt.checks
+                            if check.diagnostic
                         ],
                     )
                 else:
@@ -4857,7 +6237,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
 
             result = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary, "2026-08-29")
+                ENGINE.EvaluationRequest(summary)
             )
 
             self.assertEqual(len(result.context.materials), 1)
@@ -4882,6 +6262,20 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertNotIn(f"from .{forbidden}", source)
 
         self.assertNotIn("from .discovery", source)
+
+    def test_runtime_has_no_parallel_mechanical_record_model(self) -> None:
+        validation_root = Path(ENGINE.__file__).parent
+        planner = validation_root.parent / "log_commands/reproduction_planner.py"
+        for path in (
+            Path(ENGINE.__file__),
+            validation_root / "controller.py",
+            planner,
+        ):
+            with self.subTest(path=path.name):
+                source = path.read_text(encoding="utf-8")
+                self.assertNotIn("mechanical_results", source)
+                self.assertNotIn("MechanicalGeneratedRecord", source)
+        self.assertFalse((validation_root / "mechanical_results.py").exists())
 
 
 if __name__ == "__main__":

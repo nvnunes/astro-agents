@@ -18,13 +18,13 @@ fixture. Its checkpoints are intentionally exact:
 | --- | --- |
 | Scaffold and author | `log init`, `log add`, `log data add-origin`, and `log command sync --add-generated` exit 0; the pending execution has no observations and requires reproduction. |
 | Execute and present | Real `pyrun` exits 0, records script/input/output observations, and clears `requires_reproduction`; `log evidence add` captures the linked output baseline. |
-| Discover and validate | Discovery returns the one summary; entry and full validation are `complete_clear`; full validation publishes SQLite state and `validation.md` without changing Markdown, evidence, or linked bytes. |
+| Discover and validate | Discovery returns the one summary; entry and full `log validate run` operations return `outcome:clear`; full validation saves the canonical SQLite snapshot and `validation.md` without changing Markdown, evidence, or linked bytes. |
 | Change policy | Changing only `auto_reproduce` preserves execution identity and observations while changing the policy field. |
 | Change recipe | Synchronization first requires explicit retirement; the accepted replacement has a new identity and empty observations until a successful real execution. |
 | Add downstream work | A second generated result is synchronized, executed, presented, and validated clear. |
-| Change a declaration | `log data update` changes the selected origin without editing pyrun observations. A fresh downstream run records its local input, but full validation remains `complete_findings` because upstream provenance is stale. Authored Markdown, both evidence baselines, and both linked results remain byte-identical. |
-| Prepare reproduction | `log reproduce --dry-run --include-all` returns plan/10, rejects the changed direct input, and skips its dependent; it does not substitute the new bytes for the recorded baseline. |
-| Inspect and render | Retained result listing and findings inspection expose the provenance failure; candidate batch validation selects the same log; report rendering uses the retained result without reevaluation. |
+| Change a declaration | `log data update` changes the selected origin without editing pyrun observations. A fresh downstream run records its local input. Full validation returns `outcome:findings` with one Orphans finding and zero Provenance findings; upstream currentness remains exclusively Reproduce-owned. Authored Markdown, both evidence baselines, and both linked results remain byte-identical. |
+| Prepare reproduction | `log reproduce --dry-run --include-all` returns plan/11, rejects the changed direct input, and skips its dependent; it does not substitute the new bytes for the recorded baseline. |
+| Inspect and render | `log validate list findings --path LOG --type orphan` exposes the validation finding; `log validate list blocked --path LOG` and `log validate list failed --path LOG` expose validation coverage and validator failures when present; `log validate run --root PROJECT` selects the same log; `log validate render --path LOG` uses the saved snapshot without reevaluation. |
 
 The same production state machine is covered at its expensive process and
 failure boundaries by
@@ -45,17 +45,17 @@ remain authoritative for adjacent failure and bound checks.
 | --- | --- | --- |
 | Validation 1 — persisted check comparison does not skip computation | `250c9d5` | `test_research_log_validation_cache.py`; `test_recompute_bypasses_cache_and_publishes_rebuilt_cache` |
 | Validation 2 — post-reproduction refresh is a parallel evaluator | `cb9bd0f` | `test_generated_declaration_has_no_refresh_operation`; `test_generated_registration_rejects_retired_refresh_option` |
-| Validation 3 — batch defects survive changing identities | `cb9bd0f` | `test_research_log_findings.py`; `test_validation_result_storage_conformance.py` |
-| Validation 4 — parallel result representations | `45d0f5`, `ff67241` | `test_research_log_result_store.py`; `test_validation_result_storage_conformance.py` |
+| Validation 3 — batch defects survive changing identities | `cb9bd0f` | `test_research_log_findings.py`; `test_validation_snapshot_storage_conformance.py` |
+| Validation 4 — parallel result representations | `45d0f5`, `ff67241` | `test_research_log_result_store.py`; `test_validation_snapshot_storage_conformance.py` |
 | Validation 5 — generic evaluation obscures lifecycle | `cb9bd0f` | `test_research_log_validation_controller.py`; `test_research_log_validation_cli.py` |
 | Validation 6 — current execution converted to transitional output state | `58e995c`, `c8a746b` | `test_research_log_pyrun_state.py`; `test_current_execution_requires_exact_command_association` |
 | Reproduction 1 — incident recovery remains in runtime | `19d368f` | `test_current_dead_owner_recovery_stops_without_restarting_work`; absence checks below |
 | Reproduction 2 — historical job formats keep multiple lifecycles | `19d368f` | `test_every_run_management_surface_refuses_historical_json_unchanged`; current SQLite job tests |
-| Reproduction 3 — planning repeats full validation | `13ca9d6` | `test_launch_captures_validation_context_for_rerender`; `test_dry_run_keeps_validation_result_state_absent` |
+| Reproduction 3 — planning repeats full validation | `13ca9d6` | `test_launch_captures_validation_context_for_rerender`; `test_dry_run_keeps_validation_snapshot_state_absent` |
 | Reproduction 4 — scheduler waiting rewrites coordinator state | `4ae32e5` | `test_reproduction_job_storage.py` permit/waiter tests; scheduler tests |
 | Reproduction 5 — operational JSON couples whole history | `4ae32e5` | `test_one_checkpoint_update_does_not_read_or_write_siblings`; `test_one_comparison_update_writes_no_sibling_or_plan_rows` |
 | Reproduction 6 — execution replans across repairs | `13ca9d6` | `test_fixed_plan_has_no_mutable_run_members`; `test_racing_resumes_install_one_supervisor_for_one_fixed_plan` |
-| Reproduction 7 — one repair inherits job lifecycle | `0e59c09` | `test_log_repair_check.py`; `test_stale_current_recipe_is_not_executed` |
+| Reproduction 7 — one repair inherits job lifecycle | `0e59c09` | `test_log_command_verify.py`; `test_stale_current_recipe_is_not_executed` |
 | Repair 1 — command correction describes the edit twice | `f7d9d78` | `test_log_command_sync.py`; explicit retirement and combined sync cases |
 | Repair 2 — registry edits rebuild whole-log context | `f7d9d78` | `test_entry_locks_serialize_locally_without_cross_entry_rewrites`; command-sync rollback cases |
 | Repair 3 — data update overlaps fingerprint refresh | `58e995c` | `test_data_registry_remains_declarative_when_file_bytes_change`; retired-refresh tests |
@@ -70,7 +70,7 @@ remain authoritative for adjacent failure and bound checks.
 | Other 1 — scaffolding eagerly creates reproduction results | `7cbc299` | `test_init_dry_run_then_creates_only_canonical_empty_log` |
 | Other 2 — entry add requires unrelated summary canonicality | `7cbc299` | `test_log_scaffold.py` summary-preservation and rollback cases |
 | Other 3 — discovery reads Markdown before filesystem shape | `7cbc299` | `test_research_log_validation_cli.py` discovery shape cases |
-| Other 4 — durable publication has several owners | `ffac117`, `0f6481f` | `test_file_publication.py`; integrated workflow; authored-registry and validation-bundle rollback suites |
+| Other 4 — durable publication has several owners | `ffac117`, `0f6481f` | `test_file_publication.py`; integrated workflow; authored-registry and validation-snapshot rollback suites |
 
 ## Approved Declaration/Observation Matrix
 
@@ -98,10 +98,10 @@ remain authoritative for adjacent failure and bound checks.
 | Explicit evidence update captures bytes; add/rename preserve baselines | `test_whole_artifact_round_trip_and_path_association`; `test_rename_preserves_path_artifact_baselines`. |
 | Null/malformed artifact baselines fail closed | presented-evidence behavior cases; `test_strict_file_decodes_presentations_only`. |
 | Directory-member baseline hashes only the linked member | `test_artifact_accepts_one_exact_registered_directory_member`; `test_changed_directory_member_hashes_only_that_member`. |
-| Cache clearing cannot change durable evidence acceptance | `test_invalid_cache_recomputes_without_changing_the_result`; evidence dependency tests. |
+| Cache clearing cannot change durable evidence acceptance | `test_invalid_cache_recomputes_without_changing_the_outcome`; evidence dependency tests. |
 | Full/selected/pattern directory and Git identities remain distinct | `test_research_log_data.py`; `test_research_log_fingerprint_cache.py`; reproduction publication reobservation. |
 | Failed child, capture, helper, or publication creates no success record | `test_pyrun.py`; `test_stream_capture.py`; current reproduction publication-retry tests. |
-| Read-only planning and validation do not mutate generated state unexpectedly | Integrated workflow; `test_dry_run_keeps_validation_result_state_absent`; read-only cache tests. |
+| Read-only planning and validation do not mutate generated state unexpectedly | Integrated workflow; `test_dry_run_keeps_validation_snapshot_state_absent`; read-only cache tests. |
 
 ## One-Time Migration Evidence
 

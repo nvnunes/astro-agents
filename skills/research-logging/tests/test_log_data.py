@@ -1941,6 +1941,7 @@ class LogDataTests(unittest.TestCase):
             validated = run(
                 root,
                 "validate",
+                "run",
                 "--format",
                 "json",
                 "--path",

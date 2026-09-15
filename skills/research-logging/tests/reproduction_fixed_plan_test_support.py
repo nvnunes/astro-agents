@@ -46,7 +46,7 @@ def current_supervisor_callbacks(
 def accepted_plan(
     *, executions: tuple[dict[str, object], ...] = ()
 ) -> ReproductionPlan:
-    """Return the smallest closed plan/10 fixture without legacy state fields."""
+    """Return the smallest closed plan/11 fixture without legacy state fields."""
 
     return ReproductionPlan(
         "summary.md",
@@ -54,14 +54,10 @@ def accepted_plan(
         False,
         {
             "evaluated_at": "2030-01-01",
-            "rules_version": "research-log-mechanical/evidence-baseline-7",
-            "validation_id": "fixture-validation-id",
-            "validation_result_id": "fixture-validation-result-id",
-            "batch_admission": {
-                "admitted": [],
-                "excluded": [],
-                "schema": "research-log-reproduction-batch-admission/2",
-            },
+            "executions": [],
+            "rules_version": "research-log-mechanical/evidence-baseline-10",
+            "schema": "research-log-reproduction-admission/1",
+            "validation_snapshot_id": "fixture-validation-snapshot-id",
         },
         (),
         {

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
+from typing import Callable, Literal, Mapping, MutableMapping, NoReturn, Sequence
 
 from research_log_data import InputResource
 
@@ -16,8 +16,59 @@ from .json_codec import canonical_json
 MAX_LINEAGE_DEPTH = 64
 
 
+@dataclass(frozen=True)
+class ProvenanceAnchor:
+    """Typed natural owner captured where a provenance defect occurs."""
+
+    kind: Literal["command", "material"]
+    identity: str
+    producer_identity: str | None = None
+
+    def as_dict(self) -> Mapping[str, str]:
+        """Return the stable internal ownership projection."""
+
+        value = {"kind": self.kind, "identity": self.identity}
+        if self.producer_identity is not None:
+            value["producer_identity"] = self.producer_identity
+        return value
+
+
 class ProvenanceV2Error(MechanicalContractError):
-    """One completed mechanical provenance failure."""
+    """One completed mechanical provenance defect with optional typed ownership."""
+
+    anchor: ProvenanceAnchor | None = None
+
+
+@dataclass(frozen=True)
+class ProducerCurrentness:
+    """One shared Reproduce-owned blocker observed during provenance traversal."""
+
+    reason: str
+    subject: str
+    observed: Mapping[str, object]
+    anchor: ProvenanceAnchor
+
+    def as_dict(self) -> Mapping[str, object]:
+        return {
+            "anchor": self.anchor.as_dict(),
+            "observed": dict(self.observed),
+            "owner": "reproduce",
+            "reason": self.reason,
+            "subject": self.subject,
+        }
+
+
+class ProducerCurrentnessBlocked(MechanicalContractError):
+    """Signal one shared currentness blocker without creating a finding."""
+
+    def __init__(self, currentness: ProducerCurrentness):
+        super().__init__(
+            "currentness.blocked",
+            currentness.subject,
+            currentness.as_dict(),
+            "Output Currentness",
+        )
+        self.currentness = currentness
 
 
 @dataclass(frozen=True)
@@ -28,6 +79,7 @@ class ProvenanceResult:
     producers: tuple[str, ...]
     lineage: tuple[tuple[str, str], ...]
     findings: tuple[ProvenanceFinding, ...]
+    currentness: tuple[ProducerCurrentness, ...]
     dependency_projection: str
     evaluated_materials: tuple[str, ...] = ()
 
@@ -40,6 +92,7 @@ class ProvenanceFinding:
     subject: str
     observed: Mapping[str, object]
     rule: str
+    anchor: ProvenanceAnchor
     outcome: str = "fail"
 
     def as_dict(self) -> Mapping[str, object]:
@@ -52,6 +105,11 @@ class ProvenanceFinding:
             "rule": self.rule,
             "subject": self.subject,
         }
+
+    def identity_dict(self) -> Mapping[str, object]:
+        """Return diagnostic content plus its typed natural owner."""
+
+        return {**self.as_dict(), "anchor": self.anchor.as_dict()}
 
 
 @dataclass(frozen=True)
@@ -149,6 +207,7 @@ class _WalkTrace:
     lineage: tuple[tuple[str, str], ...]
     support: tuple[Mapping[str, object], ...]
     findings: tuple[tuple[str, ProvenanceFinding], ...]
+    currentness: tuple[tuple[str, ProducerCurrentness], ...]
     evaluated_materials: tuple[str, ...] = ()
 
 
@@ -161,6 +220,7 @@ class _ProvenanceDependency:
     lineage: Sequence[tuple[str, str]]
     support: Sequence[Mapping[str, object]]
     findings: Sequence[ProvenanceFinding]
+    currentness: Sequence[ProducerCurrentness]
 
 
 @dataclass
@@ -255,6 +315,8 @@ class _WalkState:
     support: list[Mapping[str, object]]
     findings: list[ProvenanceFinding]
     finding_seen: set[str]
+    currentness: list[ProducerCurrentness]
+    currentness_seen: set[str]
     collect_findings: bool
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
     confirmed_record: Callable[[Invocation, str], bool] | None
@@ -290,7 +352,7 @@ def evaluate_provenance(
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
     producer_index: ProducerIndex | None = None,
 ) -> ProvenanceResult:
-    """Require one producer and raise the first provenance failure."""
+    """Require one producer and raise the first provenance defect."""
 
     return _evaluate_provenance(
         material,
@@ -309,7 +371,7 @@ def evaluate_complete_provenance(
     confirmed_record: Callable[[Invocation, str], bool] | None = None,
     context: CompleteProvenanceContext | None = None,
 ) -> ProvenanceResult:
-    """Collect every independently reachable bounded provenance failure."""
+    """Collect every independently reachable bounded provenance defect."""
 
     if context is not None:
         if producer_validator is not None or confirmed_record is not None:
@@ -356,6 +418,8 @@ def _evaluate_provenance(
         [],
         [],
         set(),
+        [],
+        set(),
         config.collect_findings,
         config.producer_validator,
         config.confirmed_record,
@@ -371,6 +435,7 @@ def _evaluate_provenance(
             state.lineage,
             state.support,
             state.findings,
+            state.currentness,
         ),
         producer_index,
         config.canonical_mapping_cache,
@@ -381,6 +446,7 @@ def _evaluate_provenance(
         tuple(state.producers),
         tuple(state.lineage),
         tuple(state.findings),
+        tuple(state.currentness),
         dependency,
         tuple(sorted(state.evaluated_materials)),
     )
@@ -467,6 +533,22 @@ def build_producer_index(
     )
 
 
+def producer_output_subject(producer: Invocation, material: Path | str) -> str:
+    """Return the exact declared output binding that owns one material."""
+
+    canonical = Path(material).resolve()
+    covering = {
+        _collection_root(producer, collection).resolve().as_posix()
+        for collection in producer.collections
+        if collection.direction == "output"
+        and collection.mechanism == "directory"
+        and _within(canonical, _collection_root(producer, collection).resolve())
+    }
+    if len(covering) == 1:
+        return next(iter(covering))
+    return canonical.as_posix()
+
+
 def require_origin_boundary(
     material: Path | str,
     resource: InputResource,
@@ -503,6 +585,7 @@ def require_origin_boundary(
                 "directory.origin.conflict",
                 resource.name,
                 {"producers": sorted(item.identity for item in confirmed)},
+                ProvenanceAnchor("material", resource.canonical_target),
             )
         return
     canonical = Path(material).resolve().as_posix()
@@ -518,12 +601,14 @@ def require_origin_boundary(
             "data.origin.invalid",
             resource.name,
             {"producer": confirmed[0].identity},
+            ProvenanceAnchor("material", canonical),
         )
     if len(confirmed) > 1:
         _fail(
             "lineage.ambiguous",
             canonical,
             {"producers": [producer.identity for producer in confirmed]},
+            ProvenanceAnchor("material", canonical),
         )
 
 
@@ -537,13 +622,7 @@ def _require_origin_boundary_cached(
     if cache is not None and identity in cache:
         failure = cache[identity]
         if failure is not None:
-            raise ProvenanceV2Error(
-                failure.code,
-                failure.subject,
-                failure.observed,
-                failure.rule,
-                outcome=failure.outcome,
-            )
+            raise _error_from_finding(failure)
         return
     try:
         require_origin_boundary(
@@ -555,7 +634,9 @@ def _require_origin_boundary_cached(
         )
     except MechanicalContractError as error:
         if cache is not None:
-            cache[identity] = _finding(error)
+            cache[identity] = _finding(
+                error, ProvenanceAnchor("material", material)
+            )
         raise
     if cache is not None:
         cache[identity] = None
@@ -576,10 +657,11 @@ def _walk_material(
                 "provenance.resource.too_large",
                 material,
                 {"depth": depth, "limit": MAX_LINEAGE_DEPTH},
+                ProvenanceAnchor("material", material),
             )
         producer = _unique_producer(material, consumer, state, starting=starting)
     except MechanicalContractError as error:
-        _record_finding(state, error)
+        _record_finding(state, error, ProvenanceAnchor("material", material))
         return
     if not _check_producer_ready(material, producer, state):
         return
@@ -610,6 +692,7 @@ def _unique_producer(
             "producer.missing" if starting else "lineage.missing",
             material,
             {"consumer": consumer.identity if consumer else None},
+            ProvenanceAnchor("material", material),
         )
     _fail_shared_output_directory(material, candidates)
     if len(candidates) != 1:
@@ -617,6 +700,7 @@ def _unique_producer(
             "producer.ambiguous" if starting else "lineage.ambiguous",
             material,
             {"producers": [item.identity for item in candidates]},
+            ProvenanceAnchor("material", material),
         )
     return candidates[0]
 
@@ -644,6 +728,7 @@ def _starting_producer(
                 "consumer": None,
                 "producers": sorted(directory_owners),
             },
+            ProvenanceAnchor("material", material),
         )
     _fail_shared_output_directory(material, candidates)
     if len(candidates) != 1:
@@ -651,6 +736,7 @@ def _starting_producer(
             "producer.ambiguous",
             material,
             {"producers": [item.identity for item in candidates]},
+            ProvenanceAnchor("material", material),
         )
     return candidates[0]
 
@@ -663,7 +749,12 @@ def _starting_directory_producer(
     matches = producer_index.lookup(material)
     exact = tuple(match.producer for match in matches if match.exact_directory)
     if not exact:
-        _fail("producer.missing", material, {"consumer": None})
+        _fail(
+            "producer.missing",
+            material,
+            {"consumer": None},
+            ProvenanceAnchor("material", material),
+        )
     exact_ids = {invocation.identity for invocation in exact}
     producers_within = {
         match.producer.identity for match in matches if match.member_output
@@ -680,6 +771,7 @@ def _starting_directory_producer(
                 "producers": [item.identity for item in exact],
                 "conflicts": sorted(conflicts),
             },
+            ProvenanceAnchor("material", material),
         )
     return exact[0]
 
@@ -711,13 +803,16 @@ def _check_producer_ready(
         path = Path(material)
         if not path.is_file() and not path.is_dir():
             output_available = False
+            anchor = ProvenanceAnchor("material", material, producer.identity)
             _record_finding(
                 state,
                 _provenance_error(
                     "provenance.output.missing",
                     material,
                     {"producer": producer.identity},
+                    anchor,
                 ),
+                anchor,
             )
         if _requires_local_script(producer) and producer.script_identity is None:
             _record_finding(
@@ -726,26 +821,42 @@ def _check_producer_ready(
                     "invocation.executable.unresolved",
                     producer.identity,
                     {"script": producer.script},
+                    ProvenanceAnchor("command", producer.identity),
                 ),
+                ProvenanceAnchor("command", producer.identity),
             )
         try:
             _validate_output_directories_cached(producer, state)
         except MechanicalContractError as error:
-            _record_finding(state, error)
+            _record_finding(
+                state, error, ProvenanceAnchor("command", producer.identity)
+            )
     if producer.identity in state.visiting:
         _record_finding(
             state,
             _provenance_error(
-                "lineage.cycle", material, {"invocation": producer.identity}
+                "lineage.cycle",
+                material,
+                {"invocation": producer.identity},
+                ProvenanceAnchor("material", material),
             ),
+            ProvenanceAnchor("material", material),
         )
         return False
     if state.producer_validator is not None and output_available:
         try:
             state.support.append(state.producer_validator(producer, material))
+        except ProducerCurrentnessBlocked as error:
+            _record_currentness(state, error.currentness)
+            state.support.append({"currentness": error.currentness.as_dict()})
         except MechanicalContractError as error:
-            _record_finding(state, error)
-            state.support.append({"finding": _finding(error).as_dict()})
+            anchor = ProvenanceAnchor(
+                "material",
+                producer_output_subject(producer, material),
+                producer.identity,
+            )
+            _record_finding(state, error, anchor)
+            state.support.append({"finding": _finding(error, anchor).as_dict()})
     return True
 
 
@@ -759,19 +870,15 @@ def _validate_output_directories_cached(
     if cache is not None and identity in cache:
         failure = cache[identity]
         if failure is not None:
-            raise ProvenanceV2Error(
-                failure.code,
-                failure.subject,
-                failure.observed,
-                failure.rule,
-                outcome=failure.outcome,
-            )
+            raise _error_from_finding(failure)
         return
     try:
         _validate_output_directories(producer, state.producer_index)
     except MechanicalContractError as error:
         if cache is not None:
-            cache[identity] = _finding(error)
+            cache[identity] = _finding(
+                error, ProvenanceAnchor("command", producer.identity)
+            )
         raise
     if cache is not None:
         cache[identity] = None
@@ -790,12 +897,14 @@ def _require_declared_producer_ready(
             "provenance.output.missing",
             material,
             {"producer": producer.identity},
+            ProvenanceAnchor("material", material),
         )
     if _requires_local_script(producer) and producer.script_identity is None:
         _fail(
             "invocation.executable.unresolved",
             producer.identity,
             {"script": producer.script},
+            ProvenanceAnchor("command", producer.identity),
         )
     _validate_output_directories(producer, producer_index)
 
@@ -835,6 +944,8 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
         [],
         [],
         set(),
+        [],
+        set(),
         True,
         state.producer_validator,
         state.confirmed_record,
@@ -848,8 +959,12 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
         tuple(trace_state.lineage),
         tuple(trace_state.support),
         tuple(
-            (canonical_json(finding.as_dict()), finding)
+            (canonical_json(finding.identity_dict()), finding)
             for finding in trace_state.findings
+        ),
+        tuple(
+            (canonical_json(item.as_dict()), item)
+            for item in trace_state.currentness
         ),
         tuple(sorted(trace_state.evaluated_materials)),
     )
@@ -875,6 +990,10 @@ def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
         if identity not in state.finding_seen:
             state.findings.append(finding)
             state.finding_seen.add(identity)
+    for identity, item in trace.currentness:
+        if identity not in state.currentness_seen:
+            state.currentness.append(item)
+            state.currentness_seen.add(identity)
 
 
 def _walk_invocation_uncached(
@@ -893,7 +1012,11 @@ def _walk_invocation_uncached(
                     state,
                 )
             except MechanicalContractError as error:
-                _record_finding(state, error)
+                _record_finding(
+                    state,
+                    error,
+                    ProvenanceAnchor("material", relationship.path),
+                )
             continue
         if (
             relationship.input_resource is not None
@@ -902,7 +1025,13 @@ def _walk_invocation_uncached(
             try:
                 _walk_directory_input(relationship, invocation, state, depth)
             except MechanicalContractError as error:
-                _record_finding(state, error)
+                _record_finding(
+                    state,
+                    error,
+                    ProvenanceAnchor(
+                        "material", relationship.input_resource.canonical_target
+                    ),
+                )
             continue
         _walk_material(
             relationship.path,
@@ -949,6 +1078,7 @@ def _walk_directory_input(
                 "covering_producers": [item.identity for item in owners],
                 "conflicts": sorted(conflicts),
             },
+            ProvenanceAnchor("material", resource.canonical_target),
         )
     owner = owners[0]
     if owner not in state.producer_index.outputs.get(relationship.path, ()):
@@ -960,6 +1090,7 @@ def _walk_directory_input(
                 "missing_member": relationship.path,
                 "producer": owner.identity,
             },
+            ProvenanceAnchor("material", resource.canonical_target),
         )
     _walk_material(
         relationship.path,
@@ -1006,8 +1137,10 @@ def _provenance_dependency_json(
         for identity in value.producers
     )
     return (
-        '{"findings":'
-        + canonical_json([finding.as_dict() for finding in value.findings])
+        '{"currentness":'
+        + canonical_json([item.as_dict() for item in value.currentness])
+        + ',"findings":'
+        + canonical_json([finding.identity_dict() for finding in value.findings])
         + ',"lineage":'
         + canonical_json(value.lineage)
         + ',"material":'
@@ -1018,7 +1151,7 @@ def _provenance_dependency_json(
         + canonical_json(value.producers)
         + ',"support":'
         + _canonical_mapping_sequence(value.support, cache)
-        + ',"version":"end-to-end-provenance-2"}'
+        + ',"version":"end-to-end-provenance-3"}'
     )
 
 
@@ -1085,6 +1218,9 @@ def _fail_shared_output_directory(
                     "collection.output_directory.shared",
                     _collection_root(invocation, collection).as_posix(),
                     {"owners": [item.identity for item in candidates]},
+                    ProvenanceAnchor(
+                        "material", _collection_root(invocation, collection).as_posix()
+                    ),
                 )
 
 
@@ -1119,6 +1255,7 @@ def _validate_output_directories(
                 "collection.output_directory.shared",
                 root.as_posix(),
                 {"owners": sorted({producer.identity, *conflicts})},
+                ProvenanceAnchor("material", root.as_posix()),
             )
 
 
@@ -1136,6 +1273,7 @@ def _collection_root(invocation: Invocation, collection: MaterialCollection) -> 
             "collection.membership.unresolved",
             invocation.identity,
             {"target": collection.target},
+            ProvenanceAnchor("command", invocation.identity),
         )
     common = Path(relationships[0].path)
     for relationship in relationships[1:]:
@@ -1163,39 +1301,86 @@ def _frozen_output_index(
     return {key: tuple(items) for key, items in values.items()}
 
 
-def _record_finding(state: _WalkState, error: MechanicalContractError) -> None:
+def _record_finding(
+    state: _WalkState,
+    error: MechanicalContractError,
+    fallback_anchor: ProvenanceAnchor,
+) -> None:
     """Record one finding or preserve strict first-failure evaluation."""
 
     if not state.collect_findings:
         raise error
-    finding = _finding(error)
-    identity = canonical_json(finding.as_dict())
+    finding = _finding(error, fallback_anchor)
+    identity = canonical_json(finding.identity_dict())
     if identity not in state.finding_seen:
         state.findings.append(finding)
         state.finding_seen.add(identity)
 
 
-def _finding(error: MechanicalContractError) -> ProvenanceFinding:
+def _record_currentness(
+    state: _WalkState,
+    currentness: ProducerCurrentness,
+) -> None:
+    """Record one shared blocker without entering provenance findings."""
+
+    identity = canonical_json(currentness.as_dict())
+    if identity not in state.currentness_seen:
+        state.currentness.append(currentness)
+        state.currentness_seen.add(identity)
+
+
+def _finding(
+    error: MechanicalContractError, fallback_anchor: ProvenanceAnchor
+) -> ProvenanceFinding:
     observed = (
         dict(error.observed)
         if isinstance(error.observed, Mapping)
         else {"value": error.observed}
     )
+    anchor = (
+        error.anchor
+        if isinstance(error, ProvenanceV2Error) and error.anchor is not None
+        else fallback_anchor
+    )
     return ProvenanceFinding(
-        error.code, error.subject, observed, error.rule, error.outcome
+        error.code, error.subject, observed, error.rule, anchor, error.outcome
     )
 
 
 def _provenance_error(
-    code: str, subject: str, observed: object
+    code: str,
+    subject: str,
+    observed: object,
+    anchor: ProvenanceAnchor,
 ) -> ProvenanceV2Error:
-    return ProvenanceV2Error(
+    error = ProvenanceV2Error(
         code,
         subject,
         observed,
         "Recorded-Command Provenance And Material Graph",
     )
+    error.anchor = anchor
+    return error
 
 
-def _fail(code: str, subject: str, observed: object) -> NoReturn:
-    raise _provenance_error(code, subject, observed)
+def _error_from_finding(finding: ProvenanceFinding) -> ProvenanceV2Error:
+    """Recreate a cached failure without losing its captured owner."""
+
+    error = ProvenanceV2Error(
+        finding.code,
+        finding.subject,
+        finding.observed,
+        finding.rule,
+        outcome=finding.outcome,
+    )
+    error.anchor = finding.anchor
+    return error
+
+
+def _fail(
+    code: str,
+    subject: str,
+    observed: object,
+    anchor: ProvenanceAnchor,
+) -> NoReturn:
+    raise _provenance_error(code, subject, observed, anchor)

@@ -12,18 +12,19 @@ from research_log_cli_test_support import run_log
 
 # isort: split
 # The CLI test helper adds the scripts directory before importing its modules.
-from log_commands.inspection_queries import Query, inspect_result
 from research_log_data import build_local_input
 from research_log_validation_test_support import mechanical_log, write
 from test_research_log_validation_material_graph import _bundle_surface, _request
 from test_research_log_validation_provenance import _context, _invocation
 from validation.commands import discover_commands
+from validation.domain import CheckOutcome
 from validation.engine import _record_raw_output_findings
-from validation.material_graph import compose_material_graph
+from validation.material_graph import classify_research_graph_materials
 from validation.output_support import resolve_output_support
 from validation.provenance import ProvenanceV2Error, evaluate_complete_provenance
 from validation.pyrun_outputs import empty_pyrun_outputs
 from validation.pyrun_state import execution_id, recipe_from_invocation
+from validation.read_model import batch_detail, list_batches
 
 
 class DirectoryOwnershipTests(unittest.TestCase):
@@ -173,7 +174,9 @@ class OutputArgumentTests(unittest.TestCase):
                 _context(root, data.inputs),
             )
             self.assertFalse(discovery.failures)
-            graph = compose_material_graph(_request(entry, data, discovery.invocations))
+            graph = classify_research_graph_materials(
+                _request(entry, data, discovery.invocations)
+            )
             self.assertFalse(graph.orphan.unused_input_names)
             self.assertIn(str(entry / "data/bundle"), graph.orphan.orphaned)
 
@@ -234,10 +237,14 @@ class OutputArgumentTests(unittest.TestCase):
                 _record_raw_output_findings(discovery.invocations[0], state)
                 self.assertEqual(len(state.checks), 4)
                 self.assertEqual(
-                    sum(c.failure is not None for c in state.checks), missing
+                    sum(
+                        c.outcome is CheckOutcome.FINDING for c in state.checks
+                    ),
+                    missing,
                 )
                 roots = [
-                    c.dependencies[0]["output_argument"]["path"] for c in state.checks
+                    c.dependency_evidence[0]["output_argument"]["path"]
+                    for c in state.checks
                 ]
                 self.assertIn(str(entry / "data/bundle"), roots)
                 self.assertNotIn(str(entry / "data/bundle/a.csv"), roots)
@@ -270,6 +277,7 @@ class OutputArgumentTests(unittest.TestCase):
             published = run_log(
                 root,
                 "validate",
+                "run",
                 "--path",
                 str(summary.with_suffix("")),
                 "--format",
@@ -279,28 +287,19 @@ class OutputArgumentTests(unittest.TestCase):
                 published.returncode, 0, published.stderr + published.stdout
             )
             logical = summary.with_suffix("")
-            current = inspect_result(logical, Query(action="list", kind="full"))
-            result_id = current["items"][0]["result_id"]
-            batches = inspect_result(
-                logical, Query(result_id=result_id, view="batches")
-            )["items"]
-            batch = next(
-                b for b in batches if b["grouping_reason"] == "output_argument"
+            batches = list_batches(logical)["items"]
+            self.assertEqual(len(batches), 1)
+            batch = batches[0]
+            self.assertEqual(batch["finding_count"], 1)
+            nodes = batch_detail(logical, batch["batch_id"], section="nodes", limit=100)
+            self.assertTrue(
+                any(
+                    item["kind"] == "command"
+                    and item["attributes"].get("cid") == "model"
+                    for item in nodes["items"]
+                )
             )
-            self.assertEqual(batch["primary_finding_count"], 1)
-            command_view = inspect_result(
-                logical,
-                Query(result_id=result_id, view="commands", batch=batch["batch_id"]),
-            )
-            self.assertEqual(command_view["total"], 1)
-            self.assertEqual(
-                command_view["items"][0]["document"], batch["anchors"][0]["document"]
-            )
-            artifact_view = inspect_result(
-                logical,
-                Query(result_id=result_id, view="artifacts", batch=batch["batch_id"]),
-            )
-            self.assertIn(
-                batch["anchors"][0]["path"],
-                {artifact["path"] for artifact in artifact_view["items"]},
+            identities = {item["identity"] for item in nodes["items"]}
+            self.assertTrue(
+                any("data/results.csv" in identity for identity in identities)
             )

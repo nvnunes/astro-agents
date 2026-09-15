@@ -28,5 +28,5 @@ Research commands:
   --input-summary "<summary>" --output-figure "<summary-plot>"
 ```
 
-A raw output path in a recorded command is a Structure finding. Current state
+A raw output path in a recorded command is a Conformance finding. Current state
 uses CID-scoped v6 records; earlier schemas are unsupported.

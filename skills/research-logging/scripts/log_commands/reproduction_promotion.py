@@ -14,7 +14,6 @@ from typing import Mapping, Sequence, cast
 
 from research_log_data import Fingerprint, parse_fingerprint
 from research_log_paths import REPRODUCTION_REPORT, RESULTS_STORE
-from validation.human_projection import load_report_context
 from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
@@ -25,6 +24,7 @@ from validation.pyrun_state import (
     load_pyrun_state,
     validated_pyrun_serialization,
 )
+from validation.report_context import load_report_context
 
 from .context import (
     LogContext,

@@ -11,21 +11,20 @@ from types import SimpleNamespace
 from research_log_cli_test_support import run_log
 
 # isort: split
-from log_commands.reproduction_planner import (
-    _blocked_validation_batches,
-    _entry_validation_blockers,
-    _require_resolved_validation_blockers,
+from test_research_log_validation_engine import (
+    _evaluate,
+    _evaluate_current_fixture,
+    _log,
 )
-from test_research_log_validation_engine import _evaluate, _log
-from validation.batch_projection import build_batch_projection
-from validation.engine import _summary_provenance
-from validation.mechanical_results import (
-    CheckScope,
-    CheckStatus,
-    FailurePayload,
-    MechanicalCheck,
+from validation.domain import (
+    CheckDiagnostic,
+    CheckOutcome,
+    FailureOperation,
+    IssueContext,
+    RuleArea,
+    RuleCheck,
 )
-from validation.result_storage import provisional_validation_admission
+from validation.engine import EvaluationRequest, _summary_provenance
 
 
 class SummaryConfirmationTests(unittest.TestCase):
@@ -33,58 +32,62 @@ class SummaryConfirmationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             summary, entry = _log(root)
-            self.assertFalse(any(c.failure for c in _evaluate(summary).result.checks))
+            self.assertFalse(
+                any(c.diagnostic for c in _evaluate(summary).attempt.checks)
+            )
             path = entry.parent / "pyrun-outputs.json"
             support = json.loads(path.read_text())
             support["outputs"]["data/results.csv"]["confirmed"] = False
             path.write_text(json.dumps(support))
 
             evaluated = _evaluate(summary)
-            checks = {c.identity: c for c in evaluated.result.checks}
-            self.assertEqual(
-                [c.failure.code for c in checks.values() if c.failure],
-                ["provenance.output.reproduction_required"],
-            )
+            checks = {c.check_id: c for c in evaluated.attempt.checks}
+            self.assertFalse(any(c.diagnostic for c in checks.values()))
             dependent = checks["provenance:summary:5"]
-            self.assertEqual(dependent.status, CheckStatus.NOT_APPLICABLE)
-            self.assertEqual(
-                dependent.dependencies,
-                ({"dependency": "provenance:e001:success-rate"},),
+            self.assertEqual(dependent.outcome, CheckOutcome.PASS)
+            self.assertTrue(evaluated.context.currentness)
+            current = _evaluate_current_fixture(
+                EvaluationRequest(summary)
             )
-            projection = build_batch_projection(
-                evaluated.result,
-                invocations=evaluated.scan["invocations"],
-                registries=evaluated.scan["registries"],
-                source_identity="fixture",
-            )
-            admission = provisional_validation_admission(evaluated.result, projection)
-            self.assertFalse(_blocked_validation_batches(admission))
-            self.assertFalse(_entry_validation_blockers(admission))
-            _require_resolved_validation_blockers(admission)
+            snapshot = current.snapshot
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertFalse(snapshot.findings)
+            self.assertFalse(snapshot.blocked_checks)
 
             logical = summary.with_suffix("")
-            published = run_log(root, "validate", "--path", str(logical))
+            published = run_log(root, "validate", "run", "--path", str(logical))
             self.assertEqual(published.returncode, 0, published.stderr)
 
-    def test_other_failures_and_unavailable_targets_remain_failures(self):
-        for status, code in (
-            (CheckStatus.FAIL, "provenance.output.unrecorded"),
-            (CheckStatus.FAIL, "lineage.missing"),
-            (CheckStatus.UNAVAILABLE, "provenance.observation.unavailable"),
+    def test_finding_and_failed_targets_block_summary_provenance(self):
+        for outcome, code in (
+            (CheckOutcome.FINDING, "provenance.output.unrecorded"),
+            (CheckOutcome.FINDING, "lineage.missing"),
+            (CheckOutcome.FAILED, "provenance.observation.unavailable"),
         ):
             with self.subTest(code=code):
-                target = MechanicalCheck(
+                target = RuleCheck(
                     "provenance:e001:result",
-                    CheckScope.PROVENANCE,
-                    status,
+                    RuleArea.PROVENANCE,
+                    outcome,
                     "/result.csv",
-                    failure=FailurePayload(code, "/result.csv", {}, "rule"),
+                    diagnostic=CheckDiagnostic(
+                        code, "/result.csv", "rule", {}
+                    ),
+                    issue_context=IssueContext(),
+                    failure_operation=(
+                        FailureOperation.OBSERVE
+                        if outcome is CheckOutcome.FAILED
+                        else None
+                    ),
                 )
                 check = _summary_provenance(
                     "summary:5",
                     ("e001", "result"),
                     SimpleNamespace(provenance_check=target),
+                    IssueContext(),
                 )
-                self.assertEqual(check.status, status)
-                self.assertEqual(check.failure.code, "summary.reference.target_invalid")
-                self.assertEqual(check.failure.dependency, target.identity)
+                self.assertEqual(check.outcome, CheckOutcome.BLOCKED)
+                self.assertIsNone(check.diagnostic)
+                self.assertEqual(check.dependencies, (target.check_id,))
+                self.assertEqual(check.rule, "Summary Association")

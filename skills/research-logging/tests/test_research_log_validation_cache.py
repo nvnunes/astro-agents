@@ -99,7 +99,7 @@ class ValidationCacheTests(unittest.TestCase):
                 self.assertIsNone(_lookup(cache, selection, evaluator="evaluator/2"))
                 self.assertEqual(_lookup(cache, selection), selection)
 
-    def test_incomplete_run_retains_rows_until_successful_publication(self) -> None:
+    def test_unpublished_run_retains_rows_until_successful_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "log"
             first = _selection(value=1)

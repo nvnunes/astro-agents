@@ -19,14 +19,14 @@ from typing import Iterator
 from research_log_paths import RESULTS_STORE
 from validation.operation_state import operation_lock
 
-STORE_VERSION = 15
+STORE_VERSION = 19
+REPLACEABLE_STORE_VERSIONS = frozenset({17, 18})
 _COMPANIONS = ("-journal", "-wal", "-shm")
 
-# The v14 layout keeps public identifiers at the API boundary while compact
-# per-result integer identities own all internal validation relationships.
-_DDL = """
+_SHARED_DDL = """
 CREATE TABLE store_state (
-    domain TEXT PRIMARY KEY CHECK(domain IN ('validation', 'reproduction')),
+    domain TEXT PRIMARY KEY CHECK(domain IN
+        ('validation', 'reproduction', 'command')),
     generation INTEGER NOT NULL CHECK(generation >= 1),
     summary TEXT NOT NULL
 );
@@ -36,324 +36,6 @@ CREATE TABLE report_materializations (
     content_sha256 TEXT NOT NULL,
     rendered_at TEXT NOT NULL
 );
-CREATE TABLE validation_results (
-    result_pk INTEGER PRIMARY KEY CHECK(result_pk >= 1),
-    result_id TEXT UNIQUE NOT NULL,
-    generation INTEGER UNIQUE NOT NULL CHECK(generation >= 1),
-    slot TEXT UNIQUE NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('full', 'entry', 'diagnostic')),
-    entry TEXT,
-    summary TEXT NOT NULL,
-    status TEXT NOT NULL,
-    reason TEXT,
-    evaluated_checks INTEGER,
-    finding_count INTEGER,
-    started_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL,
-    stored_at TEXT NOT NULL,
-    result_date TEXT NOT NULL,
-    rules_version TEXT NOT NULL,
-    source_identity TEXT,
-    validation_id TEXT,
-    record_identity TEXT,
-    projection_schema TEXT,
-    report_context_json TEXT
-);
-CREATE TABLE validation_result_entries (
-    result_pk INTEGER NOT NULL,
-    relation TEXT NOT NULL CHECK(relation IN ('requested', 'evaluated', 'dependency')),
-    position INTEGER NOT NULL CHECK(position >= 0),
-    entry TEXT NOT NULL,
-    PRIMARY KEY(result_pk, relation, position),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_result_limitations (
-    result_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    code TEXT NOT NULL,
-    PRIMARY KEY(result_pk, position),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_codes (
-    result_pk INTEGER NOT NULL,
-    code_pk INTEGER NOT NULL CHECK(code_pk >= 1),
-    code TEXT NOT NULL,
-    PRIMARY KEY(result_pk, code_pk),
-    UNIQUE(result_pk, code),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_checks (
-    result_pk INTEGER NOT NULL,
-    check_pk INTEGER NOT NULL CHECK(check_pk >= 1),
-    check_id TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    status TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    code_pk INTEGER,
-    rule TEXT,
-    observed_json TEXT,
-    failure_dependency TEXT,
-    PRIMARY KEY(result_pk, check_pk),
-    UNIQUE(result_pk, check_id),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, code_pk) REFERENCES validation_codes(result_pk, code_pk),
-    CHECK(
-        (status IN ('fail', 'unavailable') AND code_pk IS NOT NULL AND rule IS NOT NULL AND observed_json IS NOT NULL)
-        OR
-        (status NOT IN ('fail', 'unavailable') AND code_pk IS NULL AND rule IS NULL AND observed_json IS NULL AND failure_dependency IS NULL)
-    )
-) WITHOUT ROWID;
-CREATE TABLE validation_check_dependencies (
-    result_pk INTEGER NOT NULL,
-    check_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    dependency_json TEXT NOT NULL,
-    PRIMARY KEY(result_pk, check_pk, position),
-    FOREIGN KEY(result_pk, check_pk) REFERENCES validation_checks(result_pk, check_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_groups (
-    result_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL CHECK(group_pk >= 1),
-    group_id TEXT NOT NULL,
-    group_kind TEXT NOT NULL CHECK(group_kind IN ('chain', 'unresolved')),
-    entry TEXT NOT NULL,
-    reason TEXT,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(result_pk, group_pk),
-    UNIQUE(result_pk, group_id),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_findings (
-    result_pk INTEGER NOT NULL,
-    check_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    admission_effect TEXT NOT NULL,
-    display_entry TEXT NOT NULL,
-    display_subject TEXT NOT NULL,
-    PRIMARY KEY(result_pk, check_pk),
-    FOREIGN KEY(result_pk, check_pk) REFERENCES validation_checks(result_pk, check_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_finding_affected_chains (
-    result_pk INTEGER NOT NULL,
-    check_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    group_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, check_pk, position),
-    FOREIGN KEY(result_pk, check_pk) REFERENCES validation_findings(result_pk, check_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) WITHOUT ROWID;
-CREATE TABLE validation_finding_affected_entries (
-    result_pk INTEGER NOT NULL,
-    check_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    entry TEXT NOT NULL,
-    PRIMARY KEY(result_pk, check_pk, position),
-    FOREIGN KEY(result_pk, check_pk) REFERENCES validation_findings(result_pk, check_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_commands (
-    result_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL CHECK(command_pk >= 1),
-    command_id TEXT NOT NULL,
-    entry TEXT NOT NULL,
-    document TEXT NOT NULL,
-    fence INTEGER NOT NULL CHECK(fence >= 0),
-    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
-    script TEXT NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(result_pk, command_pk),
-    UNIQUE(result_pk, command_id),
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_command_tokens (
-    result_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    token TEXT NOT NULL,
-    PRIMARY KEY(result_pk, command_pk, position),
-    FOREIGN KEY(result_pk, command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_artifacts (
-    result_pk INTEGER NOT NULL,
-    artifact_pk INTEGER NOT NULL CHECK(artifact_pk >= 1),
-    artifact_id TEXT NOT NULL,
-    PRIMARY KEY(result_pk, artifact_pk),
-    UNIQUE(result_pk, artifact_id),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_command_relationships (
-    result_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL,
-    direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),
-    position INTEGER NOT NULL CHECK(position >= 0),
-    path_artifact_pk INTEGER,
-    path_text TEXT,
-    proof TEXT NOT NULL,
-    target TEXT,
-    artifact TEXT,
-    origin INTEGER NOT NULL CHECK(origin IN (0, 1)),
-    PRIMARY KEY(result_pk, command_pk, direction, position),
-    FOREIGN KEY(result_pk, command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, path_artifact_pk) REFERENCES validation_artifacts(result_pk, artifact_pk) ON DELETE CASCADE,
-    CHECK((path_artifact_pk IS NULL) != (path_text IS NULL))
-) WITHOUT ROWID;
-CREATE TABLE validation_command_collections (
-    result_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),
-    mechanism TEXT NOT NULL,
-    root TEXT,
-    target TEXT NOT NULL,
-    PRIMARY KEY(result_pk, command_pk, position),
-    FOREIGN KEY(result_pk, command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_collection_members (
-    result_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL,
-    collection_position INTEGER NOT NULL CHECK(collection_position >= 0),
-    position INTEGER NOT NULL CHECK(position >= 0),
-    path TEXT NOT NULL,
-    PRIMARY KEY(result_pk, command_pk, collection_position, position),
-    FOREIGN KEY(result_pk, command_pk, collection_position)
-        REFERENCES validation_command_collections(result_pk, command_pk, position) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_group_artifacts (
-    result_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    artifact_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, group_pk, position),
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, artifact_pk) REFERENCES validation_artifacts(result_pk, artifact_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_group_edges (
-    result_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    source_command_pk INTEGER NOT NULL,
-    target_command_pk INTEGER NOT NULL,
-    artifact_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, group_pk, position),
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, source_command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, target_command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, artifact_pk) REFERENCES validation_artifacts(result_pk, artifact_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_group_signals (
-    result_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    signal TEXT NOT NULL,
-    PRIMARY KEY(result_pk, group_pk, position),
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_registry_records (
-    result_pk INTEGER NOT NULL,
-    registry_pk INTEGER NOT NULL CHECK(registry_pk >= 1),
-    payload_sha256 TEXT NOT NULL,
-    owner_entry TEXT NOT NULL,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    location TEXT NOT NULL,
-    path TEXT NOT NULL,
-    origin INTEGER NOT NULL CHECK(origin IN (0, 1)),
-    from_entry TEXT,
-    read_only INTEGER CHECK(read_only IN (0, 1)),
-    identity_algorithm TEXT NOT NULL,
-    identity_commit TEXT,
-    PRIMARY KEY(result_pk, registry_pk),
-    UNIQUE(result_pk, payload_sha256),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE,
-    CHECK((from_entry IS NULL AND read_only IS NULL) OR (from_entry IS NOT NULL AND read_only = 1))
-) WITHOUT ROWID;
-CREATE TABLE validation_registry_identity_members (
-    result_pk INTEGER NOT NULL,
-    registry_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    member TEXT NOT NULL,
-    PRIMARY KEY(result_pk, registry_pk, position),
-    FOREIGN KEY(result_pk, registry_pk) REFERENCES validation_registry_records(result_pk, registry_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_group_registry (
-    result_pk INTEGER NOT NULL,
-    group_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    registry_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, group_pk, position),
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, registry_pk) REFERENCES validation_registry_records(result_pk, registry_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_batches (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL CHECK(batch_pk >= 1),
-    batch_id TEXT NOT NULL,
-    batch_type TEXT NOT NULL,
-    grouping_reason TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    primary_finding_count INTEGER NOT NULL CHECK(primary_finding_count >= 1),
-    starting_check_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(result_pk, batch_pk),
-    UNIQUE(result_pk, batch_id),
-    FOREIGN KEY(result_pk) REFERENCES validation_results(result_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, starting_check_pk) REFERENCES validation_findings(result_pk, check_pk)
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_entries (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    entry TEXT NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, position),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_anchors (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    anchor_json TEXT NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, position),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_findings (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    check_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, position),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, check_pk) REFERENCES validation_findings(result_pk, check_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_groups (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    group_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, position),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, group_pk) REFERENCES validation_groups(result_pk, group_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_related_batches (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    related_batch_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, position),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, related_batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) WITHOUT ROWID;
-CREATE TABLE validation_batch_command_links (
-    result_pk INTEGER NOT NULL,
-    batch_pk INTEGER NOT NULL,
-    command_pk INTEGER NOT NULL,
-    code_pk INTEGER NOT NULL,
-    PRIMARY KEY(result_pk, batch_pk, command_pk, code_pk),
-    FOREIGN KEY(result_pk, batch_pk) REFERENCES validation_batches(result_pk, batch_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, command_pk) REFERENCES validation_commands(result_pk, command_pk) ON DELETE CASCADE,
-    FOREIGN KEY(result_pk, code_pk) REFERENCES validation_codes(result_pk, code_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
 CREATE TABLE reproduction_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     summary TEXT NOT NULL,
@@ -456,35 +138,9 @@ CREATE TABLE reproduction_comparison_evidence (
     tolerance_json TEXT NOT NULL,
     matched INTEGER NOT NULL CHECK(matched IN (0, 1)),
     PRIMARY KEY(entry, artifact, position),
-    FOREIGN KEY(entry, artifact) REFERENCES reproduction_artifact_results(entry, artifact) ON DELETE CASCADE
+    FOREIGN KEY(entry, artifact)
+        REFERENCES reproduction_artifact_results(entry, artifact) ON DELETE CASCADE
 ) WITHOUT ROWID;
-CREATE INDEX validation_results_kind_generation
-    ON validation_results(kind, generation DESC, result_pk);
-CREATE INDEX validation_checks_code
-    ON validation_checks(result_pk, code_pk, check_pk);
-CREATE INDEX validation_checks_subject
-    ON validation_checks(result_pk, subject, check_pk);
-CREATE INDEX validation_groups_entry
-    ON validation_groups(result_pk, entry, group_id, group_pk);
-CREATE INDEX validation_groups_projection_order
-    ON validation_groups(result_pk, group_kind, position, group_pk);
-CREATE INDEX validation_commands_group_order
-    ON validation_commands(result_pk, group_pk, position, command_pk);
-CREATE INDEX validation_commands_entry
-    ON validation_commands(result_pk, entry, command_id, command_pk);
-CREATE INDEX validation_relationship_artifact
-    ON validation_command_relationships(result_pk, path_artifact_pk, command_pk)
-    WHERE path_artifact_pk IS NOT NULL;
-CREATE INDEX validation_group_artifacts_artifact
-    ON validation_group_artifacts(result_pk, artifact_pk, group_pk);
-CREATE INDEX validation_batch_entries_entry
-    ON validation_batch_entries(result_pk, entry, batch_pk);
-CREATE INDEX validation_batch_findings_check
-    ON validation_batch_findings(result_pk, check_pk, batch_pk);
-CREATE INDEX validation_batch_groups_group
-    ON validation_batch_groups(result_pk, group_pk, batch_pk);
-CREATE INDEX validation_batch_commands_code
-    ON validation_batch_command_links(result_pk, code_pk, command_pk, batch_pk);
 CREATE INDEX reproduction_runs_order
     ON reproduction_runs(finished_at DESC, accepted_at DESC, run_id DESC);
 CREATE INDEX reproduction_run_commands_order
@@ -494,6 +150,340 @@ CREATE INDEX reproduction_run_executions_order
 CREATE INDEX reproduction_artifact_outcome
     ON reproduction_artifact_results(outcome, entry, artifact);
 """
+
+_VALIDATION_V19_DDL = """
+CREATE TABLE validation_snapshots (
+    snapshot_pk INTEGER PRIMARY KEY CHECK(snapshot_pk >= 1),
+    snapshot_id TEXT UNIQUE NOT NULL,
+    generation INTEGER UNIQUE NOT NULL CHECK(generation >= 1),
+    slot TEXT UNIQUE NOT NULL,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('log', 'entry')),
+    target_log TEXT NOT NULL,
+    target_entry TEXT,
+    outcome TEXT NOT NULL CHECK(outcome IN ('clear', 'findings', 'failed')),
+    passed_check_count INTEGER NOT NULL CHECK(passed_check_count >= 0),
+    finding_count INTEGER NOT NULL CHECK(finding_count >= 0),
+    batch_count INTEGER NOT NULL CHECK(batch_count >= 0),
+    blocked_count INTEGER NOT NULL CHECK(blocked_count >= 0),
+    failed_count INTEGER NOT NULL CHECK(failed_count >= 0),
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    stored_at TEXT NOT NULL,
+    rules_version TEXT NOT NULL,
+    source_identity TEXT NOT NULL,
+    report_context_json TEXT NOT NULL,
+    CHECK((target_kind = 'log' AND target_entry IS NULL) OR
+          (target_kind = 'entry' AND target_entry IS NOT NULL)),
+    CHECK((outcome = 'clear' AND failed_count = 0 AND finding_count = 0
+                              AND batch_count = 0) OR
+          (outcome = 'findings' AND failed_count = 0 AND finding_count >= 1
+                                 AND batch_count >= 1) OR
+          (outcome = 'failed' AND failed_count >= 1))
+);
+CREATE TABLE validation_snapshot_entries (
+    snapshot_pk INTEGER NOT NULL,
+    relation TEXT NOT NULL CHECK(relation IN
+        ('requested', 'evaluated', 'dependency', 'repair', 'context')),
+    position INTEGER NOT NULL CHECK(position >= 0),
+    entry TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, relation, position),
+    UNIQUE(snapshot_pk, relation, entry),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_findings (
+    snapshot_pk INTEGER NOT NULL,
+    finding_pk INTEGER NOT NULL CHECK(finding_pk >= 1),
+    finding_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    type TEXT NOT NULL CHECK(type IN
+        ('conformance', 'evidence', 'provenance', 'orphan')),
+    code TEXT NOT NULL,
+    entry TEXT,
+    subject TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    observed_json TEXT NOT NULL,
+    admission_owner TEXT CHECK(admission_owner IS NULL OR admission_owner IN
+        ('execution', 'command', 'material', 'entry', 'log')),
+    PRIMARY KEY(snapshot_pk, finding_pk),
+    UNIQUE(snapshot_pk, finding_id),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_blocked_checks (
+    snapshot_pk INTEGER NOT NULL,
+    check_pk INTEGER NOT NULL CHECK(check_pk >= 1),
+    check_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    area TEXT NOT NULL CHECK(area IN
+        ('conformance', 'evidence', 'provenance', 'orphan')),
+    entry TEXT,
+    subject TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    blocked_by_json TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, check_pk),
+    UNIQUE(snapshot_pk, check_id),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_failed_checks (
+    snapshot_pk INTEGER NOT NULL,
+    check_pk INTEGER NOT NULL CHECK(check_pk >= 1),
+    check_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    area TEXT NOT NULL CHECK(area IN
+        ('conformance', 'evidence', 'provenance', 'orphan')),
+    entry TEXT,
+    subject TEXT NOT NULL,
+    code TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK(operation IN
+        ('read', 'observe', 'cache', 'graph', 'other')),
+    reason_json TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, check_pk),
+    UNIQUE(snapshot_pk, check_id),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_finding_causes (
+    snapshot_pk INTEGER NOT NULL,
+    finding_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    cause_finding_pk INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_pk, finding_pk, position),
+    UNIQUE(snapshot_pk, finding_pk, cause_finding_pk),
+    FOREIGN KEY(snapshot_pk, finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, cause_finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_finding_source_locations (
+    snapshot_pk INTEGER NOT NULL,
+    finding_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    path TEXT NOT NULL,
+    line INTEGER CHECK(line IS NULL OR line >= 1),
+    PRIMARY KEY(snapshot_pk, finding_pk, position),
+    FOREIGN KEY(snapshot_pk, finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_repair_keys (
+    snapshot_pk INTEGER NOT NULL,
+    repair_key_pk INTEGER NOT NULL CHECK(repair_key_pk >= 1),
+    kind TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, repair_key_pk),
+    UNIQUE(snapshot_pk, kind, identity),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_finding_repair_keys (
+    snapshot_pk INTEGER NOT NULL,
+    finding_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    repair_key_pk INTEGER NOT NULL,
+    repair_entry TEXT,
+    PRIMARY KEY(snapshot_pk, finding_pk, position),
+    UNIQUE(snapshot_pk, finding_pk, repair_key_pk),
+    FOREIGN KEY(snapshot_pk, finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, repair_key_pk)
+        REFERENCES validation_repair_keys(snapshot_pk, repair_key_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_repair_nodes (
+    snapshot_pk INTEGER NOT NULL,
+    node_pk INTEGER NOT NULL CHECK(node_pk >= 1),
+    node_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    kind TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    entry TEXT,
+    attributes_json TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, node_pk),
+    UNIQUE(snapshot_pk, node_id),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_repair_edges (
+    snapshot_pk INTEGER NOT NULL,
+    edge_pk INTEGER NOT NULL CHECK(edge_pk >= 1),
+    position INTEGER NOT NULL CHECK(position >= 0),
+    relation_kind TEXT NOT NULL CHECK(relation_kind IN
+        ('established', 'ambiguous')),
+    kind TEXT NOT NULL,
+    subject_node_pk INTEGER NOT NULL,
+    observed_json TEXT,
+    PRIMARY KEY(snapshot_pk, edge_pk),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk, subject_node_pk)
+        REFERENCES validation_repair_nodes(snapshot_pk, node_pk) ON DELETE CASCADE,
+    CHECK((relation_kind = 'established' AND observed_json IS NULL) OR
+          (relation_kind = 'ambiguous' AND observed_json IS NOT NULL))
+) WITHOUT ROWID;
+CREATE TABLE validation_repair_edge_targets (
+    snapshot_pk INTEGER NOT NULL,
+    edge_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    target_node_pk INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_pk, edge_pk, position),
+    UNIQUE(snapshot_pk, edge_pk, target_node_pk),
+    FOREIGN KEY(snapshot_pk, edge_pk)
+        REFERENCES validation_repair_edges(snapshot_pk, edge_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, target_node_pk)
+        REFERENCES validation_repair_nodes(snapshot_pk, node_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_finding_nodes (
+    snapshot_pk INTEGER NOT NULL,
+    finding_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    role TEXT NOT NULL CHECK(role IN ('context', 'repair')),
+    node_pk INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_pk, finding_pk, position),
+    UNIQUE(snapshot_pk, finding_pk, node_pk),
+    FOREIGN KEY(snapshot_pk, finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, node_pk)
+        REFERENCES validation_repair_nodes(snapshot_pk, node_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_batches (
+    snapshot_pk INTEGER NOT NULL,
+    batch_pk INTEGER NOT NULL CHECK(batch_pk >= 1),
+    batch_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    focus_finding_pk INTEGER NOT NULL,
+    finding_count INTEGER NOT NULL CHECK(finding_count >= 1),
+    PRIMARY KEY(snapshot_pk, batch_pk),
+    UNIQUE(snapshot_pk, batch_id),
+    UNIQUE(snapshot_pk, position),
+    FOREIGN KEY(snapshot_pk) REFERENCES validation_snapshots(snapshot_pk)
+        ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, focus_finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk)
+) WITHOUT ROWID;
+CREATE TABLE validation_batch_rationale (
+    snapshot_pk INTEGER NOT NULL,
+    batch_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    rationale TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, batch_pk, position),
+    FOREIGN KEY(snapshot_pk, batch_pk)
+        REFERENCES validation_batches(snapshot_pk, batch_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_batch_findings (
+    snapshot_pk INTEGER NOT NULL,
+    batch_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    finding_pk INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_pk, batch_pk, position),
+    UNIQUE(snapshot_pk, finding_pk),
+    FOREIGN KEY(snapshot_pk, batch_pk)
+        REFERENCES validation_batches(snapshot_pk, batch_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, finding_pk)
+        REFERENCES validation_findings(snapshot_pk, finding_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_batch_repair_keys (
+    snapshot_pk INTEGER NOT NULL,
+    batch_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    repair_key_pk INTEGER NOT NULL,
+    PRIMARY KEY(snapshot_pk, batch_pk, position),
+    UNIQUE(snapshot_pk, batch_pk, repair_key_pk),
+    FOREIGN KEY(snapshot_pk, batch_pk)
+        REFERENCES validation_batches(snapshot_pk, batch_pk) ON DELETE CASCADE,
+    FOREIGN KEY(snapshot_pk, repair_key_pk)
+        REFERENCES validation_repair_keys(snapshot_pk, repair_key_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE validation_batch_entries (
+    snapshot_pk INTEGER NOT NULL,
+    batch_pk INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('repair', 'context')),
+    position INTEGER NOT NULL CHECK(position >= 0),
+    entry TEXT NOT NULL,
+    PRIMARY KEY(snapshot_pk, batch_pk, role, position),
+    UNIQUE(snapshot_pk, batch_pk, role, entry),
+    FOREIGN KEY(snapshot_pk, batch_pk)
+        REFERENCES validation_batches(snapshot_pk, batch_pk) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS command_diagnostics (
+    diagnostic_pk INTEGER PRIMARY KEY CHECK(diagnostic_pk >= 1),
+    diagnostic_id TEXT UNIQUE NOT NULL,
+    generation INTEGER UNIQUE NOT NULL CHECK(generation >= 1),
+    operation TEXT NOT NULL,
+    code TEXT NOT NULL,
+    entry TEXT,
+    summary TEXT NOT NULL,
+    stored_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS command_diagnostic_records (
+    diagnostic_pk INTEGER NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    kind TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(diagnostic_pk, position),
+    FOREIGN KEY(diagnostic_pk) REFERENCES command_diagnostics(diagnostic_pk)
+        ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX validation_snapshots_slot_generation
+    ON validation_snapshots(slot, generation DESC);
+CREATE INDEX validation_snapshot_entries_lookup
+    ON validation_snapshot_entries(snapshot_pk, entry, relation);
+CREATE INDEX validation_findings_type_order
+    ON validation_findings(snapshot_pk, type, position);
+CREATE INDEX validation_findings_entry_order
+    ON validation_findings(snapshot_pk, entry, position);
+CREATE INDEX validation_findings_id
+    ON validation_findings(snapshot_pk, finding_id);
+CREATE INDEX validation_blocked_checks_order
+    ON validation_blocked_checks(snapshot_pk, position);
+CREATE INDEX validation_failed_checks_order
+    ON validation_failed_checks(snapshot_pk, position);
+CREATE INDEX validation_batches_order
+    ON validation_batches(snapshot_pk, position);
+CREATE INDEX validation_batches_id
+    ON validation_batches(snapshot_pk, batch_id);
+CREATE INDEX validation_batch_entries_lookup
+    ON validation_batch_entries(snapshot_pk, entry, batch_pk, role);
+CREATE INDEX validation_batch_findings_finding
+    ON validation_batch_findings(snapshot_pk, finding_pk, batch_pk);
+CREATE INDEX validation_finding_nodes_node
+    ON validation_finding_nodes(snapshot_pk, node_pk, finding_pk);
+CREATE INDEX validation_repair_edges_subject
+    ON validation_repair_edges(snapshot_pk, subject_node_pk, edge_pk);
+CREATE INDEX validation_repair_edge_targets_target
+    ON validation_repair_edge_targets(snapshot_pk, target_node_pk, edge_pk);
+CREATE INDEX IF NOT EXISTS command_diagnostics_generation
+    ON command_diagnostics(generation DESC, diagnostic_pk);
+"""
+
+_REPLACEABLE_VALIDATION_TABLES = (
+    "validation_batch_entries",
+    "validation_batch_repair_keys",
+    "validation_batch_findings",
+    "validation_batch_nodes",
+    "validation_batch_rationale",
+    "validation_batches",
+    "validation_finding_nodes",
+    "validation_repair_edge_targets",
+    "validation_repair_edges",
+    "validation_repair_nodes",
+    "validation_finding_repair_keys",
+    "validation_repair_keys",
+    "validation_finding_source_locations",
+    "validation_finding_causes",
+    "validation_failed_checks",
+    "validation_blocked_checks",
+    "validation_not_evaluated",
+    "validation_findings",
+    "validation_snapshot_entries",
+    "validation_snapshots",
+)
 
 
 class ResultStoreError(RuntimeError):
@@ -573,7 +563,7 @@ def _open_configured(path: Path, *, writable: bool) -> sqlite3.Connection:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version == 0 and writable:
             return db
-        if version != STORE_VERSION:
+        if version not in {*REPLACEABLE_STORE_VERSIONS, STORE_VERSION}:
             raise ResultStoreError(
                 "results.schema.unsupported", f"store version {version} is unsupported"
             )
@@ -598,15 +588,29 @@ def _sqlite_error_code(error: sqlite3.OperationalError) -> str:
 def _initialize_schema(db: sqlite3.Connection) -> None:
     """Create the first store schema inside the caller's open transaction."""
 
+    _execute_ddl(db, _SHARED_DDL)
+    _execute_ddl(db, _VALIDATION_V19_DDL)
+    db.execute(f"PRAGMA user_version={STORE_VERSION}")
+
+
+def replace_validation_schema(db: sqlite3.Connection) -> None:
+    """Replace only prior validation-owned tables in the active transaction."""
+
+    db.execute("DELETE FROM report_materializations WHERE kind='validation'")
+    for table in _REPLACEABLE_VALIDATION_TABLES:
+        db.execute(f"DROP TABLE IF EXISTS {table}")
+    _execute_ddl(db, _VALIDATION_V19_DDL)
+
+
+def _execute_ddl(db: sqlite3.Connection, ddl: str) -> None:
     statement = ""
-    for line in _DDL.splitlines(keepends=True):
+    for line in ddl.splitlines(keepends=True):
         statement += line
         if sqlite3.complete_statement(statement):
             db.execute(statement)
             statement = ""
     if statement.strip():
         raise ResultStoreError("results.store.malformed", "incomplete store schema")
-    db.execute(f"PRAGMA user_version={STORE_VERSION}")
 
 
 @contextmanager
@@ -722,12 +726,12 @@ def result_generation(log_root: Path, kind: str) -> int:
     return int(row[0])
 
 
-def clear_validation_results(log_root: Path) -> None:
+def clear_validation_snapshots(log_root: Path) -> None:
     """Clear only disposable validation rows and its derived report marker."""
 
     with results_lock(log_root):
         with result_transaction(log_root) as db:
-            db.execute("DELETE FROM validation_results")
+            db.execute("DELETE FROM validation_snapshots")
             db.execute("DELETE FROM store_state WHERE domain='validation'")
             db.execute("DELETE FROM report_materializations WHERE kind='validation'")
 

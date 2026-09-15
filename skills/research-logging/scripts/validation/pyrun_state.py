@@ -389,6 +389,22 @@ def associate_execution(
     )
 
 
+def associate_exact_execution(
+    state: PyrunFile, invocation: Invocation, *, project_root: Path
+) -> ExecutionAssociation | None:
+    """Return an execution only when its complete canonical recipe still matches."""
+
+    association = associate_execution(state, invocation, project_root=project_root)
+    if association is None:
+        return None
+    recipe = recipe_from_invocation(
+        invocation,
+        entry_root=state.entry_root,
+        project_root=project_root,
+    )
+    return association if association.execution.recipe == recipe else None
+
+
 def execution_output_owners(state: PyrunFile) -> OutputOwnerIndex:
     """Index every persisted output identity by its owning execution."""
 
@@ -411,6 +427,7 @@ def resolve_execution_output(
     """Resolve an output or directory member and retain its state association."""
 
     material_path = Path(material).resolve()
+    subject = material
     key = portable_output_path(
         material_path, entry_root=owners.entry_root, project_root=project_root
     )
@@ -436,8 +453,9 @@ def resolve_execution_output(
             )
             owner = owners.owners.get(key)
             material_path = path
+            subject = path.as_posix()
     return ResolvedExecutionOutput(
-        material, key, material_path, owner if owner == association else None, owner
+        subject, key, material_path, owner if owner == association else None, owner
     )
 
 

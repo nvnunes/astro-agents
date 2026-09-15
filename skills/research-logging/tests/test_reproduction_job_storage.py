@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import shutil
 import sqlite3
@@ -83,7 +84,11 @@ from test_log_reproduction_planning import _Fixture, _plan
 
 @contextmanager
 def _job_fixture(
-    *, executions: int = 2, outputs_per_execution: int = 1, create: bool = True
+    *,
+    executions: int = 2,
+    outputs_per_execution: int = 1,
+    create: bool = True,
+    policy_skipped: bool = False,
 ) -> Iterator[tuple[Path, _Fixture, EntryContext, ReproductionPlan, AcceptedJob, Path]]:
     with tempfile.TemporaryDirectory() as directory:
         project = Path(directory).resolve()
@@ -115,7 +120,15 @@ def _job_fixture(
                 ]
             )
             execution_records.append(
-                fixture.execution(entry, f"build-{index}", {"raw": raw}, selected)
+                fixture.execution(
+                    entry,
+                    f"build-{index}",
+                    {"raw": raw},
+                    selected,
+                    auto_reproduce=not (
+                        policy_skipped and index == executions - 1
+                    ),
+                )
             )
         fixture.write_pyrun(entry, execution_records)
         plan = _plan(
@@ -334,6 +347,18 @@ def _start_and_fail(run_root: Path, plan: ReproductionPlan, index: int) -> None:
 
 
 class ReproductionJobStorageMilestoneTests(unittest.TestCase):
+    def test_policy_skipped_command_admission_round_trips_durably(self) -> None:
+        with _job_fixture(policy_skipped=True, create=False) as (
+            *_unused,
+            plan,
+            accepted,
+            run_root,
+        ):
+            self.assertEqual(len(plan.commands), 2)
+            self.assertEqual(len(plan.admission["executions"]), 2)
+            create_job(run_root, accepted)
+            self.assertEqual(load_accepted_plan(run_root), plan)
+
     def test_policy_command_with_null_source_digest_round_trips(self) -> None:
         with _job_fixture(executions=1, create=False) as (
             *_unused,
@@ -545,8 +570,8 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
         expected = {
             "runs": "run_id summary target_kind target_entry include_all jobs execution_timeout_seconds accepted_at run_path workspace_path diagnostics_path",
             "run_state": "run_id status phase stop_requested_at started_at resumed_at stopped_at finished_at updated_at completed_executions matched changed failed comparison_failed skipped latest_execution_entry latest_execution_cid latest_execution_id latest_execution_code latest_execution_message latest_execution_recorded_at operational_code operational_message operational_recorded_at",
-            "accepted_admission": "run_id validation_id validation_result_id rules_version evaluated_at",
-            "accepted_admission_groups": "run_id disposition position entry group_id decision_json",
+            "accepted_admission": "run_id validation_snapshot_id rules_version evaluated_at",
+            "accepted_admission_executions": "run_id position entry cid execution_id disposition decision_json",
             "accepted_commands": "run_id command_pk entry cid execution_id selection auto_reproduce exclusive queued accepted_requires_reproduction prior_disposition source_digest entry_root project_root cwd script last_run_at runner environment_profile execution_contract details_json data_declaration_json",
             "accepted_recipe_parameters": "run_id command_pk position value",
             "accepted_parameter_roles": "run_id command_pk selector role",
@@ -590,7 +615,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
             "runs": ("run_id",),
             "run_state": ("run_id",),
             "accepted_admission": ("run_id",),
-            "accepted_admission_groups": ("run_id", "disposition", "position"),
+            "accepted_admission_executions": ("run_id", "position"),
             "accepted_commands": ("run_id", "command_pk"),
             "accepted_recipe_parameters": ("run_id", "command_pk", "position"),
             "accepted_parameter_roles": ("run_id", "command_pk", "selector"),
@@ -665,7 +690,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
             "runs": set(),
             "run_state": run_fk,
             "accepted_admission": run_fk,
-            "accepted_admission_groups": {
+            "accepted_admission_executions": {
                 ("accepted_admission", (("run_id", "run_id"),), "RESTRICT")
             },
             "accepted_commands": run_fk,
@@ -788,6 +813,9 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
             "publication_state": run_fk,
         }
         unique_keys = {
+            "accepted_admission_executions": {
+                ("run_id", "entry", "cid", "execution_id")
+            },
             "accepted_commands": {("run_id", "entry", "cid", "execution_id")},
             "accepted_materials": {("run_id", "role", "identity", "fingerprint_json")},
             "accepted_executions": {("run_id", "plan_order")},
@@ -803,7 +831,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
         check_counts = {
             "runs": 5,
             "run_state": 11,
-            "accepted_admission_groups": 2,
+            "accepted_admission_executions": 2,
             "accepted_commands": 9,
             "accepted_recipe_parameters": 1,
             "accepted_parameter_roles": 1,
@@ -850,7 +878,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
                 "check((latest_execution_entry is null and latest_execution_cid is null and latest_execution_id is null and latest_execution_code is null and latest_execution_message is null and latest_execution_recorded_at is null) or (latest_execution_entry is not null and latest_execution_cid is not null and latest_execution_id is not null and latest_execution_code is not null and latest_execution_message is not null and latest_execution_recorded_at is not null))",
                 "check((operational_code is null and operational_message is null and operational_recorded_at is null) or (operational_code is not null and operational_message is not null and operational_recorded_at is not null))",
             ),
-            "accepted_admission_groups": (
+            "accepted_admission_executions": (
                 "check(disposition in ('admitted', 'excluded'))",
                 "check(position >= 0)",
             ),
@@ -950,7 +978,7 @@ class ReproductionJobStorageSchemaTests(unittest.TestCase):
         with _job_fixture() as (*_unused, run_root):
             database = run_root / "state.sqlite"
             with sqlite3.connect(database) as db:
-                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
                 self.assertEqual(
                     db.execute("PRAGMA journal_mode").fetchone()[0], "delete"
                 )
@@ -2318,6 +2346,42 @@ class ReproductionJobStorageIsolationTests(unittest.TestCase):
 
 
 class ReproductionJobStorageErrorTests(unittest.TestCase):
+    def test_admission_json_must_match_its_indexed_columns(self) -> None:
+        mutations = (
+            (
+                "column",
+                "UPDATE accepted_admission_executions "
+                "SET disposition='excluded'",
+                (),
+            ),
+            (
+                "json",
+                "UPDATE accepted_admission_executions SET decision_json=?",
+                (
+                    json.dumps(
+                        {
+                            "blocking_finding_ids": [],
+                            "cid": "different",
+                            "disposition": "admitted",
+                            "entry": "e001",
+                            "execution_id": "different",
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                ),
+            ),
+        )
+        for label, statement, parameters in mutations:
+            with self.subTest(label=label), _job_fixture() as (*_unused, run_root):
+                with sqlite3.connect(run_root / "state.sqlite") as db:
+                    db.execute(statement, parameters)
+                with self.assertRaisesRegex(
+                    JobStoreInvariantError,
+                    "disagrees with its indexed columns",
+                ):
+                    load_accepted_plan(run_root)
+
     def test_open_rejects_a_copied_store_at_a_different_run_root(self) -> None:
         with _job_fixture() as (project, *_unused, run_root):
             copied_root = (

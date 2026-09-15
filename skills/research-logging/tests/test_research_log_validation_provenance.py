@@ -95,6 +95,7 @@ class ProvenanceLineageTests(unittest.TestCase):
             "/tmp/source.csv",
             {"consumer": "shared"},
             "Recorded-Command Provenance And Material Graph",
+            PROVENANCE.ProvenanceAnchor("material", "/tmp/source.csv"),
         )
         value = PROVENANCE._ProvenanceDependency(
             "/tmp/result.csv",
@@ -102,16 +103,18 @@ class ProvenanceLineageTests(unittest.TestCase):
             (("upstream", "shared"),),
             support,
             (finding,),
+            (),
         )
         expected = PROVENANCE.canonical_json(
             {
-                "findings": [finding.as_dict()],
+                "currentness": [],
+                "findings": [finding.identity_dict()],
                 "lineage": [["upstream", "shared"]],
                 "material": "/tmp/result.csv",
                 "producers": ["shared"],
                 "producer_state": [PROVENANCE._invocation_dependency(producer)],
                 "support": list(support),
-                "version": "end-to-end-provenance-2",
+                "version": "end-to-end-provenance-3",
             }
         )
         cache: dict[int, tuple[dict[str, object], str]] = {}

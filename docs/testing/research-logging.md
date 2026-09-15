@@ -10,6 +10,8 @@ not add work to these implementation gates.
 
 The completed CLI simplification program has a durable
 [finding and scenario coverage index](research-logging-cli-simplification-coverage.md).
+The replacement validation model has a durable
+[contract-to-test coverage index](research-log-validation-model-coverage.md).
 
 ## Focused Contract And Validator Checks
 
@@ -57,8 +59,9 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_research_log_integrated_workflow.py
 ```
 
-For output-code currentness or material-graph integration, use these focused
-tests while iterating before running that complete validator set:
+For output-code currentness or shared-research-graph material classification,
+use these focused tests while iterating before running that complete validator
+set:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
@@ -119,6 +122,7 @@ For reproduction planning, comparison, and staging development, run:
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_log_reproduction_admission.py \
   skills/research-logging/tests/test_log_reproduction_planning.py \
   skills/research-logging/tests/test_reproduction_job_storage.py \
   skills/research-logging/tests/test_log_reproduction_scheduler.py \
@@ -140,18 +144,42 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_research_log_result_store.py \
   skills/research-logging/tests/test_log_reproduction_empty_recovery.py \
-  skills/research-logging/tests/test_log_results_render.py \
+  skills/research-logging/tests/test_log_report_render.py \
   skills/research-logging/tests/test_log_scaffold.py
 ```
 
 This focused command supplements rather than replaces the complete tool gate.
 
+For changes to the canonical validation model, publication lifecycle, saved
+queries, or public validation projections, run:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_research_log_validation_domain.py \
+  skills/research-logging/tests/test_research_log_validation_batches.py \
+  skills/research-logging/tests/test_research_log_validation_research_graph.py \
+  skills/research-logging/tests/test_validation_snapshot_storage.py \
+  skills/research-logging/tests/test_validation_snapshot_storage_conformance.py \
+  skills/research-logging/tests/test_validation_read_model.py \
+  skills/research-logging/tests/test_validation_saved_queries.py \
+  skills/research-logging/tests/test_research_log_report_context.py \
+  skills/research-logging/tests/test_log_report_render.py \
+  skills/research-logging/tests/test_research_log_validation_cli.py
+```
+
+This is the focused validation model, publication, read-model, and projection
+gate. It also supplements rather than replaces the complete tool gate.
+
 The reproduction suite uses fixed-plan fixtures. Its completion coverage must
-exercise locked fresh preparation, strict accepted plan insertion and SQLite
+exercise finding-owned admission over the fresh validation snapshot and shared
+research graph, exact command/execution/output binding, cross-type batch
+independence, blocker dependency propagation, locked fresh preparation, strict
+accepted plan insertion and SQLite
 reconstruction, run-store and scheduler transactions, stop and interruption
 recovery, dependency failure and independent progress, publication-only retry,
 source-change rejection and new-run preparation, comparison-baseline
-invariance, reservation/promotion overlap, and validation-bundle invariance.
+invariance, reservation/promotion overlap, and validation-snapshot invariance.
 It must not restore continuation, whole-snapshot certification, JSON job
 decoding, or accepted-attempt lineage coverage.
 
@@ -172,12 +200,12 @@ REPRODUCTION_SANDBOX_TEST=1 \
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
   skills/research-logging/tests/test_log_reproduction_execution.py \
-  skills/research-logging/tests/test_log_repair_check.py
+  skills/research-logging/tests/test_log_command_verify.py
 ```
 
 These tests use only generated projects and synthetic workers. The enabled
 host tests must prove both network denial and retained-boundary write denial
-for durable reproduction and isolated repair checking. They never execute a
+for durable reproduction and isolated command verification. They never execute a
 maintained research recipe.
 
 The complexity check is a ratchet over explicitly recorded complexity debt. It
@@ -203,7 +231,7 @@ The complete research-logging tool gate must cover:
   Scope](../research-log-mechanical-validator-spec.md#evidence-record-role-and-scope)
   and [Evidence File And Presentation
   Association](../research-log-mechanical-validator-spec.md#evidence-file-and-presentation-association);
-- input, retention, command, output-support, provenance, lineage, and Hygiene
+- input, retention, command, output-support, provenance, lineage, and Orphans
   behavior defined by [Input Registry And Artifact Graph
   Contract](../research-log-mechanical-validator-spec.md#input-registry-and-artifact-graph-contract);
 - evaluation, publication, generated-state, locking, dry-run, failure, and
@@ -222,15 +250,27 @@ The complete research-logging tool gate must cover:
 
 Run the complete research-logging tool gate after any validator change. Use the
 focused controller, engine, evidence, command, locator, transformation,
-provenance, material-graph, and publication tests during iteration.
+provenance, shared-graph material-classification, and publication tests during
+iteration.
 
 Wall time is diagnostic rather than an objective gate. Require bounded
 complexity, no avoidable repeated reads or hashes, correct cache reuse, and no
 asymptotic regression.
 
-## Repair-Check Coverage
+## Command-Verification Coverage
 
-Current repair-check tests must prove its isolated workspace is the only
+Current command-verification tests must prove its isolated workspace is the only
 artifact written, selected current inputs and retained baselines are stable,
 and no reproduction run, publication, promotion, or metadata update occurs.
 Do not retain execution-target reproduction or `--verify-repair` fixtures.
+
+Run the focused command and command-diagnostic gate with:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_log_command_verify.py \
+  skills/research-logging/tests/test_command_diagnostic_storage.py \
+  skills/research-logging/tests/test_log_command_sync.py \
+  skills/research-logging/tests/test_rejected_producer_diagnostics.py
+```

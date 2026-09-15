@@ -151,8 +151,8 @@ class RecordSurfaceTests(unittest.TestCase):
 
         self.assertIn("named mechanical-validation findings", skill)
         self.assertIn("## Diagnose Named Findings", validate)
-        self.assertIn("log findings list", validate)
-        self.assertIn("Do not apply a correction", validate)
+        self.assertIn("log validate list findings", validate)
+        self.assertIn("Diagnosis is read-only", validate)
         self.assertIn("Do not select review lenses", review)
         self.assertIn("does not rerun validation", cases)
 
@@ -331,7 +331,7 @@ class RecordSurfaceTests(unittest.TestCase):
         normalized = " ".join(cases.split())
 
         for phrase in (
-            "class-level repair starts one bounded Repair campaign",
+            "code-scoped repair starts one bounded Repair campaign",
             "exact-finding repair starts directly",
             "combined search and correction request enters Repair",
             "combined diagnosis and correction enters Repair",
@@ -358,10 +358,10 @@ class RecordSurfaceTests(unittest.TestCase):
         cases = " ".join(CASES.read_text(encoding="utf-8").split())
         repair = reference("operation-repair.md")
         for phrase in (
-            "lists the class once",
+            "lists the owning type once",
             "runs full validation once at that checkpoint",
-            "skips the evidence-changing chain for researcher direction",
-            "continues with the independent chain",
+            "skips the evidence-changing batch for researcher direction",
+            "continues with the independent batch",
             "without polling or broadening scope",
         ):
             self.assertIn(phrase, cases)
@@ -387,20 +387,28 @@ class RecordSurfaceTests(unittest.TestCase):
     def test_multilog_reporting_is_owned_by_the_validation_tool(self) -> None:
         validate = reference("operation-validate.md")
         records = reference("file-validation-records.md")
+        cases = CASES.read_text(encoding="utf-8")
+        normalized_validate = " ".join(validate.split())
+        normalized_cases = " ".join(cases.split())
         self.assertIn(
-            "Its default text is the complete finished Markdown", validate
-        )
-        self.assertIn("Present it unchanged", validate)
-        self.assertIn("every discovered log", validate)
-        self.assertIn("every exceptional explanation", validate)
-        self.assertIn("returns no\nstructured result", validate)
-        self.assertIn(
-            "includes every discovered log in the finished Markdown comparison",
-            CASES.read_text(encoding="utf-8"),
+            "validates every discovered log independently", normalized_validate
         )
         self.assertIn(
-            "A nonzero batch may have empty standard error.",
-            CASES.read_text(encoding="utf-8"),
+            "The cross-log table shows only finding-type", normalized_validate
+        )
+        self.assertIn(
+            "Blocked and Failed counts below the table", normalized_validate
+        )
+        self.assertIn("A root run uses precedence 2, then 3", normalized_validate)
+        self.assertIn("Whole-operation failure", records)
+        self.assertIn("never reevaluate research files", normalized_validate)
+        self.assertIn(
+            "includes every discovered log in `rows`",
+            normalized_cases,
+        )
+        self.assertIn(
+            "Operational errors take precedence in the aggregate exit code.",
+            normalized_cases,
         )
         self.assertFalse(
             (REFERENCES / "operation-validate-multilog-report.md").exists()

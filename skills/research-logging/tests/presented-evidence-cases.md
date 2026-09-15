@@ -65,7 +65,7 @@ without publishing the evidence record.
 Given an unmarked `diff` fence under experimental `Results:`, Validate reports
 presented evidence missing an EID. A marked `diff` fence whose source is
 reachable through the artifact graph participates in ordinary Provenance and
-Hygiene exactly like a linked whole artifact.
+orphan classification exactly like a linked whole artifact.
 
 Given a changed analysis stage that consumes a serialized intermediate, Record
 reloads the intermediate and checks its expected structure. It records shape,
@@ -280,21 +280,25 @@ checks unprojected residue without claiming full validation.
 ## Repair Routing Cases
 
 Given “fix every `data.output.token_missing` finding in this log,” the explicit
-class-level repair starts one bounded Repair campaign. Multiple matching chains
-are campaign membership, not ambiguity; unrelated codes remain outside scope.
+code-scoped repair starts one bounded Repair campaign. It lists Conformance
+findings, selects the rows with that code, and follows their repair batches.
+Those batches may also contain related findings of other types; unrelated
+batches remain outside scope.
 
 Given “repair finding chk-123,” the exact-finding repair starts directly and
-uses `findings show` for that one published identity without a preliminary
-validation run.
+uses `log validate detail finding --path LOG --id chk-123` for that saved
+identity without a preliminary validation run.
 
 Given “find and fix the raw output paths in e004,” the combined search and
-correction request enters Repair. It queries the relevant class and entry,
-forms the matching chain batches, and does not detour through diagnosis-only
+correction request enters Repair. It lists the owning type for that entry,
+selects matching finding rows by code and condition, then uses the repair
+batches containing those findings without detouring through diagnosis-only
 Validate.
 
 Given “diagnose and correct the missing named inputs in this log,” combined
 diagnosis and correction enters Repair. Repair owns the bounded inspection
-needed to establish the correction within that class.
+needed to select matching findings within their owning type and follow their
+batches.
 
 Given the agent has just reported one clearly bounded selected set and the
 researcher says “fix those,” the unambiguous pronoun enters Repair for exactly
@@ -326,16 +330,17 @@ outside repair scope. It does not mutate the log to satisfy faulty validation.
 
 ## Integrated Repair Scenarios
 
-Given a published raw-output-path class with two independent command chains,
-Repair uses the supplied result ID, or selects the cached full-result ID when
-none was supplied, lists the class once, and retrieves only needed command
-detail. It may group the established named-output corrections at one checkpoint.
+Given saved raw-output-path findings in two independent repair batches, Repair
+lists the owning type once, selects the matching finding rows by code, identifies
+the containing batches, and retrieves only the batch detail needed for each
+correction. It may group the established named-output corrections at one
+checkpoint.
 When bounded coverage suffices, it uses explicit entry validation; when full-log coverage
 is needed and authorized, it runs full validation once at that checkpoint.
 Batch boundaries do not require separate editing or note-taking cycles.
 
-Given a batch check returns `coverage_incomplete` and further related edits
-need the same full-log coverage, Repair defers their assessment to the group's
+Given an entry validation has Blocked or Failed checks and further related edits
+need the same full-log coverage, Repair defers their assessment to the campaign's
 authorized full-validation checkpoint. It does not alternate batch and full
 validation for every edit or check overlapping batches to remedy that gap.
 Without full-validation authority, it reports the verification gap without
@@ -348,30 +353,32 @@ the calculation and input/output identities. A script edit is not itself a
 reason to request a research decision. Missing execution support continues to
 require reproduction; Repair does not run the research command or choose a new origin.
 
-Given a class campaign contains one chain whose correction would change a
-presented value and one independent mechanically correctable chain, Repair
-skips the evidence-changing chain for researcher direction, reports that
-decision, and continues with the independent chain. If another chain has an
-unresolved projection or a lock owner conflict, it reports the precise blocker
+Given a repair campaign contains one batch whose correction would change a
+presented value and one independent mechanically correctable batch, Repair
+skips the evidence-changing batch for researcher direction, reports that
+decision, and continues with the independent batch. If another batch has an
+unresolved repair-context ambiguity or a lock owner conflict, it reports the precise blocker
 once and stops only that affected case without polling or broadening scope.
 
 Given an entry validation completed but its stdout was lost, Repair uses
-`results list --kind entry --entry eNNN`, matches the evaluation time to the
-invocation, then requests only missing detail from the matched ID. An uncertain
-match leaves the invocation's outcome unknown; an older result surviving a
-failed run is not evidence of that run's outcome. Repair does not repeat
-validation, copy the payload into a note, or parse JSON to reconstruct a report.
+`log validate list findings --path LOG --entry eNNN` or `log validate list
+batches --path LOG --entry eNNN` to read that scoped snapshot's saved time,
+including from a zero-item page, then requests detail only as needed. If the
+saved time cannot be associated with the invocation, its outcome remains
+unknown; an older snapshot surviving a failed run is not evidence of that run's
+outcome. Repair does not repeat validation, copy the payload into a note, or
+parse JSON to reconstruct a report.
 
-Given a command owns a large collection, its ordinary view shows the member
-count and a query reference. Repair requests a member page only when the next
-action needs those members. Scripts may explicitly request JSON; the agent
-uses the default text views.
+Given a repair batch owns a large context collection, batch detail shows
+complete membership counts and a continuation cursor. Repair requests the next
+detail page only when the next action needs those members. Scripts may
+explicitly request JSON; the agent uses the default text views.
 
-Given entry e001 is checked twice, only its latest cached result remains; an
-entry e002 result is preserved. A new full validation clears previous scoped
-results. Previously reported outcomes remain in the conversation; the agent
-does not assume old result IDs will still resolve or maintain a separate history
-merely to copy those results.
+Given entry e001 is checked twice, only its latest saved entry snapshot remains;
+an e002 entry snapshot is preserved. A new full validation clears previous
+entry snapshots. Previously reported outcomes remain in the conversation; the agent
+does not assume a superseded finding or batch identity will still resolve or
+maintain a separate history merely to copy those results.
 
 ## Replace Boundary
 
@@ -572,7 +579,7 @@ only the scopes included when it was produced.
 
 Given changed evidence followed by a Validate request, Validate uses current
 inputs and saved fingerprints to reopen affected outcomes, reuse only unchanged
-outcomes, and publish a complete dated generated bundle. Non-Validate
+outcomes, and publish a complete dated validation snapshot. Non-Validate
 operations do not precompute this change set.
 
 Given an existing generated failure report, Record, Replace, Update Summary,
@@ -585,12 +592,11 @@ Given current evidence whose source, locator, transformation, presentation
 marker, command relationship, and retained-material graph satisfy the
 specification, validation completes through code without agent judgment.
 
-Given `log validate --root` returns completed evaluations for several logs,
-the CLI includes every discovered log in the finished Markdown comparison in
-`report`, with concise explanations for incomplete, blocked, or operationally
-failed rows. The agent presents that report unchanged and does not open
-generated reports, recalculate cells, or separately reconcile `results` and
-`failures`. A nonzero batch may have empty standard error.
+Given `log validate run --root PROJECT` returns evaluations for several logs, the CLI
+includes every discovered log in `rows`, with concise operation errors and
+saved Failed outcomes kept local to their rows. The agent presents the returned projection
+and does not open generated reports or recalculate counts. Operational errors
+take precedence in the aggregate exit code.
 
 Given a supported presentation that differs from its selected source through an
 approved percentage, rounding, notation, unit, interval, tuple, uncertainty, or
@@ -598,24 +604,44 @@ table transformation, validation applies the declared deterministic form.
 An unsupported or ambiguous declaration fails precisely; validation does not
 choose a plausible alternative.
 
-Given a one-log mechanical result, the validation agent presents the returned
-`report` unchanged. It does not open generated files, enumerate machine checks,
-or reconstruct the human summary. The agent does not override the result or
-edit research material. A later, separately authorized Repair operation
-resolves a named issue before Validate is rerun.
+Given a one-log validation run, the validation agent presents the returned
+run projection. It does not open generated files, enumerate private checks, or
+reconstruct the saved summary. The agent does not override the projection or edit
+research material. A later, separately authorized Repair operation resolves a
+named issue before Validate is rerun.
+
+Given a saved full-log snapshot, `log validate show --path LOG` reports finding
+counts by type, batch count, and counts of applicable private checks that were
+Blocked or Failed. `log validate show --root PROJECT` omits both check counts
+from each log row so the table remains compact, then reports their totals in the
+text footer and JSON envelope. When some logs lack a readable snapshot, the
+totals are marked partial and name their contributing-log count. Blocked is
+coverage information caused by another validation finding or failed check;
+Failed means the validator could not complete that localized check. Neither is
+a finding or a guarantee about what a later run may reveal. Reproduction
+currentness does not create validation checks or affect these counts.
+
+Given several evidence records that consume one material with one failed
+Provenance rule, validation publishes one finding at that material and keeps all
+consumer relationships in the shared graph. Distinct unsatisfied rules on that
+material, and the same unsatisfied rule on different materials, remain distinct
+findings. Batch detail derives the selected repair neighborhood from the one
+saved graph; publication does not store an expanded neighborhood for every
+finding or batch.
 
 Given a separately authorized Repair of a published finding, the agent uses
-`log findings list` with exact entry or subject filters and then `log findings
-show` for one selected check. It does not parse `validation.md` or load
-`.cache/results.sqlite` directly; use `log results export --path LOG --format json`
-when an explicit export is required. The query remains read-only and returns no
-repair advice or inferred intent.
+`log validate list findings --path LOG --type TYPE` with the owning type filter
+and then `log validate detail finding --path LOG --id FINDING_ID` for one
+selected finding. It does not parse `validation.md` or load
+`.cache/results.sqlite` directly; there is no generic validation export. The
+query remains read-only and returns no repair advice or inferred intent.
 
-Given complete findings, the CLI exits zero and publishes disposable machine state
+Given a completed evaluation with findings, the CLI exits zero and publishes disposable machine state
 in `.cache/results.sqlite` and the source-controlled `validation.md` report.
-Given an unavailable required observation, it returns `incomplete`, exits
-nonzero, and leaves the prior completed bundle unchanged. Dry-run always writes
-nothing.
+Given the validator cannot complete one localized check reliably, it returns
+`failed`, exits 3, saves that completed snapshot, and continues independent
+checks. A whole-operation failure exits 2 and leaves the prior completed
+snapshot unchanged. Dry-run always writes nothing.
 
 Given unchanged successful checks, validation reuses a check only when its
 complete dependency projection and active rules version still match. A changed
@@ -630,11 +656,11 @@ relationship fails until research-owned metadata makes the relationship exact.
 Given evidence sourced from one exact member of a generated output-directory
 bundle, validation associates the presentation only with that member and uses
 the bundle's recursive fingerprint and directory-level output support for
-Provenance. The reached member covers the bundle for Hygiene without claiming
+Provenance. The reached member covers the bundle for Orphans classification without claiming
 that sibling files were consumed or presented.
 
 Given an unreached output-directory bundle with matching directory-level
-`pyrun` support, validation reports one orphan Hygiene finding at the output
+`pyrun` support, validation reports one orphan finding at the output
 root rather than one finding per member, even when the output-only bundle is
 absent from `data.json`.
 Given an unmatched directory-output support record, it likewise reports only
@@ -643,12 +669,12 @@ the root and suppresses descendant orphan findings.
 Given a locally accessible file outside the validated log and consumed by an
 active recorded workflow, validation treats it as an origin of the current log
 when `data.json` says `origin: true`. It does not inspect another log's
-validation state or use that reference to change Hygiene classification in the
+validation state or use that reference to change Orphans classification in the
 file's owning log.
 
 Given retained material outside the evidence-rooted command closure and not
 covered by an explicit retention declaration,
-validation reports the exact residual path as an orphan Hygiene finding.
+validation reports the exact residual path as an orphan finding.
 Mechanical validation never asks an agent to classify the orphan semantically.
 
 ## Input Registry
@@ -661,15 +687,16 @@ that should use `<name>`.
 
 A valid declared input in a workflow branch that does not reach presented
 evidence remains a used declaration; the workflow's retained material
-remains eligible for Hygiene evaluation.
+remains eligible for orphan classification evaluation.
 
 A reached generated output passes Provenance only when its output-keyed
-`pyrun-outputs.json` record is confirmed and exactly matches the current output
-fingerprint, script path and fingerprint, ordered parameters, and direct input
-fingerprints. Changing any one without a matching successful run fails that
-starting artifact's Provenance.
+`pyrun-outputs.json` record is confirmed and exactly matches the declared
+execution association. Missing producer support fails Provenance.
+Reproduction-required or unequal execution signatures are retained only as
+Reproduce-owned currentness conditions; they create no validation check,
+finding, blocker, failure, or batch.
 
-An output record absent from the complete current graph is an unmatched Hygiene
+An output record absent from the complete current graph is an unmatched orphan
 finding. If its file exists, validation does not also report that file as an
-orphan. A graph-declared output whose file is missing is a Provenance failure,
-not Hygiene.
+orphan. A graph-declared output whose file is missing is a Provenance finding,
+not an orphan finding.

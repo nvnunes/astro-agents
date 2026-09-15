@@ -6,31 +6,24 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Mapping
 
-from research_log_paths import (
-    RESULTS_STORE,
-    VALIDATION_REPORT,
+from research_log_paths import RESULTS_STORE, VALIDATION_REPORT
+
+from .domain import (
+    ValidationAttempt,
+    ValidationSnapshot,
 )
-
-from .batch_projection import build_batch_projection
 from .engine import (
-    RULES_VERSION,
     EntryEvaluationTarget,
-    EvaluationContext,
     EvaluationRequest,
     EvaluationResult,
     FullEvaluationTarget,
     evaluate_mechanical,
 )
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
-from .human_projection import (
-    ReportContext,
-    load_report_context,
-)
-from .mechanical_results import CompletionState, MechanicalGeneratedRecord
 from .operation_state import (
     LOCK_OWNER_SCHEMA,
     operation_lock,
@@ -41,14 +34,8 @@ from .records import (
     RecordPublicationError,
     publish_validation_outputs_locked,
 )
-from .report import (
-    compose_blocked_validation_report,
-    compose_validation_command_report,
-    compose_validation_report,
-)
 from .validation_cache import ValidationCache, ValidationCacheError
 
-RESULT_SCHEMA = "research-log-validation-result/1"
 UNSUPPORTED_GENERATED_PATHS = (
     "validation/manifest.json",
     "validation/outcomes",
@@ -88,7 +75,6 @@ class ValidationRequest:
 
     Attributes:
         summary: Maintained research-log summary to validate.
-        result_date: Optional ISO calendar date for completed findings.
         publish: Whether to publish completed generated state.
         recompute: Whether to bypass all prior mechanical-cache reuse.
         recompute_validation: Whether to bypass per-log validation-cache reuse.
@@ -96,15 +82,24 @@ class ValidationRequest:
     """
 
     summary: Path
-    result_date: str | None = None
     publish: bool = True
     recompute: bool = False
     recompute_validation: bool = False
     recompute_fingerprints: bool = False
 
 
-def validate(request: ValidationRequest) -> dict[str, Any]:
-    """Evaluate one log and optionally publish its generated mechanical bundle."""
+@dataclass(frozen=True)
+class ValidationControllerOutcome:
+    """Canonical evaluation plus controller-owned publication facts."""
+
+    attempt: ValidationAttempt
+    snapshot: ValidationSnapshot
+    published: bool
+    metrics: Mapping[str, object]
+
+
+def validate(request: ValidationRequest) -> ValidationControllerOutcome:
+    """Evaluate one log and optionally publish its completed snapshot."""
 
     if request.summary.is_symlink():
         raise ValidationControllerError(
@@ -122,7 +117,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             "recompute": request.recompute,
             "recompute_fingerprints": request.recompute_fingerprints,
             "recompute_validation": request.recompute_validation,
-            "result_date": request.result_date,
             "summary": requested_summary.as_posix(),
         }
         return {
@@ -146,15 +140,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
             require_mutation_ready(requested_log_root)
             summary = requested_summary.resolve()
             _validate_request(summary)
-            unsupported = _unsupported_metadata_state(summary)
-            if unsupported is not None:
-                context = load_report_context(summary)
-                unsupported["report"] = compose_blocked_validation_report(
-                    context.title,
-                    _unsupported_report_explanation(unsupported),
-                )
-                return unsupported
-            result_date = _result_date(request.result_date)
             log_root = summary.with_suffix("")
             if log_root != requested_log_root.resolve():
                 raise ValidationControllerError(
@@ -164,7 +149,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
                 request,
                 summary,
                 log_root,
-                result_date,
                 starting_snapshot=starting_snapshot,
             )
             return result
@@ -179,35 +163,6 @@ def validate(request: ValidationRequest) -> dict[str, Any]:
         ) from error
 
 
-def evaluate_current_record(
-    summary: Path, *, result_date: str
-) -> MechanicalGeneratedRecord:
-    """Evaluate one current record without locking, publication, or cache writes.
-
-    This narrow service lets a read-only consumer prove that a published result
-    still describes the exact current research source.  The caller must guard
-    the complete source snapshot against concurrent change.
-    """
-
-    summary = summary.resolve()
-    _validate_request(summary)
-    unsupported = _unsupported_metadata_state(summary)
-    if unsupported is not None:
-        raise ValidationControllerError(
-            "generated metadata requires Repair before currentness evaluation"
-        )
-    result = _run_validation(
-        ValidationRequest(summary, result_date=result_date, publish=False),
-        summary,
-        summary.with_suffix(""),
-        _result_date(result_date),
-    )
-    raw = result.get("record")
-    if not isinstance(raw, Mapping):
-        raise ValidationControllerError("mechanical validation did not complete")
-    return MechanicalGeneratedRecord.from_dict(raw)
-
-
 @dataclass(frozen=True)
 class EntryValidationRequest:
     """One non-authoritative stable-entry inspection evaluation."""
@@ -215,22 +170,27 @@ class EntryValidationRequest:
     summary: Path
     entry_id: str
     entry_root: Path
-    result_date: str | None = None
     dry_run: bool = False
     recompute_validation: bool = False
     recompute_fingerprints: bool = False
 
 
 @dataclass(frozen=True)
-class EntryValidationResult:
-    """One scoped evaluation and its best-effort retained inspection identity."""
+class EntryValidationOutcome:
+    """One scoped evaluation and its retained snapshot identity when saved."""
 
     evaluation: EvaluationResult
-    inspection_id: str | None = None
+    stored_snapshot: ValidationSnapshot | None = None
 
     @property
-    def record(self) -> MechanicalGeneratedRecord:
-        return self.evaluation.record
+    def snapshot_id(self) -> str | None:
+        """Return the retained snapshot identity when this result was saved."""
+
+        return (
+            None
+            if self.stored_snapshot is None
+            else self.stored_snapshot.internal_snapshot_id
+        )
 
     @property
     def context(self):
@@ -241,22 +201,27 @@ class EntryValidationResult:
         return self.evaluation.metrics
 
 
-def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
+def validate_entry(request: EntryValidationRequest) -> EntryValidationOutcome:
     """Evaluate exactly one entry under the normal log lock without publishing."""
 
     summary = request.summary.resolve()
     _validate_request(summary)
     from research_log_result_store import results_lock
 
-    from .result_storage import (
-        publish_validation_result,
-        result_metadata_from_evaluation,
+    from .snapshot_storage import (
+        SnapshotPublicationRequest,
+        entry_relations_from_evaluation,
+        load_validation_snapshot,
+        publish_validation_snapshot,
     )
 
     starting_snapshot = research_snapshot(summary)
     with operation_lock(summary.with_suffix(""), "log.lock", mode="exclusive"):
         if research_snapshot(summary) != starting_snapshot:
-            return _source_changed_entry_result(request, "before_entry_evaluation")
+            raise ValidationControllerError(
+                "research sources changed before entry validation completed",
+                code="validation.source_changed",
+            )
         with FingerprintCache(
             project_root(summary),
             writable=False,
@@ -267,113 +232,50 @@ def validate_entry(request: EntryValidationRequest) -> EntryValidationResult:
                 writable=False,
                 reuse=not request.recompute_validation,
             ) as checks:
-                evaluation_started = datetime.now(timezone.utc).isoformat(
-                    timespec="microseconds"
-                )
                 result = evaluate_mechanical(
                     EvaluationRequest(
                         summary,
-                        _result_date(request.result_date),
                         EntryEvaluationTarget(request.entry_id, request.entry_root),
                         fingerprints,
                         checks,
                     )
                 )
-                evaluation_finished = datetime.now(timezone.utc).isoformat(
-                    timespec="microseconds"
-                )
         if research_snapshot(summary) != starting_snapshot:
-            return _source_changed_entry_result(request, "during_entry_evaluation")
-        inspection_id = None
+            raise ValidationControllerError(
+                "research sources changed during entry validation",
+                code="validation.source_changed",
+            )
+        stored_snapshot = None
         if not request.dry_run:
             # The controller owns scoped retention because it owns the lock and
             # the source-stability decision.  A cache write is best effort and
             # never changes the evaluation outcome.
-            projection = build_batch_projection(
-                result.record,
-                invocations=result.context.invocations,
-                registries=result.context.registries,
-                source_identity=_value_digest(starting_snapshot),
-            )
-            if result.record.completion is not CompletionState.INCOMPLETE:
-                with results_lock(summary.with_suffix("")):
-                    source_identity = _value_digest(starting_snapshot)
-                    from .result_storage import ValidationPublicationRequest
-
-                    inspection_id = publish_validation_result(
-                        ValidationPublicationRequest(
-                            summary.with_suffix(""),
-                            result.record,
-                            projection,
-                            None,
-                            result_metadata_from_evaluation(
-                                result.context, source_identity=source_identity
-                            ),
-                            kind="entry",
-                            entry=request.entry_id,
-                            started_at=evaluation_started,
-                            finished_at=evaluation_finished,
-                            source_identity=source_identity,
-                        )
-                    ).result_id
-    return EntryValidationResult(result, inspection_id)
-
-
-def _source_changed_entry_result(
-    request: EntryValidationRequest, phase: str
-) -> EntryValidationResult:
-    """Return a scoped incomplete record instead of recasting drift as an error."""
-
-    from .engine import ENTRY_LIMITATIONS
-    from .mechanical_results import (
-        CheckScope,
-        CheckStatus,
-        FailurePayload,
-        MechanicalCheck,
-    )
-
-    record = MechanicalGeneratedRecord.build(
-        request.summary.resolve().as_posix(),
-        RULES_VERSION,
-        _result_date(request.result_date),
-        (
-            MechanicalCheck(
-                f"entry:{request.entry_id}:source_changed",
-                CheckScope.CONFORMANCE,
-                CheckStatus.UNAVAILABLE,
-                request.summary.resolve().as_posix(),
-                failure=FailurePayload(
-                    "source_changed",
-                    request.summary.resolve().as_posix(),
-                    {"phase": phase},
-                    "Stable Source Observation",
-                ),
-            ),
-        ),
-    )
-    target = EntryEvaluationTarget(request.entry_id, request.entry_root)
-    return EntryValidationResult(
-        EvaluationResult(
-            record,
-            EvaluationContext(target, (), (), (), (), ENTRY_LIMITATIONS, ()),
-            {},
-        )
-    )
+            with results_lock(summary.with_suffix("")):
+                publish_validation_snapshot(
+                    SnapshotPublicationRequest(
+                        summary.with_suffix(""),
+                        result.snapshot,
+                        entry_relations_from_evaluation(result.context),
+                    )
+                )
+                stored_snapshot = load_validation_snapshot(
+                    summary.with_suffix(""), slot=f"entry:{request.entry_id}"
+                )
+    return EntryValidationOutcome(result, stored_snapshot)
 
 
 def _run_validation(
     request: ValidationRequest,
     summary: Path,
     log_root: Path,
-    result_date: str,
     *,
     starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None = None,
-) -> dict[str, Any]:
+) -> ValidationControllerOutcome:
     """Evaluate under the caller-owned publication lifecycle."""
 
     if starting_snapshot is None:
         starting_snapshot = research_snapshot(summary)
-    report_context = load_report_context(summary)
+    generated_residue = _unsupported_metadata_paths(summary)
     recompute_validation = request.recompute or request.recompute_validation
     recompute_fingerprints = request.recompute or request.recompute_fingerprints
     with FingerprintCache(
@@ -386,77 +288,50 @@ def _run_validation(
             writable=request.publish,
             reuse=not recompute_validation,
         ) as validation_cache:
-            evaluation_started = datetime.now(timezone.utc).isoformat(
-                timespec="microseconds"
-            )
             evaluation = evaluate_mechanical(
                 EvaluationRequest(
                     summary,
-                    result_date,
                     FullEvaluationTarget(),
                     fingerprint_cache,
                     validation_cache,
+                    generated_residue,
                 )
             )
-            evaluation_finished = datetime.now(timezone.utc).isoformat(
-                timespec="microseconds"
-            )
-            record = evaluation.record
-            projection = build_batch_projection(
-                record,
-                invocations=evaluation.context.invocations,
-                registries=evaluation.context.registries,
-                source_identity=_value_digest(starting_snapshot),
-            )
-            if not request.publish or record.completion is CompletionState.INCOMPLETE:
-                return _completed_result(
-                    record,
-                    evaluation.metrics,
+            if not request.publish:
+                return ValidationControllerOutcome(
+                    attempt=evaluation.attempt,
+                    snapshot=evaluation.snapshot,
                     published=False,
-                    report_context=report_context,
-                    batch_projection=projection,
+                    metrics=dict(evaluation.metrics),
                 )
             _require_publication_state(
                 summary,
-                fingerprint_cache,
                 starting_snapshot=starting_snapshot,
-                unchanged_report_sha256=None,
             )
             from research_log_result_store import (
                 record_report_materialization,
                 results_lock,
             )
 
-            from .result_storage import (
-                ValidationPublicationRequest,
-                load_validation_report_projection,
-                publish_validation_result,
-                result_metadata_from_evaluation,
+            from .snapshot_report import compose_snapshot_report
+            from .snapshot_storage import (
+                SnapshotPublicationRequest,
+                entry_relations_from_evaluation,
+                load_validation_snapshot,
+                publish_validation_snapshot,
             )
 
             with results_lock(log_root):
-                retained = publish_validation_result(
-                    ValidationPublicationRequest(
+                retained = publish_validation_snapshot(
+                    SnapshotPublicationRequest(
                         log_root,
-                        record,
-                        projection,
-                        report_context,
-                        result_metadata_from_evaluation(
-                            evaluation.context,
-                            source_identity=_value_digest(starting_snapshot),
-                        ),
-                        started_at=evaluation_started,
-                        finished_at=evaluation_finished,
-                        source_identity=_value_digest(starting_snapshot),
+                        evaluation.snapshot,
+                        entry_relations_from_evaluation(evaluation.context),
                     )
                 )
                 try:
-                    stored_projection = load_validation_report_projection(log_root)
-                    report_bytes = compose_validation_report(
-                        stored_projection.record,
-                        context=cast(ReportContext, stored_projection.context),
-                        groups=cast(Any, stored_projection.groups),
-                    ).encode()
+                    stored_snapshot = load_validation_snapshot(log_root)
+                    report_bytes = compose_snapshot_report(stored_snapshot).encode()
                 except Exception as error:
                     raise _committed_report_error(
                         "render_failed", retained, error
@@ -465,8 +340,11 @@ def _run_validation(
                     publish_validation_outputs_locked(
                         log_root,
                         {VALIDATION_REPORT: report_bytes},
-                        validate_current=lambda: _require_unsupported_metadata_clear(
-                            summary
+                        validate_current=lambda: (
+                            _require_unsupported_metadata_unchanged(
+                                summary,
+                                generated_residue,
+                            )
                         ),
                     )
                 except Exception as error:
@@ -490,42 +368,26 @@ def _run_validation(
                 **fingerprint_cache.metrics.as_dict(),
                 **validation_cache.metrics.as_dict(),
             }
-            completed = _completed_result(
-                record,
-                metrics,
+            return ValidationControllerOutcome(
+                attempt=evaluation.attempt,
+                snapshot=stored_snapshot,
                 published=True,
-                report_context=report_context,
-                batch_projection=projection,
+                metrics=metrics,
             )
-            completed["_inspection_id"] = retained.result_id
-            return completed
 
 
 def _committed_report_error(
     kind: str, retained: object, error: Exception
 ) -> ValidationControllerError:
-    """Name a report-only failure without recasting its committed result as failed."""
+    """Name a report-only failure without recasting its snapshot as failed."""
 
-    result_id = getattr(retained, "result_id", "unknown")
+    snapshot_id = getattr(retained, "snapshot_id", "unknown")
     generation = getattr(retained, "generation", "unknown")
     return ValidationControllerError(
-        "validation result committed: "
-        f"id={result_id}; generation={generation}; {error}",
-        code=f"results.report.{kind}",
+        "validation snapshot committed: "
+        f"id={snapshot_id}; generation={generation}; {error}",
+        code=f"validation.report.{kind}",
     )
-
-
-def _current_report_identity(
-    log_root: Path, fingerprint_cache: FingerprintCache
-) -> str | None:
-    path = log_root / RESULTS_STORE
-    if path.is_symlink() or not path.is_file():
-        return None
-    try:
-        observation = fingerprint_cache.observe_regular_file(path)
-    except FingerprintCacheError:
-        return None
-    return observation.fingerprint.digest
 
 
 def _validate_request(summary: Path) -> None:
@@ -540,23 +402,7 @@ def _validate_request(summary: Path) -> None:
         )
 
 
-def _result_date(value: str | None) -> str:
-    if value is None:
-        return date.today().isoformat()
-    try:
-        parsed = date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValidationControllerError(
-            f"validation date must use YYYY-MM-DD: {value!r}"
-        ) from exc
-    if parsed.isoformat() != value:
-        raise ValidationControllerError(
-            f"validation date must use YYYY-MM-DD: {value!r}"
-        )
-    return value
-
-
-def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
+def _unsupported_metadata_paths(summary: Path) -> tuple[str, ...]:
     log_root = summary.with_suffix("")
     unsupported_state = [
         relative
@@ -576,48 +422,33 @@ def _unsupported_metadata_state(summary: Path) -> dict[str, Any] | None:
         if any(marker in prefix for marker in UNSUPPORTED_REPORT_MARKERS):
             unsupported_state.append("validation.md")
     unsupported_state = sorted(set(unsupported_state))
-    if not unsupported_state:
-        return None
-    return {
-        "code": "validation.unsupported_metadata",
-        "observed": {"paths": unsupported_state},
-        "published": False,
-        "schema": RESULT_SCHEMA,
-        "status": "unsupported_metadata",
-        "summary": summary.as_posix(),
-    }
+    return tuple(unsupported_state)
 
 
-def _unsupported_report_explanation(state: Mapping[str, Any]) -> str:
-    """Name the bounded generated paths that require Repair."""
-
-    observed = state.get("observed")
-    paths = observed.get("paths") if isinstance(observed, Mapping) else None
-    if not isinstance(paths, list):
-        return "Generated metadata requires Repair before validation can run"
-    displayed = ", ".join(f"`{path}`" for path in paths if isinstance(path, str))
-    if not displayed:
-        return "Generated metadata requires Repair before validation can run"
-    return "Generated metadata requires Repair before validation can run: " + displayed
-
-
-def _require_unsupported_metadata_clear(summary: Path) -> None:
-    state = _unsupported_metadata_state(summary)
-    if state is not None:
+def _require_unsupported_metadata_unchanged(
+    summary: Path,
+    expected: tuple[str, ...],
+) -> None:
+    observed = _unsupported_metadata_paths(summary)
+    expected_structural = tuple(path for path in expected if path != "validation.md")
+    observed_structural = tuple(path for path in observed if path != "validation.md")
+    if observed_structural != expected_structural:
         raise ValidationControllerError(
-            "research log acquired unsupported metadata during validation: "
-            + json.dumps(state["observed"], sort_keys=True)
+            "generated validation residue changed during validation: "
+            + json.dumps(
+                {
+                    "expected": expected_structural,
+                    "observed": observed_structural,
+                }
+            )
         )
 
 
 def _require_publication_state(
     summary: Path,
-    fingerprint_cache: FingerprintCache,
     *,
     starting_snapshot: tuple[tuple[str, tuple[int, ...]], ...] | None,
-    unchanged_report_sha256: str | None,
 ) -> None:
-    _require_unsupported_metadata_clear(summary)
     if (
         starting_snapshot is not None
         and research_snapshot(summary) != starting_snapshot
@@ -625,40 +456,6 @@ def _require_publication_state(
         raise ValidationControllerError(
             "research-owned state changed during validation"
         )
-    if unchanged_report_sha256 is None:
-        return
-    observed = _current_report_identity(summary.with_suffix(""), fingerprint_cache)
-    if observed != unchanged_report_sha256:
-        raise ValidationControllerError(
-            "authoritative mechanical report changed during validation"
-        )
-
-
-def _completed_result(
-    record: MechanicalGeneratedRecord,
-    metrics: Mapping[str, Any],
-    *,
-    published: bool,
-    report_context: ReportContext,
-    batch_projection: Mapping[str, object],
-) -> dict[str, Any]:
-    log_root = Path(record.summary).with_suffix("")
-    return {
-        "metrics": dict(metrics),
-        "_batch_projection": dict(batch_projection),
-        "published": published,
-        "record": record.as_dict(),
-        "report": compose_validation_command_report(
-            record,
-            context=report_context,
-            published=published,
-            human_report=(log_root / VALIDATION_REPORT).as_posix(),
-            mechanical_report=(log_root / RESULTS_STORE).as_posix(),
-        ),
-        "schema": RESULT_SCHEMA,
-        "status": record.completion.value,
-        "summary": record.summary,
-    }
 
 
 def _value_digest(value: object) -> str:

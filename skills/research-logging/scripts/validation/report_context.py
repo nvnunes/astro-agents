@@ -1,44 +1,26 @@
-"""Shared human projection for mechanical validation findings."""
+"""Human wording and bounded research-log report context."""
 
 from __future__ import annotations
 
-import json
 import re
-from collections import defaultdict, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
-
-from .mechanical_results import (
-    CheckScope,
-    CheckStatus,
-    FailurePayload,
-    MechanicalCheck,
-    MechanicalGeneratedRecord,
-)
 
 ENTRY_ID_RE = re.compile(r"e[0-9]{3,}[a-z]?\Z", re.I)
-ENTRY_TOKEN_RE = re.compile(r"(?:^|:)(e[0-9]{3,}[a-z]?)(?=:|$)", re.I)
-ENTRY_DIRECTORY_RE = re.compile(
-    r"(?:^|/)[0-9]{4}-[0-9]{2}-[0-9]{2}-(e[0-9]{3,})-", re.I
-)
 ENTRY_LINK_RE = re.compile(
     r"\[(?P<title>[^\]\r\n]+)\]"
     r"\((?P<target><?[^()\s\r\n]+>?)\)"
 )
-SPLIT_ENTRY_PARENT_RE = re.compile(
-    r"^- `[0-9]{4}-[0-9]{2}-[0-9]{2}` (?P<title>.+):$"
-)
+SPLIT_ENTRY_PARENT_RE = re.compile(r"^- `[0-9]{4}-[0-9]{2}-[0-9]{2}` (?P<title>.+):$")
 ENTRY_FOLDER_ID_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}-(?P<entry>e[0-9]{3,})-.+\Z"
 )
-SUMMARY_LINE_RE = re.compile(r"summary:(?P<line>[1-9][0-9]*)\Z")
 MAX_SUMMARY_BYTES = 8 * 1024 * 1024
 
 
-class HumanProjectionError(ValueError):
-    """Raised when a machine finding has no complete human projection."""
+class PresentationError(ValueError):
+    """Raised when bounded presentation context cannot be assembled."""
 
 
 @dataclass(frozen=True)
@@ -75,28 +57,6 @@ class ReportContext:
 
         summary = summary.absolute()
         return cls(summary.stem, summary, summary.with_suffix(""), {})
-
-
-@dataclass(frozen=True)
-class FindingGroup:
-    """One deterministic human issue signature over machine checks."""
-
-    status: CheckStatus
-    scope: CheckScope
-    code: str
-    entry: str | None
-    subject: str
-    rule: str
-    observed: Mapping[str, Any]
-    presentation: FindingPresentation
-    check_ids: tuple[str, ...]
-    impacted_checks: int
-
-    @property
-    def represented_checks(self) -> int:
-        """Return the number of exact checks represented by this group."""
-
-        return len(self.check_ids)
 
 
 CATALOG: Mapping[str, FindingPresentation] = {
@@ -310,9 +270,14 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "More than one evidence record uses the same ID.",
         "record",
     ),
-    "hygiene.output.unmatched": FindingPresentation(
+    "orphan.output.unmatched": FindingPresentation(
         "Unmatched Recorded Output",
         "A recorded output is not used by current evidence or provenance.",
+        "path",
+    ),
+    "orphan.generated.residue": FindingPresentation(
+        "Obsolete Validation Artifact",
+        "An artifact from an unsupported validation layout remains in the log.",
         "path",
     ),
     "invocation.command.unsupported": FindingPresentation(
@@ -543,19 +508,9 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The recorded execution no longer matches the current producing command.",
         "path",
     ),
-    "provenance.output.signature_mismatch": FindingPresentation(
-        "Output Signature Mismatch",
-        "The producing invocation no longer matches the recorded output signature.",
-        "path",
-    ),
     "provenance.output.signature_unsupported": FindingPresentation(
         "Unsupported Output Signature",
         "The output record uses a signature form no longer accepted by the validator.",
-        "path",
-    ),
-    "provenance.output.reproduction_required": FindingPresentation(
-        "Output Requires Reproduction",
-        "The recorded output still requires reproduction.",
         "path",
     ),
     "provenance.output.unrecorded": FindingPresentation(
@@ -587,6 +542,21 @@ CATALOG: Mapping[str, FindingPresentation] = {
     "reproduction.comparison.tolerance_incompatible": FindingPresentation(
         "Incompatible Reproduction Tolerance",
         "A reproduction tolerance does not apply to a numeric selected value.",
+        "record",
+    ),
+    "pyrun.command.missing": FindingPresentation(
+        "Missing Recorded Execution",
+        "A current recorded command has no matching retained execution state.",
+        "command",
+    ),
+    "pyrun.command.recipe_changed": FindingPresentation(
+        "Recorded Command Recipe Changed",
+        "The current recorded command recipe differs from its retained execution.",
+        "command",
+    ),
+    "pyrun.command.stale": FindingPresentation(
+        "Stale Recorded Execution",
+        "Retained execution state has no exact current recorded-command match.",
         "record",
     ),
     "pyrun.output.identity_invalid": FindingPresentation(
@@ -806,10 +776,10 @@ def load_report_context(summary: Path) -> ReportContext:
     summary = summary.absolute()
     try:
         if summary.stat().st_size > MAX_SUMMARY_BYTES:
-            raise HumanProjectionError("maintained summary exceeds report bound")
+            raise PresentationError("maintained summary exceeds report bound")
         text = summary.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        raise HumanProjectionError(
+        raise PresentationError(
             f"could not read maintained summary for reporting: {error}"
         ) from error
     first = text.splitlines()[0] if text else ""
@@ -901,389 +871,3 @@ def _entry_target(raw_target: str, log_root: Path) -> PurePosixPath | None:
     if not target.parts or target.parts[0] != "entries":
         return None
     return target
-
-
-def project_findings(
-    record: MechanicalGeneratedRecord,
-    context: ReportContext | None = None,
-) -> tuple[FindingGroup, ...]:
-    """Project direct non-passing checks into deterministic issue groups."""
-
-    context = context or ReportContext.empty(Path(record.summary))
-    impacted = _dependent_impacts(record.checks)
-    grouped: dict[
-        tuple[str, ...],
-        tuple[MechanicalCheck, FindingPresentation, str | None, str],
-    ] = {}
-    identities: dict[tuple[str, ...], list[str]] = defaultdict(list)
-    impacts: dict[tuple[str, ...], set[str]] = defaultdict(set)
-    for check in record.checks:
-        if check.status not in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}:
-            continue
-        if check.failure is None:
-            raise HumanProjectionError(
-                f"direct non-passing check has no failure: {check.identity}"
-            )
-        presentation = CATALOG.get(check.failure.code)
-        if presentation is None:
-            raise HumanProjectionError(
-                f"missing human presentation for {check.failure.code}"
-            )
-        entry = _entry_id(check, context)
-        subject = logical_subject(check, context, entry)
-        observed = json.dumps(
-            dict(check.failure.observed),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        signature: tuple[str, ...] = (
-            check.status.value,
-            check.failure.code,
-            entry or "",
-            subject,
-            check.failure.rule,
-            observed,
-        )
-        grouped.setdefault(signature, (check, presentation, entry, subject))
-        identities[signature].append(check.identity)
-        impacts[signature].update(impacted.get(check.identity, ()))
-    result = []
-    for signature, (check, presentation, entry, subject) in grouped.items():
-        assert check.failure is not None
-        result.append(
-            FindingGroup(
-                check.status,
-                check.scope,
-                check.failure.code,
-                entry,
-                subject,
-                check.failure.rule,
-                dict(check.failure.observed),
-                presentation,
-                tuple(sorted(identities[signature])),
-                len(impacts[signature]),
-            )
-        )
-    return tuple(sorted(result, key=finding_sort_key))
-
-
-def finding_sort_key(group: FindingGroup) -> tuple[object, ...]:
-    """Return the stable human and machine inventory order."""
-
-    entry = _entry_sort_key(group.entry)
-    return (
-        *entry,
-        group.presentation.name.casefold(),
-        group.code,
-        group.subject.casefold(),
-        group.status.value,
-        json.dumps(
-            dict(group.observed),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
-        group.check_ids[0],
-    )
-
-
-def logical_subject(
-    check: MechanicalCheck,
-    context: ReportContext,
-    entry: str | None = None,
-) -> str:
-    """Return one bounded human logical subject without reading source files."""
-
-    failure = check.failure
-    subject = check.subject
-    summary_match = SUMMARY_LINE_RE.fullmatch(subject)
-    if summary_match is not None:
-        return f"Summary line {summary_match.group('line')}"
-    observed = _observed_subject(failure)
-    if observed is not None:
-        return observed
-    entry_relative = _entry_relative_subject(subject, context, entry)
-    if entry_relative is not None:
-        return entry_relative
-    relative = _relative_path(subject, context.log_root)
-    if relative is not None:
-        return _short_log_path(relative)
-    return _fallback_subject(subject)
-
-
-def _observed_subject(failure: object) -> str | None:
-    if not isinstance(failure, FailurePayload):
-        return None
-    for key in ("relative", "output"):
-        value = failure.observed.get(key)
-        if isinstance(value, str) and value:
-            return _portable(value)
-    return None
-
-
-def _entry_relative_subject(
-    subject: str,
-    context: ReportContext,
-    entry: str | None,
-) -> str | None:
-    if entry is None or entry not in context.entries:
-        return None
-    return _relative_path(subject, context.entries[entry].root)
-
-
-def _short_log_path(relative: str) -> str:
-    parts = PurePosixPath(relative).parts
-    if len(parts) >= 4 and parts[0] == "entries":
-        return PurePosixPath(*parts[2:]).as_posix()
-    return relative
-
-
-def _fallback_subject(subject: str) -> str:
-    if subject.startswith("entries/") and ":" in subject:
-        return subject.rsplit(":", 1)[-1]
-    if _looks_absolute(subject):
-        return f"<external>/{Path(subject).name}"
-    return _portable(subject)
-
-
-def area_results(
-    record: MechanicalGeneratedRecord,
-    groups: Sequence[FindingGroup],
-) -> Mapping[str, str]:
-    """Return the shared four-area human result vocabulary."""
-
-    by_scope: dict[CheckScope, list[FindingGroup]] = defaultdict(list)
-    for group in groups:
-        by_scope[group.scope].append(group)
-    return {
-        "Structure": _ordinary_area(
-            record, CheckScope.CONFORMANCE, by_scope[CheckScope.CONFORMANCE]
-        ),
-        "Evidence": _ordinary_area(
-            record, CheckScope.EVIDENCE, by_scope[CheckScope.EVIDENCE]
-        ),
-        "Provenance": _provenance_area(record, by_scope[CheckScope.PROVENANCE]),
-        "Hygiene": _ordinary_area(
-            record, CheckScope.ORPHAN, by_scope[CheckScope.ORPHAN]
-        ),
-    }
-
-
-def provenance_artifact_counts(
-    record: MechanicalGeneratedRecord,
-) -> Mapping[str, int]:
-    """Count unique provenance artifacts by their worst human status."""
-
-    failure_affected = _failure_affected_provenance_checks(record.checks)
-    artifacts: dict[str, set[CheckStatus]] = defaultdict(set)
-    for check in record.checks:
-        if check.scope is not CheckScope.PROVENANCE:
-            continue
-        for artifact in _check_artifacts(check):
-            status = check.status
-            if (
-                check.failure is not None
-                and check.failure.code == "provenance.output.reproduction_required"
-            ):
-                status = CheckStatus.UNAVAILABLE
-            elif (
-                status is CheckStatus.NOT_APPLICABLE
-                and check.identity in failure_affected
-            ):
-                status = CheckStatus.FAIL
-            artifacts[artifact].add(status)
-    counts = {status.value: 0 for status in CheckStatus}
-    for statuses in artifacts.values():
-        for status in (
-            CheckStatus.FAIL,
-            CheckStatus.UNAVAILABLE,
-            CheckStatus.PASS,
-            CheckStatus.NOT_APPLICABLE,
-        ):
-            if status in statuses:
-                counts[status.value] += 1
-                break
-    return counts
-
-
-def _ordinary_area(
-    record: MechanicalGeneratedRecord,
-    scope: CheckScope,
-    groups: Sequence[FindingGroup],
-) -> str:
-    checks = [check for check in record.checks if check.scope is scope]
-    if any(group.status is CheckStatus.UNAVAILABLE for group in groups):
-        return "Incomplete"
-    if groups:
-        return f"{len(groups)} {_plural(len(groups), 'issue')}"
-    if (
-        checks
-        and all(check.status is CheckStatus.NOT_APPLICABLE for check in checks)
-        and any(check.dependencies for check in checks)
-    ):
-        return "—"
-    return "Clear"
-
-
-def _provenance_area(
-    record: MechanicalGeneratedRecord,
-    groups: Sequence[FindingGroup],
-) -> str:
-    if any(group.status is CheckStatus.UNAVAILABLE for group in groups):
-        return "Incomplete"
-    counts = provenance_artifact_counts(record)
-    values = []
-    failed = counts[CheckStatus.FAIL.value]
-    reproduction_required = counts[CheckStatus.UNAVAILABLE.value]
-    if failed:
-        values.append(f"{failed} artifact {_plural(failed, 'issue')}")
-    if reproduction_required:
-        values.append(f"{reproduction_required} await reproduction")
-    if values:
-        return " · ".join(values)
-    checks = [check for check in record.checks if check.scope is CheckScope.PROVENANCE]
-    if (
-        checks
-        and all(check.status is CheckStatus.NOT_APPLICABLE for check in checks)
-        and any(check.dependencies for check in checks)
-    ):
-        return "—"
-    return "Clear"
-
-
-def _entry_id(
-    check: MechanicalCheck,
-    context: ReportContext,
-) -> str | None:
-    match = ENTRY_TOKEN_RE.search(check.identity)
-    if match is not None:
-        return match.group(1).lower()
-    if check.failure is not None:
-        for key in ("entry", "owner", "document"):
-            value = check.failure.observed.get(key)
-            if not isinstance(value, str):
-                continue
-            match = ENTRY_DIRECTORY_RE.search(value.replace("\\", "/"))
-            if match is not None:
-                return match.group(1).lower()
-            if ENTRY_ID_RE.fullmatch(value):
-                return value.lower()
-    for entry_id, entry in context.entries.items():
-        if _relative_path(check.subject, entry.root) is not None:
-            return entry_id
-    return None
-
-
-def _dependent_impacts(
-    checks: Sequence[MechanicalCheck],
-) -> Mapping[str, frozenset[str]]:
-    reverse: dict[str, set[str]] = defaultdict(set)
-    not_applicable = {
-        check.identity for check in checks if check.status is CheckStatus.NOT_APPLICABLE
-    }
-    for check in checks:
-        if check.identity not in not_applicable:
-            continue
-        for dependency in check.dependencies:
-            identity = dependency.get("dependency")
-            if isinstance(identity, str) and identity:
-                reverse[identity].add(check.identity)
-    result: dict[str, frozenset[str]] = {}
-    for check in checks:
-        if check.status not in {CheckStatus.FAIL, CheckStatus.UNAVAILABLE}:
-            continue
-        found: set[str] = set()
-        queue = deque(reverse.get(check.identity, ()))
-        while queue:
-            identity = queue.popleft()
-            if identity in found:
-                continue
-            found.add(identity)
-            queue.extend(reverse.get(identity, ()))
-        result[check.identity] = frozenset(found)
-    return result
-
-
-def _failure_affected_provenance_checks(
-    checks: Sequence[MechanicalCheck],
-) -> set[str]:
-    affected = {
-        check.identity
-        for check in checks
-        if check.scope is CheckScope.PROVENANCE
-        and check.status is CheckStatus.FAIL
-        and (
-            check.failure is None
-            or check.failure.code != "provenance.output.reproduction_required"
-        )
-    }
-    pending = [
-        check
-        for check in checks
-        if check.scope is CheckScope.PROVENANCE
-        and check.status is CheckStatus.NOT_APPLICABLE
-    ]
-    while pending:
-        remaining = []
-        changed = False
-        for check in pending:
-            if _check_dependencies(check) & affected:
-                affected.add(check.identity)
-                changed = True
-            else:
-                remaining.append(check)
-        if not changed:
-            break
-        pending = remaining
-    return affected
-
-
-def _check_artifacts(check: MechanicalCheck) -> set[str]:
-    artifacts: set[str] = set()
-    for dependency in check.dependencies:
-        values = dependency.get("artifacts")
-        if isinstance(values, list):
-            artifacts.update(
-                value for value in values if isinstance(value, str) and value
-            )
-    return artifacts
-
-
-def _check_dependencies(check: MechanicalCheck) -> set[str]:
-    dependencies: set[str] = set()
-    for dependency in check.dependencies:
-        value = dependency.get("dependency")
-        if isinstance(value, str) and value:
-            dependencies.add(value)
-    return dependencies
-
-
-def _entry_sort_key(entry: str | None) -> tuple[int, int, str]:
-    if entry is None:
-        return (1, 0, "")
-    match = re.fullmatch(r"e(?P<number>[0-9]+)(?P<suffix>[a-z]?)", entry, re.I)
-    if match is None:
-        return (0, 0, entry.casefold())
-    return (0, int(match.group("number")), match.group("suffix").casefold())
-
-
-def _relative_path(value: str, root: Path) -> str | None:
-    if not _looks_absolute(value):
-        return None
-    try:
-        return Path(value).absolute().relative_to(root.absolute()).as_posix()
-    except ValueError:
-        return None
-
-
-def _looks_absolute(value: str) -> bool:
-    return value.startswith("/") or bool(re.match(r"[A-Za-z]:[/\\]", value))
-
-
-def _portable(value: str) -> str:
-    return value.replace("\\", "/")
-
-
-def _plural(count: int, singular: str) -> str:
-    return singular if count == 1 else singular + "s"

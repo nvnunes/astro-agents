@@ -5,13 +5,13 @@ import json
 import sqlite3
 import tempfile
 from contextlib import closing
-from dataclasses import replace
-from datetime import datetime, timezone
+from dataclasses import fields
 from pathlib import Path
 
 from research_log_result_store import (
     ResultStoreError,
     record_report_materialization,
+    result_generation,
     result_snapshot,
 )
 from research_log_validation_test_support import (
@@ -20,26 +20,22 @@ from research_log_validation_test_support import (
     unittest,
     write,
 )
-from validation.batch_projection import build_batch_projection
-from validation.result_storage import (
-    ValidationPublicationRequest,
-    export_validation_result,
-    latest_full_validation,
-    load_mechanical_record,
-    publish_diagnostic_commands,
-    publish_validation_result,
+from validation.command_diagnostics import publish_command_diagnostic
+from validation.snapshot_storage import (
+    SnapshotPublicationRequest,
+    load_validation_snapshot,
+    publish_validation_snapshot,
 )
 
 CONTROLLER = importlib.import_module("validation.controller")
 DATA = importlib.import_module("research_log_data")
+DOMAIN = importlib.import_module("validation.domain")
 ENGINE = importlib.import_module("validation.engine")
 FINGERPRINT_CACHE = importlib.import_module("validation.fingerprint_cache")
-HUMAN = importlib.import_module("validation.human_projection")
+REPORT_CONTEXT = importlib.import_module("validation.report_context")
 LOCATOR = importlib.import_module("validation.locator")
 OPERATION_STATE = importlib.import_module("validation.operation_state")
 RECORDS = importlib.import_module("validation.records")
-REPORT = importlib.import_module("validation.report")
-RESULTS = importlib.import_module("validation.mechanical_results")
 VALIDATION_CACHE = importlib.import_module("validation.validation_cache")
 
 
@@ -60,10 +56,15 @@ def _result_rows(log_root: Path) -> list[tuple[object, ...]]:
         return [
             tuple(row)
             for row in database.execute(
-                "SELECT result_id, generation, slot FROM validation_results "
+                "SELECT snapshot_id, generation, slot FROM validation_snapshots "
                 "ORDER BY generation"
             )
         ]
+
+
+def _stored_snapshot(log_root: Path, slot: str = "full"):
+    snapshot = load_validation_snapshot(log_root, slot=slot)
+    return snapshot, result_generation(log_root, "validation")
 
 
 def _marker(log_root: Path) -> tuple[object, ...] | None:
@@ -75,559 +76,36 @@ def _marker(log_root: Path) -> tuple[object, ...] | None:
         return None if row is None else tuple(row)
 
 
+def _attempt_outcome(result) -> str:
+    return result.snapshot.outcome.value
+
+
 class MechanicalControllerTests(unittest.TestCase):
-    def test_report_leaves_zero_check_scope_status_blank(self) -> None:
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    "conformance:log",
-                    RESULTS.CheckScope.CONFORMANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    "summary",
-                    failure=RESULTS.FailurePayload(
-                        "association.declaration_missing",
-                        "summary",
-                        {"entries": 0},
-                        "Evidence Files And Unsupported Metadata",
-                    ),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertNotIn("Validated:", report)
-        self.assertEqual(
-            report,
-            REPORT.compose_validation_report(replace(record, result_date="2026-08-31")),
-        )
-
-        self.assertIn("| Structure | 1 issue |", report)
-        self.assertIn("| Evidence | Clear |", report)
-        self.assertIn("| Provenance | Clear |", report)
-        self.assertIn("| Hygiene | Clear |", report)
-
-    def test_report_counts_unique_provenance_artifacts_not_evidence_checks(
-        self,
-    ) -> None:
-        artifact = "/project/data/result.csv"
-        second = "/project/data/second.csv"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:first",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.PASS,
-                    "first",
-                    ({"artifacts": [artifact]},),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:second",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    "second",
-                    ({"artifacts": [artifact]},),
-                    RESULTS.FailurePayload(
-                        "producer.missing",
-                        "second",
-                        {"material": artifact},
-                        "Provenance Starting Points And Traversal",
-                    ),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:third",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.PASS,
-                    "third",
-                    ({"artifacts": [second]},),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:summary:1",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    "summary:1",
-                    ({"target": "provenance:e001:second"},),
-                    RESULTS.FailurePayload(
-                        "summary.reference.target_invalid",
-                        "summary:1",
-                        {"target_status": "fail"},
-                        "Summary Association",
-                    ),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn("| Provenance | 1 artifact issue |", report)
-
-    def test_batch_report_composes_ready_to_present_shared_scope_counts(
-        self,
-    ) -> None:
-        failed_artifact = "/project/data/failed.csv"
-        unconfirmed_artifact = "/project/data/unconfirmed.csv"
-        checks = (
-            RESULTS.MechanicalCheck(
-                "conformance:log",
-                RESULTS.CheckScope.CONFORMANCE,
-                RESULTS.CheckStatus.FAIL,
-                "summary",
-                failure=RESULTS.FailurePayload(
-                    "association.declaration_missing", "summary", {}, "Summary"
-                ),
-            ),
-            RESULTS.MechanicalCheck(
-                "evidence:e001:pass",
-                RESULTS.CheckScope.EVIDENCE,
-                RESULTS.CheckStatus.PASS,
-                "pass",
-            ),
-            RESULTS.MechanicalCheck(
-                "evidence:e001:fail",
-                RESULTS.CheckScope.EVIDENCE,
-                RESULTS.CheckStatus.FAIL,
-                "fail",
-                failure=RESULTS.FailurePayload(
-                    "evidence.declaration.invalid", "fail", {}, "Evidence"
-                ),
-            ),
-            RESULTS.MechanicalCheck(
-                "provenance:e001:failed",
-                RESULTS.CheckScope.PROVENANCE,
-                RESULTS.CheckStatus.FAIL,
-                failed_artifact,
-                ({"artifacts": [failed_artifact]},),
-                RESULTS.FailurePayload(
-                    "producer.missing",
-                    failed_artifact,
-                    {},
-                    "Provenance",
-                ),
-            ),
-            RESULTS.MechanicalCheck(
-                "provenance:e001:unconfirmed",
-                RESULTS.CheckScope.PROVENANCE,
-                RESULTS.CheckStatus.FAIL,
-                unconfirmed_artifact,
-                ({"artifacts": [unconfirmed_artifact]},),
-                RESULTS.FailurePayload(
-                    "provenance.output.reproduction_required",
-                    unconfirmed_artifact,
-                    {},
-                    "Provenance",
-                ),
-            ),
-            *(
-                RESULTS.MechanicalCheck(
-                    f"orphan:e001:{number}",
-                    RESULTS.CheckScope.ORPHAN,
-                    RESULTS.CheckStatus.FAIL,
-                    f"orphan-{number}",
-                    failure=RESULTS.FailurePayload(
-                        "orphan.material.unused",
-                        f"orphan-{number}",
-                        {},
-                        "Hygiene",
-                    ),
-                )
-                for number in range(2)
-            ),
-        )
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md", "test-rules", "2026-08-30", checks
-        )
-        projection = {
-            "chains": [
-                {
-                    "chain_id": "structure",
-                    "findings": [
-                        {
-                            "code": "association.declaration_missing",
-                            "scope": "conformance",
-                            "status": "fail",
-                        }
-                    ],
-                },
-                {
-                    "chain_id": "provenance-and-hygiene",
-                    "findings": [
-                        {
-                            "code": "producer.missing",
-                            "scope": "provenance",
-                            "status": "fail",
-                        },
-                        {
-                            "code": "orphan.material.unused",
-                            "scope": "orphan",
-                            "status": "fail",
-                        },
-                    ],
-                },
-                {
-                    "chain_id": "second-hygiene",
-                    "findings": [
-                        {
-                            "code": "orphan.material.unused",
-                            "scope": "orphan",
-                            "status": "fail",
-                        }
-                    ],
-                },
-                {
-                    "chain_id": "confirmation",
-                    "findings": [
-                        {
-                            "code": "provenance.output.reproduction_required",
-                            "observed": {"producer": "execution-1"},
-                            "scope": "provenance",
-                            "status": "fail",
-                        }
-                    ],
-                },
-            ],
-            "unresolved": [],
-        }
-        projection["repair_batches"] = []
-        for chain in projection["chains"]:
-            members = []
-            for number, finding in enumerate(chain["findings"]):
-                finding["identity"] = f"{chain['chain_id']}:{number}"
-                members.append(finding["identity"])
-            projection["repair_batches"].append(
-                {
-                    "batch_type": "chain",
-                    "grouping_reason": "command_chain",
-                    "primary_finding_ids": members,
-                }
-            )
-        row = REPORT.ValidationBatchReportRow(
-            "Study | One",
-            "/project/docs/study.md",
-            "/project/docs/study/validation.md",
-            "log results export --path /project/docs/study --format json",
-            True,
-            REPORT.batch_area_results(record, projection),
-        )
-
-        report = REPORT.compose_validation_batch_report((row,))
-
-        self.assertIn(
-            "| [Study \\| One](</project/docs/study.md>) | 3 chains | 1 | 1 | "
-            "[Human](</project/docs/study/validation.md>) |",
-            report,
-        )
-
-    def test_batch_report_counts_inspection_groups(self) -> None:
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md", "test-rules", "2026-08-30", ()
-        )
-        projection = {
-            "chains": [],
-            "unresolved": [
-                {
-                    "findings": [
-                        {
-                            "identity": "unassigned-1",
-                            "code": "command.syntax.invalid",
-                            "scope": "conformance",
-                            "status": "fail",
-                        }
-                    ]
-                }
-            ],
-            "repair_batches": [
-                {
-                    "batch_type": "structural",
-                    "grouping_reason": "inspection_group",
-                    "primary_finding_ids": ["unassigned-1"],
-                }
-            ],
-        }
-        self.assertEqual(
-            REPORT.batch_area_results(record, projection),
-            {"Structure": "1 inspection", "Evidence": "Clear", "Reproduction": "Clear"},
-        )
-
-    def test_batch_report_preserves_chain_and_inspection_counts(self) -> None:
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md", "test-rules", "2026-08-30", ()
-        )
-        findings = [
-            {
-                "identity": f"finding-{number}",
-                "code": "command.syntax.invalid",
-                "scope": "conformance",
-                "status": "fail",
-            }
-            for number in range(3)
-        ]
-        projection = {
-            "chains": [{"chain_id": "chain-1", "findings": findings[:1]}],
-            "unresolved": [{"findings": findings[1:]}],
-            "repair_batches": [
-                {
-                    "batch_type": "chain" if number == 0 else "structural",
-                    "grouping_reason": "command_chain"
-                    if number == 0
-                    else "inspection_group",
-                    "primary_finding_ids": [finding["identity"]],
-                }
-                for number, finding in enumerate(findings)
-            ],
-        }
-        self.assertEqual(
-            REPORT.batch_area_results(record, projection),
-            {
-                "Structure": "1 chain + 2 inspection",
-                "Evidence": "Clear",
-                "Reproduction": "Clear",
-            },
-        )
-
-    def test_batch_report_reserves_dash_for_incomplete_structure(self) -> None:
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md", "test-rules", "2026-08-30", ()
-        )
-        projection = {
-            "chains": [
-                {
-                    "chain_id": "chain-1",
-                    "findings": [
-                        {
-                            "code": "command.syntax.invalid",
-                            "scope": "conformance",
-                            "status": "unavailable",
-                        }
-                    ],
-                }
-            ],
-            "unresolved": [],
-        }
-        self.assertEqual(
-            REPORT.batch_area_results(record, projection),
-            {"Structure": "—", "Evidence": "Clear", "Reproduction": "Clear"},
-        )
-
-    def test_report_counts_unconfirmed_output_as_unavailable_artifact(self) -> None:
-        artifact = "/project/data/migrated.csv"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:migrated",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    artifact,
-                    ({"artifacts": [artifact]},),
-                    RESULTS.FailurePayload(
-                        "provenance.output.reproduction_required",
-                        artifact,
-                        {"output": "data/migrated.csv"},
-                        "Mechanical Validation Evaluation And Outcomes",
-                    ),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn("| Provenance | 1 await reproduction |", report)
-
-    def test_report_prefers_actual_failure_over_unconfirmed_output(self) -> None:
-        artifact = "/project/data/migrated.csv"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:migrated",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    artifact,
-                    ({"artifacts": [artifact]},),
-                    RESULTS.FailurePayload(
-                        "provenance.output.reproduction_required",
-                        artifact,
-                        {"output": "data/migrated.csv"},
-                        "Mechanical Validation Evaluation And Outcomes",
-                    ),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:missing-producer",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    artifact,
-                    ({"artifacts": [artifact]},),
-                    RESULTS.FailurePayload(
-                        "producer.missing",
-                        artifact,
-                        {"material": artifact},
-                        "Provenance Starting Points And Traversal",
-                    ),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn("| Provenance | 1 artifact issue |", report)
-
-    def test_report_status_prefers_failed_artifact_over_distinct_unconfirmed(
-        self,
-    ) -> None:
-        failed = "/project/data/failed.csv"
-        unconfirmed = "/project/data/unconfirmed.csv"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:failed",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    failed,
-                    ({"artifacts": [failed]},),
-                    RESULTS.FailurePayload(
-                        "producer.missing",
-                        failed,
-                        {"material": failed},
-                        "Provenance Starting Points And Traversal",
-                    ),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:unconfirmed",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    unconfirmed,
-                    ({"artifacts": [unconfirmed]},),
-                    RESULTS.FailurePayload(
-                        "provenance.output.reproduction_required",
-                        unconfirmed,
-                        {"output": "data/unconfirmed.csv"},
-                        "Mechanical Validation Evaluation And Outcomes",
-                    ),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn(
-            "| Provenance | 1 artifact issue · 1 await reproduction |", report
-        )
-
-    def test_report_counts_artifact_blocked_by_provenance_failure_as_failed(
-        self,
-    ) -> None:
-        artifact = "/project/data/downstream.csv"
-        declaration = "entry:e001:input:catalog-declaration"
-        command = "entry:e001:command:1:1"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    declaration,
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.FAIL,
-                    "catalog",
-                    failure=RESULTS.FailurePayload(
-                        "data.fingerprint.mismatch",
-                        "catalog",
-                        {"expected": "old", "observed": "current"},
-                        "Fingerprints",
-                    ),
-                ),
-                RESULTS.MechanicalCheck(
-                    command,
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.NOT_APPLICABLE,
-                    command,
-                    ({"dependency": declaration},),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:downstream",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.NOT_APPLICABLE,
-                    artifact,
-                    ({"artifacts": [artifact]}, {"dependency": command}),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn("| Provenance | 1 artifact issue |", report)
-
-    def test_report_keeps_artifact_blocked_by_other_scope_not_applicable(
-        self,
-    ) -> None:
-        artifact = "/project/data/downstream.csv"
-        evidence = "evidence:e001:downstream"
-        record = RESULTS.MechanicalGeneratedRecord.build(
-            "docs/study.md",
-            "test-rules",
-            "2026-08-30",
-            (
-                RESULTS.MechanicalCheck(
-                    evidence,
-                    RESULTS.CheckScope.EVIDENCE,
-                    RESULTS.CheckStatus.FAIL,
-                    artifact,
-                    failure=RESULTS.FailurePayload(
-                        "transformation.presentation.mismatch",
-                        artifact,
-                        {"expected": 1, "observed": 2},
-                        "Evidence Values",
-                    ),
-                ),
-                RESULTS.MechanicalCheck(
-                    "provenance:e001:downstream",
-                    RESULTS.CheckScope.PROVENANCE,
-                    RESULTS.CheckStatus.NOT_APPLICABLE,
-                    artifact,
-                    ({"artifacts": [artifact]}, {"dependency": evidence}),
-                ),
-            ),
-        )
-
-        report = REPORT.compose_validation_report(record)
-
-        self.assertIn("| Provenance | — |", report)
-
-    def test_completed_result_publishes_public_bundle_and_report(self) -> None:
+    def test_completed_attempt_publishes_snapshot_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             summary_bytes = summary.read_bytes()
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
             log_root = summary.with_suffix("")
-            stored = latest_full_validation(log_root)
-            record = load_mechanical_record(log_root, stored.result_id).as_dict()
+            snapshot, generation = _stored_snapshot(log_root)
             cache_path = _cache_path(summary)
             report = (log_root / "validation.md").read_text()
-            self.assertEqual(result["status"], "complete_clear")
-            self.assertTrue(result["published"])
+            self.assertEqual(_attempt_outcome(result), "clear")
+            self.assertTrue(result.published)
+            self.assertEqual(
+                tuple(field.name for field in fields(result)),
+                ("attempt", "snapshot", "published", "metrics"),
+            )
             self.assertGreaterEqual(
-                result["metrics"]["validation_cache_sqlite_writes"], 3
+                result.metrics["validation_cache_sqlite_writes"], 3
             )
             self.assertTrue((log_root / ".cache" / "results.sqlite").is_file())
-            self.assertEqual(stored.generation, 1)
-            self.assertEqual(_marker(log_root)[0], stored.generation)
+            self.assertEqual(generation, 1)
+            self.assertEqual(_marker(log_root)[0], generation)
             self.assertTrue(cache_path.is_file())
             with closing(sqlite3.connect(cache_path)) as connection:
                 self.assertEqual(
@@ -635,15 +113,14 @@ class MechanicalControllerTests(unittest.TestCase):
                     VALIDATION_CACHE.CACHE_SCHEMA_VERSION,
                 )
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
-            self.assertIn("## Mechanical Validation", report)
+            self.assertIn("# Validation", report)
             self.assertNotIn("## Reproduction", report)
             self.assertNotIn("not_yet_run", report)
-            self.assertNotIn("### Counts", report)
-            self.assertIn("| Structure | Clear |", report)
-            self.assertIn("Validated Study.", result["report"])
-            for check in record["checks"]:
-                if check["status"] == "pass":
-                    self.assertNotIn(check["identity"], report)
+            self.assertIn("| Conformance | 0 |", report)
+            self.assertIn("| Batches | 0 |", report)
+            self.assertFalse(hasattr(result, "report"))
+            self.assertFalse(hasattr(result, "record"))
+            self.assertFalse(snapshot.findings)
             self.assertEqual(summary.read_bytes(), summary_bytes)
             cache_names = {path.name for path in (log_root / ".cache").iterdir()}
             self.assertIn(VALIDATION_CACHE.CACHE_FILENAME, cache_names)
@@ -651,38 +128,53 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertNotIn("research-log-validation.lock", cache_names)
             self.assertIn("research-log-operations", cache_names)
 
-    def test_findings_are_complete_and_grouped_without_passing_rows(self) -> None:
+    def test_findings_are_complete_and_batched_without_passing_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory), output_option="results")
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
             report = (summary.with_suffix("") / "validation.md").read_text()
-            self.assertEqual(result["status"], "complete_findings")
-            self.assertIn("### [e001 — Study trial]", report)
-            self.assertIn("#### Material Role Unresolved", report)
-            self.assertIn("prevents 3 dependent checks", report)
-            self.assertNotIn("material.candidate.unresolved", report)
-            self.assertNotIn("Status: `not_applicable`", report)
-            self.assertNotIn("Dependencies:", report)
-            self.assertNotIn("Observed:", report)
-            self.assertNotIn("Violated rule:", report)
-            for check in result["record"]["checks"]:
-                if check["status"] == "pass":
-                    self.assertNotIn(check["identity"], report)
+            self.assertEqual(_attempt_outcome(result), "findings")
+            snapshot = load_validation_snapshot(summary.with_suffix(""))
+            self.assertIn("## Findings", report)
+            self.assertIn("## Batches", report)
+            self.assertNotIn("Command chain", report)
+            self.assertNotIn("Unresolved group", report)
+            for check in result.attempt.checks:
+                if check.outcome is DOMAIN.CheckOutcome.PASS:
+                    self.assertNotIn(check.check_id, report)
                 else:
-                    failure = check.get("failure")
-                    if check["scope"] == "orphan":
+                    diagnostic = check.diagnostic
+                    if check.area is DOMAIN.RuleArea.ORPHAN:
                         continue
-                    if failure is None:
-                        self.assertEqual(check["status"], "not_applicable")
-                        self.assertNotIn(f"`{check['identity']}`", report)
-                        self.assertTrue(check["dependencies"])
+                    if diagnostic is None:
+                        self.assertEqual(
+                            check.outcome, DOMAIN.CheckOutcome.BLOCKED
+                        )
+                        self.assertNotIn(f"`{check.check_id}`", report)
+                        self.assertTrue(check.dependency_evidence)
                     else:
-                        self.assertNotIn(f"`{failure['code']}`", report)
-            self.assertIn("| Hygiene | 3 issues |", report)
+                        presentation = REPORT_CONTEXT.CATALOG[diagnostic.code]
+                        self.assertIn(f"### {presentation.name}", report)
+                        self.assertIn(presentation.sentence, report)
+            self.assertEqual(
+                {
+                    finding_id
+                    for batch in snapshot.batches
+                    for finding_id in batch.finding_ids
+                },
+                {finding.finding_id for finding in snapshot.findings},
+            )
+            unmatched = next(
+                check
+                for check in result.attempt.checks
+                if check.check_id.startswith("orphan:unmatched-output:")
+            )
+            self.assertIs(unmatched.outcome, DOMAIN.CheckOutcome.BLOCKED)
+            self.assertIn("| Orphans | 2 |", report)
 
     def test_report_renders_the_cause_of_dependent_not_applicable_checks(
         self,
@@ -695,34 +187,34 @@ class MechanicalControllerTests(unittest.TestCase):
             write(evidence_path, json.dumps(evidence) + "\n")
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
             report = (summary.with_suffix("") / "validation.md").read_text()
             dependent = next(
                 check
-                for check in result["record"]["checks"]
-                if check["identity"] == "provenance:e001:success-rate"
+                for check in result.attempt.checks
+                if check.check_id == "provenance:e001:success-rate"
             )
-            self.assertEqual(dependent["status"], "not_applicable")
+            self.assertEqual(dependent.outcome, DOMAIN.CheckOutcome.BLOCKED)
             self.assertEqual(
-                dependent["dependencies"],
-                [{"dependency": "evidence:e001:success-rate"}],
+                dependent.dependency_evidence,
+                ({"dependency": "evidence:e001:success-rate"},),
             )
             self.assertNotIn("`provenance:e001:success-rate`", report)
-            self.assertIn("prevents 2 dependent checks", report)
+            self.assertIn("### Undeclared Command Input", report)
 
-    def test_dry_run_and_incomplete_evaluation_publish_nothing(self) -> None:
+    def test_dry_run_publishes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             result = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(
-                    summary, result_date="2026-08-29", publish=False
+                    summary, publish=False
                 )
             )
-            self.assertEqual(result["status"], "complete_clear")
-            self.assertFalse(result["published"])
-            self.assertIn("Report: Not published.", result["report"])
+            self.assertEqual(_attempt_outcome(result), "clear")
+            self.assertFalse(result.published)
+            self.assertFalse(hasattr(result, "report"))
             self.assertFalse((summary.with_suffix("") / "validation").exists())
             self.assertFalse((summary.with_suffix("") / "validation.md").exists())
             self.assertFalse((Path(directory) / ".cache").exists())
@@ -733,47 +225,36 @@ class MechanicalControllerTests(unittest.TestCase):
             write(entry.parent / "evidence.json", "{\n")
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
-            self.assertEqual(result["status"], "complete_findings")
+            self.assertEqual(_attempt_outcome(result), "findings")
             failures = [
-                check["failure"]["code"]
-                for check in result["record"]["checks"]
-                if "failure" in check
+                check.diagnostic.code
+                for check in result.attempt.checks
+                if check.diagnostic is not None
             ]
             self.assertIn("evidence.json.schema_invalid", failures)
-            self.assertTrue(result["published"])
+            self.assertTrue(result.published)
             self.assertTrue(
                 (summary.with_suffix("") / ".cache/results.sqlite").is_file()
             )
 
-    def test_invalid_date_is_an_operational_error(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            summary, _ = _log(Path(directory))
-            with self.assertRaisesRegex(
-                CONTROLLER.ValidationControllerError, "YYYY-MM-DD"
-            ):
-                CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-8-29")
-                )
-            self.assertFalse((summary.with_suffix("") / "validation.md").exists())
-
-    def test_invalid_cache_recomputes_without_changing_the_result(self) -> None:
+    def test_invalid_cache_recomputes_without_changing_the_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             first = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
             cache_path = _cache_path(summary)
             cache_path.write_bytes(b"not a sqlite database")
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
-            self.assertEqual(first["status"], "complete_clear")
-            self.assertEqual(result["status"], "complete_clear")
+            self.assertEqual(_attempt_outcome(first), "clear")
+            self.assertEqual(_attempt_outcome(result), "clear")
             with closing(sqlite3.connect(cache_path)) as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
@@ -792,10 +273,10 @@ class MechanicalControllerTests(unittest.TestCase):
             before = cache_path.read_bytes()
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
-            self.assertEqual(result["status"], "complete_clear")
+            self.assertEqual(_attempt_outcome(result), "clear")
             self.assertEqual(cache_path.read_bytes(), before)
 
     def test_unchanged_validation_reuses_selections_and_preserves_findings(
@@ -803,11 +284,10 @@ class MechanicalControllerTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             first = CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
-            first_stored = latest_full_validation(log_root)
-            report_before = (log_root / "validation.md").read_bytes()
+            first_snapshot, first_generation = _stored_snapshot(log_root)
 
             with (
                 mock.patch.object(
@@ -823,29 +303,39 @@ class MechanicalControllerTests(unittest.TestCase):
             ):
                 second = CONTROLLER.validate(request)
 
-            self.assertEqual(first["status"], "complete_clear")
-            self.assertEqual(second["status"], "complete_clear")
-            self.assertEqual(first["record"], second["record"])
+            self.assertEqual(_attempt_outcome(first), "clear")
+            self.assertEqual(_attempt_outcome(second), "clear")
+            self.assertEqual(
+                first.attempt.checks,
+                second.attempt.checks,
+            )
+            self.assertEqual(
+                first.attempt.findings,
+                second.attempt.findings,
+            )
             # The script, two data artifacts, and output-support file are each
             # hashed once; later consumers reuse those observations.
-            self.assertEqual(first["metrics"]["fingerprint_cache_file_hashes"], 4)
-            self.assertGreater(second["metrics"]["input_fingerprints_reused"], 0)
-            self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(second["metrics"]["source_payload_reads"], 0)
-            self.assertEqual(second["metrics"]["source_evaluations"], 0)
-            self.assertEqual(second["metrics"]["fingerprint_cache_file_hashes"], 0)
-            second_stored = latest_full_validation(log_root)
-            self.assertNotEqual(second_stored.result_id, first_stored.result_id)
-            self.assertGreater(second_stored.generation, first_stored.generation)
-            self.assertEqual((log_root / "validation.md").read_bytes(), report_before)
-            self.assertEqual(_marker(log_root)[0], second_stored.generation)
+            self.assertEqual(first.metrics["fingerprint_cache_file_hashes"], 4)
+            self.assertGreater(second.metrics["input_fingerprints_reused"], 0)
+            self.assertGreater(second.metrics["selection_cache_hits"], 0)
+            self.assertEqual(second.metrics["source_payload_reads"], 0)
+            self.assertEqual(second.metrics["source_evaluations"], 0)
+            self.assertEqual(second.metrics["fingerprint_cache_file_hashes"], 0)
+            second_snapshot, second_generation = _stored_snapshot(log_root)
+            self.assertNotEqual(
+                second_snapshot.internal_snapshot_id,
+                first_snapshot.internal_snapshot_id,
+            )
+            self.assertGreater(second_generation, first_generation)
+            self.assertEqual(second_snapshot.findings, first_snapshot.findings)
+            self.assertEqual(_marker(log_root)[0], second_generation)
 
     def test_renaming_an_evidence_token_preserves_selection_cache_eligibility(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             first = CONTROLLER.validate(request)
             entry_root = entry.parent
             data_path = entry_root / "data.json"
@@ -866,12 +356,12 @@ class MechanicalControllerTests(unittest.TestCase):
 
             second = CONTROLLER.validate(request)
 
-            self.assertEqual(first["status"], "complete_clear")
-            self.assertEqual(second["status"], "complete_clear")
-            self.assertGreater(second["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(second["metrics"]["source_payload_reads"], 0)
-            self.assertEqual(second["metrics"]["source_evaluations"], 0)
-            self.assertEqual(second["metrics"]["fingerprint_cache_file_hashes"], 0)
+            self.assertEqual(_attempt_outcome(first), "clear")
+            self.assertEqual(_attempt_outcome(second), "clear")
+            self.assertGreater(second.metrics["selection_cache_hits"], 0)
+            self.assertEqual(second.metrics["source_payload_reads"], 0)
+            self.assertEqual(second.metrics["source_evaluations"], 0)
+            self.assertEqual(second.metrics["fingerprint_cache_file_hashes"], 0)
 
     def test_unchanged_local_input_reuses_its_verified_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -891,15 +381,15 @@ class MechanicalControllerTests(unittest.TestCase):
                 }
             ]
             write(data_path, json.dumps(payload) + "\n")
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
 
             first = CONTROLLER.validate(request)
             second = CONTROLLER.validate(request)
 
-            self.assertEqual(first["metrics"]["input_fingerprints_reused"], 0)
-            self.assertEqual(second["metrics"]["input_fingerprints_reused"], 1)
+            self.assertEqual(first.metrics["input_fingerprints_reused"], 0)
+            self.assertEqual(second.metrics["input_fingerprints_reused"], 1)
             self.assertGreaterEqual(
-                second["metrics"]["fingerprint_cache_file_reuses"], 1
+                second.metrics["fingerprint_cache_file_reuses"], 1
             )
             self.assertTrue(
                 (Path(directory) / ".cache/research-log-fingerprints.sqlite3").is_file()
@@ -908,7 +398,7 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_completed_run_drops_obsolete_selection_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             cache_path = _cache_path(summary)
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
@@ -916,25 +406,25 @@ class MechanicalControllerTests(unittest.TestCase):
 
             result = CONTROLLER.validate(request)
 
-            self.assertEqual(result["status"], "complete_findings")
+            self.assertEqual(_attempt_outcome(result), "findings")
             self.assertEqual(_cache_rows(cache_path, "evidence_selections"), 0)
 
     def test_changed_source_is_rehashed_instead_of_using_seeded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             write(entry.parent / "data" / "results.csv", "success_rate\n0.675\n")
 
             changed = CONTROLLER.validate(request)
 
-            self.assertEqual(changed["status"], "complete_findings")
-            self.assertEqual(changed["metrics"]["source_hashes_reused"], 0)
+            self.assertEqual(_attempt_outcome(changed), "findings")
+            self.assertEqual(changed.metrics["source_hashes_reused"], 0)
 
     def test_changed_presentation_reuses_selection_then_compares_freshly(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             write(
                 entry,
@@ -943,80 +433,77 @@ class MechanicalControllerTests(unittest.TestCase):
 
             changed = CONTROLLER.validate(request)
 
-            self.assertEqual(changed["status"], "complete_findings")
-            self.assertGreater(changed["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(changed["metrics"]["source_payload_reads"], 0)
+            self.assertEqual(_attempt_outcome(changed), "findings")
+            self.assertGreater(changed.metrics["selection_cache_hits"], 0)
+            self.assertEqual(changed.metrics["source_payload_reads"], 0)
 
     def test_recompute_bypasses_cache_and_publishes_rebuilt_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            ordinary = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            ordinary = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(ordinary)
             CONTROLLER.validate(ordinary)
 
             recomputed = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(
                     summary,
-                    result_date="2026-08-29",
                     recompute=True,
                 )
             )
 
             cache_path = _cache_path(summary)
-            self.assertEqual(recomputed["status"], "complete_clear")
-            self.assertTrue(recomputed["published"])
-            self.assertEqual(recomputed["metrics"]["source_hashes_reused"], 0)
-            self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(_attempt_outcome(recomputed), "clear")
+            self.assertTrue(recomputed.published)
+            self.assertEqual(recomputed.metrics["source_hashes_reused"], 0)
+            self.assertEqual(recomputed.metrics["selection_cache_hits"], 0)
             self.assertGreater(_cache_rows(cache_path, "evidence_selections"), 0)
 
     def test_recompute_validation_reuses_project_fingerprints_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
             recomputed = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(
                     summary,
-                    result_date="2026-08-29",
                     recompute_validation=True,
                 )
             )
 
-            self.assertEqual(recomputed["status"], "complete_clear")
-            self.assertEqual(recomputed["metrics"]["selection_cache_hits"], 0)
+            self.assertEqual(_attempt_outcome(recomputed), "clear")
+            self.assertEqual(recomputed.metrics["selection_cache_hits"], 0)
             self.assertGreater(
-                recomputed["metrics"]["fingerprint_cache_file_reuses"], 0
+                recomputed.metrics["fingerprint_cache_file_reuses"], 0
             )
 
     def test_recompute_fingerprints_reuses_per_log_validation_cache_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
             recomputed = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(
                     summary,
-                    result_date="2026-08-29",
                     recompute_fingerprints=True,
                 )
             )
 
-            self.assertEqual(recomputed["status"], "complete_clear")
-            self.assertGreater(recomputed["metrics"]["selection_cache_hits"], 0)
-            self.assertEqual(recomputed["metrics"]["fingerprint_cache_file_reuses"], 0)
+            self.assertEqual(_attempt_outcome(recomputed), "clear")
+            self.assertGreater(recomputed.metrics["selection_cache_hits"], 0)
+            self.assertEqual(recomputed.metrics["fingerprint_cache_file_reuses"], 0)
             self.assertGreater(
-                recomputed["metrics"]["fingerprint_cache_file_hashes"], 0
+                recomputed.metrics["fingerprint_cache_file_hashes"], 0
             )
 
     def test_recompute_dry_run_neither_reads_cache_nor_publishes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
             log_root = summary.with_suffix("")
             tracked = (
@@ -1043,31 +530,30 @@ class MechanicalControllerTests(unittest.TestCase):
                 result = CONTROLLER.validate(
                     CONTROLLER.ValidationRequest(
                         summary,
-                        result_date="2026-08-29",
                         publish=False,
                         recompute=True,
                     )
                 )
 
-            self.assertEqual(result["status"], "complete_clear")
-            self.assertFalse(result["published"])
-            self.assertEqual(result["metrics"]["source_hashes_reused"], 0)
+            self.assertEqual(_attempt_outcome(result), "clear")
+            self.assertFalse(result.published)
+            self.assertEqual(result.metrics["source_hashes_reused"], 0)
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
             self.assertEqual(project_cache.read_bytes(), b"not a sqlite database")
 
-    def test_oversized_selection_is_valid_but_not_cached(self) -> None:
+    def test_oversized_selection_is_saved_as_failed_but_not_cached(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             with mock.patch.object(VALIDATION_CACHE, "MAX_SELECTION_BYTES", 1):
                 first = CONTROLLER.validate(request)
                 result = CONTROLLER.validate(request)
 
-            self.assertEqual(first["status"], "complete_clear")
-            self.assertEqual(result["status"], "complete_clear")
-            self.assertGreater(result["metrics"]["selection_cache_oversized"], 0)
-            self.assertEqual(result["metrics"]["selection_cache_hits"], 0)
-            self.assertGreater(result["metrics"]["source_payload_reads"], 0)
+            self.assertEqual(_attempt_outcome(first), "clear")
+            self.assertEqual(_attempt_outcome(result), "clear")
+            self.assertGreater(result.metrics["selection_cache_oversized"], 0)
+            self.assertEqual(result.metrics["selection_cache_hits"], 0)
+            self.assertGreater(result.metrics["source_payload_reads"], 0)
             self.assertEqual(
                 _cache_rows(_cache_path(summary), "evidence_selections"), 0
             )
@@ -1085,13 +571,13 @@ class MechanicalControllerTests(unittest.TestCase):
                 ENGINE, "observe_source_identity", side_effect=unavailable
             ):
                 result = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                    CONTROLLER.ValidationRequest(summary)
                 )
-            self.assertEqual(result["status"], "incomplete")
-            self.assertFalse(result["published"])
-            self.assertFalse((summary.with_suffix("") / "validation.md").exists())
+            self.assertEqual(_attempt_outcome(result), "failed")
+            self.assertTrue(result.published)
+            self.assertTrue((summary.with_suffix("") / "validation.md").exists())
 
-    def test_each_exact_unsupported_path_is_recognized_without_decoding(self) -> None:
+    def test_each_obsolete_validation_path_becomes_a_orphan_finding(self) -> None:
         for relative in CONTROLLER.UNSUPPORTED_GENERATED_PATHS:
             with (
                 self.subTest(relative=relative),
@@ -1105,11 +591,26 @@ class MechanicalControllerTests(unittest.TestCase):
 
                 result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-                self.assertEqual(result["status"], "unsupported_metadata")
-                self.assertEqual(result["code"], "validation.unsupported_metadata")
-                self.assertEqual(result["observed"]["paths"], [relative])
+                self.assertEqual(_attempt_outcome(result), "findings")
+                findings = [
+                    check.diagnostic.as_dict()
+                    for check in result.attempt.checks
+                    if check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.generated.residue"
+                ]
+                self.assertEqual(
+                    findings,
+                    [
+                        {
+                            "code": "orphan.generated.residue",
+                            "observed": {"path": relative},
+                            "rule": "Generated Validation Ownership",
+                            "subject": path.resolve().as_posix(),
+                        }
+                    ],
+                )
                 self.assertEqual(path.read_bytes(), before)
-                self.assertFalse((log_root / ".cache/results.sqlite").exists())
+                self.assertTrue((log_root / ".cache/results.sqlite").exists())
 
     def test_unrecognized_validation_file_does_not_trigger_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1117,13 +618,13 @@ class MechanicalControllerTests(unittest.TestCase):
             write(summary.with_suffix("") / "validation/unrelated.json", "{}\n")
 
             result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
 
-            self.assertEqual(result["status"], "complete_clear")
-            self.assertTrue(result["published"])
+            self.assertEqual(_attempt_outcome(result), "clear")
+            self.assertTrue(result.published)
 
-    def test_unsupported_report_marker_is_a_precise_preflight_condition(self) -> None:
+    def test_obsolete_report_marker_becomes_orphan_and_is_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
@@ -1134,20 +635,26 @@ class MechanicalControllerTests(unittest.TestCase):
                 "| Entry | Date | Checked | Reproducibility |\n"
                 "| --- | --- | --- | --- |\n",
             )
-            before = report.read_bytes()
-
             result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            self.assertEqual(result["status"], "unsupported_metadata")
-            self.assertEqual(result["observed"]["paths"], ["validation.md"])
-            self.assertEqual(report.read_bytes(), before)
-            self.assertFalse((log_root / ".cache/results.sqlite").exists())
+            self.assertEqual(_attempt_outcome(result), "findings")
+            codes = {
+                check.diagnostic.code
+                for check in result.attempt.checks
+                if check.diagnostic is not None
+            }
+            self.assertIn("orphan.generated.residue", codes)
+            self.assertNotIn(
+                b"| Entry | Date | Checked | Reproducibility |",
+                report.read_bytes(),
+            )
+            self.assertTrue((log_root / ".cache/results.sqlite").exists())
 
-    def test_unsupported_transaction_state_is_reported_without_writing(self) -> None:
+    def test_obsolete_transaction_state_is_published_as_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
             log_root = summary.with_suffix("")
             transaction = (
@@ -1155,22 +662,22 @@ class MechanicalControllerTests(unittest.TestCase):
                 / "validation/.cache/upgrade-transactions/transaction/transaction.json"
             )
             write(transaction, "{}\n")
-            tracked = (
-                log_root / ".cache/results.sqlite",
-                log_root / "validation.md",
-            )
-            before = {path: path.read_bytes() for path in tracked}
-
             result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            self.assertEqual({path: path.read_bytes() for path in tracked}, before)
-            self.assertEqual(result["status"], "unsupported_metadata")
-            self.assertEqual(
-                result["observed"]["paths"],
-                ["validation/.cache/upgrade-transactions"],
+            self.assertEqual(_attempt_outcome(result), "findings")
+            residue = [
+                check.diagnostic.observed["path"]
+                for check in result.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.generated.residue"
+            ]
+            self.assertEqual(residue, ["validation/.cache/upgrade-transactions"])
+            self.assertIn(
+                "### Obsolete Validation Artifact",
+                (log_root / "validation.md").read_text(encoding="utf-8"),
             )
 
-    def test_dangling_unsupported_state_symlink_is_reported(self) -> None:
+    def test_dangling_obsolete_state_symlink_becomes_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             pending = summary.with_suffix("") / "validation/.cache/upgrade-transactions"
@@ -1179,12 +686,15 @@ class MechanicalControllerTests(unittest.TestCase):
 
             result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            self.assertEqual(result["status"], "unsupported_metadata")
-            self.assertEqual(
-                result["observed"]["paths"],
-                ["validation/.cache/upgrade-transactions"],
-            )
-            self.assertFalse(
+            self.assertEqual(_attempt_outcome(result), "findings")
+            residue = [
+                check.diagnostic.observed["path"]
+                for check in result.attempt.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.generated.residue"
+            ]
+            self.assertEqual(residue, ["validation/.cache/upgrade-transactions"])
+            self.assertTrue(
                 (summary.with_suffix("") / ".cache/results.sqlite").exists()
             )
 
@@ -1204,54 +714,45 @@ class MechanicalControllerTests(unittest.TestCase):
             summary, entry_document = _log(Path(directory))
             log_root = summary.with_suffix("")
             CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            full_before = latest_full_validation(log_root)
+            _, full_generation = _stored_snapshot(log_root)
             entry = CONTROLLER.validate_entry(
                 CONTROLLER.EntryValidationRequest(
                     summary, "e001", entry_document.parent
                 )
             )
-            self.assertIsNotNone(entry.inspection_id)
-            entry_export = export_validation_result(log_root, entry.inspection_id)
-            metadata = entry_export["metadata"]
-            self.assertEqual(metadata["entries"]["requested"], ["e001"])
-            self.assertEqual(metadata["entries"]["evaluated"], ["e001"])
-            self.assertEqual(metadata["entries"]["dependency"], [])
-            self.assertEqual(
-                metadata["whole_log_limitations"],
-                list(ENGINE.ENTRY_LIMITATIONS),
-            )
-            self.assertRegex(metadata["source_identity"], r"^[0-9a-f]{64}$")
-            self.assertTrue(metadata["started_at"])
-            self.assertTrue(metadata["finished_at"])
-            self.assertTrue(metadata["stored_at"])
+            self.assertIsNotNone(entry.snapshot_id)
+            entry_snapshot = load_validation_snapshot(log_root, slot="entry:e001")
+            self.assertRegex(entry_snapshot.source_identity, r"^[0-9a-f]{64}$")
+            self.assertTrue(entry_snapshot.started_at)
+            self.assertTrue(entry_snapshot.finished_at)
+            self.assertTrue(entry_snapshot.stored_at)
             self.assertEqual(
                 [row[2] for row in _result_rows(log_root)], ["full", "entry:e001"]
             )
-            publish_diagnostic_commands(
-                log_root, summary.resolve().as_posix(), "fixture", []
+            publish_command_diagnostic(
+                log_root, summary.resolve().as_posix(), "fixture", ()
             )
             self.assertEqual(
                 [row[2] for row in _result_rows(log_root)],
-                ["full", "entry:e001", "diagnostic"],
+                ["full", "entry:e001"],
             )
             CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
             rows = _result_rows(log_root)
             self.assertEqual([row[2] for row in rows], ["full"])
-            self.assertGreater(rows[0][1], full_before.generation)
+            self.assertGreater(rows[0][1], full_generation)
 
     def test_full_publication_timestamps_bracket_mechanical_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
             moments = iter(
-                datetime(2026, 9, 12, 10, 0, second, tzinfo=timezone.utc)
-                for second in (0, 1, 2)
+                f"2026-09-12T10:00:0{second}.000000+00:00" for second in (1, 2)
             )
             events: list[str] = []
             original_evaluate = CONTROLLER.evaluate_mechanical
 
-            def now(_: object) -> datetime:
-                events.append("now")
+            def timestamp() -> str:
+                events.append("timestamp")
                 return next(moments)
 
             def evaluate(*args: object, **kwargs: object):
@@ -1259,43 +760,35 @@ class MechanicalControllerTests(unittest.TestCase):
                 return original_evaluate(*args, **kwargs)
 
             with (
-                mock.patch.object(CONTROLLER, "datetime") as mocked_datetime,
+                mock.patch.object(ENGINE, "_utc_timestamp", side_effect=timestamp),
                 mock.patch.object(
                     CONTROLLER, "evaluate_mechanical", side_effect=evaluate
                 ),
             ):
-                mocked_datetime.now.side_effect = now
                 CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                    CONTROLLER.ValidationRequest(summary)
                 )
 
-            exported = export_validation_result(
-                log_root, latest_full_validation(log_root).result_id
-            )
+            exported = load_validation_snapshot(log_root)
             self.assertEqual(
                 events,
-                ["now", "now", "evaluate", "now"],
+                ["evaluate", "timestamp", "timestamp"],
             )
-            self.assertEqual(
-                exported["metadata"]["started_at"], "2026-09-12T10:00:01.000000+00:00"
-            )
-            self.assertEqual(
-                exported["metadata"]["finished_at"], "2026-09-12T10:00:02.000000+00:00"
-            )
+            self.assertEqual(exported.started_at, "2026-09-12T10:00:01.000000+00:00")
+            self.assertEqual(exported.finished_at, "2026-09-12T10:00:02.000000+00:00")
 
     def test_entry_publication_timestamps_bracket_mechanical_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry_document = _log(Path(directory))
             log_root = summary.with_suffix("")
             moments = iter(
-                datetime(2026, 9, 12, 10, 0, second, tzinfo=timezone.utc)
-                for second in (1, 2)
+                f"2026-09-12T10:00:0{second}.000000+00:00" for second in (1, 2)
             )
             events: list[str] = []
             original_evaluate = CONTROLLER.evaluate_mechanical
 
-            def now(_: object) -> datetime:
-                events.append("now")
+            def timestamp() -> str:
+                events.append("timestamp")
                 return next(moments)
 
             def evaluate(*args: object, **kwargs: object):
@@ -1303,52 +796,40 @@ class MechanicalControllerTests(unittest.TestCase):
                 return original_evaluate(*args, **kwargs)
 
             with (
-                mock.patch.object(CONTROLLER, "datetime") as mocked_datetime,
+                mock.patch.object(ENGINE, "_utc_timestamp", side_effect=timestamp),
                 mock.patch.object(
                     CONTROLLER, "evaluate_mechanical", side_effect=evaluate
                 ),
             ):
-                mocked_datetime.now.side_effect = now
                 result = CONTROLLER.validate_entry(
                     CONTROLLER.EntryValidationRequest(
-                        summary, "e001", entry_document.parent, result_date="2026-08-29"
+                        summary, "e001", entry_document.parent
                     )
                 )
 
-            assert result.inspection_id is not None
-            exported = export_validation_result(log_root, result.inspection_id)
-            self.assertEqual(events, ["now", "evaluate", "now"])
-            self.assertEqual(
-                exported["metadata"]["started_at"], "2026-09-12T10:00:01.000000+00:00"
-            )
-            self.assertEqual(
-                exported["metadata"]["finished_at"], "2026-09-12T10:00:02.000000+00:00"
-            )
+            assert result.snapshot_id is not None
+            exported = load_validation_snapshot(log_root, slot="entry:e001")
+            self.assertEqual(events, ["evaluate", "timestamp", "timestamp"])
+            self.assertEqual(exported.started_at, "2026-09-12T10:00:01.000000+00:00")
+            self.assertEqual(exported.finished_at, "2026-09-12T10:00:02.000000+00:00")
 
-    def test_failed_result_transaction_preserves_the_completed_full_slot(self) -> None:
+    def test_failed_snapshot_transaction_preserves_completed_full_slot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
             CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
             before = _result_rows(log_root)
-            record = load_mechanical_record(log_root, before[0][0])
-            with mock.patch(
-                "validation.result_storage._insert_projection",
-                side_effect=sqlite3.OperationalError("fixture transaction failure"),
-            ):
-                with self.assertRaises(ResultStoreError):
-                    publish_validation_result(
-                        ValidationPublicationRequest(
-                            log_root,
-                            record,
-                            build_batch_projection(
-                                record,
-                                invocations=(),
-                                registries=(),
-                                source_identity="fixture",
-                            ),
-                        )
-                    )
+            snapshot = load_validation_snapshot(log_root)
+
+            def fail(phase: str) -> None:
+                if phase == "before_commit":
+                    raise RuntimeError("fixture transaction failure")
+
+            with self.assertRaisesRegex(RuntimeError, "fixture transaction failure"):
+                publish_validation_snapshot(
+                    SnapshotPublicationRequest(log_root, snapshot, {}),
+                    _test_hook=fail,
+                )
             self.assertEqual(_result_rows(log_root), before)
 
     def test_report_marker_tracks_committed_generation_and_stales_on_replacement(
@@ -1358,29 +839,22 @@ class MechanicalControllerTests(unittest.TestCase):
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
             CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            first = latest_full_validation(log_root)
-            self.assertEqual(_marker(log_root)[0], first.generation)
-            record = load_mechanical_record(log_root, first.result_id)
-            replacement = publish_validation_result(
-                ValidationPublicationRequest(
-                    log_root,
-                    record,
-                    build_batch_projection(
-                        record, invocations=(), registries=(), source_identity="fixture"
-                    ),
-                )
+            snapshot, first_generation = _stored_snapshot(log_root)
+            self.assertEqual(_marker(log_root)[0], first_generation)
+            replacement = publish_validation_snapshot(
+                SnapshotPublicationRequest(log_root, snapshot, {})
             )
             self.assertIsNone(_marker(log_root))
             report = (log_root / "validation.md").read_bytes()
             record_report_materialization(log_root, "validation", report)
             self.assertEqual(_marker(log_root)[0], replacement.generation)
 
-    def test_render_failure_preserves_prior_report_after_result_commit(self) -> None:
+    def test_render_failure_preserves_prior_report_after_snapshot_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
             CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            before = latest_full_validation(log_root)
+            _, before_generation = _stored_snapshot(log_root)
             report_before = (log_root / "validation.md").read_bytes()
             with (
                 mock.patch.object(
@@ -1391,15 +865,16 @@ class MechanicalControllerTests(unittest.TestCase):
                 self.assertRaises(CONTROLLER.ValidationControllerError) as raised,
             ):
                 CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
-            after = latest_full_validation(log_root)
-            self.assertEqual(raised.exception.code, "results.report.write_failed")
-            self.assertIn(after.result_id, str(raised.exception))
-            self.assertIn(f"generation={after.generation}", str(raised.exception))
-            self.assertGreater(after.generation, before.generation)
+            after, after_generation = _stored_snapshot(log_root)
+            self.assertEqual(raised.exception.code, "validation.report.write_failed")
+            self.assertIn(after.internal_snapshot_id, str(raised.exception))
+            self.assertIn(f"generation={after_generation}", str(raised.exception))
+            self.assertGreater(after_generation, before_generation)
             self.assertEqual((log_root / "validation.md").read_bytes(), report_before)
             self.assertIsNone(_marker(log_root))
 
-            from log_commands.inspection_cli import run_results
+            from log_commands.context import LogContext
+            from log_commands.validation_cli import render_validation
 
             with mock.patch.object(
                 CONTROLLER,
@@ -1407,21 +882,13 @@ class MechanicalControllerTests(unittest.TestCase):
                 side_effect=AssertionError("render retry must not reevaluate"),
             ):
                 self.assertEqual(
-                    run_results(
-                        [
-                            "render",
-                            "--path",
-                            str(log_root),
-                            "--kind",
-                            "validation",
-                        ]
-                    ),
-                    0,
+                    render_validation(LogContext(summary.resolve(), log_root)),
+                    None,
                 )
             self.assertTrue((log_root / "validation.md").is_file())
-            self.assertEqual(_marker(log_root)[0], after.generation)
+            self.assertEqual(_marker(log_root)[0], after_generation)
 
-    def test_report_composition_failure_names_the_committed_result(self) -> None:
+    def test_report_composition_failure_names_the_committed_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             log_root = summary.with_suffix("")
@@ -1429,18 +896,18 @@ class MechanicalControllerTests(unittest.TestCase):
             report_before = (log_root / "validation.md").read_bytes()
             with (
                 mock.patch.object(
-                    CONTROLLER,
-                    "compose_validation_report",
+                    importlib.import_module("validation.snapshot_report"),
+                    "compose_snapshot_report",
                     side_effect=ValueError("fixture composition failure"),
                 ),
                 self.assertRaises(CONTROLLER.ValidationControllerError) as raised,
             ):
                 CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
-            committed = latest_full_validation(log_root)
-            self.assertEqual(raised.exception.code, "results.report.render_failed")
-            self.assertIn(committed.result_id, str(raised.exception))
-            self.assertIn(f"generation={committed.generation}", str(raised.exception))
+            committed, generation = _stored_snapshot(log_root)
+            self.assertEqual(raised.exception.code, "validation.report.render_failed")
+            self.assertIn(committed.internal_snapshot_id, str(raised.exception))
+            self.assertIn(f"generation={generation}", str(raised.exception))
             self.assertEqual((log_root / "validation.md").read_bytes(), report_before)
             self.assertIsNone(_marker(log_root))
 
@@ -1531,10 +998,10 @@ class MechanicalControllerTests(unittest.TestCase):
                 ),
             ):
                 result = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                    CONTROLLER.ValidationRequest(summary)
                 )
 
-            self.assertTrue(result["published"])
+            self.assertTrue(result.published)
 
     def test_controller_acquires_log_lock_before_preflight_in_both_modes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1565,11 +1032,10 @@ class MechanicalControllerTests(unittest.TestCase):
                     result = CONTROLLER.validate(
                         CONTROLLER.ValidationRequest(
                             summary,
-                            result_date="2026-08-29",
                             publish=publish,
                         )
                     )
-                self.assertEqual(result["published"], publish)
+                self.assertEqual(result.published, publish)
 
     def test_validation_locks_are_independent_between_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1584,13 +1050,12 @@ class MechanicalControllerTests(unittest.TestCase):
                 result = CONTROLLER.validate(
                     CONTROLLER.ValidationRequest(
                         second,
-                        result_date="2026-08-29",
                         publish=False,
                     )
                 )
-            self.assertFalse(result["published"])
+            self.assertFalse(result.published)
 
-    def test_post_publication_cache_failure_preserves_authoritative_bundle(
+    def test_post_publication_cache_failure_preserves_authoritative_snapshot(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1602,11 +1067,11 @@ class MechanicalControllerTests(unittest.TestCase):
                 return_value=False,
             ):
                 result = CONTROLLER.validate(
-                    CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                    CONTROLLER.ValidationRequest(summary)
                 )
 
             log_root = summary.with_suffix("")
-            self.assertTrue(result["published"])
+            self.assertTrue(result.published)
             self.assertTrue((log_root / ".cache/results.sqlite").is_file())
             self.assertTrue((log_root / "validation.md").is_file())
 
@@ -1620,34 +1085,26 @@ class MechanicalControllerTests(unittest.TestCase):
             cache = log_root / ".cache"
             cache.mkdir(exist_ok=True)
             (cache / "results.sqlite").symlink_to(external / "results.sqlite")
-            record = RESULTS.MechanicalGeneratedRecord.build(
-                summary.resolve().as_posix(), "test-rules", "2026-08-29", ()
+            evaluation = ENGINE.evaluate_mechanical(
+                ENGINE.EvaluationRequest(summary)
             )
+            assert evaluation.snapshot is not None
 
             with self.assertRaisesRegex(
                 ResultStoreError,
                 "symlink",
             ):
-                publish_validation_result(
-                    ValidationPublicationRequest(
-                        log_root,
-                        record,
-                        build_batch_projection(
-                            record,
-                            invocations=(),
-                            registries=(),
-                            source_identity="fixture",
-                        ),
-                    )
+                publish_validation_snapshot(
+                    SnapshotPublicationRequest(log_root, evaluation.snapshot, {})
                 )
 
             self.assertFalse((external / "results.sqlite").exists())
 
-    def test_engine_operational_error_preserves_prior_bundle(self) -> None:
+    def test_engine_operational_error_preserves_prior_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
             CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+                CONTROLLER.ValidationRequest(summary)
             )
             log_root = summary.with_suffix("")
             tracked = (
@@ -1666,10 +1123,10 @@ class MechanicalControllerTests(unittest.TestCase):
 
             self.assertEqual({path: path.read_bytes() for path in tracked}, before)
 
-    def test_metadata_preflight_during_publication_restores_bundle(self) -> None:
+    def test_metadata_preflight_during_publication_restores_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             before_rows = _result_rows(log_root)
@@ -1694,7 +1151,7 @@ class MechanicalControllerTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     CONTROLLER.ValidationControllerError,
-                    "acquired unsupported metadata",
+                    "generated validation residue changed",
                 ):
                     CONTROLLER.validate(request)
 
@@ -1706,7 +1163,7 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_active_research_mutation_prevents_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (
@@ -1730,7 +1187,7 @@ class MechanicalControllerTests(unittest.TestCase):
     def test_changed_research_snapshot_prevents_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            request = CONTROLLER.ValidationRequest(summary, result_date="2026-08-29")
+            request = CONTROLLER.ValidationRequest(summary)
             CONTROLLER.validate(request)
             log_root = summary.with_suffix("")
             tracked = (

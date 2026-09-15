@@ -96,7 +96,7 @@ class FingerprintCacheMetrics:
     directories_hydrated: int
 
     def as_dict(self) -> dict[str, int]:
-        """Return stable metric names for the validation result envelope."""
+        """Return stable metric names for the validation evaluation."""
 
         return {
             "fingerprint_cache_directory_reuses": self.directory_reuses,

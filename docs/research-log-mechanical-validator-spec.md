@@ -4143,21 +4143,21 @@ using `--recompute` bypasses both. A dry run that bypasses both opens neither
 cache and leaves generated state byte-identical.
 
 `validation.md` is a deterministic, source-controlled, nonauthoritative human
-projection of the latest completed full-log snapshot. It contains the saved
-time and outcome, counts atomic findings under `Conformance`, `Evidence`,
-`Provenance`, and `Orphans`, flat bounded finding sections, canonical batch
-summaries, and blocked and failed counts plus their list commands when nonzero. It
-contains no private passing checks, statuses, human finding groups,
-command chains, unresolved groups, admission effects, or generic stored-result
-terminology. Reproduction has no section in this document; its independent
-human projection is `<log>/reproduction.md`.
+projection of the latest completed full-log snapshot. Beneath `# Validation`,
+it contains only the same two-column field/value table as single-log text
+`log validate show`: Log, Saved, Outcome, Conformance, Evidence, Provenance,
+Orphans, Batches, Blocked, Failed, in that order. Counts include explicit zeroes;
+unavailable summary values are not represented as zero. Saved uses the compact
+UTC date `Mon D`; JSON retains exact timestamps and canonical paths.
+There are no inventories, batch rationales, diagnostics, navigation commands,
+or reproduction sections. Finding and batch detail remain on `list` and `detail`.
 
-Only confirmed findings enter finding sections. A localized validator failure
-enters the saved Failed snapshot and its separate failed-check inventory. A
-whole-operation failure never replaces the report. Human names and concise sentences come from one complete
-presentation catalog; an emitted code without a catalog entry is an
-implementation error rather than a fallback that exposes machine syntax. A
-clear report says `No mechanical findings.`
+A localized validator failure enters the saved Failed snapshot and its separate
+failed-check inventory. A whole-operation failure never replaces the report.
+Saved finding names and explanations still come from the complete presentation
+catalog and remain available through detail; an emitted code without a catalog
+entry is an implementation error, not a machine-syntax fallback. Report rendering
+and recovery never reevaluate research sources or change the saved snapshot.
 
 Reproduction does not request, publish, or invoke validation after it
 completes. Its result and report remain independent from the existing validation
@@ -4168,9 +4168,10 @@ operation.
 
 Output reproduction requirements and signature-currentness mismatches belong
 to Reproduce and never appear as validation findings or repair batches.
-`show` counts findings by the four fixed types and reports batches in their own
-column. The single-log view additionally reports blocked and failed counts; the
-cross-log table omits them and reports both aggregates after the table. A batch counts once regardless of how many types or
+`show` counts findings by the four fixed types. Single-log text uses the fixed
+field/value summary, including Batches, Blocked and Failed rows. The cross-log
+table reports batches in their own column, omits blocked and failed columns,
+and reports both aggregates after the table. A batch counts once regardless of how many types or
 entries it spans. Missing saved validation is explicit rather than rendered as
 zero. Agents use the generated projection; they do not parse reports or
 recalculate counts.

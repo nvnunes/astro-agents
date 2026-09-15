@@ -50,9 +50,24 @@ class RecordWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)["outcome"], "findings")
-                self.assertIn(
+                listing = run_log(
+                    root, "validate", "list", "findings", "--path", str(logical),
+                    "--type", "evidence", "--format", "json",
+                )
+                self.assertEqual(listing.returncode, 0, listing.stderr)
+                findings = json.loads(listing.stdout)["items"]
+                self.assertEqual(len(findings), 1)
+                detail = run_log(
+                    root, "validate", "detail", "finding", "--path", str(logical),
+                    "--id", findings[0]["finding_id"], "--format", "json",
+                )
+                self.assertEqual(detail.returncode, 0, detail.stderr)
+                self.assertEqual(
+                    json.loads(detail.stdout)["finding"]["diagnosis"]["title"],
                     "Missing Evidence Declaration",
-                    (logical / "validation.md").read_text(),
+                )
+                self.assertIn(
+                    "| Evidence | 1 |", (logical / "validation.md").read_text()
                 )
 
     def test_directory_execution_and_cross_entry_evidence_refresh(self):

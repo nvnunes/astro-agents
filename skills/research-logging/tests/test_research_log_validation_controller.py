@@ -21,6 +21,7 @@ from research_log_validation_test_support import (
     write,
 )
 from validation.command_diagnostics import publish_command_diagnostic
+from validation.read_model import finding_detail
 from validation.snapshot_storage import (
     SnapshotPublicationRequest,
     load_validation_snapshot,
@@ -132,15 +133,14 @@ class MechanicalControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, _ = _log(Path(directory), output_option="results")
 
-            result = CONTROLLER.validate(
-                CONTROLLER.ValidationRequest(summary)
-            )
+            result = CONTROLLER.validate(CONTROLLER.ValidationRequest(summary))
 
             report = (summary.with_suffix("") / "validation.md").read_text()
             self.assertEqual(_attempt_outcome(result), "findings")
             snapshot = load_validation_snapshot(summary.with_suffix(""))
-            self.assertIn("## Findings", report)
-            self.assertIn("## Batches", report)
+            self.assertNotIn("## Findings", report)
+            self.assertNotIn("## Batches", report)
+            self.assertIn(f"| Batches | {len(snapshot.batches)} |", report)
             self.assertNotIn("Command chain", report)
             self.assertNotIn("Unresolved group", report)
             for check in result.attempt.checks:
@@ -151,15 +151,17 @@ class MechanicalControllerTests(unittest.TestCase):
                     if check.area is DOMAIN.RuleArea.ORPHAN:
                         continue
                     if diagnostic is None:
-                        self.assertEqual(
-                            check.outcome, DOMAIN.CheckOutcome.BLOCKED
-                        )
+                        self.assertEqual(check.outcome, DOMAIN.CheckOutcome.BLOCKED)
                         self.assertNotIn(f"`{check.check_id}`", report)
                         self.assertTrue(check.dependency_evidence)
                     else:
                         presentation = REPORT_CONTEXT.CATALOG[diagnostic.code]
-                        self.assertIn(f"### {presentation.name}", report)
-                        self.assertIn(presentation.sentence, report)
+                        saved = snapshot.report_context["presentations"][
+                            diagnostic.code
+                        ]
+                        self.assertEqual(saved["name"], presentation.name)
+                        self.assertEqual(saved["sentence"], presentation.sentence)
+                        self.assertNotIn(f"### {presentation.name}", report)
             self.assertEqual(
                 {
                     finding_id
@@ -176,7 +178,7 @@ class MechanicalControllerTests(unittest.TestCase):
             self.assertIs(unmatched.outcome, DOMAIN.CheckOutcome.BLOCKED)
             self.assertIn("| Orphans | 2 |", report)
 
-    def test_report_renders_the_cause_of_dependent_not_applicable_checks(
+    def test_detail_retains_the_cause_of_dependent_blocked_checks(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -203,7 +205,13 @@ class MechanicalControllerTests(unittest.TestCase):
                 ({"dependency": "evidence:e001:success-rate"},),
             )
             self.assertNotIn("`provenance:e001:success-rate`", report)
-            self.assertIn("### Undeclared Command Input", report)
+            detail = finding_detail(
+                summary.with_suffix(""), "evidence:e001:success-rate"
+            )
+            self.assertEqual(
+                detail["finding"]["diagnosis"]["title"], "Undeclared Command Input"
+            )
+            self.assertIn("| Blocked | 3 |", report)
 
     def test_dry_run_publishes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -676,7 +684,7 @@ class MechanicalControllerTests(unittest.TestCase):
             ]
             self.assertEqual(residue, ["validation/.cache/upgrade-transactions"])
             self.assertIn(
-                "### Obsolete Validation Artifact",
+                "| Orphans | 1 |",
                 (log_root / "validation.md").read_text(encoding="utf-8"),
             )
 

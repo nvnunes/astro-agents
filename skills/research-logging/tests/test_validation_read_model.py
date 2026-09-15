@@ -374,9 +374,12 @@ class ValidationReadModelTests(unittest.TestCase):
             set(snapshot.batches[0].finding_ids),
         )
         for finding in snapshot.findings:
-            self.assertIn(f"- Finding: `{finding.finding_id}`", report)
+            self.assertNotIn(finding.finding_id, report)
         for batch in snapshot.batches:
-            self.assertIn(f"### {batch.batch_id}", report)
+            self.assertNotIn(batch.batch_id, report)
+        self.assertIn(f"| Batches | {len(snapshot.batches)} |", report)
+        self.assertIn("| Conformance | 1 |", report)
+        self.assertIn("| Provenance | 1 |", report)
 
     def test_finding_cursor_is_complete_and_snapshot_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -233,7 +233,7 @@ class ReportRenderRecoveryTests(unittest.TestCase):
                 render_validation(log)
 
             self.assertIn(
-                "No mechanical findings.",
+                "| Outcome | Clear |",
                 (root / "validation.md").read_text(encoding="utf-8"),
             )
             self.assertTrue(_has_marker(root, "validation"))

@@ -1234,9 +1234,11 @@ and orphan code.
 A completed published mechanical evaluation writes the human-facing
 `<log>/validation.md` report. It shows when mechanical validation last
 completed, records the saved outcome, counts atomic findings under
-Conformance, Evidence, Provenance, and Orphans, and presents flat finding
-sections plus canonical repair-batch summaries. It also reports blocked and
-failed counts with their list commands. Reproduction publishes its separate
+Conformance, Evidence, Provenance, and Orphans, and counts repair batches,
+blocked checks, and failed checks. Beneath its heading it contains only the
+same compact field/value table as single-log `log validate show`, with explicit
+zeroes and a compact UTC saved date. Inventories and diagnostics remain on
+validation `list` and `detail`, not in the report. Reproduction publishes its separate
 `<log>/reproduction.md` report; neither report hides the other's failures.
 
 The single-log summary includes blocked and failed counts. The cross-log table

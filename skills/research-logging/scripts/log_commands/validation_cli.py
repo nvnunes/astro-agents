@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, NoReturn, Sequence, cast
 
@@ -22,6 +21,8 @@ from validation.read_model import (
     show_validation,
     show_validation_root,
 )
+from validation.summary import human_saved_at as _human_saved_at
+from validation.summary import render_saved_summary
 
 from .context import LogContext, resolve_entry, resolve_log
 from .model import ActionError
@@ -330,7 +331,7 @@ def _print(
 def _render_run(value: Mapping[str, object]) -> str:
     if value["schema"] == "research-log-validation-root-run/1":
         rows = cast(Sequence[Mapping[str, object]], value["rows"])
-        lines = [_show_table(value["rows"], root_scope=True)]
+        lines = [_root_show_table(value["rows"])]
         lines.append(
             "Totals: "
             f"{value['clear_count']} clear; {value['findings_count']} findings; "
@@ -381,11 +382,18 @@ def _render_run(value: Mapping[str, object]) -> str:
 
 
 def _render_show(value: Mapping[str, object]) -> str:
-    return _show_table(value["rows"])
+    rows = cast(Sequence[Mapping[str, object]], value["rows"])
+    lines = [render_saved_summary(rows[0])]
+    if rows[0].get("replacement_required"):
+        lines.append(f"Next: {rows[0]['next_command']}")
+    if isinstance(rows[0].get("error"), Mapping):
+        error = cast(Mapping[str, object], rows[0]["error"])
+        lines.append(f"Error: {error['code']}: {error['message']}")
+    return "\n".join(lines)
 
 
 def _render_root_show(value: Mapping[str, object]) -> str:
-    lines = [_show_table(value["rows"], root_scope=True)]
+    lines = [_root_show_table(value["rows"])]
     blocked = value["blocked_check_total"]
     failed = value["failed_check_total"]
     if value["totals_partial"]:
@@ -400,7 +408,7 @@ def _render_root_show(value: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _show_table(rows_value: object, *, root_scope: bool = False) -> str:
+def _root_show_table(rows_value: object) -> str:
     assert isinstance(rows_value, list)
     headers = [
         "Log",
@@ -410,17 +418,15 @@ def _show_table(rows_value: object, *, root_scope: bool = False) -> str:
         "Evidence",
         "Provenance",
         "Orphans",
+        "Batches",
     ]
-    if not root_scope:
-        headers.extend(("Blocked", "Failed"))
-    headers.append("Batches")
     lines = [" | ".join(headers), " | ".join("---" for _ in headers)]
     for row in rows_value:
         assert isinstance(row, Mapping)
         counts = row.get("finding_counts_by_type")
         log = str(row["log"])
         cells = [
-            Path(log).name if root_scope else log,
+            Path(log).name,
             _human_saved_at(row.get("saved_at")),
             str(row["outcome"]).title(),
         ]
@@ -428,13 +434,6 @@ def _show_table(rows_value: object, *, root_scope: bool = False) -> str:
             str(counts[name]) if isinstance(counts, Mapping) else "—"
             for name in FINDING_TYPES
         )
-        if not root_scope:
-            cells.extend(
-                (
-                    str(row.get("blocked_check_count", "—")),
-                    str(row.get("failed_check_count", "—")),
-                )
-            )
         cells.append(str(row.get("batch_count", "—")))
         lines.append(" | ".join(cells))
         if row.get("replacement_required"):
@@ -443,18 +442,6 @@ def _show_table(rows_value: object, *, root_scope: bool = False) -> str:
             error = row["error"]
             lines.append(f"Error: {error['code']}: {error['message']}")
     return "\n".join(lines)
-
-
-def _human_saved_at(value: object) -> str:
-    """Render a saved ISO timestamp as a concise UTC calendar date."""
-
-    if value is None:
-        return "—"
-    instant = datetime.fromisoformat(str(value))
-    if instant.tzinfo is None:
-        raise ValueError("saved validation timestamp must include a timezone")
-    utc = instant.astimezone(timezone.utc)
-    return f"{utc:%b} {utc.day}"
 
 
 def _render_list(value: Mapping[str, object]) -> str:

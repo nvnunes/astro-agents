@@ -22,9 +22,10 @@ may resolve to a report that does not yet exist.
 
 `<log>/validation.md` is the validation-only human projection. It shows the
 saved outcome, counts atomic findings under Conformance, Evidence, Provenance,
-and Orphans, then presents flat finding sections and canonical repair-batch
-summaries. When relevant, it also gives Blocked and Failed counts and their
-saved-list commands. Reproduction has the separate summary navigation and report defined
+and Orphans, and counts Batches, Blocked and Failed. Beneath its heading it
+contains only the compact field/value summary shared with single-log
+`log validate show`; inventories and diagnostics belong on `list` and `detail`.
+Reproduction has the separate summary navigation and report defined
 in `references/file-summary-reproduction.md`. Agents do not parse either
 report for validation or repair. Correct generated records through their owning
 operation, never through summary edits.

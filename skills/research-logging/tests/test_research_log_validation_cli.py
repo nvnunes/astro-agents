@@ -1070,7 +1070,7 @@ class ValidationCliTests(unittest.TestCase):
             self.assertNotIn(structured_row["saved_at"], root_show.stdout)
             self.assertRegex(
                 single_show.stdout,
-                r"[A-Z][a-z]{2} \d{1,2} \| Clear \|",
+                r"(?m)^\| Saved \| [A-Z][a-z]{2} \d{1,2} \|$",
             )
 
     def test_removed_cli_spellings_have_no_aliases(self) -> None:

@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import shlex
 from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence, cast
 
 from .domain import Finding, ValidationSnapshot
 from .report_context import CATALOG, load_report_context
-
-_TYPE_LABELS = (
-    ("conformance", "Conformance"),
-    ("evidence", "Evidence"),
-    ("provenance", "Provenance"),
-    ("orphan", "Orphans"),
-)
+from .summary import TYPE_LABELS, render_saved_summary
 
 
 class SnapshotReportError(ValueError):
@@ -55,80 +48,20 @@ def build_snapshot_report_context(
 
 
 def compose_snapshot_report(snapshot: ValidationSnapshot) -> str:
-    """Render the durable report from the same findings and batches as queries."""
+    """Render only the shared saved summary beneath the Validation heading."""
 
-    context = _report_context(snapshot)
+    _report_context(snapshot)
     counts = Counter(finding.type.value for finding in snapshot.findings)
-    lines = [
-        "# Validation",
-        "",
-        f"Saved: {snapshot.stored_at or snapshot.finished_at}",
-        f"Outcome: {snapshot.outcome.value.title()}",
-        f"Log: {context['title']}",
-        "",
-        "| Type | Findings |",
-        "| --- | ---: |",
-        *(f"| {label} | {counts[key]} |" for key, label in _TYPE_LABELS),
-        f"| Batches | {len(snapshot.batches)} |",
-        f"| Blocked | {len(snapshot.blocked_checks)} |",
-        f"| Failed | {len(snapshot.failed_checks)} |",
-        "",
-    ]
-    log_root = Path(snapshot.target.log).with_suffix("")
-    if snapshot.blocked_checks:
-        lines.extend(
-            (
-                "Inspect blocked checks with `log validate list blocked --path "
-                f"{shlex.quote(str(log_root))}`.",
-                "",
-            )
-        )
-    if snapshot.failed_checks:
-        lines.extend(
-            (
-                "Inspect failed checks with `log validate list failed --path "
-                f"{shlex.quote(str(log_root))}`.",
-                "",
-            )
-        )
-    lines.extend(("## Findings", ""))
-    if not snapshot.findings:
-        lines.append("No mechanical findings.")
-    presentations = cast(
-        Mapping[str, Mapping[str, str]], context["presentations"]
-    )
-    for finding in snapshot.findings:
-        presentation = presentations[finding.code]
-        lines.extend(
-            (
-                f"### {presentation['name']}",
-                "",
-                presentation["sentence"],
-                "",
-                f"- Finding: `{finding.finding_id}`",
-                f"- Type: {finding.type.value}",
-                f"- Entry: {_entry_label(context, finding.entry)}",
-                f"- Subject: {finding.subject}",
-                "",
-            )
-        )
-    lines.extend(("## Batches", ""))
-    if not snapshot.batches:
-        lines.append("No batches.")
-    for batch in snapshot.batches:
-        lines.extend(
-            (
-                f"### {batch.batch_id}",
-                "",
-                f"- Focus finding: `{batch.focus_finding_id}`",
-                f"- Findings: {', '.join(f'`{item}`' for item in batch.finding_ids)}",
-                f"- Repair entries: {', '.join(batch.repair_entries) or '—'}",
-                f"- Context entries: {', '.join(batch.context_entries) or '—'}",
-                f"- Rationale: {'; '.join(batch.rationale) or 'singleton finding'}",
-                "",
-            )
-        )
-    return "\n".join(lines).rstrip() + "\n"
+    row = {
+        "log": str(Path(snapshot.target.log).with_suffix("")),
+        "saved_at": snapshot.stored_at or snapshot.finished_at,
+        "outcome": snapshot.outcome.value,
+        "finding_counts_by_type": {key: counts[key] for key, _ in TYPE_LABELS},
+        "batch_count": len(snapshot.batches),
+        "blocked_check_count": len(snapshot.blocked_checks),
+        "failed_check_count": len(snapshot.failed_checks),
+    }
+    return "# Validation\n\n" + render_saved_summary(row) + "\n"
 
 
 def validate_snapshot_report_context(snapshot: ValidationSnapshot) -> None:
@@ -192,14 +125,6 @@ def _normalize_report_context(
         "presentations": normalized_presentations,
         "title": title,
     }
-
-
-def _entry_label(context: Mapping[str, object], entry: str | None) -> str:
-    if entry is None:
-        return "—"
-    entries = cast(Mapping[str, Mapping[str, str]], context["entries"])
-    presentation = entries.get(entry)
-    return entry if presentation is None else f"{entry} — {presentation['title']}"
 
 
 def _object(value: object, name: str) -> Mapping[str, object]:

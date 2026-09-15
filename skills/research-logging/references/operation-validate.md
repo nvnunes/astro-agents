@@ -87,7 +87,9 @@ Request `--format json` explicitly for structured output. Follow the exact
 continuation command printed by a bounded text view.
 
 The single-log summary reports finding counts under Conformance, Evidence,
-Provenance, and Orphans, plus batches, blocked checks, and failed checks. The
+Provenance, and Orphans, plus batches, blocked checks, and failed checks as a
+compact field/value table. `validation.md` contains only this same table beneath
+its heading; inventories, diagnostics, and navigation stay on the CLI. The
 cross-log table shows only finding-type and batch counts. It reports aggregate
 Blocked and Failed counts below the table and marks those totals partial if a
 discovered log lacks a readable full snapshot. Root text uses final directory

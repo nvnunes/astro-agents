@@ -35,9 +35,11 @@ and Repair use `log validate show`, `list`, and `detail`; never parse the
 database directly.
 
 `validation.md` is the concise source-controlled human projection of the same
-saved snapshot. It includes the saved outcome, finding counts and sections,
-repair batches, and counts plus list commands for blocked and failed checks.
-It does not expose passing checks. Reproduction owns separate state and
+saved snapshot. Beneath its heading it contains only the compact field/value
+table shared with single-log `log validate show`: Log, Saved, Outcome,
+Conformance, Evidence, Provenance, Orphans, Batches, Blocked, Failed. It contains
+no inventories, diagnostics, navigation commands, or passing checks. Use `list`
+and `detail` to inspect saved issues. Reproduction owns separate state and
 `reproduction.md`; validation preserves both.
 
 Command diagnostics occupy a separate command-owned domain. `log command show

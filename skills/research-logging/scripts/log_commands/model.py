@@ -27,40 +27,28 @@ class AddArguments:
 
 
 @dataclass(frozen=True)
-class EvidenceCommonArguments:
-    """Typed arguments for one common evidence add or update action."""
+class EvidenceSyncArguments:
+    """One evidence authoring sync or artifact-wide refresh request."""
 
-    record_id: str
-    source: str
-    select: tuple[str, ...]
-    identity: tuple[str, ...]
-    where: tuple[tuple[str, str, str], ...]
-    as_percentage: bool
-    scale: str | None
-    dry_run: bool
-    reproduction_tolerance: str | None = None
+    record_id: str | None
+    source: str | None
+    add_origins: tuple[str, ...] = ()
+    add_origin_directories: tuple[str, ...] = ()
+    add_from_entries: tuple[str, ...] = ()
+    target_changes: tuple[str, ...] = ()
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
 class RetentionArguments:
-    """Typed arguments for one complete retention add or update action."""
+    """Typed arguments for retention ensure or additive update."""
 
     record_id: str
     targets: tuple[str, ...]
     reason: str | None
     dry_run: bool
-
-
-@dataclass(frozen=True)
-class DataAddArguments:
-    """Typed arguments for one intent-specific input registration."""
-
-    name: str
-    target: str
-    kind: str | None
-    identity: tuple[str, ...] | None
-    commit: str | None
-    dry_run: bool
+    remove_targets: tuple[str, ...] = ()
+    clear_reason: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,12 +57,12 @@ class DataUpdateArguments:
 
     name: str
     target: str | None
-    classification: str | None
+    boundary: str | None
     identity: tuple[str, ...] | None
-    byte_complete: bool
-    commit: str | None
     dry_run: bool
     reproduction_comparison: str | None = None
+    kind: str | None = None
+    acknowledge_shared: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,10 +71,13 @@ class CommandSyncArguments:
 
     cid: str
     add_origins: tuple[str, ...]
+    add_origin_directories: tuple[str, ...]
+    add_origin_git: tuple[str, ...]
     add_generated: tuple[str, ...]
-    renames: tuple[str, ...]
-    removals: tuple[str, ...]
-    retirements: tuple[str, ...]
+    add_generated_directories: tuple[str, ...]
+    add_from_entries: tuple[str, ...]
+    target_changes: tuple[str, ...]
+    execution_deletions: tuple[str, ...]
     dry_run: bool
 
 

@@ -164,32 +164,28 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
             )
             self.assertEqual(result.matches, 2)
 
-    def test_text_selection_is_exact_and_occurrence_is_explicit(self) -> None:
+    def test_text_selection_uses_explicit_inclusive_bounds(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "run.log"
             write(
                 source,
                 "start\nBenchmark simulations: one\nBenchmark simulations: two\n",
             )
-
-            result = LOCATOR.evaluate_locator(
-                source,
-                {
-                    "text": {
-                        "contains": "Benchmark simulations",
-                        "occurrence": "all",
-                    },
-                    "expect": {"matches": 2, "items": 2},
-                },
+            selected = LOCATOR.evaluate_locator(
+                source, {"text": {"lines": "2:3"}, "expect": {"matches": 1, "items": 1}}
             )
-
-            self.assertEqual(len(result.items), 2)
-            with self.assertRaisesRegex(
-                LOCATOR.LocatorV2Error, "locator.selection.ambiguous"
+            self.assertEqual(
+                selected.items[0].value.value,
+                "Benchmark simulations: one\nBenchmark simulations: two",
+            )
+            for old in (
+                {"contains": "Benchmark simulations"},
+                {"contains": "Benchmark simulations", "occurrence": 1},
             ):
-                LOCATOR.evaluate_locator(
-                    source, {"text": {"contains": "Benchmark simulations"}}
-                )
+                with self.assertRaisesRegex(
+                    LOCATOR.LocatorV2Error, "locator.syntax.invalid"
+                ):
+                    LOCATOR.parse_locator({"text": old})
 
     def test_npz_aligned_records_and_binary_float_bits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -401,7 +397,7 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
                 ("results.csv", "value\n1\n", {"select": [["value"]]}),
                 ("results.tsv", "value\n1\n", {"select": [["value"]]}),
                 ("results.json", '{"value":1}', {"path": ["value"]}),
-                ("results.txt", "value\n", {"text": {"contains": "value"}}),
+                ("results.txt", "value\n", {"text": {"line": "1"}}),
             )
             with mock.patch.object(LOCATOR, "MAX_TEXT_OR_JSON_BYTES", 4):
                 for filename, content, locator in textual_cases:
@@ -501,7 +497,7 @@ class LocatorV2SourceProfileTests(unittest.TestCase):
                 (
                     "bad.txt",
                     b"\xff",
-                    {"text": {"contains": "value"}},
+                    {"text": {"line": "1"}},
                     "text.decode",
                 ),
             )

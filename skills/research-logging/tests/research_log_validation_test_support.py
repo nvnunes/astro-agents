@@ -53,7 +53,7 @@ def mechanical_log(
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v5",
+                "schema": "research-log-data/v6",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -79,7 +79,7 @@ def mechanical_log(
         entry_root / "evidence.json",
         json.dumps(
             {
-                "schema": "research-log-evidence/v4",
+                "schema": "research-log-evidence/v5",
                 "records": [
                     {
                         "id": "success-rate",
@@ -154,7 +154,8 @@ def mechanical_log(
         f"--{output_option} '<results>'\n"
         "```\n\n"
         "`Results:`\n\n"
-        "The success rate was `67.6%`<!-- eid:success-rate -->.\n",
+        "The success rate was `67.6%`<!-- eid:success-rate source=results "
+        "select=/success_rate form=percentage render=fixed:1 -->.\n",
     )
     return summary, entry
 

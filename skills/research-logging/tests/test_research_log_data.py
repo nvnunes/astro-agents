@@ -83,7 +83,7 @@ class DataFileTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             item = payload["inputs"][0]
             item["origin"] = False
-            item["comparison"] = {
+            item["reproduction_comparison"] = {
                 "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
                 "profile": "evidence",
             }
@@ -93,8 +93,8 @@ class DataFileTests(unittest.TestCase):
 
             self.assertEqual(loaded.inputs[0].comparison.profile, "evidence")
             self.assertEqual(
-                json.loads(loaded.canonical_json())["inputs"][0]["comparison"],
-                item["comparison"],
+                json.loads(loaded.canonical_json())["inputs"][0]["reproduction_comparison"],
+                item["reproduction_comparison"],
             )
 
     def test_evidence_comparison_rejects_origins_directories_and_unknown_forms(
@@ -109,17 +109,17 @@ class DataFileTests(unittest.TestCase):
                 "profile": "evidence",
             }
             replacements = (
-                {"comparison": None, "origin": False},
-                {"comparison": comparison},
+                {"reproduction_comparison": None, "origin": False},
+                {"reproduction_comparison": comparison},
                 {
-                    "comparison": comparison,
+                    "reproduction_comparison": comparison,
                     "kind": "directory",
                     "location": "data",
                     "identity": {"algorithm": "directory-sha256-v1"},
                     "origin": False,
                 },
                 {
-                    "comparison": {
+                    "reproduction_comparison": {
                         "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
                         "profile": "approximate",
                     },

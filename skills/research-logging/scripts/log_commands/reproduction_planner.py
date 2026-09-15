@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
 from research_log_data import (
+    DATA_SCHEMA,
     DataFile,
     Fingerprint,
     InputResource,
@@ -1638,8 +1639,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
             "execution": canonical_execution_source_digest(owner.execution.as_dict()),
             "execution_id": owner.execution_id,
             "currentness": [
-                conclusion.as_dict()
-                for conclusion in state.currentness.get(key, ())
+                conclusion.as_dict() for conclusion in state.currentness.get(key, ())
             ],
             "materials": materials,
             "outputs": outputs,
@@ -1794,7 +1794,7 @@ def _project_command_details(
                                 _resolved_input_declaration(item)
                                 for item in current.data.inputs
                             ],
-                            "schema": "research-log-data/v5",
+                            "schema": DATA_SCHEMA,
                         }
                         if current.data is not None
                         else None
@@ -1953,7 +1953,7 @@ def _resolved_input_declaration(resource: InputResource) -> dict[str, object]:
         "reference_entry": resource.reference_entry,
     }
     if resource.comparison is not None:
-        value["comparison"] = resource.comparison.as_dict()
+        value["reproduction_comparison"] = resource.comparison.as_dict()
     return value
 
 

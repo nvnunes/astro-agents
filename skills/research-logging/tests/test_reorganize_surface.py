@@ -63,8 +63,8 @@ class ReorganizeSurfaceTests(unittest.TestCase):
         ):
             self.assertIn(phrase.lower(), combined.lower())
         for schema in (
-            "research-log-data/v5",
-            "research-log-evidence/v4",
+            "research-log-data/v6",
+            "research-log-evidence/v5",
             "research-log-retention/v1",
             '"fingerprint"',
             '"records"',

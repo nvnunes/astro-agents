@@ -484,133 +484,25 @@ class TransformationV2TableTests(unittest.TestCase):
             (("case-8", "1.12%"), ("case-15", "1.14%")),
         )
 
-    def test_structured_range_and_explicit_identity_order(self) -> None:
-        def field_value(field: int) -> dict:
-            value = _value(0)
-            value["source"] = {"field": field, "input": 0}
-            return value
-
-        recipe = {
-            "columns": [
-                {"form": "text", "values": [{"source": {"field": 0, "input": 0}}]},
-                {
-                    "form": "range",
-                    "unit": "%",
-                    "values": [field_value(1), field_value(2)],
-                },
-            ],
-            "form": "table",
-            "headings": ["Case", "Error range"],
-            "mode": "structured",
-            "rows": {"input": 0, "order": [["case-15"], ["case-8"]]},
-        }
-        source = _selection(
-            "case-8",
-            "1.118",
-            "1.449",
-            "case-15",
-            "1.143",
-            "1.319",
-            records=(0, 0, 0, 1, 1, 1),
-            identities=(("case-8",), ("case-15",)),
-        )
-        result = TRANSFORM.evaluate_transformation(
-            recipe, [source], presentation_kind="table"
-        )
-
-        self.assertEqual(
-            result.rows,
-            (("case-15", "1.14–1.32%"), ("case-8", "1.12–1.45%")),
-        )
-
-    def test_summary_labels_boolean_and_sequences(self) -> None:
-        recipe = {
-            "form": "table",
-            "headings": ["Metric", "Status", "Dimensions"],
-            "mode": "summary",
-            "rows": [
-                [
-                    {"form": "label", "text": "Detector"},
+    def test_removed_table_modes_fail_closed(self):
+        for mode in ("structured", "summary"):
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(
+                    TRANSFORM.TransformationV2Error, "transformation.syntax.invalid"
+                ),
+            ):
+                TRANSFORM.evaluate_transformation(
                     {
-                        "form": "boolean",
-                        "style": "pass_fail",
-                        "values": [{"source": {"input": 0, "item": 0}}],
+                        "form": "table",
+                        "mode": mode,
+                        "headings": ["Value"],
+                        "rows": [],
+                        "columns": [],
                     },
-                    {
-                        "form": "sequence",
-                        "style": "dimensions",
-                        "values": [
-                            {
-                                "render": {"mode": "integer"},
-                                "source": {"input": 1, "item": index},
-                            }
-                            for index in range(3)
-                        ],
-                    },
-                ]
-            ],
-        }
-        result = TRANSFORM.evaluate_transformation(
-            recipe,
-            [_selection(True), _selection(109, 400, 400)],
-            presentation_kind="table",
-        )
-
-        self.assertEqual(result.rows, (("Detector", "Pass", "109 x 400 x 400"),))
-        self.assertEqual(result.numerical_cells, frozenset({(1, 3)}))
-
-    def test_table_boolean_parser_and_sequence_styles_are_closed(self) -> None:
-        rows = [
-            [
-                {
-                    "form": "boolean",
-                    "style": "yes_no",
-                    "values": [{"parse": "boolean", "source": {"input": 0, "item": 0}}],
-                },
-                {
-                    "form": "sequence",
-                    "style": "slash",
-                    "unit": "%",
-                    "values": [
-                        _value(0, places=1, input_index=1),
-                        _value(1, places=1, input_index=1),
-                    ],
-                },
-                {
-                    "form": "sequence",
-                    "style": "comma",
-                    "unit": "nm",
-                    "values": [
-                        {
-                            "render": {"mode": "integer"},
-                            "source": {"input": 2, "item": index},
-                        }
-                        for index in range(2)
-                    ],
-                },
-            ]
-        ]
-        result = TRANSFORM.evaluate_transformation(
-            {
-                "form": "table",
-                "headings": ["Valid", "Fractions", "Bands"],
-                "mode": "summary",
-                "rows": rows,
-            },
-            [_selection("True"), _selection("1.3", "0.0"), _selection(211, 231)],
-            presentation_kind="table",
-        )
-
-        self.assertEqual(result.rows, (("yes", "1.3 / 0.0%", "211, 231 nm"),))
-        TRANSFORM.compare_presentation(
-            result,
-            presented_kind="table",
-            presented=(
-                "| Valid | Fractions | Bands |\n"
-                "| --- | --- | --- |\n"
-                "| YES | 1.3 / 0.0% | 211, 231 nm |"
-            ),
-        )
+                    [_selection(1)],
+                    presentation_kind="table",
+                )
 
     def test_direct_boolean_presentation_is_case_insensitive(self) -> None:
         result = TRANSFORM.evaluate_transformation(
@@ -675,21 +567,7 @@ class TransformationV2TableTests(unittest.TestCase):
         self.assertEqual(len(raised.exception.observed["differences"]), 16)
         self.assertTrue(raised.exception.observed["differences_truncated"])
 
-    def test_summary_label_and_direct_text_restrictions_fail(self) -> None:
-        with self.assertRaisesRegex(
-            TRANSFORM.TransformationV2Error,
-            "transformation.table.label_invalid",
-        ):
-            TRANSFORM.evaluate_transformation(
-                {
-                    "form": "table",
-                    "headings": ["Only"],
-                    "mode": "summary",
-                    "rows": [[{"form": "label", "text": "Not evidence"}]],
-                },
-                [_selection("unused")],
-                presentation_kind="table",
-            )
+    def test_direct_text_restrictions_fail(self) -> None:
         with self.assertRaisesRegex(
             TRANSFORM.TransformationV2Error,
             "transformation.type.mismatch",

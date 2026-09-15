@@ -185,6 +185,7 @@ class MechanicalControllerTests(unittest.TestCase):
             evidence = json.loads(evidence_path.read_text())
             evidence["records"][0]["sources"][0]["source"] = "<missing>"
             write(evidence_path, json.dumps(evidence) + "\n")
+            write(entry, entry.read_text().replace("source=results", "source=missing"))
 
             result = CONTROLLER.validate(
                 CONTROLLER.ValidationRequest(summary)
@@ -351,6 +352,8 @@ class MechanicalControllerTests(unittest.TestCase):
                 entry,
                 entry.read_text(encoding="utf-8").replace(
                     "<results>", "<renamed-results>"
+                ).replace(
+                    "source=results", "source=renamed-results"
                 ),
             )
 

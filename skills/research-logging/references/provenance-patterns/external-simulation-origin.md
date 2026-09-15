@@ -4,16 +4,6 @@ Use an origin for an existing external simulation dataset when no command in
 this log produced it. Registration does not copy the dataset, and reproduction
 starts at that verified boundary instead of rerunning the external job.
 
-Required tooling:
-
-```bash
-"$LOG_TOOL" data add-origin --path "$LOG" --entry e001 \
-  external-results /datasets/simulations/run-042 \
-  --identity summary.csv --identity metadata.json
-"$LOG_TOOL" data add-generated --path "$LOG" --entry e001 \
-  results-table tables/results.tex --kind file
-```
-
 Research command:
 
 ```bash
@@ -22,6 +12,16 @@ Research command:
   --output-table "<results-table>"
 ```
 
+Tooling after authoring each Markdown command, before its execution:
+
+```bash
+"$LOG_TOOL" command sync --path "$LOG" --entry e001 --cid build_table \
+  --add-origin-directory external-results=/datasets/simulations/run-042 \
+  --add-generated results-table=tables/results.tex
+"$LOG_TOOL" data update --path "$LOG" --entry e001 external-results \
+  --identity file:summary.csv --identity file:metadata.json
+```
+
 The directory must remain locally accessible. Large size or long runtime does
 not itself make an artifact an origin; the selected provenance boundary does.
-Omit `--identity` when the complete directory defines the input.
+Omit the data update when the complete directory defines the input.

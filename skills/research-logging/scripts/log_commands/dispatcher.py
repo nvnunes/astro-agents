@@ -10,16 +10,15 @@ from typing import Mapping, NoReturn, Sequence
 
 from research_log_result_store import ResultStoreError
 
-from .context import resolve_entry, resolve_log, resolve_log_creation
+from .context import EntryContext, resolve_entry, resolve_log, resolve_log_creation
 from .model import (
     ActionError,
     ActionResult,
     AddArguments,
     CommandSyncArguments,
-    DataAddArguments,
     DataUpdateArguments,
     EntryUpdateArguments,
-    EvidenceCommonArguments,
+    EvidenceSyncArguments,
     InitArguments,
     RetentionArguments,
     TransferArguments,
@@ -91,7 +90,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif isinstance(result, Mapping):
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         else:
-            print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+            from validation.json_codec import canonical_json
+
+            print(canonical_json(result.as_dict()))
         return 0
     except (ActionError, ResultStoreError, OSError, UnicodeError) as error:
         return _report_failure(
@@ -211,66 +212,55 @@ def _dispatch_add(arguments: Sequence[str]) -> ActionResult:
     )
 
 
+def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
+    for name in ("compare", "sync"):
+        action = actions.add_parser(name, help="Evaluate Markdown-owned evidence")
+        _entry_arguments(action)
+        scope = action.add_mutually_exclusive_group(required=True)
+        scope.add_argument("--id", help="one Markdown evidence ID")
+        scope.add_argument(
+            "--source", help="direct generated declaration in its owning entry"
+        )
+        if name == "sync":
+            _mutation_argument(action)
+            for flag in (
+                "--add-origin",
+                "--add-origin-directory",
+                "--add-from-entry",
+                "--change-target",
+            ):
+                action.add_argument(
+                    flag,
+                    action="append",
+                    default=[],
+                    metavar="NAME=ENTRY" if flag == "--add-from-entry" else "NAME=PATH",
+                )
+
+
+def _dispatch_evidence_refresh(
+    entry: EntryContext, args: argparse.Namespace
+) -> ActionResult:
+    from . import evidence_sync
+
+    return evidence_sync.compare_or_sync(
+        entry,
+        args.action,
+        EvidenceSyncArguments(
+            record_id=args.id,
+            source=args.source,
+            add_origins=tuple(getattr(args, "add_origin", ())),
+            add_origin_directories=tuple(getattr(args, "add_origin_directory", ())),
+            add_from_entries=tuple(getattr(args, "add_from_entry", ())),
+            target_changes=tuple(getattr(args, "change_target", ())),
+            dry_run=getattr(args, "dry_run", False),
+        ),
+    )
+
+
 def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log evidence")
     actions = parser.add_subparsers(dest="action", required=True)
-    for name in ("add", "update"):
-        verb = "Add" if name == "add" else "Replace"
-        action = actions.add_parser(
-            name,
-            help=f"{verb} one evidence record after authoring its marker",
-            description=(
-                f"{verb} one fully checked evidence record. Author the unique "
-                "presentation marker before invoking this action."
-            ),
-        )
-        _entry_arguments(action)
-        _mutation_argument(action)
-        action.add_argument("--id", required=True, help="presentation marker ID")
-        source_form = action.add_mutually_exclusive_group(required=True)
-        source_form.add_argument(
-            "--source",
-            action="append",
-            help="one local data input name or complete <name> token",
-        )
-        source_form.add_argument(
-            "--definition",
-            type=Path,
-            help="advanced sources/transformation JSON beneath /private/tmp",
-        )
-        action.add_argument(
-            "--select",
-            action="append",
-            default=[],
-            help="JSON Pointer to one selected field or value; repeat as needed",
-        )
-        action.add_argument(
-            "--identity",
-            action="append",
-            default=[],
-            help="JSON Pointer asserting stable record identity; repeat as needed",
-        )
-        action.add_argument(
-            "--where",
-            nargs=3,
-            action="append",
-            default=[],
-            metavar=("POINTER", "TYPE", "VALUE"),
-            help="require a typed equality match; repeat for conjunction",
-        )
-        transform = action.add_mutually_exclusive_group()
-        transform.add_argument(
-            "--as-percentage",
-            action="store_true",
-            help="present one retained proportion as a percentage",
-        )
-        transform.add_argument(
-            "--scale", help="apply one researcher-authorized numeric scale"
-        )
-        action.add_argument(
-            "--reproduction-tolerance",
-            help="absolute numeric tolerance for evidence-scoped reproduction",
-        )
+    _evidence_refresh_parsers(actions)
     rename = actions.add_parser(
         "rename", help="Rename one evidence ID after every Markdown edit"
     )
@@ -279,7 +269,7 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     rename.add_argument("old_id")
     rename.add_argument("new_id")
     remove = actions.add_parser(
-        "remove", help="Remove one record after its Markdown references"
+        "delete", help="Delete one record after its Markdown references"
     )
     _entry_arguments(remove)
     _mutation_argument(remove)
@@ -288,56 +278,13 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
     entry = resolve_entry(resolve_log(args.path), args.entry)
-    if args.action in {"add", "update"}:
-        if args.definition is not None:
-            if (
-                args.select
-                or args.identity
-                or args.where
-                or args.as_percentage
-                or args.scale is not None
-                or args.reproduction_tolerance is not None
-            ):
-                raise ActionError(
-                    "evidence.definition.arguments_conflict",
-                    "--definition cannot be combined with common evidence arguments",
-                )
-            from . import evidence_definition
-
-            return evidence_definition.add_or_update(
-                entry,
-                action=args.action,
-                record_id=args.id,
-                definition=args.definition,
-                dry_run=args.dry_run,
-            )
-        if len(args.source) != 1:
-            raise ActionError(
-                "evidence.common.unsupported",
-                "common evidence accepts exactly one source",
-            )
-        from . import evidence
-
-        return evidence.add_or_update_common(
-            entry,
-            action=args.action,
-            arguments=EvidenceCommonArguments(
-                record_id=args.id,
-                source=args.source[0],
-                select=tuple(args.select),
-                identity=tuple(args.identity),
-                where=tuple(tuple(value) for value in args.where),
-                as_percentage=args.as_percentage,
-                scale=args.scale,
-                reproduction_tolerance=args.reproduction_tolerance,
-                dry_run=args.dry_run,
-            ),
-        )
+    if args.action in {"compare", "sync"}:
+        return _dispatch_evidence_refresh(entry, args)
     from . import evidence
 
     if args.action == "rename":
         return evidence.rename(entry, args.old_id, args.new_id, dry_run=args.dry_run)
-    if args.action == "remove":
+    if args.action == "delete":
         return evidence.remove(entry, args.id, dry_run=args.dry_run)
     return evidence.list_records(entry)
 
@@ -345,14 +292,6 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
 def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log data")
     actions = parser.add_subparsers(dest="action", required=True)
-    _add_data_input_parsers(actions)
-    use = actions.add_parser(
-        "use", help="Reference one generated artifact declared by another entry"
-    )
-    _entry_arguments(use)
-    _mutation_argument(use)
-    use.add_argument("--from-entry", required=True)
-    use.add_argument("name")
     _add_data_update_parser(actions)
     rename = actions.add_parser(
         "rename", help="Rename an input after recorded-command token edits"
@@ -362,7 +301,7 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     rename.add_argument("old_name")
     rename.add_argument("new_name")
     remove = actions.add_parser(
-        "remove", help="Remove an input after command and evidence use"
+        "delete", help="Delete an input after command and evidence use"
     )
     _entry_arguments(remove)
     _mutation_argument(remove)
@@ -373,50 +312,23 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     from . import data
 
     entry = resolve_entry(resolve_log(args.path), args.entry)
-    if args.action == "use":
-        result = data.use(
-            entry,
-            source=resolve_entry(entry.log, args.from_entry),
-            name=args.name,
-            dry_run=args.dry_run,
-        )
-    elif args.action in {"add-origin", "add-generated"}:
-        result = data.add(
-            entry,
-            generated=args.action == "add-generated",
-            arguments=DataAddArguments(
-                name=args.name,
-                target=args.target,
-                kind=getattr(args, "kind", None),
-                identity=(
-                    tuple(args.identity)
-                    if getattr(args, "identity", None) is not None
-                    else None
-                ),
-                commit=getattr(args, "commit", None),
-                dry_run=args.dry_run,
-            ),
-        )
-    elif args.action == "update":
-        classification_value = (
-            "origin" if args.origin else "generated" if args.generated else None
-        )
+    if args.action == "update":
         result = data.update(
             entry,
             DataUpdateArguments(
                 name=args.name,
                 target=args.target,
-                classification=classification_value,
+                boundary=args.boundary,
                 identity=(tuple(args.identity) if args.identity is not None else None),
-                byte_complete=args.byte_complete,
-                commit=args.commit,
+                kind=args.kind,
+                acknowledge_shared=args.acknowledge_shared,
                 reproduction_comparison=args.reproduction_comparison,
                 dry_run=args.dry_run,
             ),
         )
     elif args.action == "rename":
         result = data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
-    elif args.action == "remove":
+    elif args.action == "delete":
         result = data.remove(entry, args.name, dry_run=args.dry_run)
     else:
         result = data.list_inputs(entry)
@@ -433,12 +345,52 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     sync.add_argument("--cid", required=True, help="stable command ID")
     sync.add_argument("--add-origin", action="append", default=[], metavar="NAME=PATH")
     sync.add_argument(
+        "--add-origin-directory",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+    )
+    sync.add_argument(
+        "--add-origin-git",
+        action="append",
+        default=[],
+        metavar="NAME=COMMIT:PATH",
+    )
+    sync.add_argument(
         "--add-generated", action="append", default=[], metavar="NAME=PATH"
     )
-    sync.add_argument("--rename", action="append", default=[], metavar="OLD=NEW")
-    sync.add_argument("--remove", action="append", default=[], metavar="NAME")
-    sync.add_argument("--retire", action="append", default=[], metavar="EXECUTION_ID")
+    sync.add_argument(
+        "--add-generated-directory",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+    )
+    sync.add_argument(
+        "--add-from-entry", action="append", default=[], metavar="NAME=ENTRY"
+    )
+    sync.add_argument(
+        "--change-target", action="append", default=[], metavar="NAME=TARGET"
+    )
+    sync.add_argument(
+        "--delete-execution",
+        action="append",
+        default=[],
+        metavar="EXECUTION_ID",
+    )
     _mutation_argument(sync)
+    rename = actions.add_parser("rename", help="Rename a CID after Markdown edits")
+    _entry_arguments(rename)
+    _mutation_argument(rename)
+    rename.add_argument("old_id")
+    rename.add_argument("new_id")
+    delete = actions.add_parser(
+        "delete", help="Delete an absent command and its unconsumed outputs"
+    )
+    _entry_arguments(delete)
+    _mutation_argument(delete)
+    delete.add_argument("--cid", required=True)
+    listed = actions.add_parser("list", help="List command recipes and policies")
+    _entry_arguments(listed)
     verify = actions.add_parser(
         "verify", help="Run one current recorded command in an isolated workspace"
     )
@@ -463,6 +415,17 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
         return _run_command_verification(args)
     if args.action == "show":
         return _show_command_diagnostic(args)
+    if args.action in {"rename", "delete", "list"}:
+        from . import command_lifecycle
+
+        entry = resolve_entry(resolve_log(args.path), args.entry)
+        if args.action == "rename":
+            return command_lifecycle.rename(
+                entry, args.old_id, args.new_id, dry_run=args.dry_run
+            )
+        if args.action == "delete":
+            return command_lifecycle.delete(entry, args.cid, dry_run=args.dry_run)
+        return command_lifecycle.list_commands(entry)
     from .command_sync import sync_command
 
     return sync_command(
@@ -470,10 +433,13 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
         CommandSyncArguments(
             cid=args.cid,
             add_origins=tuple(args.add_origin),
+            add_origin_directories=tuple(args.add_origin_directory),
+            add_origin_git=tuple(args.add_origin_git),
             add_generated=tuple(args.add_generated),
-            renames=tuple(args.rename),
-            removals=tuple(args.remove),
-            retirements=tuple(args.retire),
+            add_generated_directories=tuple(args.add_generated_directory),
+            add_from_entries=tuple(args.add_from_entry),
+            target_changes=tuple(args.change_target),
+            execution_deletions=tuple(args.delete_execution),
             dry_run=args.dry_run,
         ),
     )
@@ -555,47 +521,6 @@ def _show_command_diagnostic(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_data_input_parsers(
-    actions: argparse._SubParsersAction[_AuthoringParser],
-) -> None:
-    for name in ("add-origin", "add-generated"):
-        description = (
-            "Register one producerless material input and stop Provenance"
-            if name == "add-origin"
-            else "Declare one named same-log generated artifact"
-        )
-        action = actions.add_parser(name, help=description, description=description)
-        _entry_arguments(action)
-        _mutation_argument(action)
-        action.add_argument("name", help="stable entry-scoped input name")
-        action.add_argument(
-            "target",
-            help="absolute or entry-root-relative file or directory",
-        )
-        if name == "add-origin":
-            representation = action.add_mutually_exclusive_group()
-            representation.add_argument(
-                "--identity",
-                action="append",
-                help="authoritative directory file or final-component pattern",
-            )
-            representation.add_argument(
-                "--commit",
-                help="full lowercase commit hash identifying a Git repository input",
-            )
-        else:
-            action.add_argument(
-                "--kind",
-                choices=("file", "directory"),
-                help="declared kind, required before the output exists",
-            )
-            action.add_argument(
-                "--identity",
-                action="append",
-                help="authoritative generated-directory file or pattern",
-            )
-
-
 def _add_data_update_parser(
     actions: argparse._SubParsersAction[_AuthoringParser],
 ) -> None:
@@ -605,33 +530,18 @@ def _add_data_update_parser(
     _entry_arguments(update)
     _mutation_argument(update)
     update.add_argument("name", help="existing input name")
-    update.add_argument("--target", help="replacement existing local target")
-    classification = update.add_mutually_exclusive_group()
-    classification.add_argument(
-        "--origin", action="store_true", help="assert an explicit origin boundary"
-    )
-    classification.add_argument(
-        "--generated",
+    update.add_argument("--target", help="replacement PATH or COMMIT:PATH Git origin")
+    update.add_argument("--boundary", choices=("origin", "generated"))
+    update.add_argument("--kind", choices=("file", "directory"))
+    update.add_argument(
+        "--acknowledge-shared",
         action="store_true",
-        help=(
-            "classify as generated with a unique same-log producer; "
-            "allow pending production or reproduction"
-        ),
+        help="accept the listed wider consumer scope without bypassing validation",
     )
-    identity = update.add_mutually_exclusive_group()
-    identity.add_argument(
+    update.add_argument(
         "--identity",
         action="append",
-        help="replace an origin directory's authoritative selectors",
-    )
-    identity.add_argument(
-        "--byte-complete",
-        action="store_true",
-        help="identify an origin directory by all descendant bytes",
-    )
-    identity.add_argument(
-        "--commit",
-        help="full lowercase commit hash identifying a Git repository input",
+        help="replace directory identity: byte-complete, file:PATH, or pattern:GLOB",
     )
     update.add_argument(
         "--reproduction-comparison",
@@ -644,7 +554,7 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log retention")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
-        verb = "Add" if name == "add" else "Replace"
+        verb = "Add" if name == "add" else "Update"
         action = actions.add_parser(
             name,
             help=f"{verb} one disconnected-retention decision",
@@ -653,18 +563,22 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
         _entry_arguments(action)
         _mutation_argument(action)
         action.add_argument("--id", required=True, help="stable retention ID")
-        action.add_argument("--reason", help="concise retention intent")
-        action.add_argument(
-            "targets",
-            nargs="+",
-            help="one directory or one or more entry-relative regular files",
-        )
+        reason = action.add_mutually_exclusive_group()
+        reason.add_argument("--reason", help="concise retention intent")
+        if name == "add":
+            action.add_argument("--target", action="append", required=True)
+        else:
+            reason.add_argument("--clear-reason", action="store_true")
+            action.add_argument("--add-target", action="append", default=[])
+            action.add_argument("--remove-target", action="append", default=[])
     rename = actions.add_parser("rename", help="Rename one retention ID")
     _entry_arguments(rename)
     _mutation_argument(rename)
     rename.add_argument("old_id")
     rename.add_argument("new_id")
-    remove = actions.add_parser("remove", help="Remove one retention decision")
+    remove = actions.add_parser(
+        "delete", help="Delete one retention decision without deleting material"
+    )
     _entry_arguments(remove)
     _mutation_argument(remove)
     remove.add_argument("--id", required=True)
@@ -680,14 +594,16 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
             action=args.action,
             arguments=RetentionArguments(
                 record_id=args.id,
-                targets=tuple(args.targets),
+                targets=tuple(args.target if args.action == "add" else args.add_target),
+                remove_targets=tuple(getattr(args, "remove_target", ())),
+                clear_reason=getattr(args, "clear_reason", False),
                 reason=args.reason,
                 dry_run=args.dry_run,
             ),
         )
     if args.action == "rename":
         return retention.rename(entry, args.old_id, args.new_id, dry_run=args.dry_run)
-    if args.action == "remove":
+    if args.action == "delete":
         return retention.remove(entry, args.id, dry_run=args.dry_run)
     return retention.list_records(entry)
 

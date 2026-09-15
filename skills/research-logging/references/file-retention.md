@@ -1,35 +1,33 @@
 # Disconnected Retention Instructions
 
-Use this file only when the researcher intentionally keeps entry-owned files
-outside the evidence-rooted command graph. Retention prevents those selected
-files from being classified as accidental orphans. It does not create
-evidence, input, command, producer, lineage, or dependency relationships.
+Use retention when the researcher intentionally keeps entry-owned material
+outside the active command and evidence graph. It records intent, not a missing
+producer, consumer, evidence relationship, or reproduction exception.
+Do not inspect or edit its JSON; use the owning CLI.
 
-Choose one stable descriptive ID, the exact entry-relative targets, and an
-optional concise reason that records the retention intent. Use either one
-nonempty directory or one or more regular files; do not mix the two forms or
-use symlinks, missing targets, overlapping records, or paths outside the entry.
-
-Resolve `<skill>/scripts/log` from this skill package, read only the
-selected action's help, and invoke:
+Choose a stable ID and one existing nonempty directory or regular-file targets,
+all entry-relative. Do not mix files and directories, use symlinks or missing
+targets, or overlap records.
 
 ```text
-<skill>/scripts/log retention add --path <log> --entry <entry-id> \
-  --id <id> [--reason <reason>] <target> [<target> ...]
+<skill>/scripts/log retention add --path LOG --entry ENTRY --id ID
+  --target PATH [--target PATH]... [--reason TEXT] [--dry-run]
+<skill>/scripts/log retention update --path LOG --entry ENTRY --id ID
+  [--add-target PATH]... [--remove-target PATH]...
+  [--reason TEXT|--clear-reason] [--dry-run]
 ```
 
-`<log>` is the logical base whose summary is `<log>.md`; do not pass the
-summary file. The CLI infers exact-file or all-descendant directory coverage,
-validates the declaration, and owns the retention registry. Never create,
-inspect, or edit that registry during ordinary Record.
+Add accepts a consistent existing assertion; omission preserves its reason.
+Update is additive and preserves omitted coverage and reason. To remove all
+coverage use `log retention delete --id ID`. Rename uses
+`log retention rename OLD NEW`; list returns semantic coverage and reason.
 
-Use `log retention update` to replace one selected retention decision,
-`rename` to preserve it under a new ID, `remove` when the material no longer
-needs disconnected retention, and `list` for a bounded semantic inventory.
-Every mutation accepts `--dry-run`.
+Connected targets fail with their command/evidence owners, including other
+entries that use the same physical file under another name. Remove those uses
+and sync or delete their owners before retention. Conversely, remove retention
+coverage before either sync makes the target active. This explicit transfer
+keeps ownership clear. Removing coverage reports disconnected material but
+never deletes retained files.
 
-Do not use retention to conceal missing metadata or Provenance. Remove a
-retention declaration when its target enters the evidence-rooted graph. If an
-action fails because existing research-owned state is malformed or legacy,
-report the exact failure and stop; do not start Repair or edit around the
-command without a separate correction request.
+Malformed state stops the operation and requires explicitly authorized Repair;
+an authoring failure alone does not authorize direct JSON editing.

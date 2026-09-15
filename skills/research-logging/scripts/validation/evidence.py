@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, NoReturn, Sequence, cast
@@ -22,7 +22,7 @@ from .errors import MechanicalContractError
 from .filesystem import BoundedFileReadError, bounded_file_bytes
 from .json_codec import V2JsonError, canonical_json, decode_json
 
-EVIDENCE_SCHEMA = "research-log-evidence/v4"
+EVIDENCE_SCHEMA = "research-log-evidence/v5"
 REPRODUCTION_TOLERANCE_FIELD = "reproduction_tolerance"
 _MISSING = object()
 MAX_EVIDENCE_FILE_BYTES = 8 * 1024 * 1024
@@ -58,11 +58,14 @@ SYNTHESIS_SECTION_LABELS = SECTION_LABELS - {
 }
 
 RECORD_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
-EID_COMMENT_RE = re.compile(r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*) -->")
+EID_COMMENT_RE = re.compile(
+    r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)"
+    r"(?P<definition>(?: (?!-->)[^\r\n]*?)?) -->"
+)
 EID_CANDIDATE_RE = re.compile(r"<!--\s*[Ee][Ii][Dd](?::|\s|=)")
 EID_LINE_RE = re.compile(
-    r"(?P<code>`(?P<value>[^`\r\n]+)`)"
-    r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*) -->"
+    r"(?P<code>`(?P<value>[^`\r\n]*)`)"
+    r"<!-- eid:(?P<id>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)(?: (?!-->)[^\r\n]*?)? -->"
 )
 SUMMARY_REFERENCE_RE = re.compile(
     r"<!-- ref entry = (?P<entry>[A-Za-z0-9][A-Za-z0-9_-]*); "
@@ -71,7 +74,7 @@ SUMMARY_REFERENCE_RE = re.compile(
 )
 SUMMARY_LINE_RE = re.compile(
     r"(?P<code>`(?P<value>[^`\r\n]+)`)"
-    r"(?P<reference><!-- ref [^\r\n]+ -->)"
+    r"(?P<reference><!-- ref [^\r\n]+? -->)"
 )
 SUMMARY_CANDIDATE_RE = re.compile(r"<!--\s*[Rr][Ee][Ff](?:\s|=)")
 INLINE_CODE_RE = re.compile(r"`([^`\r\n]+)`")
@@ -151,9 +154,7 @@ class PresentationRecord:
             ),
         }
         if self.reproduction_tolerance is not None:
-            result[REPRODUCTION_TOLERANCE_FIELD] = (
-                self.reproduction_tolerance.as_dict()
-            )
+            result[REPRODUCTION_TOLERANCE_FIELD] = self.reproduction_tolerance.as_dict()
         if self.kind == "artifact" and (
             self.artifact_fingerprint is not None
             or self.artifact_fingerprint_present is True
@@ -212,6 +213,7 @@ class PresentedItem:
     under_results: bool
     presentation_form: str
     presentation_format: str | None
+    definition: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -517,6 +519,7 @@ def index_entry_presentations(
     observed_markers = [
         (number, match.start())
         for number, line in enumerate(lines, 1)
+        if not fenced[number - 1]
         for match in EID_CANDIDATE_RE.finditer(line)
     ]
     if any(marker not in consumed_markers for marker in observed_markers):
@@ -534,7 +537,100 @@ def index_entry_presentations(
             {"ids": ids},
             "V2 Entry Presentation Markers",
         )
-    return tuple(items)
+    return _bind_markdown_definitions(text, items)
+
+
+def _bind_markdown_definitions(
+    text: str, items: Sequence[PresentedItem]
+) -> tuple[PresentedItem, ...]:
+    from .evidence_markdown import read_markdown_evidence
+
+    definitions = {}
+    for match in authored_eid_comments(text):
+        if match["definition"].strip():
+            marker = read_markdown_evidence(text, match["id"])
+            definitions[marker.id] = {
+                "sources": list(marker.sources),
+                "transformation": marker.transformation,
+                "reproduction_tolerance": marker.tolerance,
+                "statistic": marker.statistic,
+            }
+    return tuple(replace(item, definition=definitions.get(item.id)) for item in items)
+
+
+def authored_eid_comments(text: str) -> tuple[re.Match[str], ...]:
+    """Return actual definition comments, excluding literal fenced content."""
+
+    lines = text.splitlines(keepends=True)
+    fenced = _fenced_lines([line.rstrip("\r\n") for line in lines])
+    offset = 0
+    markers: list[re.Match[str]] = []
+    for line, inside_fence in zip(lines, fenced):
+        if not inside_fence:
+            markers.extend(EID_COMMENT_RE.finditer(text, offset, offset + len(line)))
+        offset += len(line)
+    return tuple(markers)
+
+
+def require_markdown_definition(record: EvidenceRecord, item: PresentedItem) -> None:
+    """Reject unsynchronized comment edits before accepting cached evaluation."""
+
+    from .evidence_markdown import materialize_statistic
+
+    normalized: dict[str, Any] = {
+        "sources": [
+            {
+                "source": source.source,
+                "locator": {
+                    key: value
+                    for key, value in source.locator.items()
+                    if key != "expect"
+                }
+                if source.locator
+                else None,
+            }
+            for source in record.sources
+        ],
+        "transformation": record.transformation,
+        "reproduction_tolerance": record.reproduction_tolerance.absolute
+        if record.reproduction_tolerance
+        else None,
+    }
+    markdown = dict(item.definition) if item.definition else None
+    if markdown is not None:
+        statistic = markdown.pop("statistic", None)
+        if statistic is not None:
+            counts = [
+                int(
+                    (source.locator or {})
+                    .get("expect", {})
+                    .get("items", len((source.locator or {}).get("select", ())) or 1)
+                )
+                for source in record.sources
+            ]
+            markdown["transformation"] = materialize_statistic(statistic, counts)
+        for source in normalized["sources"]:
+            if source["locator"] is not None and "text" not in source["locator"]:
+                source["locator"].setdefault("path", [])
+        if (
+            normalized["transformation"]
+            and normalized["transformation"].get("form") == "percentage"
+        ):
+            normalized["transformation"] = {
+                "decimal_places": 1,
+                **normalized["transformation"],
+            }
+    if markdown != normalized:
+        _fail(
+            "evidence.definition.unsynchronized",
+            record.id,
+            {
+                "maintained": canonical_json(normalized),
+                "markdown": canonical_json(markdown),
+                "required_action": "log evidence sync --id " + record.id,
+            },
+            "Evidence Markdown Definitions",
+        )
 
 
 def index_entry_section_issues(text: str) -> tuple[EntrySectionIssue, ...]:
@@ -727,7 +823,9 @@ def index_entry_presentation_candidates(
                 if _artifact_target(match.group("target"), document_path) is not None
             )
         if not fenced[index] and _looks_like_table(lines, index):
-            candidates.append(PresentationCandidate("table", index + 1))
+            markdown, _ = _table_block(lines, index)
+            if not _independently_marked_table(markdown):
+                candidates.append(PresentationCandidate("table", index + 1))
         fence = FENCE_RE.fullmatch(line)
         if fence is not None and fence.group("info") in {"diff", "text"}:
             candidates.append(
@@ -737,6 +835,22 @@ def index_entry_presentation_candidates(
                 )
             )
     return tuple(candidates)
+
+
+def _independently_marked_table(markdown: str) -> bool:
+    """Permit cell composition only when all numeric cells are marked."""
+
+    from .transformation import parse_markdown_table
+
+    if EID_LINE_RE.search(markdown) is None:
+        return False
+    _, rows = parse_markdown_table(EID_LINE_RE.sub("marked", markdown))
+    return all(
+        not _presented_numeric_expression(cell)
+        and cell.casefold() not in {"true", "false", "yes", "no", "pass", "fail"}
+        for row in rows
+        for cell in row
+    )
 
 
 def index_summary_statistic_candidates(text: str) -> tuple[int, ...]:
@@ -1003,6 +1117,7 @@ def _decode_record(
         for number, source in enumerate(sources)
     )
     transformation = value["transformation"]
+    _require_v5_record_form(kind, decoded_sources, transformation, subject)
     if kind == "artifact" and transformation is not None:
         _invalid(subject, {"transformation": transformation})
     if transformation is not None and (
@@ -1041,6 +1156,43 @@ def _decode_record(
         artifact_fingerprint=artifact_fingerprint,
         artifact_fingerprint_present=raw_artifact_fingerprint is not _MISSING,
     )
+
+
+def _require_v5_record_form(
+    kind: str, sources: Sequence[EvidenceSource], transformation: object, subject: str
+) -> None:
+    if kind in {"table", "output"} and len(sources) != 1:
+        _invalid(subject, {"reason": "single_source_required"})
+    if kind == "table" and (
+        not isinstance(transformation, Mapping)
+        or transformation.get("mode") != "direct"
+        or transformation.get("form") != "table"
+    ):
+        _invalid(subject, {"reason": "record a script for joined or derived tables"})
+    if kind == "output":
+        locator = sources[0].locator or {}
+        selector = locator.get("text")
+        if (
+            transformation is not None
+            or not isinstance(selector, Mapping)
+            or set(selector) - {"line", "lines", "chars"}
+        ):
+            _invalid(subject, {"reason": "verbatim_bounded_slice_required"})
+    if (
+        kind == "statistic"
+        and isinstance(transformation, Mapping)
+        and transformation.get("form")
+        not in {
+            "scalar",
+            "percentage",
+            "boolean",
+            "range",
+            "tuple",
+            "interval",
+            "plus_minus",
+        }
+    ):
+        _invalid(subject, {"reason": "closed_scalar_form_required"})
 
 
 def _decode_reproduction_tolerance(
@@ -1125,9 +1277,7 @@ def _normalized_relative(value: object, subject: str) -> str:
     return value
 
 
-def _artifact_target(
-    raw_target: str, document_path: PurePosixPath
-) -> str | None:
+def _artifact_target(raw_target: str, document_path: PurePosixPath) -> str | None:
     """Return one eligible local artifact target relative to the log root."""
 
     target = raw_target[1:-1] if raw_target.startswith("<") else raw_target

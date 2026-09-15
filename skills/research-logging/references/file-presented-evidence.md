@@ -1,174 +1,117 @@
 # Presented Evidence Instructions
 
-Use this file when adding or changing a presented result, artifact, or
-summary evidence reference. The agent chooses what the research presents and
-where it belongs. The public CLI owns evidence-record validation and storage.
-Never create, inspect, or edit its registry during ordinary Record.
+Use this file for a presented result, retained artifact, or summary reference.
+Choose what the research should present; Markdown defines the selection and
+format, and `log evidence sync` derives the record and presentation.
+Do not create, inspect, or edit JSON during ordinary Record.
 
-Entry evidence exists only under `Results:` in an experimental section. A
-numerical result in experimental prose is separate evidence even when the same
-value appears in a table.
+Entry evidence belongs under `Results:` in an experimental section.
+A value in prose is separate evidence even when repeated in a table.
+Give each item a stable descriptive lowercase EID, never an ID containing its
+current value.
 
-## Presentation Markers
+## Define Then Sync
 
-Use one stable descriptive lowercase ID for each statistic, table, retained
-output, or whole artifact. Do not include the value in the ID.
-
-- Put a statistic marker immediately after its single code span:
-
-  ```markdown
-  Overall error fell to `0.286%`<!-- eid:overall-error -->.
-  ```
-
-- Put a table or retained-output marker on the source line immediately before
-  the Markdown table or `text` fence, with no intervening line:
-
-  ```markdown
-  <!-- eid:configuration-table -->
-  | Configuration | Error |
-  | --- | ---: |
-  | Candidate | 0.286% |
-  ```
-
-- Put a linked artifact marker immediately after its local Markdown link or
-  image embed on the same source line, with no intervening characters:
-
-  ```markdown
-  ![Residual map](images/residual-map.png)<!-- eid:residual-map -->
-  [Download results](data/results.csv)<!-- eid:results-download -->
-  ```
-
-- To present the complete contents of a retained UTF-8 diff artifact inline,
-  put its marker on the source line immediately before a fence whose info
-  string is exactly `diff`:
-
-  ````markdown
-  <!-- eid:v11-v12-expanded-diff -->
-  ```diff
-  -old value
-  +new value
-  ```
-  ````
-
-  The complete fenced payload must match the complete source file after only
-  CRLF or CR line endings are normalized to LF and one terminal LF is removed
-  from each side for Markdown's structural fence separation. Do not trim
-  whitespace or omit output. Other fenced formats are not inline artifacts.
-
-The marker is exactly `<!-- eid:descriptive-id -->`. Keep names, connective
-wording, and parameters outside a marked statistic's code span.
-
-## Common Evidence Workflow
-
-1. Retain the source and register it as an input through
-   `references/file-data-index.md` when it does not already have a local
-   `<name>` token. Require that transaction to succeed before continuing.
-2. Author the complete presentation and marker first.
-3. Resolve `<skill>/scripts/log` from this skill package. Read only
-   `log evidence add --help` or `log evidence update --help`, then invoke the
-   selected action with the logical log path, stable entry ID, evidence ID, and
-   one source token:
-
-   ```text
-   <skill>/scripts/log evidence add --path <log> --entry <entry-id> \
-     --id <id> --source <name> [common selection or conversion arguments]
-   ```
-
-   `<log>` is the logical base whose summary is `<log>.md`; do not pass the
-   summary file itself. Use `--select` with a JSON Pointer such as `/accuracy`.
-   Use repeated `--where <pointer> <string|integer|decimal|boolean|null>
-   <value>` to select matching records and repeated `--identity` to assert
-   stable row identity. Use `--as-percentage` only when the retained proportion
-   is intentionally presented as a percentage, and `--scale` only for a
-   researcher-authorized scientific scale conversion.
-   Use `--reproduction-tolerance <absolute-decimal>` only after the researcher
-   approves that smallest scientifically justified tolerance for one evidence
-   value belonging to an artifact explicitly configured for evidence-scoped
-   reproduction. It never relaxes comparison with the Markdown presentation.
-   For a whole artifact, pass only its one source token; the action recognizes
-   the marked link, image, or inline `diff` fence and rejects selection or
-   conversion arguments.
-4. Require the command to succeed. It resolves and observes the source,
-   infers the document and evidence kind from the unique marker, records exact
-   selection expectations, checks the presentation, and publishes the complete
-   record. For a linked image or download, it captures the exact current
-   SHA-256 as the evidence record's artifact baseline only after the source and
-   presentation association remain stable through publication. A later
-   `evidence update` is the only normal action that replaces that baseline;
-   fresh execution, reproduction, promotion, and cache rebuilding do not.
-   Do not open a registry to inspect or confirm a successful result.
-
-Invoke dependent authoring actions separately. Read each bounded result and
-stop at the first failure instead of sending the next action in the same shell
-invocation.
-
-This common path covers linked and inline whole artifacts, one-source identity
-statistics, inferred scalar rendering and units, fractional percentages,
-explicit scaling, direct tables whose selected source already has the
-presented shape, and one selected line of retained `text` output. Use a
-complete `<name>` token for a file or
-`<directory-name>/member` for one exact directory member. A bare directory,
-raw path, URI, or cross-entry shorthand is not an evidence source.
-
-For a member of a generated output-directory bundle, keep the evidence source
-on that exact member. Do not register the member separately: validation uses
-the bundle's recursive fingerprint and directory-level output support for
-Provenance while preserving the member-level presentation association.
-
-## Advanced Definition Routing
-
-When the intended presentation clearly needs one of the forms below, or the
-common action reports `evidence.common.unsupported`, do not edit the registry
-or start Repair. Choose first by presentation family and read exactly one
-matching reference. For a statistic, use its transformation and source count
-to choose between the first two routes:
-
-- a one-source statistic whose only advanced need is source selection:
-  `references/record-evidence-definition-sources.md`;
-- a compound or otherwise advanced numerical presentation, including every
-  statistic that consumes several sources:
-  `references/record-evidence-definition-numeric.md`;
-- a direct table needing explicit column formatting:
-  `references/record-evidence-definition-direct-tables.md`;
-- a table built by applying one column recipe to repeated source records:
-  `references/record-evidence-definition-structured-tables.md`;
-- a small table assembled from several exact retained selections:
-  `references/record-evidence-definition-summary-tables.md`; or
-- a retained-output presentation needing an explicit text recipe:
-  `references/record-evidence-definition-outputs.md`.
-
-That reference supplies the focused `sources` and `transformation` definition.
-Write only that bounded definition under `/private/tmp`, run the documented
-`--dry-run`, and apply it only after the preflight succeeds. A valid advanced
-case is still Record, not Repair.
-
-If current research-owned state is malformed or legacy and prevents the owning
-action from operating, stop and report the exact failure. Do not perform Repair
-without a separate correction request.
-
-## Summary Evidence
-
-A maintained summary may present a statistic only by referencing an already
-supported entry statistic or exact table cell:
+For a new value use an empty code span, immediately followed by the definition:
 
 ```markdown
-The runtime was `12.3 ms`<!-- ref entry = e004a; eid = full-sample-runtime -->.
+The error was ``<!-- eid:error source=metrics select=/error render=fixed:3 -->.
 ```
+
+For an existing item use the same syntax; change only the desired comment fields,
+then sync. Source names may be `metrics`, `bundle/metrics.csv`, or their
+complete named tokens. Raw paths and bare directories are not evidence sources.
+
+```text
+<skill>/scripts/log evidence sync --path LOG --entry ENTRY --id EID
+  [--add-origin NAME=PATH]... [--add-origin-directory NAME=PATH]...
+  [--add-from-entry NAME=ENTRY]... [--change-target NAME=PATH]... [--dry-run]
+```
+
+LOG is the logical base whose summary is LOG.md. Read the selected action's help
+only when needed. Missing generated sources must be declared through their
+producer's command sync; an evidence-owned origin can be declared in this call.
+Add assertions are optional once the name exists and may be repeated consistently.
+Omission preserves data properties. A conflict names the owning change action.
+
+Sync fills the empty presentation or replaces its existing owned region, derives
+selection expectations, and captures current linked-artifact fingerprints.
+Require success before continuing. Do not inspect JSON to confirm success.
+A malformed registry is a separate Repair boundary, not an invitation to edit
+around an authoring failure.
+
+## Refresh After Execution
+
+After `pyrun` updates a generated artifact, compare related evidence once:
+
+```text
+<skill>/scripts/log evidence compare --path LOG --entry OWNER --source NAME
+<skill>/scripts/log evidence sync --path LOG --entry OWNER --source NAME
+```
+
+Compare is read-only and returns each EID and the exact before and after
+presentation. Judge whether differences make scientific sense before sync.
+Source scope reaches references in other entries and forwarded summary values.
+For a single item use `--id EID` in either command.
+Call sync even when the presentation did not change: it refreshes fingerprints
+and expectations without rewriting unchanged Markdown.
+
+## Supported Presentations
+
+- A short scalar, percentage, Boolean, range, tuple, interval, or plus/minus:
+  read `references/record-evidence-definition-numeric.md` when needed.
+- Source selection beyond a simple field:
+  read `references/record-evidence-definition-sources.md`.
+- A direct Markdown table from one retained source:
+  read `references/record-evidence-definition-direct-tables.md`.
+- A verbatim retained-output excerpt:
+  read `references/record-evidence-definition-outputs.md`.
+
+The comment is compact shell-quoted key=value syntax. Semicolons start another
+source or table-column clause. There are no JSON/YAML definitions, definition
+files, joins, generic compound table cells, or user-supplied fingerprints.
+
+For a linked whole artifact use one source and no selection or transformation:
 
 ```markdown
-The error was `0.286%`<!-- ref entry = e001; eid = configuration-table; row = 2; column = 3 -->.
+![Residual map](images/residual-map.png)<!-- eid:residual-map source=map -->
+[Download results](data/results.csv)<!-- eid:results source=results -->
 ```
 
-Table coordinates are one-based body-row and presented-column coordinates. The
-summary expression must exactly match the entry presentation or selected cell.
-Do not originate a calculation, source, transformation, table, output block,
-or artifact in the summary.
+For a complete retained UTF-8 diff, put the comment immediately before a
+`diff` fence. Sync owns its payload, not fence delimiters. It preserves complete
+source content after LF normalization and structural fence separation; no
+fingerprint field is stored for this inline artifact.
 
-## Boundaries
+A summary table combining independent metrics is ordinary Markdown composition:
+give each evidence-bearing cell its own code span and EID. There is no summary
+table CLI record. Mark every numeric or closed-Boolean data cell independently;
+partial marking does not waive whole-table evidence completeness.
+Use cell composition for small tables with at most three repetitions along
+their repeated axis: rows, or columns in a transposed presentation. Identify
+the repeated axis rather than choosing the shorter table dimension. For larger
+compositions, record a script that compiles a table-shaped retained artifact,
+then use direct-table evidence. This is authoring guidance, not a CLI limit.
+A join, derived column, pivot, or derived table requires a
+recorded script that emits a presentation-ready retained artifact; then use
+ordinary direct-table evidence. Do not emulate the calculation in comments.
 
-Retention records intent for disconnected material only; follow
-`references/file-retention.md` when needed. Mechanical validation reports
-evidence that lacks a supported presentation, marker, source, or successful
-authoring transaction and checks exact association, selection, transformation,
-presentation, provenance, and orphan state. It never edits research-owned
-material.
+## Lifecycle And Summary References
+
+For rename, edit the entry EID and every summary reference first, then
+`log evidence rename OLD NEW`. For delete, remove the marker and summary
+references first, then `log evidence delete --id EID`. Use `log evidence list`
+for semantic inspection. Mutations accept `--dry-run` and never delete files.
+
+A summary reuses an already supported entry value or exact table cell:
+
+```markdown
+Runtime was `12.3 ms`<!-- ref entry = e004a; eid = runtime -->.
+Error was `0.286%`<!-- ref entry = e001; eid = cases; row = 2; column = 3 -->.
+```
+
+Rows and columns are one-based body-row and presented-column coordinates.
+A split entry uses the exact document stem in a summary reference, but the
+physical entry ID for CLI ownership. Do not originate calculations or artifact
+evidence in the summary. Retention is for disconnected material only; remove
+its coverage explicitly before sync makes a retained target active.

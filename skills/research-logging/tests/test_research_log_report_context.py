@@ -14,7 +14,7 @@ REPORT_CONTEXT = importlib.import_module("validation.report_context")
 
 class PresentationTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(REPORT_CONTEXT.CATALOG), 141)
+        self.assertEqual(len(REPORT_CONTEXT.CATALOG), 151)
         self.assertTrue(
             {
                 "orphan.generated.residue",

@@ -1,0 +1,88 @@
+"""Current authoring surfaces; historical rejection fixtures are not consumers."""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+from research_log_cli_test_support import SCRIPTS, run_log
+
+
+class AuthoringSurfaceTests(unittest.TestCase):
+    def test_help_contains_current_actions_without_removed_parameters(self):
+        expected = {
+            "command": {"sync", "rename", "delete", "list", "verify", "show"},
+            "evidence": {"compare", "sync", "rename", "delete", "list"},
+            "data": {"update", "rename", "delete", "list"},
+            "retention": {"add", "update", "rename", "delete", "list"},
+        }
+        for family, names in expected.items():
+            result = run_log(SCRIPTS, family, "--help")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            choice = re.search(r"\{([a-z,]+)\}", result.stdout)
+            self.assertIsNotNone(choice, result.stdout)
+            self.assertEqual(set(choice[1].split(",")), names, family)
+            for action in names:
+                result = run_log(SCRIPTS, family, action, "--help")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for removed in (
+                    "--definition",
+                    "--data-kind",
+                    "--fingerprint",
+                    "--comparison-id",
+                ):
+                    self.assertNotIn(removed, result.stdout)
+
+    def test_runtime_and_active_guidance_have_no_removed_authoring_path(self):
+        package = Path(__file__).resolve().parents[1]
+        self.assertEqual(package / "scripts", SCRIPTS)
+        project = package.parents[1]
+        self.assertFalse(
+            (package / "scripts/log_commands/evidence_definition.py").exists()
+        )
+        paths = list((package / "scripts").rglob("*.py"))
+        paths += list((package / "references").rglob("*.md"))
+        paths += [package / "SKILL.md"]
+        paths += [
+            project / "docs" / name
+            for name in (
+                "research-logging.md",
+                "research-log-mechanical-validator-spec.md",
+                "research-log-reproduction-spec.md",
+            )
+        ]
+        forbidden = (
+            r"def (?:add_origin|add_generated|apply_candidate_locked)\(",
+            r"--definition(?:\s|=)",
+            r"(?:scripts/log|\$LOG_TOOL\")\s+(?:data\s+(?:add-origin|add-generated|use)|evidence\s+(?:add|update))\b",
+            r"mode\s*==\s*[\"'](?:structured|summary)[\"']",
+            r"record-evidence-definition-(?:structured|summary)-tables\.md",
+            r"schema\s*==\s*[\"']research-log-evidence/v4[\"']",
+        )
+        for path in paths:
+            text = path.read_text()
+            for pattern in forbidden:
+                self.assertIsNone(re.search(pattern, text), f"{path}: {pattern}")
+
+    def test_maintained_workflow_builders_use_current_surface(self):
+        root = Path(__file__).resolve().parent
+        command_guide = root.parent / "references/file-entry-commands.md"
+        for removed in ("--rename", "--remove", "--retire"):
+            self.assertNotIn(removed, command_guide.read_text())
+        # These are active workflow builders, not unsupported-route tests.
+        for name in (
+            "test_research_log_integrated_workflow.py",
+            "test_log_record_workflow.py",
+            "test_log_reorganize.py",
+        ):
+            text = (root / name).read_text()
+            for removed in (
+                '"add-origin"',
+                '"add-generated"',
+                '"use"',
+                '"--definition"',
+                '"research-log-data/v5"',
+                '"research-log-evidence/v4"',
+            ):
+                self.assertNotIn(removed, text, name)

@@ -56,8 +56,8 @@ material as a new routing event and load only its matching reference.
 - Scripts, figures, or serialized artifacts: read `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
 - Presented results, evidence records, summary references, or artifact links:
-  read `references/file-presented-evidence.md`. It routes an unsupported common
-  case to exactly one focused advanced-definition reference.
+  read `references/file-presented-evidence.md`. It routes selection, numeric,
+  direct-table, and verbatim-output details to focused comment references.
 - Artifact, command, or provenance work: read the small
   `references/provenance-patterns.md` index, then only the matching common-case
   cards. A material command or evidence input, a `<name>` token, or an explicit

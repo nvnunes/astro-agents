@@ -217,7 +217,7 @@ def _evidence_scoped_fixture(
     data = __import__("json").loads(data_path.read_text(encoding="utf-8"))
     data["inputs"].append(
         {
-            "comparison": {
+            "reproduction_comparison": {
                 "contract": "research-log-evidence-scoped-comparison/1",
                 "profile": "evidence",
             },
@@ -239,16 +239,14 @@ def _evidence_scoped_fixture(
                         "kind": "output",
                         "sources": [
                             {
-                                "locator": {
-                                    "text": {"contains": "stable", "occurrence": 1}
-                                },
+                                "locator": {"text": {"line": "1"}},
                                 "source": "<output>",
                             }
                         ],
                         "transformation": None,
                     }
                 ],
-                "schema": "research-log-evidence/v4",
+                "schema": "research-log-evidence/v5",
             }
         ),
         encoding="utf-8",
@@ -256,7 +254,8 @@ def _evidence_scoped_fixture(
     document = entry.root / f"{entry.id}.md"
     document.write_text(
         document.read_text(encoding="utf-8").replace(
-            "Recorded.", "<!-- eid:stable-output -->\n```text\nstable\n```"
+            "Recorded.",
+            "<!-- eid:stable-output source=output line=1 -->\n```text\nstable\n```",
         ),
         encoding="utf-8",
     )

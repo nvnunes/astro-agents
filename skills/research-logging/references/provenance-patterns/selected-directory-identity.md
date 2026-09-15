@@ -5,18 +5,6 @@ final-component patterns only when they explicitly define a very large origin
 or generated directory's relevant identity. Excluded descendants are not
 covered.
 
-Required tooling:
-
-```bash
-"$LOG_TOOL" data add-origin --path "$LOG" --entry e001 \
-  simulation-config configs/simulation.yaml
-"$LOG_TOOL" data add-generated --path "$LOG" --entry e001 \
-  simulation-results data/simulation-results --kind directory \
-  --identity summary.csv --identity metadata.json
-"$LOG_TOOL" data add-generated --path "$LOG" --entry e001 \
-  results-table tables/results.tex --kind file
-```
-
 Research commands:
 
 ```bash
@@ -29,6 +17,18 @@ Research commands:
 ./pyrun scripts/build_table.py \
   --input-summary "<simulation-results>/summary.csv" \
   --output-table "<results-table>"
+```
+
+Tooling after authoring each Markdown command, before its execution:
+
+```bash
+"$LOG_TOOL" command sync --path "$LOG" --entry e001 --cid run_simulation \
+  --add-origin simulation-config=configs/simulation.yaml \
+  --add-generated-directory simulation-results=data/simulation-results
+"$LOG_TOOL" data update --path "$LOG" --entry e001 simulation-results \
+  --identity file:summary.csv --identity file:metadata.json
+"$LOG_TOOL" command sync --path "$LOG" --entry e001 --cid build_table \
+  --add-generated results-table=tables/results.tex
 ```
 
 The member token says what the command reads; `--identity` says what defines

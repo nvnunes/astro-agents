@@ -75,15 +75,6 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 encoding="utf-8",
             )
             common = ("--path", str(log), "--entry", "e001")
-            declared = run_log(
-                entry,
-                "data",
-                "add-origin",
-                *common,
-                "source",
-                "data/source.csv",
-            )
-            self.assertEqual(declared.returncode, 0, declared.stderr)
             synchronized = run_log(
                 entry,
                 "command",
@@ -93,6 +84,8 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 "build",
                 "--add-generated",
                 "result=data/result.csv",
+                "--add-origin",
+                "source=data/source.csv",
             )
             self.assertEqual(synchronized.returncode, 0, synchronized.stderr)
             initial_state = load_pyrun_state(
@@ -135,19 +128,17 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 document.read_text(encoding="utf-8").replace(
                     "Pending.",
                     "[Generated result](data/result.csv)"
-                    "<!-- eid:generated-result -->",
+                    "<!-- eid:generated-result source=result -->",
                 ),
                 encoding="utf-8",
             )
             evidence = run_log(
                 entry,
                 "evidence",
-                "add",
+                "sync",
                 *common,
                 "--id",
                 "generated-result",
-                "--source",
-                "result",
             )
             self.assertEqual(evidence.returncode, 0, evidence.stderr)
             evidence_before = (entry / "evidence.json").read_bytes()
@@ -171,9 +162,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 "--format",
                 "json",
             )
-            self.assertEqual(
-                entry_validation.returncode, 0, entry_validation.stderr
-            )
+            self.assertEqual(entry_validation.returncode, 0, entry_validation.stderr)
             entry_result = payload(entry_validation)
             entry_findings = run_log(
                 project,
@@ -219,9 +208,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            policy_sync = run_log(
-                entry, "command", "sync", *common, "--cid", "build"
-            )
+            policy_sync = run_log(entry, "command", "sync", *common, "--cid", "build")
             self.assertEqual(policy_sync.returncode, 0, policy_sync.stderr)
             policy_state = load_pyrun_state(
                 entry / "pyrun.json", entry_root=entry, project_root=project
@@ -247,7 +234,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(retirement_required.returncode, 2)
             self.assertIn(
-                "command.sync.retirement.required", retirement_required.stderr
+                "command.sync.execution.deletion_required", retirement_required.stderr
             )
             recipe_sync = run_log(
                 entry,
@@ -256,7 +243,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 *common,
                 "--cid",
                 "build",
-                "--retire",
+                "--delete-execution",
                 original_identity,
             )
             self.assertEqual(recipe_sync.returncode, 0, recipe_sync.stderr)
@@ -327,19 +314,18 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             document.write_text(
                 document.read_text(encoding="utf-8").replace(
                     "Pending downstream result.",
-                    "[Final result](data/final.csv)<!-- eid:final-result -->",
+                    "[Final result](data/final.csv)"
+                    "<!-- eid:final-result source=final -->",
                 ),
                 encoding="utf-8",
             )
             final_evidence = run_log(
                 entry,
                 "evidence",
-                "add",
+                "sync",
                 *common,
                 "--id",
                 "final-result",
-                "--source",
-                "final",
             )
             self.assertEqual(final_evidence.returncode, 0, final_evidence.stderr)
             second_clear = run_log(
@@ -390,9 +376,7 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 "--output",
                 "<final>",
             )
-            self.assertEqual(
-                fresh_downstream.returncode, 0, fresh_downstream.stderr
-            )
+            self.assertEqual(fresh_downstream.returncode, 0, fresh_downstream.stderr)
             stale_validation = run_log(
                 project,
                 "validate",

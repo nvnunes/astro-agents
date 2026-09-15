@@ -59,16 +59,17 @@ delete an unmentioned dependent section or file.
 7. Remove each selected research-owned record through its owning CLI action:
 
    ```text
-   <skill>/scripts/log evidence remove --path <log> --entry <entry-id> --id <id>
-   <skill>/scripts/log data remove --path <log> --entry <entry-id> <name>
-   <skill>/scripts/log retention remove --path <log> --entry <entry-id> --id <id>
+   <skill>/scripts/log evidence delete --path <log> --entry <entry-id> --id <id>
+   <skill>/scripts/log data delete --path <log> --entry <entry-id> <name>
+   <skill>/scripts/log retention delete --path <log> --entry <entry-id> --id <id>
    ```
 
    Invoke only the families required by the authorized replacement and stop on
    the first failure. Never repair the failure by editing a registry directly.
    Leave every old source and retained artifact in place until all required
-   mutations succeed. `pyrun.json` remains tool-owned and is outside
-   this research-owned removal sequence.
+   mutations succeed. Delete an absent producer through `log command delete --cid CID` only after
+   removing its downstream uses. This owns execution and exclusive generated
+   declarations; do not edit `pyrun.json` by hand.
 8. Only after all required record removals succeed, delete the explicitly
    authorized old source and retained artifacts. Leave the durable backup in
    place and report its location.

@@ -647,36 +647,26 @@ where the file is stored.
 Register an accessible producerless input through the active skill's management
 CLI:
 
-```bash
-<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  development_set /data/project/development.csv
+Author the Markdown command first, then synchronize it together with any
+missing declarations:
+
+```text
+<skill>/scripts/log command sync --path LOG --entry ENTRY --cid CID
+  --add-origin development_set=/data/project/development.csv
+  --add-generated-directory results=data/results
 ```
 
-Without `--commit`, the CLI infers file versus directory, normalizes the target,
-and records the identity rule and explicit origin boundary. It does not record
-a content fingerprint in `data.json`. Fresh execution observes current input
-bytes; successful `pyrun` records those observations in `pyrun.json`.
-For source code identified by a repository commit, use the same action with
-`--commit <full-commit-hash>` and the repository root as the target. The path
-only locates an accessible repository; the full commit identifies the tracked
-snapshot. Every consuming `pyrun` command uses both `<name>` and
-`<name:commit>`. Register a live environment, dirty or untracked file,
-generated model, cache, build product, or submodule checkout separately when
-the command also consumes it.
-
-Raw command-input, command-output, and evidence-source paths and URIs are
-invalid. Evidence sources use one complete `<name>` or
-`<directory-name>/member` token and must resolve to one local regular file.
-Declare a generated artifact before its producer runs with
-`<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
-<target> --kind file|directory`; successful production records its output
-fingerprint and execution support in `pyrun.json`, leaving the declaration
-unchanged. A later entry reuses a same-log declaration with
-`<skill>/scripts/log data use --path <log> --entry <consumer-entry>
---from-entry <producer-entry> <name>`. The reference does not copy the target
-or turn it into an origin. `log data` is the sole ordinary author of
-`data.json`; do not edit the registry directly. Omit the file when the entry
-has no command or evidence inputs.
+File and directory variants make the intended kind explicit. Generated outputs
+can be declared before they exist, provided the command uniquely owns them.
+Repeated consistent assertions are accepted; known declarations may be omitted.
+A Git origin uses --add-origin-git NAME=COMMIT:PATH, and commands pass both
+the repository token and its paired commit token. A later same-log entry uses
+its own sync's --add-from-entry NAME=ENTRY instead of copying data or inventing
+an origin. Shared target changes, directory identity, kind, boundary, and
+reproduction policy belong to `log data update`. Renames and deletion use
+`log data rename` and `log data delete` after Markdown uses are updated or
+removed and their owners synchronized. These actions never delete retained files.
+Normal recording and repair use the owning CLI, not direct registry edits.
 
 One `pyrun` output-directory declaration represents one atomic generated
 artifact when that invocation owns the complete directory. Register the
@@ -768,23 +758,28 @@ uncertainty, or table assembly. Researchers do not need to author or inspect its
 technical syntax during normal work. Review and validation report when the
 connection is missing, ambiguous, unsupported, or inconsistent.
 
-For a common one-source presentation, author the result and its stable `eid`
-marker first, then use the active skill's management CLI:
+The agent writes an EID comment describing sources, selection, and formatting
+beside the presentation, then calls `log evidence sync --id ID`. New values
+use empty code spans; direct tables use an authored header and alignment row;
+retained-output excerpts use an empty text fence and explicit source bounds.
+The same format is used for subsequent edits. Sync derives the evidence record,
+fills the presentation, and accepts current linked-artifact fingerprints.
 
-```text
-<skill>/scripts/log evidence add --path <log> --entry <entry-id> \
-  --id <id> --source <name> --select <json-pointer>
-```
+After an artifact is updated by `pyrun`, the agent runs
+`log evidence compare --source NAME` once to inspect exact before/after
+presentations, judges the changes, then runs `log evidence sync --source NAME`
+once to update related entry evidence and forwarded summary values.
+It still syncs unchanged presentations to refresh fingerprints without rewriting
+Markdown. Either call also supports one evidence ID instead of an artifact.
 
-The action resolves the retained source, records exact selection expectations,
-infers the presentation kind and rendering from the marker, compares the
-result, and writes the evidence record. It also supports typed equality
-conditions, stable row identities, proportion-to-percentage presentation,
-explicit scaling, direct tables, and retained text output through its
-action-specific help. If common arguments cannot express a
-specification-approved presentation, the skill routes the agent to one focused
-advanced definition; the agent preflights that temporary definition under `/private/tmp`
-and still delegates the registry mutation to the CLI.
+There are no temporary definition files or generic advanced-table language.
+A direct table can select/reorder source columns and format their values.
+A summary table is ordinary Markdown with independently evidenced cells.
+Each numeric or closed-Boolean data cell needs its own scalar or compound EID;
+partial marking does not replace a whole direct-table declaration.
+Joined or derived tables require a recorded script to emit a retained
+presentation-ready artifact first. Scientific computation does not live in
+the evidence comment.
 
 Every presented generated result must trace through the recorded workflow until
 it reaches an explicit origin or an inputless producer that does not require
@@ -803,7 +798,7 @@ The agent records that intent through:
 
 ```text
 <skill>/scripts/log retention add --path <log> --entry <entry-id> \
-  --id <id> [--reason <reason>] <target> [<target> ...]
+  --id <id> --target <target> [--target <target>]... [--reason <reason>]
 ```
 
 The action accepts either one nonempty directory or one or more regular files

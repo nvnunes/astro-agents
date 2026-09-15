@@ -8,7 +8,9 @@ description: Perform, record, reproduce, review, and validate investigations in 
 Use this skill for Record, Replace, Update Summary, Repair, Reorganize, Review,
 Validate, and Reproduce.
 Record performs and documents an investigation as one workflow and also starts
-logs. Its production checks do not establish validation.
+logs. Its production checks do not establish validation. It normally authors
+Markdown and uses command sync before execution and evidence sync after it;
+Record's focused references teach the definition and ownership details.
 
 Research outside the log is adjacent work, not another operation. A log's
 presence does not authorize Record. Leave it unchanged for exploratory work

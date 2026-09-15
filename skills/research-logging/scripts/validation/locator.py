@@ -240,6 +240,23 @@ def evaluate_locator(
     return evaluate_observed_locator(observation, locator)
 
 
+def selection_expectations(selection: SelectionResult) -> Mapping[str, Any]:
+    """Encode observed selection bounds using the locator's literal grammar."""
+
+    result: dict[str, Any] = {
+        "matches": selection.matches,
+        "items": len(selection.items),
+    }
+    if selection.identities:
+        result["identities"] = [
+            [_literal_projection(value) for value in identity]
+            for identity in selection.identities
+        ]
+    if selection.shape is not None:
+        result["shape"] = list(selection.shape)
+    return result
+
+
 def observe_source(
     source: Path,
     *,
@@ -349,7 +366,9 @@ def require_source_reader(observation: SourceIdentityObservation) -> None:
     _require_unchanged(observation)
 
 
-def require_source_unchanged(observation: SourceIdentityObservation) -> None:
+def require_source_unchanged(
+    observation: SourceIdentityObservation | SourceObservation,
+) -> None:
     """Reject a source that changed after its retained identity was observed."""
 
     _require_unchanged(observation)
@@ -654,25 +673,20 @@ def _expectation_identity(value: object, number: int, width: int) -> list[object
 
 
 def _text_selector(value: object) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or not {"contains"} <= set(value) <= {
-        "contains",
-        "occurrence",
-    }:
+    if not isinstance(value, Mapping) or set(value) - {"line", "lines", "chars"}:
         _fail("locator.syntax.invalid", "locator.text", {"value": value})
-    contains = value["contains"]
-    occurrence = value.get("occurrence")
     if (
-        not isinstance(contains, str)
-        or not contains
-        or occurrence is not None
-        and occurrence != "all"
-        and (
-            not isinstance(occurrence, int)
-            or isinstance(occurrence, bool)
-            or occurrence <= 0
-        )
+        ("line" in value) == ("lines" in value)
+        or "chars" in value
+        and "line" not in value
     ):
         _fail("locator.syntax.invalid", "locator.text", {"value": value})
+    for key, bound in value.items():
+        pattern = r"[1-9][0-9]*" if key == "line" else r"[1-9][0-9]*:[1-9][0-9]*"
+        if not isinstance(bound, str) or re.fullmatch(pattern, bound) is None:
+            _fail("locator.syntax.invalid", "locator.text", {"value": value})
+        if ":" in bound and int(bound.split(":")[0]) > int(bound.split(":")[1]):
+            _fail("locator.syntax.invalid", "locator.text", {"value": value})
     return dict(value)
 
 
@@ -892,38 +906,39 @@ def _evaluate_text(
         lines = payload.decode("utf-8").splitlines()
     except UnicodeError as exc:
         _fail("locator.text.decode", "text", {"error": str(exc)})
+    return _evaluate_text_slice(lines, locator, source_identity)
+
+
+def _evaluate_text_slice(
+    lines: Sequence[str], locator: ParsedLocator, source_identity: str
+) -> SelectionResult:
     selector = locator.value["text"]
-    matches = [
-        (index, line)
-        for index, line in enumerate(lines)
-        if selector["contains"] in line
-    ]
-    match_count = len(matches)
-    occurrence = selector.get("occurrence")
-    if occurrence == "all":
-        selected = matches
-    elif isinstance(occurrence, int):
-        selected = matches[occurrence - 1 : occurrence]
-    elif match_count == 1:
-        selected = matches
+    if "line" in selector:
+        first = last = int(selector["line"])
     else:
-        _fail("locator.selection.ambiguous", "text", {"matches": match_count})
-    if not selected:
-        _fail("locator.selection.empty", "text", {"matches": match_count})
-    items = tuple(
-        SelectionItem(
-            coordinate=(
-                "match",
-                rank,
-                hashlib.sha256(line.encode("utf-8")).hexdigest(),
-            ),
-            value=string_value(line),
+        first, last = (int(bound) for bound in selector["lines"].split(":"))
+    if last > len(lines):
+        _fail(
+            "locator.text.range",
+            "text",
+            {"requested": [first, last], "lines": len(lines)},
         )
-        for rank, (_, line) in enumerate(selected, 1)
+    selected = "\n".join(lines[first - 1 : last])
+    if "chars" in selector:
+        start, end = (int(bound) for bound in selector["chars"].split(":"))
+        if end > len(selected):
+            _fail(
+                "locator.text.range",
+                "text",
+                {"chars": [start, end], "length": len(selected)},
+            )
+        selected = selected[start - 1 : end]
+    items = (
+        SelectionItem(coordinate=("lines", first, last), value=string_value(selected)),
     )
-    _check_expectations(locator, match_count, items, (), None)
+    _check_expectations(locator, 1, items, (), None)
     context = _EvaluationContext(locator, "text", source_identity, {}, True)
-    return _selection_result(context, items, match_count, (), None)
+    return _selection_result(context, items, 1, (), None)
 
 
 def _evaluate_candidates(
@@ -1198,13 +1213,14 @@ def _condition_matches(node: _Node, condition: Mapping[str, Any]) -> bool:
     observed = canonical_source_value(selected[0].value)
     parse = condition.get("parse")
     if parse is not None:
-        if observed.kind != "string" or not isinstance(observed.value, str):
+        if observed.kind == "string" and isinstance(observed.value, str):
+            observed = _parse_lexical(observed.value, parse, node.coordinate)
+        elif observed.kind != parse:
             _fail(
                 "locator.type.mismatch",
                 canonical_json(list(node.coordinate)),
                 {"parse": parse, "type": observed.kind},
             )
-        observed = _parse_lexical(observed.value, parse, node.coordinate)
     if condition["op"] == "eq":
         return observed.typed_equal(authored_literal(condition["value"]))
     return any(

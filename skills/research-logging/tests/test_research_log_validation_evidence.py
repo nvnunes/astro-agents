@@ -8,14 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
-from research_log_data import Fingerprint
 from research_log_validation_test_support import write
-from validation.evidence import EvidenceSource
 
 EVIDENCE = importlib.import_module("validation.evidence")
-EVIDENCE_COMMAND = importlib.import_module("log_commands.evidence")
-CONTEXT = importlib.import_module("log_commands.context")
-MODEL = importlib.import_module("log_commands.model")
 
 
 def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
@@ -42,7 +37,7 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v4",
+  "schema": "research-log-evidence/v5",
   "records": [
     {
       "id": "success-rate",
@@ -72,7 +67,7 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
       "kind": "output",
       "sources": [{
         "source": "<run-log>",
-        "locator": {"text": {"contains": "completed"}}
+        "locator": {"text": {"line": "1"}}
       }],
       "transformation": null
     }
@@ -88,73 +83,49 @@ def evidence_fixture(root: Path) -> tuple[Path, Path, Path]:
 
 class EvidenceFileTests(unittest.TestCase):
     def test_publication_recheck_rejects_replaced_file_with_same_bytes(self) -> None:
+        from log_commands import evidence_sync
+        from test_log_command_sync import fixture
+        from test_log_evidence_sync import evidence, retained_files, set_results
+
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            log_root = root / "docs" / "study"
-            entry_root = log_root / "entries" / "2026-08-28-e001-study"
-            artifact = entry_root / "data" / "result.png"
-            write(artifact, "same bytes\n")
-            write(
-                entry_root / "data.json",
-                json.dumps(
-                    {
-                        "schema": "research-log-data/v5",
-                        "inputs": [
-                            {
-                                "identity": {"algorithm": "sha256"},
-                                "kind": "file",
-                                "location": "data/result.png",
-                                "name": "result",
-                                "origin": True,
-                            }
-                        ],
-                    }
-                ),
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
             )
-            entry = CONTEXT.EntryContext(
-                CONTEXT.LogContext(root / "docs" / "study.md", log_root),
-                "e001",
-                entry_root,
+            artifact = entry / "data/result.png"
+            artifact.write_bytes(b"same bytes\n")
+            set_results(
+                document, "![Result](data/result.png)<!-- eid:result source=result -->"
             )
-            candidate = EVIDENCE.EvidenceRecord(
-                "result",
-                "entries/2026-08-28-e001-study/e001.md",
-                "artifact",
-                (EvidenceSource("<result>", None),),
-                None,
-                artifact_fingerprint=Fingerprint("sha256", "a" * 64),
-                artifact_fingerprint_present=True,
-            )
-            prepared = Fingerprint("sha256", "a" * 64)
-            first_identity = {
-                "kind": "file",
-                "size": 11,
-                "mtime_ns": 1,
-                "ctime_ns": 1,
-            }
-            replacement_identity = {**first_identity, "ctime_ns": 2}
+            replacement = Path(directory) / "replacement.png"
+            replacement.write_bytes(artifact.read_bytes())
+            before = retained_files(logical)
+            original_recheck = evidence_sync._recheck_sources
+
+            def replace_then_recheck(edits, observations):
+                replacement.replace(artifact)
+                original_recheck(edits, observations)
+
             with mock.patch.object(
-                EVIDENCE_COMMAND,
-                "observe_file_content",
-                return_value=(prepared.digest, replacement_identity),
-            ), self.assertRaises(MODEL.ActionError) as caught:
-                EVIDENCE_COMMAND._recheck_prepared_artifact(
-                    entry,
-                    candidate,
-                    prepared_artifact_observation=EVIDENCE_COMMAND.PreparedArtifactObservation(
-                        prepared, artifact.resolve(), first_identity
-                    ),
+                evidence_sync, "_recheck_sources", replace_then_recheck
+            ):
+                result = evidence(
+                    logical,
+                    "sync",
+                    "--id",
+                    "result",
+                    "--add-origin",
+                    "result=data/result.png",
                 )
-            self.assertEqual(caught.exception.code, "evidence.artifact.source_changed")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("evidence.artifact.source_changed", result.stderr)
+            self.assertEqual(retained_files(logical), before)
 
     def test_reproduction_tolerance_is_optional_and_numeric(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log_root, entry_root, _ = evidence_fixture(Path(directory))
             path = entry_root / "evidence.json"
             payload = json.loads(path.read_text(encoding="utf-8"))
-            payload["records"][0]["reproduction_tolerance"] = {
-                "absolute": "0.01"
-            }
+            payload["records"][0]["reproduction_tolerance"] = {"absolute": "0.01"}
             write(path, json.dumps(payload) + "\n")
 
             evidence = EVIDENCE.load_evidence_file(
@@ -218,9 +189,7 @@ class EvidenceFileTests(unittest.TestCase):
                 entry_root=entry_root,
                 fields=fields,
             )
-            self.assertEqual(
-                record.as_dict(), fields
-            )
+            self.assertEqual(record.as_dict(), fields)
             invalid = (
                 {**fields, "sources": fields["sources"] * 2},
                 {
@@ -664,8 +633,8 @@ class EvidenceAssociationTests(unittest.TestCase):
         artifacts = tuple(
             item
             for item in EVIDENCE.index_entry_presentations(
-            text,
-            document="entries/2026-08-28-e001-study/e001.md",
+                text,
+                document="entries/2026-08-28-e001-study/e001.md",
             )
             if item.kind == "artifact"
         )

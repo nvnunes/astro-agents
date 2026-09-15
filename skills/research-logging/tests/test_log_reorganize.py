@@ -51,6 +51,30 @@ def run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return run_log(cwd, *arguments)
 
 
+def declare_fixture_input(
+    logical: Path, entry_id: str, name: str, target: str
+) -> subprocess.CompletedProcess[str]:
+    """Seed normalized state for reorganization tests, not an authoring API."""
+    entry = resolve_entry(resolve_log(logical), entry_id).root
+    path = entry / "data.json"
+    payload = (
+        json.loads(path.read_text())
+        if path.exists()
+        else {"schema": "research-log-data/v6", "inputs": []}
+    )
+    payload["inputs"].append(
+        {
+            "name": name,
+            "location": target,
+            "kind": "file",
+            "origin": True,
+            "identity": {"algorithm": "sha256"},
+        }
+    )
+    path.write_text(json.dumps(payload) + "\n")
+    return subprocess.CompletedProcess([], 0, "{}", "")
+
+
 def create_log(root: Path, count: int = 2) -> tuple[Path, list[Path]]:
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     logical = root / "docs" / "study"
@@ -302,17 +326,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             shared.parent.mkdir()
             shared.write_text("stable\n", encoding="utf-8")
             relative = os.path.relpath(shared, start=consumer).replace(os.sep, "/")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e002",
-                "shared",
-                relative,
-            )
+            registered = declare_fixture_input(logical, "e002", "shared", relative)
             self.assertEqual(registered.returncode, 0, registered.stderr)
             summary = logical.with_suffix(".md")
             summary.write_text(
@@ -342,16 +356,8 @@ class ReorganizeIdentityTests(unittest.TestCase):
             target = entry / "data" / "source.txt"
             target.parent.mkdir()
             target.write_text("before\n", encoding="utf-8")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "source",
-                "data/source.txt",
+            registered = declare_fixture_input(
+                logical, "e001", "source", "data/source.txt"
             )
             self.assertEqual(registered.returncode, 0, registered.stderr)
             write_execution_state(entry, ("data/source.txt",))
@@ -424,36 +430,25 @@ class ReorganizeIdentityTests(unittest.TestCase):
             data = entry / "data" / "result.txt"
             data.parent.mkdir()
             data.write_text("complete\n", encoding="utf-8")
-            run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e002",
-                "result",
-                "data/result.txt",
-            )
+            declare_fixture_input(logical, "e002", "result", "data/result.txt")
             document = entry / "e002.md"
             document.write_text(
                 document.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
-                + "<!-- eid:run-result -->\n```text\ncomplete\n```\n",
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
+                + "<!-- eid:run-result source=result line=1 -->\n"
+                "```text\ncomplete\n```\n",
                 encoding="utf-8",
             )
             recorded = run(
                 root,
                 "evidence",
-                "add",
+                "sync",
                 "--path",
                 str(logical),
                 "--entry",
                 "e002",
                 "--id",
                 "run-result",
-                "--source",
-                "result",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
@@ -520,7 +515,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             (producer / "data.json").write_text(
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "result",
@@ -537,7 +532,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             (consumer / "data.json").write_text(
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [{"from_entry": "e001", "name": "result"}],
                     }
                 ),
@@ -569,9 +564,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             self.assertEqual(changed.returncode, 0, changed.stderr)
             moved_consumer = logical / "entries" / "2026-09-02-e001-trial-2"
             data = json.loads((moved_consumer / "data.json").read_text())
-            self.assertEqual(
-                data["inputs"], [{"from_entry": "e002", "name": "result"}]
-            )
+            self.assertEqual(data["inputs"], [{"from_entry": "e002", "name": "result"}])
             self.assertFalse(consumer.exists())
 
     def test_relocate_moves_the_complete_pair(self) -> None:
@@ -621,9 +614,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
                     lock = operation_directory(logical) / f"entry-{entry_id}.lock"
                     with lock.open("r+b") as handle:
                         with self.assertRaises(BlockingIOError):
-                            fcntl.flock(
-                                handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
-                            )
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 original(log, target_summary, target_root, data)
 
             with mock.patch.object(
@@ -710,17 +701,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             external = root / "source.txt"
             external.write_text("source\n", encoding="utf-8")
             location = os.path.relpath(external, start=entries[0]).replace(os.sep, "/")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "source",
-                location,
-            )
+            registered = declare_fixture_input(logical, "e001", "source", location)
             self.assertEqual(registered.returncode, 0, registered.stderr)
             summary = logical.with_suffix(".md")
             summary.write_text(
@@ -750,17 +731,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             logical, entries = create_log(root, 2)
             target = entries[0] / "e001.md"
             location = os.path.relpath(target, start=entries[1]).replace(os.sep, "/")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e002",
-                "old-entry",
-                location,
-            )
+            registered = declare_fixture_input(logical, "e002", "old-entry", location)
             self.assertEqual(registered.returncode, 0, registered.stderr)
             blocked = run(
                 root,
@@ -796,7 +767,7 @@ class ReorganizeIdentityTests(unittest.TestCase):
             unregistered = run(
                 root,
                 "data",
-                "remove",
+                "delete",
                 "--path",
                 str(logical),
                 "--entry",
@@ -853,7 +824,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             (source / "data.json").write_text(
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "result",
@@ -911,7 +882,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             (source / "data.json").write_text(
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "result",
@@ -969,16 +940,8 @@ class ReorganizeTransferTests(unittest.TestCase):
             for name in ("moved", "unrelated"):
                 target = data / f"{name}.txt"
                 target.write_text(name + "\n", encoding="utf-8")
-                declared = run(
-                    root,
-                    "data",
-                    "add-origin",
-                    "--path",
-                    str(logical),
-                    "--entry",
-                    "e001",
-                    name,
-                    target.relative_to(source).as_posix(),
+                declared = declare_fixture_input(
+                    logical, "e001", name, target.relative_to(source).as_posix()
                 )
                 self.assertEqual(declared.returncode, 0, declared.stderr)
             destination_data = destination / "data"
@@ -1026,17 +989,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             outputs = ("data/first.txt", "data/second.txt")
             for name, output in zip(("first", "second"), outputs, strict=True):
                 (source / output).write_text(name + "\n", encoding="utf-8")
-                registered = run(
-                    root,
-                    "data",
-                    "add-origin",
-                    "--path",
-                    str(logical),
-                    "--entry",
-                    "e001",
-                    name,
-                    output,
-                )
+                registered = declare_fixture_input(logical, "e001", name, output)
                 self.assertEqual(registered.returncode, 0, registered.stderr)
             script = source / "scripts/make.py"
             script.parent.mkdir()
@@ -1102,22 +1055,12 @@ class ReorganizeTransferTests(unittest.TestCase):
             source_image = source / "images" / "map.png"
             source_image.parent.mkdir()
             source_image.write_bytes(b"map bytes")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "map",
-                "images/map.png",
-            )
+            registered = declare_fixture_input(logical, "e001", "map", "images/map.png")
             self.assertEqual(registered.returncode, 0, registered.stderr)
             section = (
                 "\n## Map\n\n`Background:`\n\nInspect the map.\n\n"
                 "`Steps:`\n\nOpen the image.\n\n`Results:`\n\n"
-                "![Map](images/map.png)<!-- eid:result-map -->\n"
+                "![Map](images/map.png)<!-- eid:result-map source=map -->\n"
             )
             source_document = source / "e001.md"
             source_document.write_text(
@@ -1127,15 +1070,13 @@ class ReorganizeTransferTests(unittest.TestCase):
             recorded = run(
                 root,
                 "evidence",
-                "add",
+                "sync",
                 "--path",
                 str(logical),
                 "--entry",
                 "e001",
                 "--id",
                 "result-map",
-                "--source",
-                "map",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
             original_record = json.loads((source / "evidence.json").read_text())[
@@ -1180,21 +1121,17 @@ class ReorganizeTransferTests(unittest.TestCase):
             destination_image.write_bytes(b"replacement")
             mismatch = run(root, *transfer_arguments, "--dry-run")
             self.assertEqual(mismatch.returncode, 2)
-            self.assertIn(
-                "association.artifact.fingerprint_mismatch", mismatch.stderr
-            )
+            self.assertIn("association.artifact.fingerprint_mismatch", mismatch.stderr)
             destination_image.write_bytes(b"map bytes")
 
             transferred = run(root, *transfer_arguments)
 
             self.assertEqual(transferred.returncode, 0, transferred.stderr)
-            record = json.loads((destination / "evidence.json").read_text())[
-                "records"
-            ][0]
+            record = json.loads((destination / "evidence.json").read_text())["records"][
+                0
+            ]
             self.assertEqual(record["kind"], "artifact")
-            self.assertEqual(
-                record["sources"], [{"locator": None, "source": "<map>"}]
-            )
+            self.assertEqual(record["sources"], [{"locator": None, "source": "<map>"}])
             self.assertEqual(
                 record["artifact_fingerprint"],
                 original_record["artifact_fingerprint"],
@@ -1210,39 +1147,28 @@ class ReorganizeTransferTests(unittest.TestCase):
             source_data = source / "data" / "result.txt"
             source_data.parent.mkdir()
             source_data.write_text("complete\n", encoding="utf-8")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "result",
-                "data/result.txt",
+            registered = declare_fixture_input(
+                logical, "e001", "result", "data/result.txt"
             )
             self.assertEqual(registered.returncode, 0, registered.stderr)
             source_document = source / "e001.md"
             source_document.write_text(
                 source_document.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
-                + "<!-- eid:run-result -->\n```text\ncomplete\n```\n",
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
+                + "<!-- eid:run-result source=result line=1 -->\n"
+                "```text\ncomplete\n```\n",
                 encoding="utf-8",
             )
             recorded = run(
                 root,
                 "evidence",
-                "add",
+                "sync",
                 "--path",
                 str(logical),
                 "--entry",
                 "e001",
                 "--id",
                 "run-result",
-                "--source",
-                "result",
-                "--reproduction-tolerance",
-                "0.1",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
 
@@ -1251,7 +1177,9 @@ class ReorganizeTransferTests(unittest.TestCase):
             script.write_text("print('complete')\n", encoding="utf-8")
             write_execution_state(source, ("data/result.txt",))
 
-            marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
+            marker = (
+                "<!-- eid:run-result source=result line=1 -->\n```text\ncomplete\n```\n"
+            )
             source_document.write_text(
                 source_document.read_text(encoding="utf-8").replace(marker, ""),
                 encoding="utf-8",
@@ -1259,7 +1187,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             destination_document = destination / "e002.md"
             destination_document.write_text(
                 destination_document.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
                 + marker,
                 encoding="utf-8",
             )
@@ -1298,8 +1226,8 @@ class ReorganizeTransferTests(unittest.TestCase):
                 evidence["records"][0]["document"], destination_document_field
             )
             self.assertEqual(
-                evidence["records"][0]["reproduction_tolerance"],
-                {"absolute": "0.1"},
+                evidence["records"][0].get("reproduction_tolerance"),
+                None,
             )
             data = json.loads((destination / "data.json").read_text())
             self.assertEqual(data["inputs"][0]["name"], "result")
@@ -1312,37 +1240,27 @@ class ReorganizeTransferTests(unittest.TestCase):
             data = entry / "data" / "result.txt"
             data.parent.mkdir()
             data.write_text("complete\n", encoding="utf-8")
-            run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "result",
-                "data/result.txt",
-            )
+            declare_fixture_input(logical, "e001", "result", "data/result.txt")
             first = entry / "e001.md"
-            marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
+            marker = (
+                "<!-- eid:run-result source=result line=1 -->\n```text\ncomplete\n```\n"
+            )
             first.write_text(
                 first.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
                 + marker,
                 encoding="utf-8",
             )
             recorded = run(
                 root,
                 "evidence",
-                "add",
+                "sync",
                 "--path",
                 str(logical),
                 "--entry",
                 "e001",
                 "--id",
                 "run-result",
-                "--source",
-                "result",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
             first.write_text(
@@ -1351,7 +1269,9 @@ class ReorganizeTransferTests(unittest.TestCase):
             )
             second = entry / "e001a.md"
             second.write_text(
-                "# 2026-09-01: Details\n\n## Trial\n\n`Results:`\n\n" + marker,
+                "# 2026-09-01: Details\n\n## Trial\n\n`Steps:`\n\n"
+                "Recorded input.\n\n`Results:`\n\n"
+                + marker,
                 encoding="utf-8",
             )
             summary = logical.with_suffix(".md")
@@ -1400,17 +1320,7 @@ class ReorganizeTransferTests(unittest.TestCase):
                 ("result", "data/result.txt"),
                 ("retained", "data/retained.log"),
             ):
-                registered = run(
-                    root,
-                    "data",
-                    "add-origin",
-                    "--path",
-                    str(logical),
-                    "--entry",
-                    "e001",
-                    name,
-                    target,
-                )
+                registered = declare_fixture_input(logical, "e001", name, target)
                 self.assertEqual(registered.returncode, 0, registered.stderr)
             retained = run(
                 root,
@@ -1422,29 +1332,30 @@ class ReorganizeTransferTests(unittest.TestCase):
                 "e001",
                 "--id",
                 "keep-run",
+                "--target",
                 "data/retained.log",
             )
             self.assertEqual(retained.returncode, 0, retained.stderr)
             source_document = source / "e001.md"
-            old_marker = "<!-- eid:run-result -->\n```text\ncomplete\n```\n"
+            old_marker = (
+                "<!-- eid:run-result source=result line=1 -->\n```text\ncomplete\n```\n"
+            )
             source_document.write_text(
                 source_document.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
                 + old_marker,
                 encoding="utf-8",
             )
             recorded = run(
                 root,
                 "evidence",
-                "add",
+                "sync",
                 "--path",
                 str(logical),
                 "--entry",
                 "e001",
                 "--id",
                 "run-result",
-                "--source",
-                "result",
             )
             self.assertEqual(recorded.returncode, 0, recorded.stderr)
             source_document.write_text(
@@ -1452,10 +1363,13 @@ class ReorganizeTransferTests(unittest.TestCase):
                 encoding="utf-8",
             )
             destination_document = destination / "e002.md"
-            new_marker = "<!-- eid:moved-result -->\n```text\ncomplete\n```\n"
+            new_marker = (
+                "<!-- eid:moved-result source=moved line=1 -->\n"
+                "```text\ncomplete\n```\n"
+            )
             destination_document.write_text(
                 destination_document.read_text(encoding="utf-8")
-                + "\n## Trial\n\n`Results:`\n\n"
+                + "\n## Trial\n\n`Steps:`\n\nRecorded input.\n\n`Results:`\n\n"
                 + new_marker,
                 encoding="utf-8",
             )
@@ -1526,7 +1440,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             evidence_path.write_text(
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "document": source.relative_to(logical).as_posix()
@@ -1590,6 +1504,7 @@ class ReorganizeTransferTests(unittest.TestCase):
                     "e001",
                     "--id",
                     record_id,
+                    "--target",
                     path,
                 )
                 self.assertEqual(retained.returncode, 0, retained.stderr)
@@ -1631,13 +1546,8 @@ class ReorganizeTransferTests(unittest.TestCase):
                 target = entry / "data" / f"{value}.txt"
                 target.parent.mkdir()
                 target.write_text(value + "\n", encoding="utf-8")
-                registered = run(
-                    root,
-                    "data",
-                    "add-origin",
-                    "--path",
-                    str(logical),
-                    "--entry",
+                registered = declare_fixture_input(
+                    logical,
                     "e001" if entry == source else "e002",
                     "shared",
                     target.relative_to(entry).as_posix(),
@@ -1680,16 +1590,8 @@ class ReorganizeTransferTests(unittest.TestCase):
             target = source / "data" / "result.txt"
             target.parent.mkdir()
             target.write_text("result\n", encoding="utf-8")
-            registered = run(
-                root,
-                "data",
-                "add-origin",
-                "--path",
-                str(logical),
-                "--entry",
-                "e001",
-                "result",
-                "data/result.txt",
+            registered = declare_fixture_input(
+                logical, "e001", "result", "data/result.txt"
             )
             self.assertEqual(registered.returncode, 0, registered.stderr)
             moved = destination / "data" / "result.txt"

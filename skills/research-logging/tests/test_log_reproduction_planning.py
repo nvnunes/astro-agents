@@ -101,7 +101,7 @@ class _Fixture:
     def write_data(self, entry: EntryContext, items: list[dict[str, object]]) -> None:
         _write_json(
             entry.root / "data.json",
-            {"inputs": items, "schema": "research-log-data/v5"},
+            {"inputs": items, "schema": "research-log-data/v6"},
         )
 
     def item(
@@ -128,7 +128,9 @@ class _Fixture:
         artifacts = []
         for number, name in enumerate(names, 1):
             location = locations[name]
-            artifacts.append(f"[artifact]({location})<!-- eid:result-{number} -->")
+            artifacts.append(
+                f"[artifact]({location})<!-- eid:result-{number} source={name} -->"
+            )
         document.write_text(
             "# Entry\n\n## Evidence\n\n`Background:`\n\n"
             "Fixture evidence.\n\n`Steps:`\n\nInspect retained output.\n\n"
@@ -151,7 +153,7 @@ class _Fixture:
                     }
                     for number, name in enumerate(names, 1)
                 ],
-                "schema": "research-log-evidence/v4",
+                "schema": "research-log-evidence/v5",
             },
         )
 

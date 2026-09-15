@@ -86,6 +86,7 @@ from .evidence import (
     index_summary_references,
     index_summary_statistic_candidates,
     load_evidence_file,
+    require_markdown_definition,
     resolve_summary_references,
 )
 from .evidence_comparison import (
@@ -187,7 +188,7 @@ from .transformation import (
 )
 from .validation_cache import ValidationCache
 
-RULES_VERSION = "research-log-mechanical/evidence-baseline-10"
+RULES_VERSION = "research-log-mechanical/markdown-evidence-11"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -790,9 +791,7 @@ class _RepairContextCollector:
         self.relationships = set()
         self.selected_ambiguities = set()
         self.operational_frontier = [
-            node_id
-            for node_id in sorted(self.primary)
-            if self._is_operational(node_id)
+            node_id for node_id in sorted(self.primary) if self._is_operational(node_id)
         ]
         self.ambiguity_frontier = list(sorted(self.primary))
 
@@ -878,8 +877,7 @@ def _repair_context(
     ).collect()
 
     ambiguities = [
-        graph.ambiguities[index].as_dict()
-        for index in sorted(selected_ambiguities)
+        graph.ambiguities[index].as_dict() for index in sorted(selected_ambiguities)
     ]
     nodes = [node.as_dict() for node in graph.nodes if node.node_id in included]
     value: dict[str, object] = {
@@ -1744,9 +1742,7 @@ def _record_data_conflicts(entries: Sequence[_Entry], state: _ScanState) -> None
                         conflict.canonical_target,
                     ),
                 ),
-                context_nodes=(
-                    GraphReference("material", conflict.canonical_target),
-                ),
+                context_nodes=(GraphReference("material", conflict.canonical_target),),
                 admission_owner=AdmissionOwner.MATERIAL,
             ),
         )
@@ -1784,8 +1780,7 @@ def _record_indexed_data_conflicts(
                 conflict.error,
                 issue_context=IssueContext(
                     source_locations=tuple(
-                        SourceLocation(path.as_posix())
-                        for path in conflict.data_files
+                        SourceLocation(path.as_posix()) for path in conflict.data_files
                     ),
                     repair_keys=(
                         RepairKey(
@@ -2111,9 +2106,7 @@ def _read_entry_data(
             load_data_file(data_path, entry_root=root) if data_path.is_file() else None
         )
     except MechanicalContractError as error:
-        check = _record_entry_surface_error(
-            entry_id, "data", data_path, error, state
-        )
+        check = _record_entry_surface_error(entry_id, "data", data_path, error, state)
         return None, check
     if data_file is None:
         return None, None
@@ -2180,9 +2173,7 @@ def _record_entry_surface_error(
     if prior is not None:
         return prior
     input_name = (
-        component.removeprefix("input:")
-        if component.startswith("input:")
-        else None
+        component.removeprefix("input:") if component.startswith("input:") else None
     )
     repair_keys = (
         (
@@ -2347,9 +2338,7 @@ def _discover_invocations(
                     error,
                     issue_context=IssueContext(
                         entry=entry.id,
-                        source_locations=(
-                            SourceLocation(entry.document.as_posix()),
-                        ),
+                        source_locations=(SourceLocation(entry.document.as_posix()),),
                         context_nodes=(
                             GraphReference(
                                 "document",
@@ -2568,9 +2557,7 @@ def _execution_issue_context(
                 entry_id,
             ),
         ),
-        context_nodes=(
-            GraphReference("execution", f"{cid}:{execution_id}", entry_id),
-        ),
+        context_nodes=(GraphReference("execution", f"{cid}:{execution_id}", entry_id),),
         admission_owner=AdmissionOwner.EXECUTION,
     )
 
@@ -3292,13 +3279,16 @@ def _has_structural_output_record(
         support = state.output_files.get(invocation.material_owner)
         if support is None:
             return False
-        return resolve_output_support(
-            invocation,
-            material,
-            entry_root=_entry_root_for_owner(invocation.material_owner, state),
-            project_root=state.project_root,
-            support=support,
-        ).record is not None
+        return (
+            resolve_output_support(
+                invocation,
+                material,
+                entry_root=_entry_root_for_owner(invocation.material_owner, state),
+                project_root=state.project_root,
+                support=support,
+            ).record
+            is not None
+        )
     except MechanicalContractError:
         return False
 
@@ -3328,9 +3318,7 @@ def _validate_output_support(
         support, currentness = _evaluate_output_support(invocation, subject, state)
     except MechanicalContractError as error:
         state.output_support_conclusions[cache_key] = _OutputSupportConclusion(
-            failure=_provenance_finding(
-                error, ProvenanceAnchor("material", subject)
-            )
+            failure=_provenance_finding(error, ProvenanceAnchor("material", subject))
         )
         raise
     state.output_support_conclusions[cache_key] = _OutputSupportConclusion(
@@ -3625,9 +3613,7 @@ def _evaluate_entries(
                     error,
                     issue_context=IssueContext(
                         entry=entry.id,
-                        source_locations=(
-                            SourceLocation(entry.document.as_posix()),
-                        ),
+                        source_locations=(SourceLocation(entry.document.as_posix()),),
                         context_nodes=(
                             GraphReference(
                                 "document",
@@ -3929,6 +3915,7 @@ def _evaluate_record(
             entry.id, record, item, (), evidence, provenance, None, ()
         )
     try:
+        require_markdown_definition(record, item)
         materials = tuple(
             _resolve_source(source, entry, state) for source in record.sources
         )
@@ -4290,9 +4277,7 @@ def _record_provenance(
     except MechanicalContractError as error:
         fallback_material = materials[0].path.resolve().as_posix()
         findings.append(
-            _provenance_finding(
-                error, ProvenanceAnchor("material", fallback_material)
-            )
+            _provenance_finding(error, ProvenanceAnchor("material", fallback_material))
         )
         provenance_checks = _register_provenance_checks(
             _ordered_provenance_findings(findings, state),
@@ -4764,10 +4749,9 @@ def _record_missing_outputs(state: _ScanState) -> None:
             _producer_repair_context(invocation, state)
             for declaration in declarations
             if (
-                invocation := state.producer_index.by_identity.get(
-                    declaration.identity
-                )
-            ) is not None
+                invocation := state.producer_index.by_identity.get(declaration.identity)
+            )
+            is not None
         )
         repair_keys.extend(
             repair_key
@@ -5190,9 +5174,7 @@ def _data_record_reference(
             and node.attributes.get("name") == name
         ):
             return node.reference
-    raise AssertionError(
-        f"missing data-record node for {entry_id!r} input {name!r}"
-    )
+    raise AssertionError(f"missing data-record node for {entry_id!r} input {name!r}")
 
 
 def _orphan_group_metadata(
@@ -5695,9 +5677,7 @@ def _dependent_check(
     blocker_evidence: Sequence[Mapping[str, object]] = (),
 ) -> RuleCheck:
     evidence = (
-        tuple(blocker_evidence)
-        if blocker_evidence
-        else ({"dependency": dependency},)
+        tuple(blocker_evidence) if blocker_evidence else ({"dependency": dependency},)
     )
     return RuleCheck(
         identity,
@@ -5771,9 +5751,7 @@ def _blocked_check(
     *,
     rule: str,
 ) -> RuleCheck:
-    evidence = tuple(
-        {"dependency": dependency} for dependency in sorted(blockers)
-    )
+    evidence = tuple({"dependency": dependency} for dependency in sorted(blockers))
     return RuleCheck(
         identity,
         area,
@@ -5924,6 +5902,7 @@ def _failure_operation_for_code(code: str) -> FailureOperation:
         return FailureOperation.GRAPH
     return FailureOperation.OTHER
 
+
 def _dependency_ids(
     dependencies: Sequence[Mapping[str, object]],
 ) -> tuple[str, ...]:
@@ -6031,9 +6010,7 @@ def _read_text(path: Path, state: _ScanState) -> str:
             issue_context=IssueContext(
                 entry=entry_id,
                 source_locations=(SourceLocation(path.as_posix()),),
-                context_nodes=(
-                    GraphReference("document", path.as_posix(), entry_id),
-                ),
+                context_nodes=(GraphReference("document", path.as_posix(), entry_id),),
                 admission_owner=(
                     AdmissionOwner.ENTRY if entry_id is not None else AdmissionOwner.LOG
                 ),

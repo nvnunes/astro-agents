@@ -1,116 +1,87 @@
 # Material Input Instructions
 
-Use this file when a recorded command consumes a file, directory, or pinned Git
-repository; an evidence presentation consumes a file or directory; or the
-researcher must choose where its Provenance chain stops. The public `log data`
-actions own input-registry validation and storage.
-Never create, inspect, or edit the registry during ordinary Record. For common
-complete examples, read `references/provenance-patterns.md` only when the
-workflow matches one of its cases.
+Use this file when a command or evidence consumes retained material, or the
+researcher chooses where Provenance stops. Commands and evidence own new
+declarations through their respective sync actions. `log data` owns shared
+changes and advanced identity and reproduction policy. Do not inspect or edit
+JSON during normal Record or Repair; use semantic `list` actions when needed.
 
-Every material input has one stable entry-scoped name. Recorded commands and
-evidence use `<name>` instead of a raw path. Use
-`<directory-name>/member` for one exact file inside a registered directory.
-Do not use a raw relative or absolute path, URI, bare directory, or cross-entry
-shorthand as an evidence source.
+Use [the provenance patterns](provenance-patterns.md), also routed as
+`references/provenance-patterns.md`, for focused examples of common cases.
 
-## Choose The Boundary
+## Name And Declare Material
 
-- Choose an origin when the target has no producer in this maintained log and
-  the researcher intends Provenance to stop at its current material. Ask whether
-  an accessible external input should be copied into the entry or referenced
-  at its current local location.
-- Choose generated when a current or planned `pyrun` command in the same
-  maintained log uniquely owns the target. Declare the artifact before the
-  command runs; successful production records its observation and execution
-  support. Production in another maintained log crosses an origin boundary.
+Give each retained file or directory one stable entry-scoped name. Commands
+use quoted `<name>` or `<directory-name>/member` arguments. Evidence comments
+accept those complete tokens or the shorter `name` and `name/member`.
+A member is not a separate directory producer.
 
-Storage location does not determine this choice. Do not infer an origin merely
-because no producer was found, and do not hide a known same-log producer behind
-an origin boundary.
+Author the Markdown command or evidence definition first. Its sync can create
+missing declarations and accept consistent assertions of existing declarations:
 
-## Register And Maintain Inputs
+- `--add-origin NAME=PATH`: an existing regular file;
+- `--add-origin-directory NAME=PATH`: an existing directory;
+- command sync only: `--add-generated NAME=PATH` and
+  `--add-generated-directory NAME=PATH`, including missing outputs;
+- command sync only: `--add-origin-git NAME=COMMIT:PATH`;
+- `--add-from-entry NAME=ENTRY`: a same-name reference to a directly generated
+  artifact in another entry of this log.
 
-Resolve `<skill>/scripts/log` from this skill package and read only the
-selected action's help. `<log>` is the logical base whose summary is
-`<log>.md`; do not pass the summary file.
+Paths are absolute or relative to the selected entry, not the caller's working
+directory. Prefer short entry-relative paths for entry-owned material.
+Omit an assertion once the name exists. A conflicting assertion is not an
+update: use the owning change action.
+
+Choose an origin only when no maintained same-log command owns the target and
+the researcher intends Provenance to stop there. Ask whether an external input
+should be copied or referenced. Generated material requires one structurally
+valid producer. Do not invent an origin to bypass missing-producer diagnostics.
+Declare every retained output through command sync before running its producer,
+including captures and output-only directories. Do not declare executed scripts
+merely because they are code.
+
+A Git origin pins tracked content, not dirty files, environments, caches,
+generated models, or submodule checkouts. Declare those separately when consumed.
+Pass both `<name>` and `<name:commit>` to a consuming command.
+
+## Maintain Existing Declarations
+
+A command- or evidence-local path change uses its sync's
+`--change-target NAME=PATH`; command Git targets also accept `COMMIT:PATH`.
+A shared change routes to:
 
 ```text
-<skill>/scripts/log data add-origin --path <log> --entry <entry-id> \
-  <name> <target> [--commit <full-commit-hash>] [--identity <selector>]...
-<skill>/scripts/log data add-generated --path <log> --entry <entry-id> \
-  <name> <target> [--kind file|directory] [--identity <selector>]...
-<skill>/scripts/log data use --path <log> --entry <entry-id> \
-  --from-entry <producer-entry-id> <name>
+<skill>/scripts/log data update --path LOG --entry ENTRY NAME
+  [--target PATH|COMMIT:PATH] [--boundary origin|generated]
+  [--kind file|directory] [--identity byte-complete|file:PATH|pattern:GLOB]...
+  [--reproduction-comparison exact|evidence] [--acknowledge-shared] [--dry-run]
 ```
 
-Write `<target>` as an absolute path or a path relative to the selected entry
-root, regardless of the shell's current directory. For entry-owned material,
-prefer the short entry-relative form such as `data/metrics.json`.
+Omission preserves existing properties. Identity selectors replace the selection;
+use byte-complete alone to clear a bounded directory identity. Prefer complete
+identity; bounded identities require explicit researcher intent and must cover
+the relevant consumed bytes. A shared update identifies its other consumers.
+`--acknowledge-shared` acknowledges that wider scope, not a validation bypass.
 
-`add-origin` declares the existing target and verifies it can be observed.
-`add-generated` accepts a missing target when `--kind` establishes whether it
-will be a file or directory, and successful production records its observation
-in execution state rather than changing the declaration. A generated directory
-may use selected identity files or final-component patterns. `data use`
-creates a read-only reference to an existing declaration in another entry of
-the same log; it neither copies the data nor relabels it as an origin. After
-success, use the token without opening the registry.
+For rename, update every Markdown use first, then
+`log data rename OLD NEW`. It verifies each affected command and evidence
+definition, updates normalized uses and same-log references together, and
+reports executions needing reproduction. Do not sync an unknown new name first.
+For deletion, remove all uses and sync or delete their owners first, then
+`log data delete NAME`. Remaining uses fail with their locations.
+Neither action deletes retained files. `log data list` returns semantic state.
 
-For source code identified by a repository commit, use `add-origin --commit`
-with the repository root as `<target>` and an exact lowercase 40-character
-commit hash. Pass both `<name>` for the repository locator and `<name:commit>`
-for the pinned commit to every consuming `pyrun` command. Together they form
-one material input. The commit covers only its tracked snapshot; register any
-dirty or untracked file, live environment, generated model, cache, build
-product, or submodule checkout separately when the command consumes it.
+## Reproduction Policy Is Separate
 
-Use the corresponding action for later intent:
+Exact whole-artifact comparison is the default. Do not change it while writing
+ordinary commands or simply because reproduction differs. First rule out
+avoidable nondeterminism and defects, then obtain researcher approval.
+`log data update --reproduction-comparison evidence` selects evidence-scoped
+comparison for one generated file; `exact` removes that exception.
+The optional `reproduction_tolerance` belongs to each evidence comment, not
+the artifact declaration. It affects reproduction only and never relaxes
+comparison with Markdown or accepts a changed retained baseline.
 
-- `log data update` changes an explicitly named target or origin/generated
-  boundary. For one researcher-approved legitimately nondeterministic generated
-  file, `--reproduction-comparison evidence` selects evidence-scoped
-  reproduction; `--reproduction-comparison exact` removes that exception;
-- `log data rename` runs only after every recorded-command token is updated;
-  it also changes same-entry evidence source tokens and reports producer
-  commands that must be rerun;
-- `log data remove` runs only after command and evidence use is removed; and
-- `log data list` returns a bounded semantic inventory when needed.
-
-Use action-specific `--dry-run` when a mutation needs preflight. Selected
-directory identity options belong to the selected action's help and explicit
-researcher intent; do not load or reproduce their registry representation
-during ordinary Record. A referenced declaration is maintained by its source
-entry: update, rename, and remove the source only after removing or
-updating every dependent reference.
-
-Whole-artifact exact comparison is always the default. Do not add an evidence
-comparison while recording ordinary work or merely because a reproduction
-changed. First rule out avoidable nondeterminism, environmental leakage, and a
-defect. Then identify every applicable evidence record and obtain researcher
-approval for the exception and any evidence-level tolerance before using the
-data update action.
-
-Declare each generated output before its recorded producer runs, including
-output-only results, command logs, and images. Use its named token in the
-command. Do not register scripts merely because they are executed.
-
-When one `pyrun` invocation owns an output directory, register that generated
-directory once rather than registering its files separately. Use `<name>` when
-a later command consumes the whole bundle and `<name>/member` when a command or
-evidence record consumes one exact file. The member remains exact, while the
-directory's declared selection and retained execution observation establish its
-identity and Provenance. Declare output-only directories too; their directory-level
-`pyrun` support establishes the atomic output boundary.
-
-If an action fails because existing research-owned state is malformed or
-legacy, report the exact failure and stop. A failed Record command does not
-authorize Repair or direct registry editing.
-
-Mechanical validation reports missing declarations, raw-path bypasses, unused
-inputs, duplicate targets, cross-entry disagreement, changed bytes, remote-only
-material, and origin boundaries that hide current same-log producers that do
-not require reproduction. Do not choose an origin boundary without researcher
-authority. Current-byte observation is not acceptance of historical execution
-or presented-artifact bytes; use the explicit evidence action when a
-presentation baseline must change.
+If the CLI cannot decode an owned registry, stop and report the precise
+failure. Direct JSON repair requires explicit authority and is reserved for
+malformed state the owning CLI cannot handle.

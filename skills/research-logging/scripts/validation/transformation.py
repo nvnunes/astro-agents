@@ -12,7 +12,7 @@ from typing import Any, Mapping, NoReturn, Sequence, cast
 
 from .errors import MechanicalContractError
 from .json_codec import V2JsonError, canonical_json, decode_json
-from .locator import DECIMAL_TEXT_RE, INTEGER_TEXT_RE, authored_literal
+from .locator import DECIMAL_TEXT_RE, INTEGER_TEXT_RE
 from .mechanical_values import CanonicalValue, SelectionResult
 
 MAX_TRANSFORMATION_BYTES = 32 * 1024
@@ -37,7 +37,6 @@ BOOLEAN_STYLES = {
     "true_false": {True: "true", False: "false"},
     "yes_no": {True: "yes", False: "no"},
 }
-SEQUENCE_SEPARATORS = {"comma": ", ", "dimensions": " x ", "slash": " / "}
 ALIGNMENT_RE = re.compile(r":?-{3,}:?\Z")
 
 
@@ -88,8 +87,6 @@ class TransformationResult:
 class _ExpressionContext:
     inputs: Sequence[SelectionResult]
     tracker: _ConsumptionTracker
-    reference_kind: str
-    record: int | None = None
 
 
 class _ConsumptionTracker:
@@ -118,33 +115,6 @@ class _ConsumptionTracker:
         reference = InputReference(cast(int, input_index), cast(int, item_index))
         self._consume(reference)
         return source.items[reference.item].value, reference
-
-    def field(
-        self, input_index: object, field_index: object, record: int
-    ) -> tuple[CanonicalValue, InputReference]:
-        source = self._input(input_index)
-        if not _index(field_index):
-            _fail(
-                "transformation.input.reference_invalid",
-                "field",
-                {"input": input_index, "field": field_index},
-            )
-        grouped = [
-            (index, item)
-            for index, item in enumerate(source.items)
-            if item.record == record
-        ]
-        field = cast(int, field_index)
-        if field >= len(grouped):
-            _fail(
-                "transformation.input.reference_invalid",
-                "field",
-                {"input": input_index, "field": field, "record": record},
-            )
-        item_index, item = grouped[field]
-        reference = InputReference(cast(int, input_index), item_index)
-        self._consume(reference)
-        return item.value, reference
 
     def complete(self) -> None:
         expected = {
@@ -294,7 +264,7 @@ def parse_markdown_table(
     """Parse only the ordinary rectangular Markdown table grammar in the spec."""
 
     lines = text.splitlines()
-    if len(lines) < 3:
+    if len(lines) < 2:
         _fail("association.presentation.syntax_invalid", "table", {"lines": len(lines)})
     parsed = [_markdown_cells(line) for line in lines]
     width = len(parsed[0])
@@ -332,7 +302,7 @@ def _parse_transformation(value: Mapping[str, Any]) -> tuple[Mapping[str, Any], 
             {"bytes": len(identity.encode("utf-8"))},
         )
     form = value["form"]
-    if form not in {*NON_TABLE_COUNTS, "percentage", "table"}:
+    if form not in {*NON_TABLE_COUNTS, "percentage", "boolean", "table"}:
         _fail("transformation.syntax.invalid", "transformation", {"form": form})
     normalized = dict(value)
     if form == "percentage" and normalized.get("decimal_places") == 1:
@@ -389,10 +359,18 @@ def _non_table_result(
     tracker: _ConsumptionTracker,
 ) -> TransformationResult:
     form = cast(str, recipe["form"])
-    context = _ExpressionContext(inputs, tracker, "item")
+    context = _ExpressionContext(inputs, tracker)
     spellings: tuple[str, ...]
     if form == "percentage":
         part = _percentage(recipe, context)
+        spellings = (part.text,)
+    elif form == "boolean":
+        value, reference = _resolve_source(recipe.get("source"), context)
+        part = _boolean_implicit(
+            {key: item for key, item in recipe.items() if key != "source"},
+            value,
+            reference,
+        )
         spellings = (part.text,)
     else:
         values = _value_array(recipe, form)
@@ -527,14 +505,8 @@ def _resolve_source(
 ) -> tuple[CanonicalValue, InputReference]:
     if not isinstance(value, Mapping):
         _fail("transformation.input.reference_invalid", "source", {"value": value})
-    if context.reference_kind == "item" and set(value) == {"input", "item"}:
+    if set(value) == {"input", "item"}:
         return context.tracker.item(value["input"], value["item"])
-    if (
-        context.reference_kind == "field"
-        and set(value) == {"field", "input"}
-        and context.record is not None
-    ):
-        return context.tracker.field(value["input"], value["field"], context.record)
     _fail(
         "transformation.input.reference_invalid",
         "source",
@@ -723,14 +695,6 @@ def _table_result(
         rows, numeric, intermediates = _direct_table(
             recipe, inputs, tracker, len(headings)
         )
-    elif mode == "structured":
-        rows, numeric, intermediates = _structured_table(
-            recipe, inputs, tracker, len(headings)
-        )
-    elif mode == "summary":
-        rows, numeric, intermediates = _summary_table(
-            recipe, inputs, tracker, len(headings)
-        )
     else:
         _fail("transformation.syntax.invalid", "table", {"mode": mode})
     if len(rows) * len(headings) > MAX_TABLE_CELLS:
@@ -755,8 +719,7 @@ def _table_result(
 def _case_insensitive_table_cells(
     recipe: Mapping[str, Any], row_count: int
 ) -> frozenset[tuple[int, int]]:
-    mode = recipe["mode"]
-    if mode in {"direct", "structured"}:
+    if recipe["mode"] == "direct":
         columns = cast(Sequence[object], recipe["columns"])
         boolean_columns = {
             column
@@ -768,13 +731,7 @@ def _case_insensitive_table_cells(
             for row in range(1, row_count + 1)
             for column in boolean_columns
         )
-    rows = cast(Sequence[Sequence[object]], recipe["rows"])
-    return frozenset(
-        (row, column)
-        for row, cells in enumerate(rows, 1)
-        for column, cell in enumerate(cells, 1)
-        if isinstance(cell, Mapping) and cell.get("form") == "boolean"
-    )
+    return frozenset()
 
 
 def _table_presentation_difference(
@@ -1057,176 +1014,6 @@ def _direct_scalar(
     )
 
 
-def _structured_table(
-    recipe: Mapping[str, Any],
-    inputs: Sequence[SelectionResult],
-    tracker: _ConsumptionTracker,
-    width: int,
-) -> tuple[tuple[tuple[str, ...], ...], set[tuple[int, int]], tuple[str, ...]]:
-    if (
-        set(recipe) != {"columns", "form", "headings", "mode", "rows"}
-        or len(inputs) != 1
-    ):
-        _fail(
-            "transformation.syntax.invalid",
-            "structured",
-            {"fields": sorted(recipe), "inputs": len(inputs)},
-        )
-    columns, rows_spec = recipe["columns"], recipe["rows"]
-    if (
-        not isinstance(columns, list)
-        or len(columns) != width
-        or not isinstance(rows_spec, Mapping)
-        or not {"input"} <= set(rows_spec) <= {"input", "order"}
-        or rows_spec["input"] != 0
-    ):
-        _fail(
-            "transformation.syntax.invalid",
-            "structured",
-            {"columns": columns, "rows": rows_spec},
-        )
-    groups = _record_groups(inputs[0])
-    order = _structured_order(rows_spec.get("order"), inputs[0], len(groups))
-    rows: list[tuple[str, ...]] = []
-    numeric: set[tuple[int, int]] = set()
-    intermediates: list[str] = []
-    for output_row, record in enumerate(order, 1):
-        context = _ExpressionContext(inputs, tracker, "field", record)
-        rendered = [_cell_recipe(column, context) for column in columns]
-        rows.append(tuple(part.text for part in rendered))
-        numeric.update(
-            (output_row, column)
-            for column, part in enumerate(rendered, 1)
-            if part.numeric
-        )
-        intermediates.extend(
-            intermediate for part in rendered for intermediate in part.intermediates
-        )
-    return tuple(rows), numeric, tuple(intermediates)
-
-
-def _summary_table(
-    recipe: Mapping[str, Any],
-    inputs: Sequence[SelectionResult],
-    tracker: _ConsumptionTracker,
-    width: int,
-) -> tuple[tuple[tuple[str, ...], ...], set[tuple[int, int]], tuple[str, ...]]:
-    if (
-        set(recipe) != {"form", "headings", "mode", "rows"}
-        or not isinstance(recipe["rows"], list)
-        or not recipe["rows"]
-    ):
-        _fail("transformation.syntax.invalid", "summary", {"fields": sorted(recipe)})
-    rows: list[tuple[str, ...]] = []
-    numeric: set[tuple[int, int]] = set()
-    intermediates: list[str] = []
-    context = _ExpressionContext(inputs, tracker, "item")
-    for row_number, row in enumerate(recipe["rows"], 1):
-        if not isinstance(row, list) or len(row) != width or not row:
-            _fail("transformation.output.shape", "summary", {"row": row_number})
-        rendered = [
-            _summary_cell(cell, column, width, context)
-            for column, cell in enumerate(row, 1)
-        ]
-        rows.append(tuple(part.text for part in rendered))
-        numeric.update(
-            (row_number, column)
-            for column, part in enumerate(rendered, 1)
-            if part.numeric
-        )
-        intermediates.extend(
-            intermediate for part in rendered for intermediate in part.intermediates
-        )
-    return tuple(rows), numeric, tuple(intermediates)
-
-
-def _summary_cell(
-    cell: object, column: int, width: int, context: _ExpressionContext
-) -> RenderedPart:
-    if isinstance(cell, Mapping) and cell.get("form") == "label":
-        text = cell.get("text")
-        if (
-            column != 1
-            or width == 1
-            or set(cell) != {"form", "text"}
-            or not _cell_text(text)
-        ):
-            _fail(
-                "transformation.table.label_invalid",
-                "label",
-                {"column": column, "text": text},
-            )
-        return RenderedPart(cast(str, text), False, ())
-    return _cell_recipe(cell, context)
-
-
-def _cell_recipe(cell: object, context: _ExpressionContext) -> RenderedPart:
-    if not isinstance(cell, Mapping) or not isinstance(cell.get("form"), str):
-        _fail("transformation.syntax.invalid", "cell", {"value": cell})
-    form = cell["form"]
-    if form == "percentage":
-        return _percentage(cell, context)
-    if form == "boolean":
-        return _boolean_cell(cell, context)
-    if form == "sequence":
-        return _sequence_cell(cell, context)
-    if form not in NON_TABLE_COUNTS:
-        _fail("transformation.syntax.invalid", "cell", {"form": form})
-    values = _value_array(cell, cast(str, form))
-    parts = [_value_expression(value, context) for value in values]
-    _validate_cell_parts(cast(str, form), parts)
-    spelling = _form_spellings(cast(str, form), parts, _unit(cell))[0]
-    if not _cell_text(spelling, allow_empty=form == "text"):
-        _fail("transformation.output.shape", "cell", {"value": spelling})
-    return RenderedPart(
-        spelling,
-        any(part.numeric for part in parts),
-        tuple(reference for part in parts for reference in part.references),
-        tuple(item for part in parts for item in part.intermediates),
-    )
-
-
-# Structured cell semantics and ordering.
-
-
-def _validate_cell_parts(form: str, parts: Sequence[RenderedPart]) -> None:
-    if form == "text":
-        if any(part.value_kind != "string" for part in parts):
-            _fail(
-                "transformation.type.mismatch",
-                "text",
-                {"types": _part_types(parts)},
-            )
-    elif form == "scalar":
-        if any(not part.numeric and part.value_kind != "null" for part in parts):
-            _fail(
-                "transformation.type.mismatch", "scalar", {"types": _part_types(parts)}
-            )
-    elif any(not part.numeric for part in parts):
-        _fail(
-            "transformation.type.mismatch",
-            form,
-            {"types": _part_types(parts)},
-        )
-
-
-def _boolean_cell(cell: Mapping[str, Any], context: _ExpressionContext) -> RenderedPart:
-    if (
-        set(cell) != {"form", "style", "values"}
-        or not isinstance(cell["values"], list)
-        or len(cell["values"]) != 1
-    ):
-        _fail("transformation.boolean.invalid", "boolean", {"value": cell})
-    expression = cell["values"][0]
-    if not isinstance(expression, Mapping) or not {"source"} <= set(expression) <= {
-        "parse",
-        "source",
-    }:
-        _fail("transformation.boolean.invalid", "boolean", {"value": expression})
-    value, reference = _resolve_source(expression["source"], context)
-    return _boolean_value(value, expression.get("parse"), cell["style"], reference)
-
-
 def _boolean_implicit(
     descriptor: Mapping[str, Any], value: CanonicalValue, reference: InputReference
 ) -> RenderedPart:
@@ -1267,66 +1054,8 @@ def _boolean_value(
     )
 
 
-def _sequence_cell(
-    cell: Mapping[str, Any], context: _ExpressionContext
-) -> RenderedPart:
-    if (
-        not {"form", "style", "values"}
-        <= set(cell)
-        <= {"form", "style", "unit", "values"}
-        or cell["style"] not in SEQUENCE_SEPARATORS
-    ):
-        _fail("transformation.syntax.invalid", "sequence", {"value": cell})
-    values = cell["values"]
-    if not isinstance(values, list) or not 2 <= len(values) <= 8:
-        _fail("transformation.syntax.invalid", "sequence", {"values": values})
-    parts = [
-        _value_expression(value, context)
-        for value in values
-        if isinstance(value, Mapping)
-    ]
-    if len(parts) != len(values) or not all(part.numeric for part in parts):
-        _fail("transformation.type.mismatch", "sequence", {"values": values})
-    text = SEQUENCE_SEPARATORS[cast(str, cell["style"])].join(
-        part.text for part in parts
-    )
-    return RenderedPart(
-        text + _unit_suffix(_unit(cell)),
-        True,
-        tuple(reference for part in parts for reference in part.references),
-        tuple(item for part in parts for item in part.intermediates),
-        value_kind="numeric",
-    )
-
-
 def _part_types(parts: Sequence[RenderedPart]) -> list[str | None]:
     return [part.value_kind for part in parts]
-
-
-def _structured_order(
-    value: object, source: SelectionResult, records: int
-) -> list[int]:
-    if value is None:
-        return list(range(records))
-    if not isinstance(value, list) or not source.identities or len(value) != records:
-        _fail("transformation.table.order_mismatch", "order", {"value": value})
-    expected = [
-        canonical_json([item.projection for item in identity])
-        for identity in source.identities
-    ]
-    observed = [
-        canonical_json([authored_literal(item).projection for item in row])
-        if isinstance(row, list)
-        else "invalid"
-        for row in value
-    ]
-    if sorted(observed) != sorted(expected):
-        _fail(
-            "transformation.table.order_mismatch",
-            "order",
-            {"expected": expected, "observed": observed},
-        )
-    return [expected.index(identity) for identity in observed]
 
 
 def _record_groups(source: SelectionResult) -> list[list[int]]:

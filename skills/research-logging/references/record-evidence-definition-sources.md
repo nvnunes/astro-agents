@@ -1,102 +1,29 @@
-# Advanced Evidence Sources
+# Evidence Source Selection
 
-Use this file only when common evidence arguments cannot express the source
-selection for an otherwise simple one-source statistic. This route does not
-cover statistics that consume several sources or need an advanced numerical
-transformation. This definition mode writes `evidence.json`; do not edit that
-registry directly.
+Use these fields in the EID comment, then `log evidence sync --id EID`.
+Each source clause starts with `source=NAME` or `source=NAME/member`.
+Repeat `select=POINTER` in the desired order.
 
-## Workflow
+Pointers use JSON Pointer escaping (`~0` for ~, `~1` for /), zero-based numeric
+indexes, `/*` for every element, and `/[START:END]` for a half-open slice.
+Use `path=POINTER` when selection begins beneath a nested source container.
+Supported sources include CSV/TSV, JSON/JSONL, NPZ, and HDF5; selection must be
+explicit rather than guessing a file from stored metadata.
 
-1. Author the presentation and its `eid` marker first.
-2. Write one temporary JSON definition beneath `/private/tmp`.
-3. Run the complete preflight:
-
-   ```text
-   <skill>/scripts/log evidence add --path <log> --entry <entry-id> --id <id> \
-     --definition /private/tmp/<name>.json --dry-run
-   ```
-
-4. If the preflight succeeds, repeat the command without `--dry-run`. Use
-   `evidence update` instead of `evidence add` for an existing ID.
-
-The CLI reads but never edits, retains, or removes the temporary definition.
-The file must be a regular non-symlink UTF-8 JSON file no larger than 8 MiB and
-must contain `sources` and `transformation`, with optional
-`reproduction_tolerance` only for a researcher-approved evidence-scoped
-reproduction rule.
-
-## Source Shape
-
-`sources` is an ordered array. Each item has exactly this shape:
-
-```json
-{
-  "source": "<results>",
-  "locator": {"select": [["success_rate"]]}
-}
+```markdown
+``<!-- eid:selected source=metrics path=/cases select=/error
+identity=/name where=/name:eq:string:baseline parse=decimal render=fixed:2 -->
 ```
 
-Use exactly one source for this focused route. A source is one complete file
-token from the owning entry's `data.json`; a directory token must include one
-exact member. Direct paths, remote targets, bare directory tokens, and
-cross-entry shorthand are invalid.
+A comment may span source lines. `identity=POINTER` may be repeated for stable
+record identity. `where=POINTER:eq:TYPE:VALUE` filters equality;
+`where=POINTER:in:TYPE:VALUE,VALUE` filters a declared set. TYPE is string,
+integer, decimal, boolean, or null. Percent-encode comma-containing string
+members of an in-set. Repeated conditions are a conjunction, not inferred joins.
+For numeric CSV comparison and rendering use `parse=decimal` or
+`parse=integer`. Sync derives matches, selected items, identities, shape, and
+current source fingerprints; do not author `expect` or fingerprint fields.
 
-A locator is a non-empty object containing only applicable keys:
-
-- `path`: an exact path made from string keys, non-negative indexes,
-  `{"slice":[start,stop]}`, or `{"all":true}`;
-- `select`: a non-empty ordered array of relative paths;
-- `where`: non-empty `eq` or `in` conditions combined with AND;
-- `identity`: paths forming a unique scalar tuple for every matched record;
-- `property`: a supported structural property;
-- `text`: exact line selection by `contains` and optional `occurrence`; and
-- `expect`: optional exact `matches`, `items`, `shape`, or `identities`.
-
-`text` is mutually exclusive with the other selection keys except `expect`.
-Use `parse:"integer"` or `parse:"decimal"` in a condition only when comparing
-a complete lexical string numerically. Expectations assert retained structure;
-they never select or reorder it.
-
-Supported value containers are bounded CSV, TSV, JSON, NPZ, HDF5/MATLAB 7.3,
-and UTF-8 text. Locator identities are limited to 8 KiB, selections to 10,000
-items, record scans to 100,000 records, text and JSON sources to 64 MiB, and
-binary materialization to 64 MiB per member and 512 MiB total. Stop and retain
-a smaller purpose-built source when the intended selection exceeds a bound.
-
-Use `"transformation": null` when the selected primitive already has the exact
-presented type and canonical spelling. Use the closed `percentage` form when
-the selected proportion is intentionally presented as a percentage. If the
-statistic needs explicit numeric rendering, scaling, a range, uncertainty, an
-interval, a tuple, or several sources, use the advanced numeric route instead.
-
-## Example
-
-For a retained CSV with `case` and `success_rate` columns:
-
-```json
-{
-  "sources": [{
-    "source": "<results>",
-    "locator": {
-      "select": [["success_rate"]],
-      "where": [{"op":"eq","path":["case"],"value":"candidate"}],
-      "identity": [["case"]],
-      "expect": {
-        "identities": [["candidate"]],
-        "items": 1,
-        "matches": 1
-      }
-    }
-  }],
-  "transformation": {
-    "form": "percentage",
-    "source": {"input": 0, "item": 0}
-  }
-}
-```
-
-Do not guess a selector, weaken an expectation to make it pass, or use a
-transformation to discard extra values. Narrow or regenerate the retained
-source, or stop for researcher direction when the intended selection is
-unclear.
+Multiple source clauses separated by semicolons are supported only for the
+closed compound numeric forms. A direct table has one source clause.
+Use a script when the requested selection requires an unsupported calculation.

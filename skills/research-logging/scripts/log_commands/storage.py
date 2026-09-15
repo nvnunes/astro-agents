@@ -91,10 +91,12 @@ def entry_lock_under_log(entry: EntryContext) -> Iterator[None]:
 
 
 @contextmanager
-def log_lock(log: LogContext) -> Iterator[None]:
+def log_lock(log: LogContext, *, timeout_seconds: float = 0) -> Iterator[None]:
     """Hold the canonical log lock exclusively."""
 
-    with operation_lock(log.root, "log.lock", mode="exclusive"):
+    with operation_lock(
+        log.root, "log.lock", mode="exclusive", timeout_seconds=timeout_seconds
+    ):
         require_mutation_ready(log.root)
         yield
 

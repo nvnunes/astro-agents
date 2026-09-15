@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from difflib import unified_diff
 from pathlib import Path
 from typing import Iterable
@@ -12,11 +12,13 @@ from research_log_data import (
     DataFile,
     InputResource,
     build_declared_generated,
+    build_git_repository_input,
     build_local_input,
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
     normalize_input_location,
+    observe_fingerprint,
 )
 from validation.commands import (
     CommandDeclaration,
@@ -49,9 +51,34 @@ from validation.pyrun_state import (
     validated_pyrun_serialization,
 )
 
-from .context import EntryContext, parse_entry_document_name, resolve_project_root
+from .context import (
+    EntryContext,
+    parse_entry_document_name,
+    resolve_entry,
+    resolve_project_root,
+)
+from .data_assertions import (
+    assignment as _mapping,
+)
+from .data_assertions import (
+    ensure_declaration as _ensure_declaration,
+)
+from .data_assertions import (
+    require_local_target as _require_local_target,
+)
 from .model import ActionError, ActionResult, CommandSyncArguments
-from .storage import PublicationError, atomic_write_texts, entry_lock
+from .retention import require_unretained_paths
+from .storage import PublicationError, atomic_write_texts, entry_lock, entry_locks
+
+
+@dataclass(frozen=True)
+class _LocalDeclarationAssertions:
+    """The fields asserted by one file or directory add form."""
+
+    values: tuple[str, ...]
+    flag: str
+    kind: str
+    origin: bool
 
 
 def sync_command(
@@ -64,11 +91,38 @@ def sync_command(
     try:
         if arguments.dry_run:
             return _sync_locked(entry, project, arguments)
+        source_ids = tuple(
+            dict.fromkeys(
+                _mapping(value, "--add-from-entry")[1]
+                for value in arguments.add_from_entries
+            )
+        )
+        if entry.id in source_ids:
+            raise ActionError("data.reference.invalid", "source and destination match")
+        referenced_entries = tuple(
+            resolve_entry(entry.log, source_id) for source_id in source_ids
+        )
+        if referenced_entries:
+            with entry_locks(entry.log, (entry, *referenced_entries)):
+                return _sync_locked(entry, project, arguments)
         with entry_lock(entry):
             return _sync_locked(entry, project, arguments)
     except ActionError:
         raise
-    except (DataContractError, MechanicalContractError, OSError, UnicodeError) as error:
+    except DataContractError as error:
+        raise ActionError(
+            "command.sync.declaration.invalid",
+            "the requested data declaration is invalid",
+            records=(
+                {
+                    "code": error.code,
+                    "observed": error.observed,
+                    "subject": error.subject,
+                },
+            ),
+            diagnostic_log=entry.log.root,
+        ) from error
+    except (MechanicalContractError, OSError, UnicodeError) as error:
         raise ActionError("command.sync.unavailable", str(error)) from error
 
 
@@ -99,14 +153,8 @@ def _sync_locked(
     selected_invocations = tuple(
         item for item in invocations if item.cid == arguments.cid
     )
-    if not selected_invocations:
-        raise ActionError("command.sync.cid.missing", arguments.cid)
-    try:
-        validate_command_structure(invocations)
-    except MechanicalContractError as error:
-        raise ActionError("command.sync.structure.invalid", str(error)) from error
     relevant_failures = tuple(
-        failure
+        (document, failure)
         for document, failure in failures
         if any(
             declaration.document == document and declaration.fence == failure.fence
@@ -118,19 +166,56 @@ def _sync_locked(
             "command.sync.declaration.invalid",
             "selected command has unresolved declarations",
             records=tuple(
-                _failure_record(document, failure) for document, failure in failures
+                {**_failure_record(document, failure), "status": "selected-failure"}
+                for document, failure in relevant_failures
             ),
             diagnostic_log=entry.log.root,
         )
-    _require_safe_removals(entry, candidate_data, arguments.removals, invocations)
-    _require_safe_renames(
-        entry, current_data, arguments.renames, arguments.cid, invocations
-    )
+    if not selected_invocations:
+        raise ActionError("command.sync.cid.missing", arguments.cid)
+    try:
+        validate_command_structure(selected_invocations)
+    except MechanicalContractError as error:
+        raise ActionError("command.sync.structure.invalid", str(error)) from error
+    _require_requested_declarations_consumed(entry, arguments, selected_invocations)
+    for invocation in selected_invocations:
+        paths = [
+            relationship.path
+            for relationship in (*invocation.inputs, *invocation.outputs)
+        ]
+        paths.extend(
+            collection.root for collection in invocation.collections if collection.root
+        )
+        if invocation.script:
+            paths.append(invocation.script)
+        require_unretained_paths(entry, paths)
     _require_output_safety(indexed, invocations, selected_invocations)
+    _require_generated_boundaries(
+        entry,
+        current_data,
+        candidate_data,
+        arguments,
+        invocations,
+    )
     _require_origin_boundaries(
         candidate_data,
         invocations,
-        tuple(_mapping(value, "--add-origin")[0] for value in arguments.add_origins),
+        tuple(
+            _mapping(value, flag)[0]
+            for flag, values in (
+                ("--add-origin", arguments.add_origins),
+                ("--add-origin-directory", arguments.add_origin_directories),
+                ("--add-origin-git", arguments.add_origin_git),
+            )
+            for value in values
+        )
+        + tuple(
+            name
+            for value in arguments.target_changes
+            if candidate_data is not None
+            and (name := _mapping(value, "--change-target")[0])
+            and candidate_data.by_name[name].origin
+        ),
     )
 
     pyrun_text = _candidate_pyrun_text(
@@ -138,7 +223,7 @@ def _sync_locked(
         project,
         arguments.cid,
         selected_invocations,
-        arguments.retirements,
+        arguments.execution_deletions,
     )
     data_text = candidate_data.canonical_json() if candidate_data is not None else None
     return _publish_candidates(
@@ -155,20 +240,50 @@ def _candidate_pyrun_text(
     project: Path,
     cid: str,
     invocations: tuple[Invocation, ...],
-    retirements: tuple[str, ...],
+    deletions: tuple[str, ...],
 ) -> str:
     path = entry.root / PYRUN_FILENAME
-    state = (
-        load_pyrun_state(path, entry_root=entry.root, project_root=project)
-        if path.exists() or path.is_symlink()
-        else empty_pyrun_state(entry.root)
-    )
+    if path.exists() or path.is_symlink():
+        try:
+            state = load_pyrun_state(path, entry_root=entry.root, project_root=project)
+        except MechanicalContractError as error:
+            raise ActionError(
+                "command.sync.registry.invalid",
+                "the owned pyrun registry requires direct Repair before sync",
+                records=(
+                    {
+                        "code": error.code,
+                        "observed": error.observed,
+                        "registry": error.subject,
+                        "required_action": "direct Repair",
+                    },
+                ),
+                diagnostic_log=entry.log.root,
+            ) from error
+    else:
+        state = empty_pyrun_state(entry.root)
     comparison = compare_command(state, cid, invocations, project_root=project)
     stale_ids = tuple(item.identity for item in comparison.stale)
-    if set(retirements) != set(stale_ids) or len(retirements) != len(set(retirements)):
+    invalid_deletions = sorted(set(deletions) - set(stale_ids))
+    if invalid_deletions:
+        current_ids = set(state.commands.get(cid, PyrunCommand({})).executions)
         raise ActionError(
-            "command.sync.retirement.required",
-            "acknowledge all and only stale execution IDs",
+            "command.sync.execution.not_stale",
+            "only stale executions may be deleted during command sync",
+            records=tuple(
+                {
+                    "cid": cid,
+                    "execution_id": identity,
+                    "status": "current" if identity in current_ids else "unknown",
+                }
+                for identity in invalid_deletions
+            ),
+            diagnostic_log=entry.log.root,
+        )
+    if set(deletions) != set(stale_ids) or len(deletions) != len(set(deletions)):
+        raise ActionError(
+            "command.sync.execution.deletion_required",
+            "delete every stale execution ID exactly once",
             records=tuple(
                 {
                     "cid": item.cid,
@@ -176,7 +291,7 @@ def _candidate_pyrun_text(
                     "parameters": list(
                         recipe_script_parameters(item.execution.recipe.parameters)
                     ),
-                    "retry_flag": f"--retire {item.identity}",
+                    "retry_flag": f"--delete-execution {item.identity}",
                     "script": item.execution.recipe.script,
                 }
                 for item in comparison.stale
@@ -320,10 +435,45 @@ def _candidate_data(
     ],
 ) -> DataFile | None:
     items = {item.name: item for item in current.inputs} if current is not None else {}
-    _apply_renames(entry, items, arguments.cid, arguments.renames, indexed)
-    _apply_removals(entry, items, arguments.removals, indexed)
-    _apply_origins(entry, items, arguments.add_origins)
-    _apply_generated(entry, items, selected, arguments.add_generated)
+    _apply_local_declarations(
+        entry,
+        items,
+        _LocalDeclarationAssertions(
+            arguments.add_origins, "--add-origin", "file", True
+        ),
+    )
+    _apply_local_declarations(
+        entry,
+        items,
+        _LocalDeclarationAssertions(
+            arguments.add_origin_directories,
+            "--add-origin-directory",
+            "directory",
+            True,
+        ),
+    )
+    _apply_git_origins(entry, items, arguments.add_origin_git)
+    _apply_local_declarations(
+        entry,
+        items,
+        _LocalDeclarationAssertions(
+            arguments.add_generated, "--add-generated", "file", False
+        ),
+    )
+    _apply_local_declarations(
+        entry,
+        items,
+        _LocalDeclarationAssertions(
+            arguments.add_generated_directories,
+            "--add-generated-directory",
+            "directory",
+            False,
+        ),
+    )
+    _apply_from_entries(entry, items, arguments.add_from_entries)
+    _apply_target_changes(
+        entry, items, arguments.cid, arguments.target_changes, indexed
+    )
     if not items:
         return None
     return data_file_from_inputs(
@@ -333,7 +483,73 @@ def _candidate_data(
     )
 
 
-def _apply_renames(
+def _apply_local_declarations(
+    entry: EntryContext,
+    items: dict[str, InputResource],
+    assertions: _LocalDeclarationAssertions,
+) -> None:
+    for raw in assertions.values:
+        name, target = _mapping(raw, assertions.flag)
+        location = normalize_input_location(target, entry_root=entry.root)
+        _require_local_target(
+            entry, name, location, kind=assertions.kind, origin=assertions.origin
+        )
+        candidate = (
+            build_local_input(
+                name, assertions.kind, location, entry_root=entry.root, origin=True
+            )
+            if assertions.origin
+            else build_declared_generated(
+                name, assertions.kind, location, entry_root=entry.root
+            )
+        )
+        _ensure_declaration(entry, items, candidate, assertions.flag)
+
+
+def _apply_git_origins(
+    entry: EntryContext,
+    items: dict[str, InputResource],
+    values: tuple[str, ...],
+) -> None:
+    for raw in values:
+        name, target = _mapping(raw, "--add-origin-git")
+        commit, location = _git_target(target, "--add-origin-git")
+        normalized = normalize_input_location(location, entry_root=entry.root)
+        candidate = build_git_repository_input(
+            name, normalized, commit, entry_root=entry.root
+        )
+        observe_fingerprint(candidate)
+        _ensure_declaration(entry, items, candidate, "--add-origin-git")
+
+
+def _apply_from_entries(
+    entry: EntryContext,
+    items: dict[str, InputResource],
+    values: tuple[str, ...],
+) -> None:
+    for raw in values:
+        name, source_id = _mapping(raw, "--add-from-entry")
+        if source_id == entry.id:
+            raise ActionError("data.reference.invalid", "source and destination match")
+        source_entry = resolve_entry(entry.log, source_id)
+        source_data = _load_data(source_entry)
+        source = source_data.by_name.get(name) if source_data is not None else None
+        if source is None or source.origin or source.reference_entry is not None:
+            raise ActionError(
+                "data.reference.source_invalid",
+                f"{source_id} must directly declare generated data named {name}",
+                records=({"entry": source_id, "name": name},),
+                diagnostic_log=entry.log.root,
+            )
+        _ensure_declaration(
+            entry,
+            items,
+            replace(source, reference_entry=source_id),
+            "--add-from-entry",
+        )
+
+
+def _apply_target_changes(
     entry: EntryContext,
     items: dict[str, InputResource],
     cid: str,
@@ -343,95 +559,84 @@ def _apply_renames(
     ],
 ) -> None:
     for raw in values:
-        old, new = _mapping(raw, "--rename")
-        if old not in items:
-            raise ActionError("data.input.missing", old)
-        if items[old].reference_entry is not None:
-            raise ActionError("data.reference.read_only", old)
-        if new in items:
-            raise ActionError("data.name.conflict", new)
-        other_cids = (
-            _declaration_cids_for_name(indexed, old)
-            | _declaration_cids_for_name(indexed, new)
-        ) - {cid}
-        if (
-            other_cids
-            or _cross_entry_references(entry, old)
-            or _evidence_uses(entry, old)
-        ):
-            raise ActionError("command.sync.rename.unsafe", "use log data rename")
-        items[new] = replace(items.pop(old), name=new)
+        name, target = _mapping(raw, "--change-target")
+        existing = items.get(name)
+        if existing is None:
+            raise ActionError("data.input.missing", name)
+        if existing.reference_entry is not None:
+            raise ActionError(
+                "command.sync.target.shared",
+                "cross-entry sources are changed through log data update",
+                records=({"name": name, "owner": "log data update"},),
+                diagnostic_log=entry.log.root,
+            )
+        if name not in _declaration_names_for_cid(indexed, cid):
+            raise ActionError(
+                "command.sync.target.not_owned",
+                f"{cid} does not use {name}",
+                records=({"cid": cid, "name": name, "owner": "log data update"},),
+                diagnostic_log=entry.log.root,
+            )
+        if existing.kind == "git-repository":
+            commit, location = _git_target(target, "--change-target")
+            candidate = build_git_repository_input(
+                name,
+                normalize_input_location(location, entry_root=entry.root),
+                commit,
+                entry_root=entry.root,
+            )
+            observe_fingerprint(candidate)
+        else:
+            location = normalize_input_location(target, entry_root=entry.root)
+            _require_local_target(
+                entry, name, location, kind=existing.kind, origin=existing.origin
+            )
+            base = build_local_input(
+                name,
+                existing.kind,
+                location,
+                entry_root=entry.root,
+                origin=existing.origin,
+            )
+            candidate = replace(
+                base,
+                identity=existing.identity,
+                comparison=existing.comparison,
+            )
+        if candidate == existing:
+            continue
+        consumers = sorted(_declaration_cids_for_name(indexed, name) - {cid})
+        references = list(_cross_entry_references(entry, name))
+        evidence = _evidence_use_ids(entry, name)
+        if consumers or references or evidence:
+            raise ActionError(
+                "command.sync.target.shared",
+                "shared declarations are changed through log data update",
+                records=(
+                    {
+                        "command_consumers": consumers,
+                        "cross_entry_consumers": references,
+                        "evidence_consumers": list(evidence),
+                        "name": name,
+                        "owner": "log data update",
+                    },
+                ),
+                diagnostic_log=entry.log.root,
+            )
+        items[name] = candidate
 
 
-def _apply_removals(
-    entry: EntryContext,
-    items: dict[str, InputResource],
-    names: tuple[str, ...],
-    indexed: tuple[
-        tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
-    ],
-) -> None:
-    for name in names:
-        if (
-            _declaration_cids_for_name(indexed, name)
-            or _cross_entry_references(entry, name)
-            or _evidence_uses(entry, name)
-        ):
-            raise ActionError("command.sync.remove.unsafe", "use log data remove")
-        if name in items:
-            del items[name]
-
-
-def _apply_origins(
-    entry: EntryContext,
-    items: dict[str, InputResource],
-    values: tuple[str, ...],
-) -> None:
-    for raw in values:
-        name, target = _mapping(raw, "--add-origin")
-        if name in items:
-            raise ActionError("data.name.conflict", name)
-        location = normalize_input_location(target, entry_root=entry.root)
-        path = Path(location) if Path(location).is_absolute() else entry.root / location
-        kind = "file" if path.is_file() else "directory" if path.is_dir() else None
-        if kind is None or path.is_symlink():
-            raise ActionError("data.target.missing", target)
-        items[name] = build_local_input(
-            name, kind, location, entry_root=entry.root, origin=True
+def _git_target(value: str, flag: str) -> tuple[str, str]:
+    if ":" not in value:
+        raise ActionError(
+            "command.sync.arguments.invalid", f"{flag} requires NAME=COMMIT:PATH"
         )
-
-
-def _apply_generated(
-    entry: EntryContext,
-    items: dict[str, InputResource],
-    selected: tuple[CommandDeclaration, ...],
-    values: tuple[str, ...],
-) -> None:
-    output_kinds = _selected_output_kinds(selected)
-    for raw in values:
-        name, target = _mapping(raw, "--add-generated")
-        if name in items:
-            raise ActionError("data.name.conflict", name)
-        location = normalize_input_location(target, entry_root=entry.root)
-        path = Path(location) if Path(location).is_absolute() else entry.root / location
-        kind = "directory" if path.is_dir() else "file" if path.is_file() else None
-        if kind is None:
-            canonical = path.absolute().as_posix()
-            kind = output_kinds.get(canonical, "file")
-        items[name] = build_declared_generated(
-            name, kind, location, entry_root=entry.root
+    commit, location = value.split(":", 1)
+    if not commit or not location:
+        raise ActionError(
+            "command.sync.arguments.invalid", f"{flag} requires NAME=COMMIT:PATH"
         )
-
-
-def _selected_output_kinds(
-    selected: Iterable[CommandDeclaration],
-) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for declaration in selected:
-        for path, kind in declaration.outputs:
-            if kind != "unknown":
-                result[path] = kind
-    return result
+    return commit, location
 
 
 def _declaration_cids_for_name(
@@ -453,6 +658,29 @@ def _declaration_cids_for_name(
             ):
                 cids.add(command.cid)
     return cids
+
+
+def _declaration_names_for_cid(
+    indexed: tuple[
+        tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
+    ],
+    cid: str,
+) -> set[str]:
+    names: set[str] = set()
+    for _, _, result in indexed:
+        for declaration in result.declarations:
+            if declaration.parsed.cid != cid:
+                continue
+            command = declaration.parsed
+            values = [value for _, value in command.capture_outputs]
+            values.extend(item.value for item in command.options)
+            values.extend(command.positionals)
+            names.update(
+                parts[0]
+                for value in values
+                if (parts := input_token_parts(value)) is not None
+            )
+    return names
 
 
 def _missing_declarations(
@@ -491,7 +719,10 @@ def _missing_declarations(
     return tuple(
         {
             "name": name,
-            "required_flag": f"{flag} {name}=PATH",
+            "required_flags": [
+                f"{flag} {name}=PATH",
+                f"{flag}-directory {name}=PATH",
+            ],
             "role": "generated" if flag == "--add-generated" else "origin",
         }
         for name, flag in sorted(missing.items())
@@ -536,6 +767,42 @@ def _require_output_safety(
                 )
 
 
+def _require_requested_declarations_consumed(
+    entry: EntryContext,
+    arguments: CommandSyncArguments,
+    selected: tuple[Invocation, ...],
+) -> None:
+    requested = {
+        _mapping(value, flag)[0]
+        for flag, values in (
+            ("--add-origin", arguments.add_origins),
+            ("--add-origin-directory", arguments.add_origin_directories),
+            ("--add-origin-git", arguments.add_origin_git),
+            ("--add-generated", arguments.add_generated),
+            ("--add-generated-directory", arguments.add_generated_directories),
+            ("--add-from-entry", arguments.add_from_entries),
+        )
+        for value in values
+    }
+    consumed = {
+        relationship.input_resource.name
+        for invocation in selected
+        for relationship in (*invocation.inputs, *invocation.outputs)
+        if relationship.input_resource is not None
+    }
+    unused = sorted(requested - consumed)
+    if unused:
+        raise ActionError(
+            "command.sync.declaration.unused",
+            "added declarations must be consumed by the selected command",
+            records=tuple(
+                {"cid": arguments.cid, "name": name, "owner": "log data update"}
+                for name in unused
+            ),
+            diagnostic_log=entry.log.root,
+        )
+
+
 def _require_origin_boundaries(
     data: DataFile | None,
     invocations: tuple[Invocation, ...],
@@ -556,23 +823,71 @@ def _require_origin_boundaries(
             )
 
 
+def _require_generated_boundaries(
+    entry: EntryContext,
+    current: DataFile | None,
+    candidate: DataFile | None,
+    arguments: CommandSyncArguments,
+    invocations: tuple[Invocation, ...],
+) -> None:
+    if candidate is None:
+        return
+    names = {
+        _mapping(value, flag)[0]
+        for flag, values in (
+            ("--add-generated", arguments.add_generated),
+            ("--add-generated-directory", arguments.add_generated_directories),
+            ("--change-target", arguments.target_changes),
+        )
+        for value in values
+    }
+    index = build_producer_index(invocations)
+    selected_ids = {item.identity for item in invocations if item.cid == arguments.cid}
+    for name in sorted(names):
+        resource = candidate.by_name[name]
+        if resource.origin or resource.reference_entry is not None:
+            continue
+        target = resource.canonical_target
+        owners = {item.identity for item in index.outputs.get(target, ())}
+        owners.update(item.producer.identity for item in index.lookup(target))
+        if not owners:
+            raise ActionError(
+                "producer.missing",
+                f"generated data {name} has no recorded producer; "
+                "author its command first",
+                records=(
+                    {"name": name, "target": target, "owner": "log command sync"},
+                ),
+                diagnostic_log=entry.log.root,
+            )
+        if len(owners) != 1:
+            raise ActionError(
+                "command.sync.producer.ambiguous",
+                f"generated data {name} has several recorded producers",
+                records=({"name": name, "producers": sorted(owners)},),
+                diagnostic_log=entry.log.root,
+            )
+        if (
+            current is None or name not in current.by_name
+        ) and not owners <= selected_ids:
+            raise ActionError(
+                "command.sync.producer.not_selected",
+                f"bootstrap {name} through its producer command",
+                records=(
+                    {
+                        "name": name,
+                        "producers": sorted(owners),
+                        "owner": "log command sync",
+                    },
+                ),
+                diagnostic_log=entry.log.root,
+            )
+
+
 def _paths_overlap(left: str, right: str) -> bool:
     first = Path(left).absolute()
     second = Path(right).absolute()
     return first == second or first in second.parents or second in first.parents
-
-
-def _mapping(value: str, flag: str) -> tuple[str, str]:
-    if "=" not in value:
-        raise ActionError(
-            "command.sync.arguments.invalid", f"{flag} requires NAME=PATH"
-        )
-    left, right = value.split("=", 1)
-    if not left or not right:
-        raise ActionError(
-            "command.sync.arguments.invalid", f"{flag} requires NAME=PATH"
-        )
-    return left, right
 
 
 def _materialize(
@@ -591,58 +906,6 @@ def _materialize(
     return order_invocations(by_document), tuple(failures)
 
 
-def _require_safe_renames(
-    entry: EntryContext,
-    current: DataFile | None,
-    values: tuple[str, ...],
-    cid: str,
-    invocations: tuple[Invocation, ...],
-) -> None:
-    for raw in values:
-        old, new = _mapping(raw, "--rename")
-        if current is None or old not in current.by_name:
-            raise ActionError("data.input.missing", old)
-        if _cross_entry_references(entry, old):
-            raise ActionError("command.sync.rename.unsafe", "use log data rename")
-        if _evidence_uses(entry, old):
-            raise ActionError("command.sync.rename.unsafe", "use log data rename")
-        for invocation in invocations:
-            names = _invocation_input_names(invocation)
-            if invocation.cid != cid and (old in names or new in names):
-                raise ActionError(
-                    "command.sync.rename.unsafe", "sync affected CIDs first"
-                )
-
-
-def _require_safe_removals(
-    entry: EntryContext,
-    candidate: DataFile | None,
-    names: tuple[str, ...],
-    invocations: tuple[Invocation, ...],
-) -> None:
-    del candidate
-    used = {
-        name
-        for invocation in invocations
-        for name in _invocation_input_names(invocation)
-    }
-    for name in names:
-        if (
-            name in used
-            or _cross_entry_references(entry, name)
-            or _evidence_uses(entry, name)
-        ):
-            raise ActionError("command.sync.remove.unsafe", "use log data remove")
-
-
-def _invocation_input_names(invocation: Invocation) -> set[str]:
-    return {
-        item.input_resource.name
-        for item in invocation.inputs
-        if item.input_resource is not None
-    }
-
-
 def _cross_entry_references(entry: EntryContext, name: str) -> tuple[str, ...]:
     found = []
     for root in sorted(entry.root.parent.iterdir()):
@@ -658,25 +921,41 @@ def _cross_entry_references(entry: EntryContext, name: str) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _evidence_uses(entry: EntryContext, name: str) -> bool:
+def _evidence_use_ids(entry: EntryContext, name: str) -> tuple[str, ...]:
     path = entry.root / "evidence.json"
     if not path.exists() and not path.is_symlink():
-        return False
+        return ()
     evidence = load_evidence_file(path, log_root=entry.log.root, entry_root=entry.root)
-    return any(
-        (parts := input_token_parts(source.source)) is not None and parts[0] == name
+    return tuple(
+        record.id
         for record in evidence.records
-        for source in record.sources
+        if any(
+            (parts := input_token_parts(source.source)) is not None and parts[0] == name
+            for source in record.sources
+        )
     )
 
 
 def _load_data(entry: EntryContext) -> DataFile | None:
     path = entry.root / "data.json"
-    return (
-        load_data_file(path, entry_root=entry.root)
-        if path.exists() or path.is_symlink()
-        else None
-    )
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        return load_data_file(path, entry_root=entry.root)
+    except DataContractError as error:
+        raise ActionError(
+            "command.sync.registry.invalid",
+            "the owned data registry requires direct Repair before sync",
+            records=(
+                {
+                    "code": error.code,
+                    "observed": error.observed,
+                    "registry": error.subject,
+                    "required_action": "direct Repair",
+                },
+            ),
+            diagnostic_log=entry.log.root,
+        ) from error
 
 
 def _failure_record(

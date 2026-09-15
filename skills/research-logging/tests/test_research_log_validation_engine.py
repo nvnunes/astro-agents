@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -51,13 +52,22 @@ def _without_material_production(graph: Any, material: str) -> Any:
 
 
 def _evaluate_current_fixture(request: Any) -> Any:
-    """Add stable CIDs to legacy test prose immediately before evaluation."""
+    """Construct current authored comments for normalized engine fixtures.
+
+    These tests mutate normalized state to exercise the engine, rather than
+    authoring. Public sync tests independently use literal comment definitions.
+    """
 
     log_root = Path(request.summary_path).with_suffix("")
     for entry_root in sorted(
         path for path in log_root.rglob("entries/*") if path.is_dir()
     ):
         counts: dict[str, int] = {}
+        evidence_path = entry_root / "evidence.json"
+        try:
+            records = json.loads(evidence_path.read_text())["records"]
+        except (OSError, ValueError, KeyError, TypeError):
+            records = []
         for document in sorted(entry_root.glob("*.md")):
             text = document.read_text(encoding="utf-8")
 
@@ -71,11 +81,81 @@ def _evaluate_current_fixture(request: Any) -> Any:
                 return f"./pyrun --cid {cid} {separator}"
 
             current = re.sub(r"\./pyrun (?![^\n]*--cid\b)", add_cid, text)
+            for record in records:
+                if record.get("document") != document.relative_to(log_root).as_posix():
+                    continue
+                current = re.sub(
+                    r"<!-- eid:" + re.escape(record["id"]) + r"(?: [^\r\n]*?)? -->",
+                    lambda _: (
+                        "<!-- eid:"
+                        + record["id"]
+                        + " "
+                        + _fixture_definition(record)
+                        + " -->"
+                    ),
+                    current,
+                )
             if current != text:
                 document.write_text(current, encoding="utf-8")
     evaluation = _EVALUATE_MECHANICAL(request)
     _assert_canonical_projection(evaluation)
     return evaluation
+
+
+def _fixture_pointer(path: list[Any]) -> str:
+    return "".join(
+        "/" + str(item).replace("~", "~0").replace("/", "~1") for item in path
+    )
+
+
+def _fixture_definition(record: dict[str, Any]) -> str:
+    """Spell the small current definition shapes used by engine fixtures."""
+
+    transformation = record.get("transformation")
+    fields = []
+    if transformation:
+        fields.extend(
+            [
+                "form=" + transformation["form"],
+                "render=fixed:" + str(transformation.get("decimal_places", 1)),
+            ]
+        )
+    tolerance = record.get("reproduction_tolerance")
+    if tolerance:
+        fields.append("reproduction_tolerance=" + tolerance["absolute"])
+    sources = []
+    for source in record.get("sources", []):
+        clause = ["source=" + source["source"]]
+        locator = source.get("locator") or {}
+        if locator.get("path"):
+            clause.append("path=" + _fixture_pointer(locator["path"]))
+        for key in ("select", "identity"):
+            clause.extend(
+                key + "=" + _fixture_pointer(path) for path in locator.get(key, [])
+            )
+        for condition in locator.get("where", []):
+            value = condition.get("value")
+            kind = condition.get(
+                "parse", "decimal" if isinstance(value, (float, int)) else "string"
+            )
+            clause.append(
+                "where="
+                + _fixture_pointer(condition["path"])
+                + ":"
+                + condition["op"]
+                + ":"
+                + kind
+                + ":"
+                + str(value)
+            )
+        clause.extend(
+            key + "=" + value for key, value in locator.get("text", {}).items()
+        )
+        sources.append(clause)
+    return "; ".join(
+        " ".join(shlex.quote(token) for token in clause)
+        for clause in [fields + sources[0], *sources[1:]]
+    )
 
 
 def _assert_canonical_projection(evaluation: Any) -> None:
@@ -89,10 +169,9 @@ def _assert_canonical_projection(evaluation: Any) -> None:
         for check in canonical.values()
         if check.outcome is DOMAIN.CheckOutcome.FINDING
     }
-    if (
-        {finding.finding_id for finding in evaluation.attempt.findings}
-        != finding_checks
-    ):
+    if {
+        finding.finding_id for finding in evaluation.attempt.findings
+    } != finding_checks:
         raise AssertionError("finding checks and projected findings differ")
     for finding in evaluation.attempt.findings:
         if not (
@@ -170,9 +249,7 @@ def _single_currentness_blocker(
     del entry_id, record_id
     currentness = evaluation.context.currentness
     if len(currentness) != 1:
-        raise AssertionError(
-            f"expected one currentness result, observed {currentness}"
-        )
+        raise AssertionError(f"expected one currentness result, observed {currentness}")
     return currentness[0].as_dict()
 
 
@@ -208,7 +285,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         entry_root / "data.json",
         json.dumps(
             {
-                "schema": "research-log-data/v5",
+                "schema": "research-log-data/v6",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -233,7 +310,7 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     write(
         entry_root / "evidence.json",
         """{
-  "schema": "research-log-evidence/v4",
+  "schema": "research-log-evidence/v5",
   "records": [
     {
       "id": "success-rate",
@@ -306,7 +383,8 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
         f"--{output_option} '<results>'\n"
         "```\n\n"
         "`Results:`\n\n"
-        "The success rate was `67.6%`<!-- eid:success-rate -->.\n",
+        "The success rate was `67.6%`<!-- eid:success-rate source=results "
+        "select=/success_rate form=percentage render=fixed:1 -->.\n",
     )
     return summary, entry
 
@@ -415,8 +493,10 @@ def _add_second_result_output(entry_document: Path) -> tuple[str, ...]:
             "--output-data '<results>' --output-data '<second>'",
         )
         .replace(
-            "The success rate was `67.6%`<!-- eid:success-rate -->.",
-            "The success rate was `67.6%`<!-- eid:success-rate -->.\n\n"
+            "The success rate was `67.6%`<!-- eid:success-rate source=results "
+            "select=/success_rate form=percentage render=fixed:1 -->.",
+            "The success rate was `67.6%`<!-- eid:success-rate source=results "
+            "select=/success_rate form=percentage render=fixed:1 -->.\n\n"
             "The second rate was `50.0%`<!-- eid:second-rate -->.",
         ),
     )
@@ -573,9 +653,7 @@ def _replace_bundle_with_pyrun_state(
 
 
 def _evaluate(summary: Path) -> Any:
-    evaluation = _evaluate_current_fixture(
-        ENGINE.EvaluationRequest(summary)
-    )
+    evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
     return SimpleNamespace(
         attempt=evaluation.attempt,
         context=evaluation.context,
@@ -607,7 +685,7 @@ def _origin_data_json(entry_root: Path) -> str:
     return (
         json.dumps(
             {
-                "schema": "research-log-data/v5",
+                "schema": "research-log-data/v6",
                 "inputs": [
                     {
                         "name": "catalog",
@@ -791,9 +869,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ):
                     failed = _EVALUATE_MECHANICAL(request)
                     _assert_canonical_projection(failed)
-                self.assertIs(
-                    failed.snapshot.outcome, DOMAIN.SnapshotOutcome.FAILED
-                )
+                self.assertIs(failed.snapshot.outcome, DOMAIN.SnapshotOutcome.FAILED)
                 self.assertEqual(len(failed.snapshot.failed_checks), 1)
                 self.assertEqual(
                     failed.snapshot.failed_checks[0].code,
@@ -802,9 +878,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 self.assertGreaterEqual(len(failed.snapshot.blocked_checks), 2)
                 self.assertFalse(failed.snapshot.findings)
                 if isinstance(request.target, ENGINE.FullEvaluationTarget):
-                    checks = {
-                        check.check_id: check for check in failed.attempt.checks
-                    }
+                    checks = {check.check_id: check for check in failed.attempt.checks}
                     self.assertIs(
                         checks["evidence:summary:5"].outcome,
                         DOMAIN.CheckOutcome.BLOCKED,
@@ -953,9 +1027,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 evaluation, "e001", "success-rate"
             )
             self.assertEqual(currentness["reason"], "signature_mismatch")
-            self.assertEqual(
-                currentness["observed"]["fields"], ["script_fingerprint"]
-            )
+            self.assertEqual(currentness["observed"]["fields"], ["script_fingerprint"])
 
     def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -981,7 +1053,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             data_path = entry.parent / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
-            data["inputs"][1]["comparison"] = {
+            data["inputs"][1]["reproduction_comparison"] = {
                 "contract": "research-log-evidence-scoped-comparison/1",
                 "profile": "evidence",
             }
@@ -1165,9 +1237,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             write(helper, "VALUE = 2\n")
             changed = _evaluate(summary)
-            currentness = _single_currentness_blocker(
-                changed, "e001", "success-rate"
-            )
+            currentness = _single_currentness_blocker(changed, "e001", "success-rate")
             self.assertEqual(currentness["reason"], "signature_mismatch")
             self.assertIn("code", currentness["observed"]["fields"])
             self.assertFalse(
@@ -1535,13 +1605,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             self.assertEqual(len(currentness), 2)
             assert evaluation.snapshot is not None
-            subjects = {
-                item.subject for item in currentness
-            }
+            subjects = {item.subject for item in currentness}
             self.assertEqual(len(subjects), 2)
             self.assertFalse(
                 any(
-                    finding.code in {
+                    finding.code
+                    in {
                         "provenance.output.reproduction_required",
                         "provenance.output.signature_mismatch",
                     }
@@ -1620,9 +1689,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             support["outputs"]["data/bundle"]["parameters"].append("--stale")
             write(support_path, json.dumps(support, indent=2) + "\n")
             stale = _evaluate(summary)
-            currentness = _single_currentness_blocker(
-                stale, "e001", "success-rate"
-            )
+            currentness = _single_currentness_blocker(stale, "e001", "success-rate")
             self.assertEqual(currentness["reason"], "signature_mismatch")
             self.assertEqual(currentness["subject"], bundle.resolve().as_posix())
 
@@ -1701,14 +1768,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "The success rate was `67.6%`<!-- eid:success-rate -->.",
-                    "The success rate was `67.6%`<!-- eid:success-rate -->.\n\n"
+                    "The success rate was `67.6%`<!-- eid:success-rate source=results "
+                    "select=/success_rate form=percentage render=fixed:1 -->.",
+                    "The success rate was `67.6%`<!-- eid:success-rate source=results "
+                    "select=/success_rate form=percentage render=fixed:1 -->.\n\n"
                     "The second rate was `67.6%`<!-- eid:second-success-rate -->.",
                 ),
             )
-            _replace_bundle_with_pyrun_state(
-                entry, requires_reproduction=True
-            )
+            _replace_bundle_with_pyrun_state(entry, requires_reproduction=True)
 
             evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             currentness = _reproduce_currentness(evaluation)
@@ -1716,9 +1783,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             self.assertEqual(len(currentness), 1)
             self.assertEqual(
-                {
-                    item.subject for item in currentness
-                },
+                {item.subject for item in currentness},
                 {bundle_id},
             )
             graph = evaluation.context.graph
@@ -1737,16 +1802,14 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     graph.node(edge.source).kind
                     is RESEARCH_GRAPH.NodeKind.EVIDENCE_RECORD
                 )
-                and (
-                    graph.node(edge.target).kind
-                    is RESEARCH_GRAPH.NodeKind.MATERIAL
-                )
+                and (graph.node(edge.target).kind is RESEARCH_GRAPH.NodeKind.MATERIAL)
             ]
             self.assertGreaterEqual(len(evidence_material_edges), 2)
             assert evaluation.snapshot is not None
             self.assertFalse(
                 any(
-                    finding.code in {
+                    finding.code
+                    in {
                         "provenance.output.reproduction_required",
                         "provenance.output.signature_mismatch",
                     }
@@ -1965,9 +2028,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             record["parameters"].append("changed")
             write(support_path, json.dumps(support, indent=2) + "\n")
             drift = _evaluate(summary)
-            currentness = _single_currentness_blocker(
-                drift, "e001", "success-rate"
-            )
+            currentness = _single_currentness_blocker(drift, "e001", "success-rate")
             self.assertEqual(currentness["reason"], "signature_mismatch")
 
             record["parameters"].pop()
@@ -1997,9 +2058,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state = ENGINE._ScanState(root / "study.md", root, root)
-            invocation = mock.Mock(
-                identity="entry:e001:execution:one", collections=()
-            )
+            invocation = mock.Mock(identity="entry:e001:execution:one", collections=())
             support = {"output": "data/result.csv"}
 
             with mock.patch.object(
@@ -2061,14 +2120,17 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             def current(invocation: Any, subject: str, scan: Any) -> Any:
                 del scan
-                return ({"output": subject}, PROVENANCE.ProducerCurrentness(
-                    "required",
-                    subject,
-                    {"producer": invocation.identity},
-                    PROVENANCE.ProvenanceAnchor(
-                        "material", subject, invocation.identity
+                return (
+                    {"output": subject},
+                    PROVENANCE.ProducerCurrentness(
+                        "required",
+                        subject,
+                        {"producer": invocation.identity},
+                        PROVENANCE.ProvenanceAnchor(
+                            "material", subject, invocation.identity
+                        ),
                     ),
-                ))
+                )
 
             with mock.patch.object(
                 ENGINE, "_evaluate_output_support", side_effect=current
@@ -2169,9 +2231,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             changed = _evaluate(summary)
 
-            currentness = _single_currentness_blocker(
-                changed, "e001", "success-rate"
-            )
+            currentness = _single_currentness_blocker(changed, "e001", "success-rate")
             self.assertEqual(currentness["reason"], "signature_mismatch")
             self.assertEqual(currentness["observed"]["fields"], ["parameters"])
 
@@ -2281,17 +2341,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
 
             collected = _evaluate(summary).attempt
-            provenance = _provenance_finding_checks(
-                collected, "e001", "success-rate"
-            )
+            provenance = _provenance_finding_checks(collected, "e001", "success-rate")
             self.assertEqual(
                 {check.diagnostic.code for check in provenance if check.diagnostic},
                 {"lineage.missing"},
             )
             self.assertTrue(_reproduce_currentness(_evaluate(summary)))
-            canonical = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            canonical = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             self.assertEqual(
                 {
                     finding.code
@@ -2308,9 +2364,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 {
                     check.diagnostic.code
                     for check in confirmed.checks
-                    if check in _provenance_finding_checks(
-                        confirmed, "e001", "success-rate"
-                    )
+                    if check
+                    in _provenance_finding_checks(confirmed, "e001", "success-rate")
                     and check.diagnostic
                 },
                 {"lineage.missing"},
@@ -2342,9 +2397,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             output_path.unlink()
             unrecorded = _evaluate(summary).attempt
-            check = _single_provenance_finding_check(
-                unrecorded, "e001", "success-rate"
-            )
+            check = _single_provenance_finding_check(unrecorded, "e001", "success-rate")
             self.assertEqual(check.diagnostic.code, "provenance.output.unrecorded")
 
     def test_origin_support_ignores_reproduce_currentness(self) -> None:
@@ -2402,16 +2455,12 @@ class EngineV2EndToEndTests(unittest.TestCase):
             output.unlink()
 
             recorded = _evaluate(summary).attempt
-            check = _single_provenance_finding_check(
-                recorded, "e001", "success-rate"
-            )
+            check = _single_provenance_finding_check(recorded, "e001", "success-rate")
             self.assertEqual(check.diagnostic.code, "provenance.output.missing")
 
             (entry.parent / "pyrun-outputs.json").unlink()
             unrecorded = _evaluate(summary).attempt
-            check = _single_provenance_finding_check(
-                unrecorded, "e001", "success-rate"
-            )
+            check = _single_provenance_finding_check(unrecorded, "e001", "success-rate")
             self.assertEqual(check.diagnostic.code, "provenance.output.missing")
 
     def test_missing_graph_output_outside_evidence_closure_fails_provenance(
@@ -2754,9 +2803,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(extra, "value\n1\n")
             support_path = entry.parent / "pyrun-outputs.json"
             support = json.loads(support_path.read_text(encoding="utf-8"))
-            recorded = json.loads(
-                json.dumps(support["outputs"]["data/results.csv"])
-            )
+            recorded = json.loads(json.dumps(support["outputs"]["data/results.csv"]))
             recorded["fingerprint"]["digest"] = hashlib.sha256(
                 extra.read_bytes()
             ).hexdigest()
@@ -2817,9 +2864,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 + "\n",
             )
 
-            evaluation = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             finding = next(
                 item
                 for item in evaluation.attempt.findings
@@ -3019,9 +3064,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             data_path = entry.parent / "data.json"
             write(data_path, "{\n")
 
-            evaluation = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
 
             checks = {check.check_id: check for check in evaluation.attempt.checks}
             declaration = checks["entry:e001:data-declaration"]
@@ -3030,9 +3073,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "evidence:e001:success-rate",
                 "provenance:e001:success-rate",
             ):
-                self.assertEqual(
-                    checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED
-                )
+                self.assertEqual(checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED)
                 self.assertIn(
                     {"dependency": declaration.check_id},
                     checks[identity].dependency_evidence,
@@ -3063,14 +3104,8 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertFalse(scoped.snapshot.failed_checks)
             self.assertEqual(
-                {
-                    (item.finding_id, item.code)
-                    for item in evaluation.snapshot.findings
-                },
-                {
-                    (item.finding_id, item.code)
-                    for item in scoped.snapshot.findings
-                },
+                {(item.finding_id, item.code) for item in evaluation.snapshot.findings},
+                {(item.finding_id, item.code) for item in scoped.snapshot.findings},
             )
             self.assertEqual(
                 {item.code for item in scoped.snapshot.findings},
@@ -3143,7 +3178,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared-catalog",
@@ -3177,9 +3212,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "evidence:e001:success-rate",
                 "provenance:e001:success-rate",
             ):
-                self.assertEqual(
-                    checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED
-                )
+                self.assertEqual(checks[identity].outcome, DOMAIN.CheckOutcome.BLOCKED)
                 self.assertIn(
                     {"dependency": conflict.check_id},
                     checks[identity].dependency_evidence,
@@ -3228,7 +3261,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     entry_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v5",
+                            "schema": "research-log-data/v6",
                             "inputs": [
                                 {
                                     "name": "conflict",
@@ -3523,7 +3556,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry_root / "evidence.json",
                 """{
-  "schema": "research-log-evidence/v4",
+  "schema": "research-log-evidence/v5",
   "records": [
     {
       "id": "unlisted-value",
@@ -3588,12 +3621,6 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            evidence["records"][0]["sources"].append(
-                {
-                    "source": "<catalog>",
-                    "locator": {"select": [["id"]]},
-                }
-            )
             duplicate = json.loads(json.dumps(evidence["records"][0]))
             duplicate["id"] = "success-rate-copy"
             evidence["records"].append(duplicate)
@@ -3624,20 +3651,13 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             evidence_path = entry.parent / "evidence.json"
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            evidence["records"][0]["sources"].append(
-                {
-                    "source": "<catalog>",
-                    "locator": {"select": [["id"]]},
-                }
-            )
             duplicate = json.loads(json.dumps(evidence["records"][0]))
             duplicate["id"] = "success-rate-copy"
             evidence["records"].append(duplicate)
             write(evidence_path, json.dumps(evidence, indent=2) + "\n")
             write(
                 entry,
-                entry.read_text(encoding="utf-8")
-                + "\nThe copied rate was `67.6%`"
+                entry.read_text(encoding="utf-8") + "\nThe copied rate was `67.6%`"
                 "<!-- eid:success-rate-copy -->.\n",
             )
             write(entry.parent / "scripts/model.py", "# changed model\n")
@@ -3687,9 +3707,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(entry_root / "data/catalog.csv", "success_rate\n0.676\n")
             data_path = entry_root / "data.json"
             data = json.loads(data_path.read_text(encoding="utf-8"))
-            catalog = next(
-                item for item in data["inputs"] if item["name"] == "catalog"
-            )
+            catalog = next(item for item in data["inputs"] if item["name"] == "catalog")
             catalog["origin"] = False
             write(data_path, json.dumps(data, indent=2) + "\n")
             evidence_path = entry_root / "evidence.json"
@@ -3700,9 +3718,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             consumer_count = 25
             for index in range(consumer_count):
                 record = json.loads(json.dumps(template))
-                record["id"] = (
-                    "success-rate" if index == 0 else f"catalog-rate-{index}"
-                )
+                record["id"] = "success-rate" if index == 0 else f"catalog-rate-{index}"
                 record["sources"][0]["source"] = "<catalog>"
                 records.append(record)
                 if index:
@@ -4090,7 +4106,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "prior-results",
@@ -4111,7 +4127,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 second_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "prior-success-rate",
@@ -4262,8 +4278,10 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(
                 entry,
                 entry.read_text(encoding="utf-8").replace(
-                    "The success rate was `67.6%`<!-- eid:success-rate -->.",
-                    "The success rate was `67.6%`<!-- eid:success-rate -->.\n\n"
+                    "The success rate was `67.6%`<!-- eid:success-rate source=results "
+                    "select=/success_rate form=percentage render=fixed:1 -->.",
+                    "The success rate was `67.6%`<!-- eid:success-rate source=results "
+                    "select=/success_rate form=percentage render=fixed:1 -->.\n\n"
                     "The checked rate was `67.6%`<!-- eid:success-rate-checked -->.",
                 ),
             )
@@ -4781,9 +4799,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(provenance.outcome, DOMAIN.CheckOutcome.BLOCKED)
             by_id = {check.check_id: check for check in evaluation.attempt.checks}
             provenance_rule = by_id[provenance.dependencies[0]]
-            self.assertEqual(
-                provenance_rule.outcome, DOMAIN.CheckOutcome.BLOCKED
-            )
+            self.assertEqual(provenance_rule.outcome, DOMAIN.CheckOutcome.BLOCKED)
             self.assertIn(
                 {"dependency": command.check_id}, provenance_rule.dependency_evidence
             )
@@ -4795,9 +4811,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             summary, entry = _log(Path(directory))
             (entry.parent / "data/catalog.csv").unlink()
 
-            evaluation = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
 
             assert evaluation.snapshot is not None
             context = evaluation.snapshot.repair_context
@@ -5124,7 +5138,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 unrelated_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "input",
@@ -5182,9 +5196,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
@@ -5248,7 +5260,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 producer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5275,7 +5287,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5293,7 +5305,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared-value",
@@ -5305,10 +5317,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                         "locator": {"select": [["value"]]},
                                     }
                                 ],
-                                "transformation": {
-                                    "form": "number",
-                                    "source": {"input": 0, "item": 0},
-                                },
+                                "transformation": None,
                             }
                         ],
                     }
@@ -5359,7 +5368,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5377,7 +5386,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared",
@@ -5469,7 +5478,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     entry_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v5",
+                            "schema": "research-log-data/v6",
                             "inputs": [
                                 {
                                     "name": "input",
@@ -5488,9 +5497,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
             write(summary, summary.read_text() + "\n" + "\n".join(links) + "\n")
 
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
@@ -5551,7 +5558,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "catalog",
@@ -5559,7 +5566,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                 "location": shared.as_posix(),
                                 "identity": {"algorithm": "sha256"},
                                 "origin": False,
-                                "comparison": {
+                                "reproduction_comparison": {
                                     "contract": DATA.EVIDENCE_COMPARISON_CONTRACT,
                                     "profile": "evidence",
                                 },
@@ -5588,7 +5595,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared",
@@ -5617,9 +5624,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Producer](study/entries/2026-08-29-e001-study/e001.md)\n"
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
             )
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
@@ -5655,7 +5660,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 third_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             DATA.build_declared_generated(
                                 "bundle",
@@ -5681,7 +5686,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5699,7 +5704,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared",
@@ -5734,7 +5739,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 fourth_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             DATA.build_local_input(
                                 "results",
@@ -5762,9 +5767,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Fourth](study/entries/2026-08-30-e004-fourth/e004.md)\n"
                 "- [Consumer](study/entries/2026-08-31-e002-consumer/e002.md)\n",
             )
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
@@ -5843,7 +5846,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5861,7 +5864,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared",
@@ -5897,9 +5900,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
                 "- [Later](study/entries/2026-08-29-e001-study/e001b.md)\n",
             )
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             scoped = _evaluate_current_fixture(
                 ENGINE.EvaluationRequest(
                     summary,
@@ -5956,7 +5957,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "shared",
@@ -5981,7 +5982,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 consumer_root / "evidence.json",
                 json.dumps(
                     {
-                        "schema": "research-log-evidence/v4",
+                        "schema": "research-log-evidence/v5",
                         "records": [
                             {
                                 "id": "shared",
@@ -6008,7 +6009,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 unrelated_root / "data.json",
                 json.dumps(
                     {
-                        "schema": "research-log-data/v5",
+                        "schema": "research-log-data/v6",
                         "inputs": [
                             {
                                 "name": "missing",
@@ -6039,9 +6040,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n"
                 "- [Unrelated](study/entries/2026-08-31-e003-unrelated/e003.md)\n",
             )
-            full = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
             with (
                 mock.patch.object(
                     ENGINE,
@@ -6170,7 +6169,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     consumer_root / "data.json",
                     json.dumps(
                         {
-                            "schema": "research-log-data/v5",
+                            "schema": "research-log-data/v6",
                             "inputs": [
                                 {
                                     "name": "shared",
@@ -6236,9 +6235,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
 
-            result = _evaluate_current_fixture(
-                ENGINE.EvaluationRequest(summary)
-            )
+            result = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
 
             self.assertEqual(len(result.context.materials), 1)
             material = result.context.materials[0]

@@ -45,7 +45,7 @@ successful inspection or declare validation.
 Given a local artifact link or image embed under experimental `Results:`,
 Record registers the artifact as a generated or origin input, puts one stable
 evidence marker immediately after the Markdown node, and invokes common
-`log evidence add` with its one source token. It does not load locator,
+`log evidence sync --id ID` with its source in the comment. It does not load locator,
 transformation, or registry-schema guidance.
 
 Given two artifact links on one line, Record assigns and records each ID
@@ -55,8 +55,7 @@ does not edit `evidence.json` or substitute a plausible source.
 
 Given a complete retained UTF-8 diff presented inline under experimental
 `Results:`, Record puts one stable marker immediately before the exact `diff`
-fence and invokes common `log evidence add` with the artifact's one source
-token. The action records `kind:"artifact"` without a locator or
+fence and invokes `log evidence sync --id ID` with the artifact's source in its comment. The action records `kind:"artifact"` without a locator or
 transformation. It accepts CRLF, CR, and one terminal line-ending difference
 only through the closed Markdown normalization rule; any other content
 difference, invalid UTF-8, non-regular source, or size-limit violation fails
@@ -148,10 +147,10 @@ those triggers, not merely because the entry contains older evidence.
 A presented computational result loads the core presented-evidence guidance
 together with each script, command, or input-registry reference required by its
 actual workflow. The common evidence path loads no definition reference. An
-unsupported advanced case loads exactly one definition selected by presentation
-family: source selection for an otherwise simple one-source statistic, numeric
-for every compound or multi-source statistic, the matching table family for a
-table, or output for retained text.
+detailed case loads exactly one definition reference selected by presentation
+family: source selection, compound numeric, direct table, or verbatim output.
+Summary tables use ordinary Markdown with separate evidence cells; joined or
+derived tables need a recorded script and retained presentation-ready artifact.
 
 A summary reference or whole-artifact evidence record does not load locator,
 transformation, or table guidance merely because another item in the entry uses
@@ -252,10 +251,9 @@ the researcher authorizes. It does not infer Repair scope from proximity or
 conversation history.
 
 Given an intended correction expressible by an owning `log` action, Repair uses
-that action rather than editing the record. When no owning action can safely
-express an explicitly authorized correction, Repair reads only the applicable
-mechanical contract, preserves the original state or backup, and edits only the
-affected non-validation Markdown or JSON. It leaves unrelated records
+that action rather than editing the record. Only when malformed JSON prevents the owning decoder from operating may an
+explicitly authorized Repair consult the applicable mechanical contract and
+edit that JSON directly. Otherwise it uses the owning CLI and Markdown. It leaves unrelated records
 unchanged and does not open registry schemas that are not involved.
 
 Given a generated target required by a recorded workflow, Record declares its
@@ -265,7 +263,7 @@ pre-production state, and successful `pyrun` production records the observation
 in `pyrun.json`, without rewriting `data.json`.
 
 Given an existing retained generated target that must enter the registry
-before reproduction, Repair uses the same `log data add-generated` action and
+before reproduction, Repair uses the producer's `log command sync --add-generated` action and
 requires one current same-log `pyrun` producer that is structurally valid and
 unambiguous. There is no privileged registration or migration form, and
 registration does not bypass a missing producer or accept current bytes.

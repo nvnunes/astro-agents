@@ -57,10 +57,10 @@ identity, cache compatibility, or evolution requires it.
 
 | Surface | Version or transition disposition |
 | --- | --- |
-| Evidence records | `research-log-evidence/v4` |
+| Evidence records | `research-log-evidence/v5` |
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
-| Input registry | `research-log-data/v5` |
+| Input registry | `research-log-data/v6` |
 | `pyrun` execution state | `research-log-pyrun/v6`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
@@ -69,7 +69,7 @@ identity, cache compatibility, or evolution requires it.
 | Locator evaluator | `research-log-locator-evaluator/1` |
 | Section classifier | `entry-section-labels/1` |
 | Selection-cache serialization | `research-log-selection-result/1` |
-| Mechanical rules | `research-log-mechanical/evidence-baseline-10` |
+| Mechanical rules | `research-log-mechanical/markdown-evidence-11` |
 | Canonical validation snapshot | `research-log-validation-snapshot/3` |
 | Authoring results | `research-log-authoring-result/1` |
 | Command diagnostics | `research-log-command-diagnostic/1` |
@@ -225,7 +225,7 @@ evidence source. It answers:
 
 A locator owns:
 
-- source-internal paths, fields, filters, indexes, slices, and occurrences;
+- source-internal paths, fields, filters, indexes, and explicit slices;
 - exact selection membership, cardinality, shape, and order;
 - normalized selected values and source-relative identities;
 - source-class-specific selection and property semantics;
@@ -560,7 +560,9 @@ must not coerce it silently.
 - `value`, containing one authored literal, for `eq`;
 - `values`, containing a non-empty array of authored literals, for `in`; and
 - optional `parse`, equal to `integer` or `decimal`, for comparison against a
-  lexical string field.
+  lexical string field or an already typed field of that same numeric kind.
+  Parsing converts strings only. An already typed integer or decimal is accepted
+  unchanged when its kind matches; a different numeric kind or Boolean fails.
 
 Supported operators are:
 
@@ -578,8 +580,10 @@ Unknown operators fail. `eq` and `in` use typed equality.
 
 Predicate-side parsing is part of source selection, not presentation:
 
-- `parse` accepts only a source string and affects only that condition's source
-  operand. It does not change the selected source value.
+- `parse` converts a source string, or accepts an already typed source operand
+  of that same numeric kind unchanged. A different numeric kind or Boolean
+  fails. It affects only that condition's source operand and does not change
+  the selected source value.
 - Every condition is type-checked for every candidate presented to `where`.
   Short-circuit evaluation of another condition must not hide a missing field,
   invalid parse, or type mismatch.
@@ -633,10 +637,9 @@ When `expect` is present, at least one expectation key is required.
 
 - Every declared expectation is checked.
 - `matches` counts candidates after path expansion and filtering but before
-  `select` field expansion. For text, it counts all matching lines before an
-  occurrence selector is applied.
+  `select` field expansion. An explicitly bounded text excerpt has one match.
 - `items` counts final selected values after `select`, `property`, or text
-  occurrence selection.
+  slicing. An explicitly bounded text excerpt has one item.
 - `identities` requires `identity`. Every expected tuple must contain one
   authored literal per declared identity path, tuples must be unique, and the
   complete ordered tuple list must equal the observed identities.
@@ -690,24 +693,12 @@ For one selected array:
 
 ### Text Selection
 
-A text selector contains one required `contains` string and may contain
-`occurrence`, a positive one-based integer or `"all"`.
-
-Example:
-
-```text
-"text":{"contains":"Benchmark simulations","occurrence":1}
-```
-
-Rules:
-
-- Matching is exact and case-sensitive within UTF-8 logical lines.
-- No regular-expression or natural-language interpretation occurs.
-- If `occurrence` is omitted, exactly one matching line is required.
-- An integer selects that match in document order.
-- `"all"` selects all matches.
-- The complete matching logical line is the selected string. Context windows,
-  prefixes, suffixes, regular expressions, and partial extraction are deferred.
+A text selector contains exactly `line:"N"` or `lines:"START:END"`, with an
+optional `chars:"START:END"` only alongside line. Bounds are one-based,
+positive, inclusive, and must exist in the source. Characters are Unicode
+code points, not bytes. UTF-8 source line endings normalize to LF.
+The selected result is exactly one string. Substring searches and inferred
+occurrences are unsupported. Evidence output requires null transformation.
 
 ## Source Profiles
 
@@ -868,7 +859,7 @@ The transformation subcontract owns:
 - decimal-place and significant-figure rounding, including the closed
   percentage default;
 - canonical numeric rendering;
-- closed Boolean table rendering and authored summary-row labels;
+- closed Boolean rendering in short values and direct-table columns;
 - exact unit suffixes;
 - a small set of canonical statistic forms; and
 - exact table headings, dimensions, order, and cell values.
@@ -962,18 +953,8 @@ An input reference has this form:
 Both indexes are zero-based non-negative integers. A reference addresses one
 complete canonical selected item.
 
-Non-table value expressions, non-table percentage recipes, and summary-table
-cells use this concrete `input`/`item` reference. A structured-table cell
-instead uses an `input`/`field` reference whose field index addresses one path
-in that input locator's ordered `select` array:
-
-```json
-{"input":0,"field":2}
-```
-
-The structured-table section defines how that reference is applied once to
-each matched record. `item` and `field` are mutually exclusive. Neither form
-performs path traversal; source-internal paths remain locator-owned.
+Non-table value expressions use only concrete input/item references.
+Source-internal paths remain locator-owned.
 
 A direct table contains no authored source reference. Its sole input and
 same-position source fields are implied by the direct-table contract.
@@ -1067,8 +1048,6 @@ A table recipe begins with one of these mode discriminants:
 
 ```json
 {"form":"table","mode":"direct"}
-{"form":"table","mode":"structured"}
-{"form":"table","mode":"summary"}
 ```
 
 The table section defines the complete mode-specific grammar and approved cell
@@ -1186,7 +1165,7 @@ rounding. It does not alter a negative value or add a sign to the exponent.
 This supports signed deltas and biases without accepting an optional sign for
 one declaration: `sign` absent and `sign:"always"` produce different exact
 presentation contracts.
-When used in a direct-table column descriptor or a repeated structured-table
+When used in a direct-table column descriptor
 cell recipe, this rule applies independently to every cell: non-negative cells
 show `+` and negative cells show `-`.
 
@@ -1268,105 +1247,19 @@ The punctuation and spacing shown are exact.
 
 ### Tables
 
-A table recipe contains `form:"table"`, one required `mode`, and neither
-top-level `values` nor `unit`. It contains `headings`, a non-empty array of
-exact presented column headings. A heading must be a non-empty Unicode string
-with no leading or trailing whitespace, vertical bar, line break, or control
-character. Heading order is presentation order. Units that apply to a whole
-column belong in its exact heading.
+Only `form:"table", mode:"direct"` is supported. A table has one source
+selection, nonempty exact headings, and one column descriptor per heading.
+The authored Markdown header/alignment rows define presented columns;
+comment column clauses map source fields to those columns in order.
+There are no generic structured or summary table transformations, joins,
+compound cells, or arbitrary row-order declarations.
 
-The transformation language defines three table modes:
+Native Boolean columns accept true_false, yes_no, and pass_fail styles.
+Text parsing accepts exactly true, false, True, or False with parse:"boolean".
+Comparison is case-insensitive only for declared Boolean cells; text,
+headings, and source parsing remain exact.
 
-- `direct` consumes one retained table whose rows and columns already
-  correspond one-to-one with the presented table;
-- `structured` applies one column recipe repeatedly to selected records when
-  cells must combine or align selected fields; and
-- `summary` enumerates the cells because no one repeated record-to-row mapping
-  expresses the table conveniently.
-
-The distinction is syntactic, not a judgment about scientific importance. A
-one-source table with one source field per presented cell should use `direct`.
-A table that composes fields uses `structured`. A small heterogeneous
-comparison may use `summary`.
-
-Maintenance note: Changes shared by all table modes must be reflected in
-[Direct Evidence Tables](../skills/research-logging/references/record-evidence-definition-direct-tables.md),
-[Structured Evidence Tables](../skills/research-logging/references/record-evidence-definition-structured-tables.md),
-and
-[Summary Evidence Tables](../skills/research-logging/references/record-evidence-definition-summary-tables.md),
-together with their public-CLI conformance tests.
-
-#### Structured And Summary Cell Recipes
-
-A structured or summary table cell recipe uses the non-table `scalar`,
-`percentage`, `range`, `plus_minus`, `interval`, `tuple`, or `text` form.
-`percentage` retains its direct `source`, optional `decimal_places`, and closed
-defaults; the other forms retain their value-expression, unit, rendering, and
-canonical punctuation rules. `text` passes through one complete selected
-string exactly. In a table cell only, that string may be empty to produce an
-intentional empty cell. A scalar may also pass through null, rendered as
-lowercase `null`.
-
-Table cells additionally support one closed Boolean form:
-
-```json
-{"form":"boolean","style":"yes_no","values":[{"source":{"input":0,"item":0}}]}
-```
-
-`boolean` contains exactly one value expression with `source` and optional
-`parse:"boolean"`, forbids `unit`, and requires one of these styles. Without
-`parse`, the selected value must be a Boolean. With `parse:"boolean"`, the
-selected value must be one complete string equal to exactly `true`, `false`,
-`True`, or `False`; the two true spellings map to Boolean true and the two false
-spellings map to Boolean false. Whitespace, other capitalization, `yes`/`no`,
-`1`/`0`, and all other spellings fail.
-
-| Style | `true` result | `false` result |
-| --- | --- | --- |
-| `true_false` | `true` | `false` |
-| `yes_no` | `yes` | `no` |
-| `pass_fail` | `Pass` | `Fail` |
-
-These are the canonical output spellings. Presentation comparison is
-case-insensitive only for cells declared as Boolean; text cells, headings, and
-source parsing remain exact. There are no aliases or custom true/false strings.
-
-Table cells additionally support one closed numeric sequence form:
-
-```json
-{"form":"sequence","style":"slash","unit":"%","values":[...]}
-```
-
-`sequence` contains from two through eight numeric value expressions, one
-required `style`, and an optional shared `unit`. It supports exactly:
-
-| Style | Canonical cell result |
-| --- | --- |
-| `slash` | `value / value[ / value…][unit]` |
-| `comma` | `value, value[, value…][unit]` |
-| `dimensions` | `value x value[ x value…][unit]` |
-
-Bracketed text in this table describes repetition or the ordinary canonical
-unit suffix; it is not emitted literally. Separators and spaces are fixed.
-Thus a slash sequence with values `1.3` and `0.0` and `unit:"%"` produces
-`1.3 / 0.0%`; a comma sequence with values `211` and `231` and `unit:"nm"`
-produces `211, 231 nm`; and a dimension sequence produces
-`109 x 400 x 400`. There is no custom separator field and no per-part unit.
-
-Every cell result is one exact string with no vertical bar, line break,
-control character, or surrounding whitespace. Nested tables and authored
-Markdown delimiters are not cell transformations. The presentation-association
-contract decides which Markdown delimiters are structure.
-
-Mixed-unit compounds, labels embedded inside evidence-bearing cells, prose
-fragments, arrows, inequalities, and structures outside the listed forms are
-unsupported. The author must
-split them into columns, retain the complete display string and select it with
-`text`, or change the presentation. Examples intentionally excluded from
-assembly include `98.65 nm / 19.118 mas`, `589824 match, 0 diff`, and
-`-0.351 mas (-0.46%)`.
-
-#### Direct Tables
+#### Direct Table Grammar
 
 A direct recipe consumes exactly one input slot, input 0. That input must be
 either one canonical selected table or a record selection with retained record
@@ -1397,14 +1290,14 @@ A direct recipe has exactly these mode-specific fields:
 
 `columns` has the same length as `headings` and the selected source column
 count. Each descriptor applies to the same-position source column for every
-record. Column and record order are unchanged.
+record. Selected column and record order are unchanged. Locator select paths may
+select a subset of columns and place them in presentation order.
 
 A direct column descriptor is exactly one of:
 
 - `{"form":"text"}`, which requires a string and passes it through exactly;
 - `{"form":"boolean","style":"true_false"}`, optionally with
-  `"parse":"boolean"`, where `style` and parsing have the same exact closed
-  meanings as the table Boolean form;
+  `"parse":"boolean"`, where `style` and parsing have the closed styles true_false, yes_no, or pass_fail and exact Boolean text parsing;
 - `{"form":"percentage"}`, optionally with `decimal_places`, which applies
   the specialized percentage contract to the same-position source column; or
 - `{"form":"scalar","value":{...}}`, with optional `unit`, where `value`
@@ -1423,156 +1316,22 @@ descriptor likewise has no `source`. Direct descriptors never contain
 Every selected source field becomes exactly one presented cell and is consumed
 once. Headings may relabel source columns, and one repeated column descriptor
 may format its cells through parsing, scaling, rounding, sign rendering, or a
-unit. Direct mode cannot combine fields, reorder rows or columns, align another
-input, insert labels, enumerate exceptions, or use a multi-value or sequence
-cell form. A complete retained range, compound, or other display string can be
+unit. Direct mode cannot combine fields, align another input, insert labels,
+enumerate exceptions, or use a multi-value cell form. Source selection may
+filter rows and select/reorder columns, but not compute new values. A complete retained range, compound, or other display string can be
 passed through one `text` column without assembly.
 
 If the source does not already have the required rectangular membership and
-order, the table is not direct. Use `structured` for repeatable composition,
-`summary` for explicit cell mapping, or retain a new direct table through the
-recorded research workflow.
+order, the table is not direct. Retain a new presentation-ready artifact through a recorded script.
+A summary table with independent evidence cells is ordinary Markdown, not
+one table record. Every numeric or closed-Boolean data cell must carry its own
+scalar or compound EID; a mixed table does not waive evidence completeness.
+Otherwise retain a table-shaped artifact and use one direct-table record.
 
 Maintenance note: Changes to direct-table syntax or behavior must be reflected
 in
 [Direct Evidence Tables](../skills/research-logging/references/record-evidence-definition-direct-tables.md)
 and its public-CLI conformance tests.
-
-#### Structured Tables
-
-A structured recipe has exactly these mode-specific fields:
-
-```json
-{
-  "columns": [cell_recipe, cell_recipe],
-  "form": "table",
-  "headings": ["Case", "Error range"],
-  "mode": "structured",
-  "rows": {"input": 0}
-}
-```
-
-`columns` is a non-empty array with the same length as `headings`. Each entry
-is one table cell recipe. Every source reference, whether directly in a
-`percentage` recipe or inside a value expression, has exactly `input` and
-`field`; `item` is prohibited. The field index selects one path from that
-input locator's ordered `select` array, and the column recipe is evaluated once
-for each driver record.
-
-Structured mode should perform at least one operation unavailable in direct
-mode to justify its additional syntax: combine several fields in a cell,
-change field order, or apply an explicit row order. A
-one-input recipe with one same-position field per scalar, percentage, Boolean,
-or text column and default record order is valid but discouraged; authors
-should use `direct` for its smaller declaration and clearer diagnostics.
-This is authoring guidance, not a validation failure: a conforming validator
-must accept the structured declaration, and authoring tools may recommend the
-equivalent direct form without changing the validation outcome.
-
-`rows.input` must be `0`. The input must be a record selection
-whose locator produced matched candidate records and retained their grouping.
-Its record order is the default output order. A flat selection, one compound
-table item, property selection, whole-artifact selection, or input without
-record grouping cannot drive a structured recipe. The repair is to use a
-record locator, use summary mode, or retain one direct table.
-
-`rows` may additionally contain `order`, an array containing every driver
-identity tuple exactly once in the required presentation order:
-
-```json
-{"input":0,"order":[["case-8"],["case-15"]]}
-```
-
-An explicit order requires the locator to declare `identity`. Its tuples use
-authored literals, must match the record identity arity and types,
-and must be an exact permutation of the observed driver identities. There is
-no sort expression, descending flag, or inferred order.
-
-Structured mode is intentionally single-source. Every source reference uses
-`input:0`; multi-source identity alignment and joins are deferred. A table that
-draws heterogeneous cells from several sources uses summary mode when small or
-retains one assembled direct table when repeated enumeration would be awkward.
-
-Each selected field of every record in the input must be consumed
-by exactly one column recipe value position. Identity metadata used for row
-ordering is not a selected field and does not consume or duplicate an item.
-An unreferenced field, repeated selected-field reference, or collapsed value
-fails. Referencing distinct selected fields from the same input is ordinary
-structured use. Locators should select only fields that the table presents.
-
-Structured mode does not provide cell overrides, literal columns, row-label
-insertion, concatenation of unrelated record streams, pivot, or transpose
-operators. A regular table with exceptions uses `summary`, or the author
-retains one direct table. A pivoted or transposed table uses `summary` when it
-is small; otherwise its oriented result is retained and declared as `direct`.
-This keeps the mechanical grammar closed instead of embedding a dataframe
-language.
-
-Maintenance note: Changes to structured-table syntax or behavior must be
-reflected in
-[Structured Evidence Tables](../skills/research-logging/references/record-evidence-definition-structured-tables.md)
-and its public-CLI conformance tests.
-
-#### Summary Tables
-
-A summary recipe contains `rows` as a non-empty rectangular array of
-non-empty row arrays:
-
-```json
-{
-  "form": "table",
-  "headings": ["Metric", "Baseline", "Candidate"],
-  "mode": "summary",
-  "rows": [[cell_recipe, cell_recipe, cell_recipe]]
-}
-```
-
-Every row length must equal `headings` length. Array order is exact row and
-column order. Within every cell recipe, every source reference has exactly
-`input` and `item`; `field` is prohibited. Summary mode may therefore express
-small pivots, transpositions, concatenations, hybrids, and comparisons by
-enumerating their resulting cells without adding separate operation grammars.
-
-The first cell of a summary row may instead be one exact authored structural
-label:
-
-```json
-{"form":"label","text":"FWHM"}
-```
-
-`label` is permitted only as the first cell of a summary row. It contains
-exactly `form` and `text`; `text` follows the ordinary exact table-cell string
-bounds and may not be empty. It is prose in the presented table, analogous to
-an authored column heading. It does not come from an evidence source, does not
-consume an input item, and is compared exactly with the presented first-column
-cell. A label may orient or identify the row but does not itself establish an
-evidence value. A row containing a label must contain at least one additional
-evidence cell, so a label cannot be the sole cell in a row. Literal cells in
-other positions remain unsupported.
-
-Every selected item across the input bundle must be referenced by exactly one
-summary evidence-cell value position. Structural labels are outside that input
-count. Summary mode does not authorize other literals, overrides, input reuse,
-omitted items, inferred labels, or a partial join. If explicit enumeration
-becomes unwieldy, the repair is one retained direct table.
-
-Maintenance note: Changes to summary-table syntax or behavior must be
-reflected in
-[Summary Evidence Tables](../skills/research-logging/references/record-evidence-definition-summary-tables.md)
-and its public-CLI conformance tests.
-
-#### Table Result
-
-All three modes produce the same canonical internal result: exact headings
-followed by an ordered rectangular matrix of exact cell strings. They preserve
-exact dimensions, heading order, row order, cell order, source identity,
-source-item consumption, and any identity alignment. The result contains no
-Markdown alignment row or source spacing.
-
-The strict presentation parser defines the accepted Markdown table structure
-and compares its parsed headings and cells to this result. Alignment-marker
-width and source spacing may be structural; headings, dimensions, order, and
-cell text are not.
 
 ### Evaluation Result And Currentness
 
@@ -1697,56 +1456,6 @@ If the sole input is a record selection with ordered fields `case` and
 `Error` and rows `case-8`, `1.12%` and `case-15`, `1.14%`. No source reference
 appears in the recipe because input 0 and same-position columns are implicit.
 
-Structured table whose range column combines two source fields:
-
-```text
-v2:{"columns":[{"form":"text","values":[{"source":{"field":0,"input":0}}]},{"form":"range","unit":"%","values":[{"parse":"decimal","render":{"decimal_places":2,"mode":"fixed"},"source":{"field":1,"input":0}},{"parse":"decimal","render":{"decimal_places":2,"mode":"fixed"},"source":{"field":2,"input":0}}]}],"form":"table","headings":["Case","Error range"],"mode":"structured","rows":{"input":0}}
-```
-
-If input 0 is a record selection with ordered fields `case`, `error_min`, and
-`error_max`, the recipe applies the two column rules to every selected record.
-For records `case-8, 1.118, 1.449` and `case-15, 1.143, 1.319`, the canonical
-result has headings `Case`, `Error range` and rows `case-8`, `1.12–1.45%` and
-`case-15`, `1.14–1.32%`.
-
-Summary table with one authored row label and two evidence cells from
-independent input selections:
-
-```text
-v2:{"form":"table","headings":["Metric","Baseline","Candidate"],"mode":"summary","rows":[[{"form":"label","text":"FWHM"},{"form":"scalar","unit":"mas","values":[{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":0,"item":0}}]},{"form":"scalar","unit":"mas","values":[{"parse":"decimal","render":{"decimal_places":3,"mode":"fixed"},"source":{"input":1,"item":0}}]}]]}
-```
-
-For input 0 string `1.6019` and input 1 string `0.6015`, the canonical result
-has one row: authored label `FWHM`, `1.602 mas`, `0.602 mas`. The label is
-presentation prose and is not selected from either input.
-
-A Boolean cell with selected value `true` and style `pass_fail` produces
-`Pass`; selected value `false` produces `Fail`:
-
-```json
-{"form":"boolean","style":"pass_fail","values":[{"source":{"input":0,"item":0}}]}
-```
-
-A Boolean cell selected from a CSV string uses the same style with the closed
-Boolean parser. Selected string `True` produces `yes`; selected string `False`
-produces `no`:
-
-```json
-{"form":"boolean","style":"yes_no","values":[{"parse":"boolean","source":{"input":0,"item":0}}]}
-```
-
-A structured or summary cell may use the table-only sequence form. For numeric
-inputs `109`, `400`, and `400`, this cell recipe produces
-`109 x 400 x 400`:
-
-```json
-{"form":"sequence","style":"dimensions","values":[{"parse":"decimal","render":{"mode":"integer"},"source":{"input":0,"item":0}},{"parse":"decimal","render":{"mode":"integer"},"source":{"input":0,"item":1}},{"parse":"decimal","render":{"mode":"integer"},"source":{"input":0,"item":2}}]}
-```
-
-The concrete references shown are valid in summary mode. The same cell in a
-structured column replaces each `item` index with the corresponding `field`
-index.
-
 ### Future Expansion If Warranted
 
 The transformation language excludes features that would make the
@@ -1767,13 +1476,6 @@ Candidates for later evaluation are:
 - controlled case, whitespace, punctuation, or lexical normalization;
 - a small named rendering profile that reduces repeated declarations without
   accepting another presented result;
-- bounded literal or fragment assembly beyond summary structural labels and
-  the table sequence registry;
-- a native pivot, transpose, record-stream concatenation, or structured-cell
-  override, if summary enumeration or retaining one direct table proves
-  materially burdensome across several logs; and
-- multi-source structured-table identity alignment, if summary mapping or one
-  retained assembled table proves materially awkward across several logs; and
 - another unary presentation operation demonstrated across multiple logs.
 
 Expansion must remain code-only, bounded, versioned, and unambiguous. It must
@@ -1912,13 +1614,11 @@ Reserved codes include:
 | `transformation.version.unsupported` | fail | The declared transformation version has no enabled evaluator. |
 | `transformation.syntax.invalid` | fail | Version-specific syntax, keys, clauses, or key relationships are invalid or conflicting. |
 | `transformation.presentation.mismatch` | fail | The associated presented item is not one of the surface spellings defined by the declared transformed form. A table mismatch reports table shapes, the total differing-cell count, and at most 16 one-based heading or cell differences with expected and observed values. |
-| `transformation.input.reference_invalid` | fail | A concrete item reference or structured field reference does not resolve in the required input. |
+| `transformation.input.reference_invalid` | fail | A concrete item reference does not resolve in the required input. |
 | `transformation.input.unused` | fail | A locator-selected item is not consumed by the recipe. |
 | `transformation.input.reused` | fail | One selected item is referenced more than once. The transformation requires exact one-time consumption. |
 | `transformation.table.direct_mismatch` | fail | A direct recipe does not have exactly one table or grouped-record input, or its selected columns and declared columns are not one-to-one. |
-| `transformation.table.input_not_records` | fail | A structured table input lacks retained record grouping or uses a prohibited selection kind. |
-| `transformation.table.order_mismatch` | fail | A declared structured row order is not an exact typed permutation of the driver identities. |
-| `transformation.table.label_invalid` | fail | A label is empty, contains prohibited cell text, occurs outside the first cell of a summary row, or is the row's only cell. |
+| `transformation.table.input_not_records` | fail | A direct table input lacks retained record grouping or uses a prohibited selection kind. |
 | `transformation.boolean.invalid` | fail | A Boolean cell has an unknown style, a non-Boolean source without the closed Boolean parser, an invalid Boolean string, or fields outside its closed form. |
 | `transformation.type.mismatch` | fail | An operation or output form does not accept the encountered canonical type. |
 | `transformation.parse_failed` | fail | A selected lexical string does not satisfy the declared complete-value grammar. |
@@ -2008,7 +1708,7 @@ current grammars.
 
 ```json
 {
-  "schema": "research-log-evidence/v4",
+  "schema": "research-log-evidence/v5",
   "records": []
 }
 ```
@@ -2128,12 +1828,14 @@ An evidence presentation record and its presented item share one exact
 marker:
 
 ```html
-<!-- eid:median-success-rate -->
+<!-- eid:median-success-rate source=results select=/rate form=percentage -->
 ```
 
-The marker is the literal prefix `<!-- eid:`, followed by the record ID,
-followed by ` -->`. No alternate spacing, case, quoting, attributes, or marker
-aliases are accepted. The comment is non-rendered structure and is not part of
+The comment starts with the literal prefix `<!-- eid:` and the record ID,
+then a compact shell-quoted key=value definition, and ends with `-->`.
+A bare EID is not a complete current definition. Case and marker aliases are
+unsupported. Definitions may span lines; placement refers to the entire
+comment adjacent to its owned presentation. The comment is non-rendered structure and is not part of
 the evidence-bearing expression.
 
 Marker placement depends on `kind`:
@@ -2158,7 +1860,8 @@ One marker binds exactly one presented item. One presented item has exactly one
 marker. A marker ID must resolve to exactly one presentation record whose
 `document` and `kind` agree with the observed item. Duplicate markers, nested
 markers, a marker in a fence, a marker without an eligible item, and a
-presentation record without a marker fail.
+presentation record without a marker fail. EID-like literals inside fences
+are not authored markers.
 
 The marker makes entry evidence identity independent of heading text, line
 number, rendered value, and surrounding prose. Those observations may still
@@ -2288,10 +1991,8 @@ Cardinality is closed by presentation kind:
 | --- | ---: | --- |
 | `artifact` | 1 | A link or image resolves to the same path as the source, or an inline `diff` payload equals the complete UTF-8 source. |
 | `statistic` | 1–8 | The transformation produces exactly one supported non-table form. |
-| `output` | 1 | The locator selects exactly one string and identity or `form:"text"` produces the complete block payload. |
+| `output` | 1 | The bounded line/character locator selects the complete verbatim block payload; transformation is null. |
 | `table` / `direct` | 1 | The selected table and recipe satisfy direct-table one-to-one rules. |
-| `table` / `structured` | 1 | Every selected record and field satisfies repeated single-source consumption. |
-| `table` / `summary` | 1–32 | Every selected item is consumed exactly once by an evidence cell. |
 
 An evidence table record must use a non-null table transformation. Null identity is
 not a second table grammar. A statistic may use null identity only when one
@@ -2583,7 +2284,7 @@ One entry-root file has exactly:
 
 ```json
 {
-  "schema": "research-log-data/v5",
+  "schema": "research-log-data/v6",
   "inputs": []
 }
 ```
@@ -2634,7 +2335,7 @@ A generated file may additionally select the named evidence-scoped
 reproduction comparison:
 
 ```json
-"comparison": {
+"reproduction_comparison": {
   "contract": "research-log-evidence-scoped-comparison/1",
   "profile": "evidence"
 }
@@ -3077,8 +2778,8 @@ Validation accepts only strict `research-log-pyrun/v6` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
-Data and evidence readers likewise accept only `research-log-data/v5` and
-`research-log-evidence/v4`. Their older schemas have no retained decoder or
+Data and evidence readers likewise accept only `research-log-data/v6` and
+`research-log-evidence/v5`. Their older schemas have no retained decoder or
 migration command. The one-time disposable conversion and the separate
 execution-state compatibility boundaries are defined by
 [Current Contract Cutover](research-log-reproduction-spec.md#current-contract-cutover).
@@ -3928,111 +3629,281 @@ Repair. Neither operation repairs or changes unrelated summary prose,
 interpretation, follow-ups, optional support material, or generated validation
 state.
 
-The input-registry operations are:
+Authoring actions may omit `--path LOG` when the working directory has exactly
+one maintained ancestor log. No match or multiple matches fails with an
+informative context error; use the explicit logical log base to disambiguate.
+
+The Record and Repair authoring contracts are:
+
+### Command Synchronization
 
 ```text
-<skill>/scripts/log data add-origin --path LOG --entry ENTRY NAME TARGET
-  [--identity SELECTOR]... [--commit COMMIT] [--dry-run]
-<skill>/scripts/log data add-generated --path LOG --entry ENTRY NAME TARGET
-  [--kind file|directory] [--identity SELECTOR]...
-  [--dry-run]
-<skill>/scripts/log data use --path LOG --entry ENTRY --from-entry ENTRY NAME
-  [--dry-run]
-<skill>/scripts/log data update --path LOG --entry ENTRY NAME
-  [--target TARGET] [--origin | --generated]
-  [--identity SELECTOR]... [--byte-complete] [--commit COMMIT] [--dry-run]
-<skill>/scripts/log data rename --path LOG --entry ENTRY OLD-NAME NEW-NAME
-  [--dry-run]
-<skill>/scripts/log data remove --path LOG --entry ENTRY NAME [--dry-run]
-<skill>/scripts/log data list --path LOG --entry ENTRY
-
-<skill>/scripts/log command sync --path LOG --entry ENTRY --cid CID
-  [--add-origin NAME=PATH]... [--add-generated NAME=PATH]...
-  [--rename OLD=NEW]... [--remove NAME]... [--retire EXECUTION_ID]...
+log command sync [--path LOG] --entry ENTRY --cid CID
+  [--add-origin NAME=PATH]...
+  [--add-origin-directory NAME=PATH]...
+  [--add-origin-git NAME=COMMIT:PATH]...
+  [--add-generated NAME=PATH]...
+  [--add-generated-directory NAME=PATH]...
+  [--add-from-entry NAME=ENTRY]...
+  [--change-target NAME=TARGET]...
+  [--delete-execution EXECUTION_ID]...
   [--dry-run]
 ```
 
-These actions normalize canonical location and use the declaration-identity
-and data-file contracts. `add-origin` rejects a current producer that does not
-require reproduction
-in the same log. Its mutually exclusive `--commit` form requires a full
-lowercase commit hash and makes `TARGET` a Git repository locator.
-`add-generated` declares a named file or directory before production. It
-infers kind from an existing target or requires `--kind` when the target is
-absent. Selected identity files or final-component patterns are available only
-for directories. The declaration contains no byte baseline; successful `pyrun`
-records its current input and output observations in `pyrun.json` without
-rewriting `data.json`. For an existing retained output,
-the same declaration rules apply: one structurally valid, unambiguous authored
-producer is required, but prior successful execution support is not.
-Registration does not mutate `pyrun.json` or grant migration authority.
-Execution reproduction requirements belong to the execution lifecycle.
-`data use` creates one same-log reference to a direct generated
-declaration in the named source entry. It rejects missing, origin, chained,
-cyclic, or locally conflicting references and does not copy the target. `update` applies
-only explicit changes and rechecks the resulting boundary; changing a Git
-repository target preserves and verifies its commit unless `--commit` replaces
-it. Git repository inputs cannot become generated or use directory identity
-options. Managed identity is available for origin and generated directories.
-`remove` requires prior removal of command and evidence use and every cross-entry
-reference, and removes an empty registry. References are read-only through
-update and rename. `rename` requires prior command
-token edits, atomically updates same-entry evidence source tokens, and reports
-producer commands whose support must be replaced by successful reruns. Each
-mutation holds the shared log lock and the selected entry lock and leaves
-generated validation state unchanged. A multi-file rename uses entry-keyed
-recognized transaction residue until publication or complete rollback, and
-cross-entry declaration disagreement remains a validation finding.
+The selector takes the full effective CID stored in normalized state. A
+recorded `pyrun` invocation may omit `--cid` and derive the CID from its Python
+program stem, or use numeric shorthand to derive `PROGRAM_STEM-N`. A full CID
+in Markdown remains the explicit override.
 
-`command sync` is the sole recipe and execution-policy editing route. The
-agent edits the selected Markdown owner first, then sync compares every current
-expansion with the selected effective-CID bucket by parameter ID and complete
-recipe. The `--cid` selector passed to `command sync` names the full effective
-CID, whether the Markdown owner authored it in full, used numeric shorthand,
-or derived it from its Python program name.
-Missing invocations become observation-empty records requiring reproduction;
-recipe changes retain only still-applicable observations and require
-reproduction; policy-only changes preserve observations and the requirement.
-Stale records require an exact acknowledgement for every reported execution
-ID. Sync may add simple declarations or apply safe local renames/removals in
-the same candidate, but it never samples current bytes, edits Markdown, or
-changes evidence-owned artifact baselines. It validates and atomically
-publishes the complete `data.json` and `pyrun.json` candidates; `--dry-run`
-returns both deterministic diffs and writes no registry or cache state.
+The add forms are idempotent ensure operations:
 
-Entry-scoped `log evidence` and `log retention` actions read and validate the
-complete current registry, build candidate state through the production
-decoder, and atomically publish canonical state while holding the stable entry
-lock. Their add, update, rename, remove, and list actions return only bounded
-semantic results. Mutations support content-write-free `--dry-run`; exact add
-or update results are unchanged, conflicting state fails, and an absent
-removal is reported distinctly. Evidence actions require the agent-authored marker and
-summary-reference change first and never edit Markdown. Retention actions
-accept either one nonempty directory or one or more regular files and never
-expose registry schemas through ordinary results. Every authoring action leaves
-generated validation state unchanged.
+- `--add-origin` and `--add-generated` declare regular files;
+- the `-directory` variants explicitly declare directories, including a
+  generated directory that does not exist yet;
+- `--add-origin-git NAME=COMMIT:PATH` declares a Git origin and revision as one
+  target; and
+- `--add-from-entry NAME=ENTRY` declares a same-name reference to a generated
+  artifact in another entry.
 
-`log evidence add` and `log evidence update` accept either the common
-single-source arguments or `--definition PATH`, never both. A definition is a
-regular non-symlink UTF-8 JSON file no larger than 8 MiB beneath
-`/private/tmp`. Its object contains exactly `sources` and `transformation`;
-the action and `--id` supply the remaining record fields through the unique
-agent-authored presentation marker. The CLI passes those two values through
-the production evidence, locator, transformation, and presentation contracts,
-then uses the same candidate-publication path as common mode. It reads but
-never modifies, retains, copies, or removes the definition. `--dry-run`
-performs the complete source observation, evaluation, presentation comparison,
-candidate build, and mutation preflight without writing the registry.
+`--change-target` changes a path or `COMMIT:PATH` only when the declaration is
+local to the selected command. Shared target changes route to `log data
+update`. Kind, boundary, directory identity, `reproduction_comparison`, rename,
+deletion, and cross-entry source replacement also belong to `log data`.
 
-When the unique marker belongs to an artifact link, image embed, or inline
-`diff` fence, common mode accepts one `--source` and no selection or conversion
-arguments. It infers the closed artifact record, requires the path-based target
-or inline contents to match the source token under the applicable association
-rule, and publishes through the ordinary evidence lifecycle. Image/link add or
-update captures an exact-file baseline in `evidence.json`; inline `diff` records
-have no fingerprint field and use bounded UTF-8 comparison. Neither form verifies
-or changes a data-registry content baseline, and image/link authoring does not
-load a format-specific artifact reader.
+`--delete-execution` removes a named stale execution. If its Markdown
+invocation remains, sync recreates it as pending with
+`requires_reproduction: true`. A current valid execution cannot be deleted
+through this option.
+
+### Evidence Comparison And Synchronization
+
+```text
+log evidence compare [--path LOG] --entry ENTRY --id ID
+
+log evidence sync [--path LOG] --entry ENTRY --id ID
+  [--add-origin NAME=PATH]...
+  [--add-origin-directory NAME=PATH]...
+  [--add-from-entry NAME=ENTRY]...
+  [--change-target NAME=PATH]...
+  [--dry-run]
+
+log evidence compare [--path LOG] --entry ENTRY --source NAME
+
+log evidence sync [--path LOG] --entry ENTRY --source NAME
+```
+
+The ID-scoped form reads the complete definition from the Markdown `eid`
+comment. Compare shows only that EID and its exact before and after presented
+Markdown. Sync validates and normalizes the definition into `evidence.json`,
+evaluates it, and replaces the adjacent placeholder or prior presentation.
+
+The ID-scoped add forms have the same ensure behavior as command sync and must
+be consumed by the candidate evidence definition. Evidence may add a file or
+directory origin or a same-name cross-entry reference. It cannot create a
+generated declaration; an unknown generated source must direct the agent to
+author and synchronize its producer command. `--change-target` is limited to a
+declaration used only by that evidence record.
+
+The source-scoped form (including --dry-run on sync) selects one direct generated declaration in its owning
+entry, follows same-log references, and finds every evidence record that uses
+the artifact. Compare returns each EID with only its exact before and after
+presentation. Sync reevaluates the same set from current state and atomically
+updates:
+
+- every related Markdown presentation;
+- any summary value that forwards one of those presentations; and
+- every applicable path-based `artifact_fingerprint`.
+
+One invalid or unstable related record rejects the source-scoped sync without
+partial publication. When a presentation is unchanged, sync leaves its
+Markdown bytes alone and still refreshes the applicable fingerprint. Compare
+creates no stored preview or comparison ID, and sync does not require a prior
+compare result.
+
+Every successful path-based artifact sync accepts the currently observed
+artifact bytes and refreshes `artifact_fingerprint`. There is no separate
+baseline flag and no caller-supplied digest.
+
+#### Evidence Markdown Forms
+
+The `eid` comment is the durable definition. It names the evidence ID, sources,
+selection, bounded presentation rules, and optional
+`reproduction_tolerance`. Derived expectations remain normalized tool-owned
+state.
+
+Supported forms are:
+
+- a scalar or short value in an adjacent inline-code span;
+- artifact evidence;
+- text output from one UTF-8 source using `line=N`, `lines=N:M`, or
+  `line=N chars=A:B`, with one-based inclusive positions and Unicode code
+  points;
+- a closed compound scalar—range, tuple, interval, or plus/minus—from ordered
+  sources; and
+- a direct Markdown table backed by one table-shaped artifact.
+
+A new scalar starts with an empty code span. A new direct table has its authored
+header and alignment row but no body. Its Markdown headings determine display
+labels and order; the comment maps each heading position to one source field
+and bounded transformation and may select rows. A new text-output record starts
+with an empty `text` fence, and sync replaces only the fence body.
+
+A summary table is ordinary Markdown whose evidence-bearing cells have separate
+scalar or compound EIDs. Every numeric or closed-Boolean data cell must be
+independently marked; partial marking does not replace a table declaration.
+A joined or derived table requires a recorded script
+that emits a retained table-shaped artifact, followed by direct-table evidence.
+Neither pattern adds a summary, join, formula, or advanced-table feature to the
+CLI.
+
+The current schema is `research-log-evidence/v5`. It contains only
+the supported forms above. Reject v4; do not add a compatibility reader,
+converter, definition-file path, or generic advanced definition form.
+
+### Graph-Level Data
+
+```text
+log data update [--path LOG] --entry ENTRY NAME
+  [--target TARGET]
+  [--boundary origin|generated]
+  [--kind file|directory]
+  [--identity IDENTITY]...
+  [--reproduction-comparison exact|evidence]
+  [--acknowledge-shared]
+  [--dry-run]
+
+log data rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
+log data delete [--path LOG] --entry ENTRY NAME [--dry-run]
+log data list [--path LOG] --entry ENTRY
+```
+
+`IDENTITY` is `byte-complete`, `file:PATH`, or `pattern:GLOB`. Supplying
+identity values replaces the directory identity policy. `TARGET` is a plain
+path or `COMMIT:PATH` for a Git origin. This single target form covers Git
+revision and repository-path changes.
+
+Data v6 persists the optional policy as `reproduction_comparison`. `exact` clears the
+optional field and restores exact artifact comparison; `evidence` delegates
+reproduction comparison to evidence records, whose comments may define
+`reproduction_tolerance`.
+
+`data update` preserves omitted properties. A declaration with several
+consumers requires `--acknowledge-shared`; the first rejection lists those
+consumers. The acknowledgment accepts the wider scope but does not bypass
+validation.
+
+For rename, the agent edits every Markdown use first. `data rename` fails with
+remaining old-name uses or missing replacements, then updates the declaration
+and normalized references only when the Markdown migration is complete. For
+delete, the agent removes uses and synchronizes their owners first. `data
+delete` fails with every remaining use and never deletes material from disk.
+Existing material left disconnected is reported for a subsequent retention or
+filesystem decision.
+
+`data list` exposes maintained semantic declaration properties needed for
+Record and Repair: name, direct or cross-entry form, target or source entry,
+kind, boundary, directory identity, Git revision, and
+`reproduction_comparison`. It need not expose derived serialization details or
+historical digests.
+
+### Retention
+
+```text
+log retention add [--path LOG] --entry ENTRY --id ID
+  --target TARGET [--target TARGET]... [--reason TEXT] [--dry-run]
+
+log retention update [--path LOG] --entry ENTRY --id ID
+  [--add-target TARGET]... [--remove-target TARGET]...
+  [--reason TEXT | --clear-reason]
+  [--dry-run]
+
+log retention rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
+log retention delete [--path LOG] --entry ENTRY --id ID [--dry-run]
+log retention list [--path LOG] --entry ENTRY
+```
+
+Retention remains separate from data. Add is an idempotent ensure. Update is
+additive and preserves omitted coverage and reason. Retention rejects targets
+currently connected to command or evidence state and overlap with another
+retention decision. Removing coverage or a retention record never deletes its
+targets; existing material left disconnected is reported for the agent's next
+action.
+
+### Command And Evidence Lifecycles
+
+```text
+log command rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
+log command delete [--path LOG] --entry ENTRY --cid CID [--dry-run]
+log command list [--path LOG] --entry ENTRY
+
+log evidence rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
+log evidence delete [--path LOG] --entry ENTRY --id ID [--dry-run]
+log evidence list [--path LOG] --entry ENTRY
+```
+
+For rename, the agent edits the Markdown CID or EID first. The lifecycle action
+verifies that the old identity is gone and the new identity is present before
+updating normalized state and references.
+
+For evidence deletion, the agent removes the presentation and marker first.
+The delete action removes only the evidence record and reports newly unused
+data for a separate `data delete` decision.
+
+For command deletion, the agent removes the command block first. The delete
+action fails while downstream consumers use its outputs, removes its execution
+records and command-exclusive generated declarations together, and reports
+output material left disconnected. It never deletes output files.
+
+The list actions expose the maintained semantic state needed to choose a normal
+Record or Repair action. Preserve existing `command verify` and `command show`
+as operational utilities.
+
+#### Compact Evidence Definition Language
+
+Comments use shell-quoted key=value tokens separated by whitespace. A semicolon
+starts a new source or table-column clause; it does not introduce an expression.
+Each source starts with source=NAME or source=NAME/member. The ID and complete
+definition are durable Markdown input, not a separate file or YAML/JSON comment.
+A source may declare path, repeated select and identity pointers, repeated where
+conditions, and bounded parse/render/scale/magnitude/sign. Pointers use JSON
+Pointer escaping, numeric indexes, /* expansion, and /[START:END] half-open
+slices. where=POINTER:eq:TYPE:VALUE or :in:TYPE:VALUE,VALUE supports string,
+integer, decimal, boolean, or null; comma-containing in-set strings use percent
+encoding. Numeric CSV predicates explicitly parse decimal/integer text.
+
+Global form defaults to scalar and supports scalar, percentage, range, tuple,
+interval, and plus_minus. One-source render=boolean:STYLE creates short Boolean
+evidence. Global unit applies to a compound value. Each source contributes its
+selected operands in observed order; rendering fields may be uniform or one per
+operand. Numeric render is integer, grouped_integer, fixed:N, scientific:N, or
+significant:N. scale is finite decimal, magnitude is true, and sign is always.
+The closed percentage form accepts fixed:N and consumes a retained proportion.
+reproduction_tolerance=ABSOLUTE_DECIMAL is optional and strictly positive.
+
+A direct table source uses path/identity/where plus one column=POINTER clause
+per Markdown header column, in that order. Columns replace source select fields.
+Column recipes support text, numeric rendering with optional parse/scale/
+magnitude/sign/unit, percentage:N, and boolean:STYLE with optional parse=boolean.
+Source and column shape/cardinality must agree. No derived columns or joins exist.
+Text output uses only source and line=N, lines=N:M, or line=N chars=A:B.
+A whole artifact uses only source and no locator/transform fields.
+
+Sync derives locator expectations and artifact fingerprints; no caller-controlled
+expectation or fingerprint field is accepted. Validation compares the authored
+definition with maintained normalized state before evaluating it and reports
+evidence.definition.unsynchronized when they differ. Definition comparison
+normalizes implied root paths and default percentage precision, but never hides
+semantic changes. Empty value spans, table bodies, and text fences are valid sync
+placeholders, not completed validation evidence.
+
+All assertions and deltas are preflighted against valid current registries.
+Coupled publication uses existing recovery guards. Failures and dry-run change
+no owned file. Source observations are rechecked before acceptance. Shared data
+and graph-level lifecycle actions lock the log before affected entries; a source
+refresh waits a bounded ten seconds for overlapping operations before reporting
+contention. Operations leave generated validation state unchanged and never
+implicitly execute research. Direct JSON editing is reserved for explicitly
+authorized malformed state the owning decoder cannot handle.
 
 The explicit single-log Reorganize operations are:
 
@@ -4605,14 +4476,14 @@ follow isolate their respective subcontracts.
 An entry presents:
 
 ```markdown
-The candidate success rate was `67.6%`<!-- eid:candidate-success-rate -->.
+The candidate success rate was `67.6%`<!-- eid:candidate-success-rate source=results select=/success_rate where=/case:eq:string:candidate form=percentage -->.
 ```
 
 Its entry-local `evidence.json` contains:
 
 ```json
 {
-  "schema": "research-log-evidence/v4",
+  "schema": "research-log-evidence/v5",
   "records": [{
     "id": "candidate-success-rate",
     "document": "entries/2026-08-27-e001-study/e001.md",
@@ -4637,7 +4508,7 @@ Its entry-local `evidence.json` contains:
 ```
 
 The same entry's `data.json` registers `data/results.csv` as the generated
-`results` file input, using its current SHA-256 fingerprint and
+`results` file input, using its declared SHA-256 identity rule and
 `"origin": false`.
 
 The same experimental section records one command that names
@@ -4647,7 +4518,7 @@ The same experimental section records one command that names
 ```bash
 ./pyrun scripts/run_study.py \
   --input-dataset "<development-set>" \
-  --output-summary-csv data/results.csv
+  --output-summary-csv "<results>"
 ```
 ````
 
@@ -4674,7 +4545,7 @@ executable interface unchanged is not a valid repair.
   adjacent `ref`. A table reference also names one exact row and column. The
   summary reuses the target record's source and command-provenance projection
   and does not declare another producer.
-- A direct, structured, or summary table uses the applicable closed table
+- A direct table uses the closed direct-table
   recipe. Every local source used by the table must independently resolve to
   exactly one producing invocation unless it reaches an explicit origin.
 - A marked output block may select a retained command log. Declare the generated
@@ -4708,7 +4579,7 @@ Suppose an entry records:
   scripts/run_trials.py \
   --reference "<reference-grid>" \
   --cases 1:40 \
-  --output-dir data/trials
+  --output-dir "<trials>"
 ```
 ````
 
@@ -4763,7 +4634,7 @@ data/smoke.h5 :: v2:{"path":["stats","sr"],"property":"shape[0]"}
 Text:
 
 ```text
-data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
+data/run.log :: v2:{"text":{"line":"2"}}
 ```
 
 ### Locator And Transformation Failure Examples
@@ -4780,7 +4651,6 @@ data/run.log :: v2:{"text":{"contains":"Benchmark simulations","occurrence":1}}
 | HDF5 external link leaves the retained file | `locator.source.unsafe`. |
 | Locator JSON is malformed | `locator.syntax.invalid`; do not retry under another interpretation. |
 | Wildcard selects more than the configured bound | `locator.selection.too_large`. |
-| Summary `label` occurs outside the first column or is its row's only cell | `transformation.table.label_invalid`. |
 | Boolean cell declares `style:"Yes/No"` | `transformation.boolean.invalid`; use `yes_no`. |
 | Binary-float input is NaN or infinity | `transformation.nonfinite_unsupported`. |
 | Binary-float input is not IEEE binary16, binary32, or binary64 | `transformation.type.mismatch`. |

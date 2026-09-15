@@ -275,7 +275,7 @@ class CommandVerificationTests(unittest.TestCase):
                 fixture.item(entry, "raw", raw, origin=True),
                 {
                     **fixture.item(entry, "output", output, origin=False),
-                    "comparison": {
+                    "reproduction_comparison": {
                         "contract": "research-log-evidence-scoped-comparison/1",
                         "profile": "evidence",
                     },
@@ -296,7 +296,7 @@ class CommandVerificationTests(unittest.TestCase):
         evidence.write_text(
             json.dumps(
                 {
-                    "schema": "research-log-evidence/v4",
+                    "schema": "research-log-evidence/v5",
                     "records": [
                         {
                             "document": f"entries/{entry.root.name}/{entry.id}.md",
@@ -497,7 +497,7 @@ class CommandVerificationTests(unittest.TestCase):
                             "transformation": None,
                         }
                     ],
-                    "schema": "research-log-evidence/v4",
+                    "schema": "research-log-evidence/v5",
                 }
             )
             + "\n",
@@ -1005,7 +1005,7 @@ class CommandVerificationTests(unittest.TestCase):
                 f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
             )
             (next((fixture.log_root / "entries").glob("*/data.json"))).write_text(
-                '{"schema": "research-log-data/v5", "inputs": "invalid"}\n',
+                '{"schema": "research-log-data/v6", "inputs": "invalid"}\n',
                 encoding="utf-8",
             )
             result = verify_command(

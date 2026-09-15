@@ -237,6 +237,53 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The evidence record does not satisfy the evidence contract.",
         "record",
     ),
+    "evidence.definition.unsynchronized": FindingPresentation(
+        "Unsynchronized Evidence Definition",
+        "The Markdown definition differs from its maintained evidence record; "
+        "run log evidence sync for that ID.",
+        "record",
+    ),
+    "evidence.definition.invalid": FindingPresentation(
+        "Invalid Markdown Evidence Definition",
+        "Correct the evidence definition in its eid comment and synchronize it.",
+        "record",
+    ),
+    "evidence.marker.unresolved": FindingPresentation(
+        "Unresolved Evidence Marker",
+        "The evidence ID has no unique adjacent marker.",
+        "record",
+    ),
+    "evidence.marker.invalid": FindingPresentation(
+        "Invalid Evidence Marker",
+        "The eid comment is not adjacent to a supported presentation.",
+        "record",
+    ),
+    "evidence.pointer.invalid": FindingPresentation(
+        "Invalid Evidence Pointer",
+        "Use a valid source-field pointer in the eid comment.",
+        "record",
+    ),
+    "evidence.condition.invalid": FindingPresentation(
+        "Invalid Evidence Filter",
+        "Correct the typed row filter in the eid comment.",
+        "record",
+    ),
+    "evidence.render.invalid": FindingPresentation(
+        "Invalid Evidence Rendering",
+        "Correct the bounded renderer in the eid comment.",
+        "record",
+    ),
+    "evidence.table.unsupported": FindingPresentation(
+        "Unsupported Evidence Table",
+        "Record a script to produce a table-shaped artifact for "
+        "joined or derived data.",
+        "record",
+    ),
+    "evidence.table.columns": FindingPresentation(
+        "Invalid Evidence Columns",
+        "Bind each Markdown heading position to one source field and renderer.",
+        "record",
+    ),
     "evidence.file.empty": FindingPresentation(
         "Empty Evidence Registry", "The evidence registry is empty.", "path"
     ),
@@ -443,6 +490,11 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "Text Source Decode Failure",
         "The text source cannot be decoded as required.",
         "path",
+    ),
+    "locator.text.range": FindingPresentation(
+        "Text Slice Out Of Range",
+        "The requested one-based inclusive line or character range exceeds the source.",
+        "locator",
     ),
     "locator.type.mismatch": FindingPresentation(
         "Locator Type Mismatch",

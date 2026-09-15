@@ -4,13 +4,12 @@ Use retention for material intentionally kept outside the provenance chain for
 presented evidence. It explains why the material remains without inventing a
 consumer, producer, or evidence relationship.
 
-Required tooling:
+Tooling for retained material outside the active graph:
 
 ```bash
 "$LOG_TOOL" retention add --path "$LOG" --entry e001 \
-  --id pilot-timings \
-  --reason "Retained to estimate runtime for future simulations." \
-  data/pilot-timings.csv
+  --id pilot-timings --target data/pilot-timings.csv \
+  --reason "Retained to estimate runtime for future simulations."
 ```
 
 Research commands: none are added by retention. Preserve any real producer

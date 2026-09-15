@@ -643,25 +643,29 @@ merging their parameter identities.
 
 ### Markdown-First Command Synchronization
 
-Edit the recorded Markdown command first, then run:
+Edit the recorded Markdown command first, then run. `--path` may be omitted
+only when the working directory has exactly one maintained ancestor log;
+otherwise specify the logical log base to resolve missing or ambiguous context.
+
 
 ```text
-log command sync --path LOG --entry ENTRY --cid CID [--dry-run]
+log command sync [--path LOG] --entry ENTRY --cid CID [--dry-run]
 ```
 
 Sync reconciles every current parameter expansion in the selected CID. It
 preserves unchanged records, retains only applicable observations when a recipe
 changes, applies policy-only changes without changing reproduction state, and
 creates observation-empty pending records for missing expansions. Stale
-parameter identities require explicit repeatable `--retire EXECUTION_ID`
+parameter identities require explicit repeatable `--delete-execution EXECUTION_ID`
 acknowledgements; sync reports the exact retry flags and refuses partial or
 extra acknowledgement.
 
-Supply missing simple declarations in the same transaction with repeatable
-`--add-origin NAME=PATH` or `--add-generated NAME=PATH`. Use `--rename OLD=NEW`
-and `--remove NAME` only when no evidence, cross-entry reference, or unselected
-CID depends on the declaration. Specialized identities and coordinated
-evidence-aware changes remain under `log data`.
+Supply missing file declarations in the same transaction with repeatable
+`--add-origin NAME=PATH` or `--add-generated NAME=PATH`; directory variants
+explicitly declare directories. Git origins use `--add-origin-git NAME=COMMIT:PATH`
+and cross-entry references use `--add-from-entry NAME=ENTRY`.
+Local target changes use `--change-target NAME=TARGET`. Shared or advanced
+changes, rename, and deletion remain under `log data`.
 
 The operation validates complete `data.json` and `pyrun.json` candidates and
 publishes both atomically under the entry lock. It never samples script, input,
@@ -686,8 +690,8 @@ researcher-approved; no migration or cleanup path may infer it.
 
 ## Current Contract Cutover
 
-The current data and evidence readers accept only `research-log-data/v5` and
-`research-log-evidence/v4`. Their conversion from data/v3-v4 and evidence/v3 is
+The current data and evidence readers accept only `research-log-data/v6` and
+`research-log-evidence/v5`. Their conversion from data/v5 and evidence/v4 is
 a one-time plan-owned operation using disposable tooling, removed before plan
 completion. No data/evidence migration CLI, legacy decoder, compatibility
 reader, or conversion tooling remains in the final runtime. Reusable docs and
@@ -1492,7 +1496,7 @@ A generated file may opt into `research-log-evidence-scoped-comparison/1`
 through its `data.json` item:
 
 ```json
-"comparison": {
+"reproduction_comparison": {
   "contract": "research-log-evidence-scoped-comparison/1",
   "profile": "evidence"
 }

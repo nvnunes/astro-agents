@@ -91,7 +91,8 @@ class LogMaterials:
         related = self._rejected_index.related(error.subject)
         if related:
             raise ActionError(
-                error.code, f"{error}\n{rejected_producer_message(related)}",
+                error.code,
+                f"{error}\n{rejected_producer_message(related)}",
                 records=related,
                 diagnostic_log=self.log.root,
             ) from error
@@ -337,10 +338,7 @@ class LogMaterials:
                     state, invocation, project_root=self.project_root
                 )
                 material = next(
-                    (
-                        relationship.path
-                        for relationship in invocation.outputs
-                    ),
+                    (relationship.path for relationship in invocation.outputs),
                     next(
                         (
                             collection.root
@@ -360,14 +358,17 @@ class LogMaterials:
                     association=association,
                     owners=self._owners[owner],
                 )
-                execution = association.execution if association is not None else (
-                    execution_output.owner.execution
-                    if execution_output.owner is not None
-                    else None
+                execution = (
+                    association.execution
+                    if association is not None
+                    else (
+                        execution_output.owner.execution
+                        if execution_output.owner is not None
+                        else None
+                    )
                 )
-                if (
-                    execution is not None
-                    and old_name in dict(execution.observed.inputs)
+                if execution is not None and old_name in dict(
+                    execution.observed.inputs
                 ):
                     records.append(
                         {
@@ -376,7 +377,7 @@ class LogMaterials:
                             "ordinal": invocation.ordinal,
                             "tokens": list(invocation.tokens),
                         }
-                )
+                    )
                 continue
             support = self._output_support(owner, entry_root)
             requires_rerun = False
@@ -479,7 +480,11 @@ def inspect_log_materials(
         root = entry.root.resolve()
         owner = root.relative_to(log.root).as_posix()
         roots[owner] = root
-        data_file = normalized_overrides.get(root, _load_data(root))
+        data_file = (
+            normalized_overrides[root]
+            if root in normalized_overrides
+            else _load_data(root)
+        )
         for document in entry.documents:
             try:
                 text = document.read_text(encoding="utf-8")

@@ -97,9 +97,7 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("complete numbered lens catalog verbatim", review)
         self.assertIn("After reporting, stop Review", review)
 
-        mapped = set(
-            re.findall(r"`(references/review-lenses/[a-z-]+\.md)`", catalog)
-        )
+        mapped = set(re.findall(r"`(references/review-lenses/[a-z-]+\.md)`", catalog))
         expected = {
             f"references/review-lenses/{path.name}"
             for path in REVIEW_LENSES.glob("*.md")
@@ -168,35 +166,32 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("lets `log add` own naming", cases)
         self.assertNotIn("loads naming and entry-structure guidance", cases)
 
-    def test_ordinary_record_does_not_route_to_registry_grammars(self) -> None:
-        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertNotIn("## Record Contract", skill)
-        self.assertIn("## Contract", reference("operation-record.md"))
-
+    def test_ordinary_record_does_not_route_to_registry_grammars(self):
         ordinary = "\n".join(
-            (
-                reference("operation-record-content.md"),
-                reference("file-entry-commands.md"),
-                reference("file-script.md"),
-                reference("file-presented-evidence.md"),
-                reference("file-data-index.md"),
-                reference("file-retention.md"),
+            reference(name)
+            for name in (
+                "operation-record-content.md",
+                "file-entry-commands.md",
+                "file-script.md",
+                "file-presented-evidence.md",
+                "file-data-index.md",
+                "file-retention.md",
             )
         )
-        for registry_grammar in (
-            "research-log-data/v5",
-            "research-log-evidence/v4",
+        for grammar in (
+            "research-log-data/v6",
+            "research-log-evidence/v5",
             "research-log-retention/v1",
-            '"fingerprint"',
             '"records"',
+            '"fingerprint"',
         ):
-            self.assertNotIn(registry_grammar, ordinary)
-        self.assertIn("Delegate deterministic", ordinary)
-        for registry_name in ("data.json", "evidence.json", "retention.json"):
-            self.assertNotIn(registry_name, ordinary)
-        self.assertIn("Never create, inspect, or edit its registry", ordinary)
-        self.assertIn("Never create, inspect, or edit the registry", ordinary)
-        self.assertIn("Never create,\ninspect, or edit that registry", ordinary)
+            self.assertNotIn(grammar, ordinary)
+        self.assertIn("Do not inspect or edit", reference("file-data-index.md"))
+        self.assertIn(
+            "Do not create, inspect, or edit JSON",
+            reference("file-presented-evidence.md"),
+        )
+        self.assertIn("Do not inspect or edit its JSON", reference("file-retention.md"))
 
     def test_atomic_bundle_guidance_stays_in_focused_references(self) -> None:
         commands = reference("file-entry-commands.md")
@@ -204,8 +199,10 @@ class RecordSurfaceTests(unittest.TestCase):
         evidence = reference("file-presented-evidence.md")
 
         self.assertIn("owns the complete directory", commands)
-        self.assertIn("register that generated\ndirectory once", data)
-        self.assertIn("Do not register the member separately", evidence)
+        self.assertIn("A member is not a separate directory producer", data)
+        self.assertIn(
+            "Raw paths and bare directories are not evidence sources", evidence
+        )
         for internal in (
             "MaterialCollection",
             "DirectoryProducerIndex",
@@ -224,7 +221,13 @@ class RecordSurfaceTests(unittest.TestCase):
             relative = card.relative_to(REFERENCES).as_posix()
             text = card.read_text(encoding="utf-8")
             self.assertEqual(index.count(f"references/{relative}"), 1, relative)
-            self.assertIn("Required tooling:", text, relative)
+            self.assertIn(
+                "outside the active graph"
+                if card.stem == "retained-support"
+                else "before its execution",
+                text,
+                relative,
+            )
             self.assertIn("Research command", text, relative)
 
         record = reference("operation-record.md")
@@ -259,43 +262,20 @@ class RecordSurfaceTests(unittest.TestCase):
             pending.extend(REFERENCE_PATTERN.findall(path.read_text(encoding="utf-8")))
 
         all_references = {
-            path.relative_to(REFERENCES).as_posix()
-            for path in REFERENCES.rglob("*.md")
+            path.relative_to(REFERENCES).as_posix() for path in REFERENCES.rglob("*.md")
         }
         self.assertEqual(reached, all_references)
 
-    def test_advanced_evidence_cases_route_to_one_focused_definition(self) -> None:
+    def test_advanced_evidence_cases_route_to_focused_comment_guidance(self):
         presented = reference("file-presented-evidence.md")
-        sources = reference("record-evidence-definition-sources.md")
-        numeric = reference("record-evidence-definition-numeric.md")
-        routed = (
-            "record-evidence-definition-sources.md",
-            "record-evidence-definition-numeric.md",
-            "record-evidence-definition-direct-tables.md",
-            "record-evidence-definition-structured-tables.md",
-            "record-evidence-definition-summary-tables.md",
-            "record-evidence-definition-outputs.md",
-        )
-        self.assertIn("evidence.common.unsupported", presented)
-        for name in routed:
-            self.assertEqual(presented.count(f"references/{name}"), 1)
-        self.assertIn("use its transformation and source count", presented)
-        self.assertIn("one-source statistic", sources)
-        self.assertIn("consume several sources", sources)
-        self.assertNotIn("record-evidence-definition-numeric", sources)
-        self.assertIn("Use 1–8 ordered source objects", numeric)
-        for locator_key in (
-            "`path`",
-            "`select`",
-            "`where`",
-            "`identity`",
-            "`property`",
-            "`text`",
-            "`expect`",
-        ):
-            self.assertIn(locator_key, numeric)
+        for name in ("sources", "numeric", "direct-tables", "outputs"):
+            self.assertEqual(
+                presented.count(f"references/record-evidence-definition-{name}.md"), 1
+            )
+        self.assertIn("There is no summary", presented)
+        self.assertIn("recorded script", presented)
+        self.assertNotIn("--definition", presented)
         self.assertNotIn("references/operation-repair.md", presented)
-        self.assertNotIn("references/operation-reorganize.md", presented)
 
     def test_behavior_cases_match_current_artifact_evidence_contract(self) -> None:
         cases = CASES.read_text(encoding="utf-8")
@@ -318,11 +298,11 @@ class RecordSurfaceTests(unittest.TestCase):
         data = reference("file-data-index.md")
         repair = reference("operation-repair.md")
         cases = CASES.read_text(encoding="utf-8")
-        self.assertIn("Declare the artifact before", data)
+        self.assertIn("before running its producer", data)
         self.assertIn("pre-production state", cases)
         self.assertNotIn("--requires-reproduction", data)
         self.assertNotIn("--requires-reproduction", repair)
-        self.assertIn("Both require one structurally valid", repair)
+        self.assertIn("validates its unique producer", repair)
 
     def test_repair_routing_cases_cover_intent_and_operation_boundaries(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -396,9 +376,7 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn(
             "The cross-log table shows only finding-type", normalized_validate
         )
-        self.assertIn(
-            "Blocked and Failed counts below the table", normalized_validate
-        )
+        self.assertIn("Blocked and Failed counts below the table", normalized_validate)
         self.assertIn("A root run uses precedence 2, then 3", normalized_validate)
         self.assertIn("Whole-operation failure", records)
         self.assertIn("never reevaluate research files", normalized_validate)
@@ -421,9 +399,7 @@ class RecordSurfaceTests(unittest.TestCase):
             self.assertNotIn(implementation_detail, records)
 
     def test_human_operation_model_matches_the_skill(self) -> None:
-        guide = (PROJECT / "docs" / "research-logging.md").read_text(
-            encoding="utf-8"
-        )
+        guide = (PROJECT / "docs" / "research-logging.md").read_text(encoding="utf-8")
         naming = reference("file-entry-naming.md")
         self.assertIn("eight core operations", guide)
         self.assertIn("**Reproduce**", guide)
@@ -438,9 +414,9 @@ class RecordSurfaceTests(unittest.TestCase):
     def test_replace_removes_registries_before_old_artifacts(self) -> None:
         replace = reference("operation-replace.md")
         markdown = replace.index("remove the superseded Markdown")
-        evidence = replace.index("log evidence remove")
-        data = replace.index("log data remove")
-        retention = replace.index("log retention remove")
+        evidence = replace.index("log evidence delete")
+        data = replace.index("log data delete")
+        retention = replace.index("log retention delete")
         artifacts = replace.index("delete the explicitly\n   authorized old source")
         self.assertLess(markdown, evidence)
         self.assertLess(evidence, artifacts)

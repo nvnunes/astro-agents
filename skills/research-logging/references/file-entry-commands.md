@@ -300,17 +300,14 @@ Never create the retained log later from output held only in agent context. Do
 not create a CSV merely to transfer formatted text into an entry; retain
 structured data when it supports analysis, reuse, or provenance.
 
-Every material command input and output must have one matching named
-declaration. When adding a producerless input, ask whether it should be copied
-into the entry or referenced at its current local location, then use
-`<skill>/scripts/log data add-origin --path <log> --entry <entry-id> <name>
-<target>`. Before a producer runs, declare each generated output with
-`<skill>/scripts/log data add-generated --path <log> --entry <entry-id> <name>
-<target> --kind file|directory`. Use `<name>` instead of the raw path in both
-directions. The declaration records the identity rule and must be observable;
-after successful production, `pyrun` records the generated current observation
-in execution state. A later entry reuses the source declaration through `log data use`
-rather than copying it.
+Every retained input and output uses a matching named declaration. Author
+the command in Markdown first, then `log command sync --cid CID` with the
+needed --add-origin, --add-origin-directory, --add-origin-git,
+--add-generated, --add-generated-directory, or --add-from-entry clauses.
+Missing generated directories are declared by the directory variant, not by
+guessing their future kind. Require sync to succeed before execution; omit
+already known declarations or assert them consistently. See
+`references/file-data-index.md` for shared changes and identity policy.
 
 Do not register scripts as artifacts merely because they are executed. Register
 output-only results, command logs, and images as generated artifacts when a
@@ -379,12 +376,13 @@ log command sync --path <log> --entry <entry> --cid <cid> --dry-run
 
 Review both registry diffs, then repeat without `--dry-run`. Supply simple
 missing declarations with repeatable `--add-origin NAME=PATH` and
-`--add-generated NAME=PATH`. Safe local declaration corrections may use
-`--rename OLD=NEW` or `--remove NAME`; use `log data` when evidence,
-cross-entry references, specialized identities, or other CIDs are involved.
+`--add-generated NAME=PATH`, with directory variants for directories.
+Use `--change-target NAME=PATH` for a safe command-local target correction.
+Declaration rename and deletion use `log data rename/delete`; shared targets,
+specialized identities, boundaries and reproduction policies use `log data update`.
 
 When parameters disappear, sync refuses and reports one exact
-`--retire EXECUTION_ID` retry flag for every stale member. Pass all and only
+`--delete-execution EXECUTION_ID` retry flag for every stale member. Pass all and only
 those flags. Sync does not run the command or sample retained bytes. Changed or
 new recipes require reproduction; policy-only changes retain their current
 reproduction state.

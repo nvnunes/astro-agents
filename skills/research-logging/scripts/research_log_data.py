@@ -29,7 +29,7 @@ from validation.filesystem import (
 )
 from validation.json_codec import V2JsonError, canonical_json, decode_json
 
-DATA_SCHEMA = "research-log-data/v5"
+DATA_SCHEMA = "research-log-data/v6"
 EVIDENCE_COMPARISON_CONTRACT = "research-log-evidence-scoped-comparison/1"
 _MISSING = object()
 DIRECTORY_FINGERPRINT_SCHEMA = "research-log-directory-fingerprint/1"
@@ -245,7 +245,7 @@ class InputResource:
             "origin": self.origin,
         }
         if self.comparison is not None:
-            value["comparison"] = self.comparison.as_dict()
+            value["reproduction_comparison"] = self.comparison.as_dict()
         return value
 
     @property
@@ -653,7 +653,7 @@ def data_file_from_inputs(
 def data_file_from_fields(
     path: Path, *, entry_root: Path, fields: Mapping[str, object]
 ) -> DataFile:
-    """Decode accepted resolved data/v5 declarations without filesystem reads.
+    """Decode accepted resolved data/v6 declarations without filesystem reads.
 
     Accepted fields use direct resources only; a cross-entry source is retained
     as normal resource fields plus its resolved ``canonical_target``.
@@ -678,7 +678,7 @@ def data_file_from_fields(
             "name", "kind", "location", "identity", "origin", "canonical_target",
             "reference_entry",
         }
-        allowed = required | {"comparison"}
+        allowed = required | {"reproduction_comparison"}
         if not required <= set(value) <= allowed:
             _invalid(path, {"input": index, "fields": sorted(value)})
         target = value["canonical_target"]
@@ -686,7 +686,14 @@ def data_file_from_fields(
             _invalid(path, {"input": index, "target": target})
         direct = {
             key: value[key]
-            for key in {"name", "kind", "location", "identity", "origin", "comparison"}
+            for key in {
+                "name",
+                "kind",
+                "location",
+                "identity",
+                "origin",
+                "reproduction_comparison",
+            }
             if key in value
         }
         decoded = _decode_input(direct, f"{path}:inputs[{index}]", root)
@@ -1203,7 +1210,7 @@ def _decode_input(
     if set(value) == {"from_entry", "name"}:
         return _decode_reference(value, subject, entry_root, loading)
     required = {"name", "kind", "location", "identity", "origin"}
-    if not required <= set(value) <= required | {"comparison"}:
+    if not required <= set(value) <= required | {"reproduction_comparison"}:
         _invalid(subject, {"fields": sorted(value)})
     name = _name(value.get("name"), subject)
     kind = value.get("kind")
@@ -1221,14 +1228,16 @@ def _decode_input(
         kind=kind,
     )
     comparison = _decode_reproduction_comparison(
-        value["comparison"] if "comparison" in value else _MISSING,
+        value["reproduction_comparison"]
+        if "reproduction_comparison" in value
+        else _MISSING,
         subject,
     )
     if comparison is not None and (kind != "file" or origin):
         _invalid(
             subject,
             {
-                "comparison": comparison.as_dict(),
+                "reproduction_comparison": comparison.as_dict(),
                 "kind": kind,
                 "origin": origin,
             },
@@ -1304,7 +1313,7 @@ def _decode_reproduction_comparison(
         or value.get("contract") != EVIDENCE_COMPARISON_CONTRACT
         or value.get("profile") != "evidence"
     ):
-        _invalid(subject, {"comparison": value})
+        _invalid(subject, {"reproduction_comparison": value})
     return ReproductionComparison(EVIDENCE_COMPARISON_CONTRACT, "evidence")
 
 

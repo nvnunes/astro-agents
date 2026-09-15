@@ -61,21 +61,24 @@ for programmatic consumers.
 
 ## Correct The Source
 
-Use the owning action when it expresses the correction; otherwise edit the affected
-source records or script. Preserve the original in version control or a backup.
+Use the owning CLI action for valid registries; edit Markdown or scripts first
+when that action consumes them. Direct JSON editing is reserved for explicitly
+authorized malformed state the CLI cannot decode. Preserve the original in version control or a backup.
 
 | Defect | Owner |
 |---|---|
-| Input registration, target, or identity declaration | `log data` |
+| Missing command/evidence declaration | The consumer's `log command sync` or `log evidence sync` add clause |
+| Shared target, boundary, kind, identity, reproduction policy, rename, deletion | `log data` |
 | Retained execution-observation mismatch | Report the mismatch and request explicit Reproduce authority for confirmation; promotion or a fresh `./pyrun` requires a separately authorized researcher decision |
 | Evidence record or association | `log evidence` |
 | Disconnected-retention declaration | `log retention` |
 | Recorded execution policy or recipe | `log command sync`; edit Markdown first, then synchronize its CID |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
-Use ordinary `log data add-generated` for a retained output or a pre-production
-declaration. Both require one structurally valid, unambiguous same-log producer;
-registration does not accept output bytes or change execution observations.
+Use the producer's `log command sync --add-generated` or
+`--add-generated-directory` for a retained or pre-production output.
+The same call validates its unique producer and declares its target without
+accepting historical output bytes or changing execution observations.
 
 For command edits, read `references/file-entry-commands.md`, including “Write A
 Recorded Command” and “Synchronize A Recorded Command”; do not hand-edit

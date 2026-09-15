@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Literal, Mapping
@@ -74,8 +75,9 @@ def operation_lock(
     *,
     mode: LockMode = "exclusive",
     owner_factory: Callable[[], Mapping[str, object]] | None = None,
+    timeout_seconds: float = 0,
 ) -> Iterator[None]:
-    """Hold one stable generated operation lock without waiting.
+    """Hold one stable operation lock, optionally waiting for a bounded interval.
 
     An exclusive owner may publish bounded diagnostic metadata after acquiring
     the OS lock and before control reaches the protected operation. Contenders
@@ -88,15 +90,14 @@ def operation_lock(
         raise ValueError(f"invalid operation lock mode: {mode}")
     if owner_factory is not None and mode != "exclusive":
         raise ValueError("operation owner metadata requires an exclusive lock")
+    if timeout_seconds < 0 or timeout_seconds > 60:
+        raise ValueError("operation lock timeout must be between zero and 60 seconds")
     directory = _prepare_operation_directory(log_root)
     path = directory / name
     owner_path = directory / f"{name}.owner.json"
     with os.fdopen(_open_lock(path, create=True), "r+b") as handle:
         operation = fcntl.LOCK_SH if mode == "shared" else fcntl.LOCK_EX
-        try:
-            fcntl.flock(handle.fileno(), operation | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise OperationLockError(path, _read_lock_owner(owner_path)) from error
+        _acquire_lock(handle.fileno(), operation, path, owner_path, timeout_seconds)
         published_owner = False
         try:
             if owner_factory is not None:
@@ -111,6 +112,21 @@ def operation_lock(
                 except OSError:
                     pass
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_lock(
+    descriptor: int, operation: int, path: Path, owner_path: Path, timeout: float
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OperationLockError(path, _read_lock_owner(owner_path)) from error
+            time.sleep(min(0.05, remaining))
 
 
 def _publish_lock_owner(path: Path, owner: Mapping[str, object]) -> None:

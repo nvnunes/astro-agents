@@ -12,6 +12,7 @@ from research_log_cli_test_support import (
     run_log,
     run_pyrun_process,
 )
+from research_log_reservations import reserve_execution
 from validation.pyrun_state import load_pyrun_state
 
 
@@ -54,6 +55,197 @@ def sync(logical: Path, *extra: str):
 
 
 class LogCommandSyncTests(unittest.TestCase):
+    def test_pinned_git_origin_allows_outputs_beneath_repository_locator(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                "./pyrun --other-inputs baseline-commit -- scripts/build.py "
+                '--baseline-repository-input "<baseline>" '
+                '--baseline-commit "<baseline:commit>" --output-dir "<result>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Other\n\n`Steps:`\n\n```bash\n"
+                + "./pyrun --cid other -- scripts/build.py --output data/other.txt\n"
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            (root / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "tracked.txt"],
+                cwd=root,
+                check=True,
+                timeout=PROCESS_TIMEOUT_SECONDS,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Research Log Tests",
+                    "-c",
+                    "user.email=research-log@example.invalid",
+                    "commit",
+                    "-m",
+                    "fixture",
+                ],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                timeout=PROCESS_TIMEOUT_SECONDS,
+            )
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                text=True,
+                timeout=PROCESS_TIMEOUT_SECONDS,
+            ).strip()
+            arguments = (
+                "--add-origin-git",
+                f"baseline={commit}:{root}",
+                "--add-generated-directory",
+                "result=data/generated",
+            )
+
+            with reserve_execution(
+                root, entry, "other", (), (entry / "data/other.txt",)
+            ):
+                reservations = tuple(
+                    (root / ".cache/research-log-operations").glob(
+                        "ordinary-execution-*.json"
+                    )
+                )
+                reservation_bytes = {path: path.read_bytes() for path in reservations}
+                preview = sync(logical, *arguments, "--dry-run")
+
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                self.assertFalse((entry / "data.json").exists())
+                self.assertFalse((entry / "pyrun.json").exists())
+                published = sync(logical, *arguments)
+                self.assertEqual(published.returncode, 0, published.stderr)
+                resources = {
+                    item["name"]: item
+                    for item in json.loads(
+                        (entry / "data.json").read_text(encoding="utf-8")
+                    )["inputs"]
+                }
+                self.assertEqual(resources["baseline"]["identity"]["commit"], commit)
+                self.assertEqual(resources["baseline"]["kind"], "git-repository")
+                before = {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                }
+                repeated = sync(logical, *arguments)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                self.assertEqual(
+                    {name: (entry / name).read_bytes() for name in before}, before
+                )
+                self.assertFalse((entry / "data/generated").exists())
+
+                mirror = root / "mirror"
+                subprocess.run(
+                    ["git", "clone", "--quiet", str(root), str(mirror)],
+                    check=True,
+                    capture_output=True,
+                    timeout=PROCESS_TIMEOUT_SECONDS,
+                )
+                retargeted = run_log(
+                    root,
+                    "data",
+                    "update",
+                    "baseline",
+                    "--target",
+                    f"{commit}:{mirror}",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                )
+                self.assertEqual(retargeted.returncode, 0, retargeted.stderr)
+                document.write_text(
+                    document.read_text(encoding="utf-8")
+                    .replace("<baseline>", "<renamed>")
+                    .replace("<baseline:commit>", "<renamed:commit>"),
+                    encoding="utf-8",
+                )
+                rename_arguments = (
+                    "data",
+                    "rename",
+                    "baseline",
+                    "renamed",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                )
+                before_rename = {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                }
+                rename_preview = run_log(root, *rename_arguments, "--dry-run")
+                self.assertEqual(rename_preview.returncode, 0, rename_preview.stderr)
+                self.assertEqual(
+                    {name: (entry / name).read_bytes() for name in before_rename},
+                    before_rename,
+                )
+                renamed = run_log(root, *rename_arguments)
+                self.assertEqual(renamed.returncode, 0, renamed.stderr)
+                state = load_pyrun_state(
+                    entry / "pyrun.json", entry_root=entry, project_root=root
+                )
+                for execution in state.commands["build"].executions.values():
+                    self.assertIn("<renamed>", execution.recipe.parameters)
+                    self.assertIn("<renamed:commit>", execution.recipe.parameters)
+                    self.assertEqual(execution.recipe.inputs, ("renamed",))
+                renamed_resources = json.loads(
+                    (entry / "data.json").read_text(encoding="utf-8")
+                )["inputs"]
+                self.assertNotIn(
+                    "baseline", {item["name"] for item in renamed_resources}
+                )
+                renamed_resource = next(
+                    item for item in renamed_resources if item["name"] == "renamed"
+                )
+                self.assertEqual(renamed_resource["identity"]["commit"], commit)
+                self.assertEqual(
+                    {path: path.read_bytes() for path in reservations},
+                    reservation_bytes,
+                )
+
+    def test_live_file_and_directory_origins_still_reject_recorded_producers(
+        self,
+    ) -> None:
+        for kind in ("file", "directory"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                logical, entry, document = fixture(
+                    Path(directory), './pyrun scripts/build.py --input "<source>"'
+                )
+                source = entry / "data/source"
+                if kind == "directory":
+                    source.mkdir()
+                    (source / "member.txt").write_text("source\n", encoding="utf-8")
+                    output = "data/source/member.txt"
+                else:
+                    source.write_text("source\n", encoding="utf-8")
+                    output = "data/source"
+                document.write_text(
+                    document.read_text(encoding="utf-8")
+                    + "\n## Producer\n\n`Steps:`\n\n```bash\n"
+                    + f"./pyrun --cid other -- scripts/build.py --output {output}\n"
+                    + "```\n\n`Results:`\n\nPending.\n",
+                    encoding="utf-8",
+                )
+                flag = (
+                    "--add-origin-directory" if kind == "directory" else "--add-origin"
+                )
+
+                result = sync(logical, flag, "source=data/source", "--dry-run")
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("command.sync.origin.produced", result.stderr)
+                self.assertFalse((entry / "data.json").exists())
+                self.assertFalse((entry / "pyrun.json").exists())
+
     def test_help_exposes_only_sync(self) -> None:
         family = run_log(Path.cwd(), "command", "--help")
         action = run_log(Path.cwd(), "command", "sync", "--help")

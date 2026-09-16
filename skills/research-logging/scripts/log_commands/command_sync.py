@@ -879,6 +879,9 @@ def _require_origin_boundaries(
     index = build_producer_index(invocations)
     for name in added_names:
         resource = data.by_name[name]
+        # Pinned Git inputs identify commits, not the locator's live directory.
+        if resource.kind == "git-repository":
+            continue
         canonical = Path(resource.canonical_target).absolute().as_posix()
         owners = {item.identity for item in index.outputs.get(canonical, ())}
         owners.update(item.producer.identity for item in index.lookup(canonical))

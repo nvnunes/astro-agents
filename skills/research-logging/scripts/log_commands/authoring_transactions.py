@@ -81,14 +81,14 @@ def merge_data(
 
 
 def artifact_locations(data: DataFile | None, names: set[str]) -> tuple[Path, ...]:
-    """Select physical declared boundaries, including directory ancestors."""
+    """Select live file/directory boundaries, not pinned Git commit locators."""
 
     if data is None:
         return ()
     return tuple(
         Path(data.by_name[name].canonical_target)
         for name in names
-        if name in data.by_name
+        if name in data.by_name and data.by_name[name].kind != "git-repository"
     )
 
 
@@ -150,9 +150,9 @@ def _registry_change_paths(
         candidate = after.get(name, {})
         if _physical_fields(prior) == _physical_fields(candidate):
             continue
-        if name in old:
+        if name in old and old[name].kind != "git-repository":
             paths.append(Path(old[name].canonical_target))
-        if "location" in candidate:
+        if "location" in candidate and candidate.get("kind") != "git-repository":
             paths.append((entry.root / candidate["location"]).resolve())
         elif "from_entry" in candidate:
             source = resolve_entry(entry.log, candidate["from_entry"])
@@ -161,6 +161,10 @@ def _registry_change_paths(
 
 
 def _physical_fields(fields: Mapping[str, object]) -> dict[str, object]:
+    """Return declaration fields that define a live filesystem boundary."""
+
+    if fields.get("kind") == "git-repository":
+        return {}
     return {
         key: value for key, value in fields.items() if key != "reproduction_comparison"
     }

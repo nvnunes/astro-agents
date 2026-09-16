@@ -731,7 +731,7 @@ def _rename_token(value: str, old_name: str, new_name: str) -> str:
     if name != old_name:
         return value
     suffix = f":{projection}" if projection is not None else ""
-    return f"<{new_name}>{suffix}" + (f"/{member}" if member is not None else "")
+    return f"<{new_name}{suffix}>" + (f"/{member}" if member is not None else "")
 
 
 def _token_name(value: str) -> str | None:

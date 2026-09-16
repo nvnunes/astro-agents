@@ -453,11 +453,26 @@ def evidence_record_from_fields(
     """Decode one candidate record from raw authoring fields."""
 
     root = entry_root.resolve()
-    return _decode_record(
-        fields,
+    return evidence_record_from_canonical_fields(
+        fields=fields,
         subject=subject,
         entry_relative=_relative(root, log_root.resolve(), "entry root"),
     )
+
+
+def evidence_record_from_canonical_fields(
+    *,
+    subject: str,
+    entry_relative: str,
+    fields: Mapping[str, Any],
+) -> EvidenceRecord:
+    """Decode frozen canonical fields without consulting current filesystem roots.
+
+    Preparation already freezes the entry-relative owner. Reuse the same record
+    grammar for saved inspection; do not re-resolve roots from today's files.
+    """
+
+    return _decode_record(fields, subject=subject, entry_relative=entry_relative)
 
 
 def _read_evidence_json(path: Path) -> object:

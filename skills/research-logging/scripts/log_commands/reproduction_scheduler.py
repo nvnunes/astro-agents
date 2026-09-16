@@ -8,10 +8,10 @@ import secrets
 import sqlite3
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Literal, Mapping, Sequence, cast
+from typing import Callable, Iterator, Literal, Mapping, Sequence, cast
 
 from validation.operation_state import (
     OperationLockError,
@@ -21,16 +21,21 @@ from validation.operation_state import (
 
 from .context import ENTRY_ID_RE
 from .model import ActionError
-from .reproduction_job_storage import (
+from .reproduction_job_control import (
     AcceptedSchedulingProjection,
-    CheckpointProjection,
     ExecutionIdentity,
     ExecutionPermitAttachment,
     JobStoreError,
-    LockedJobStore,
-    SchedulerOwnerProjection,
-    open_locked_job,
 )
+from .reproduction_work_job import (
+    PERMIT_ADMISSION_PHASES,
+    LockedWorkJob,
+    WorkPermitCheckpoint,
+    WorkSchedulerOwner,
+    open_work_job,
+)
+
+JobOpener = Callable[[Path], AbstractContextManager[LockedWorkJob]]
 
 SCHEDULER_STORE_VERSION = 2
 SCHEDULER_DATABASE_NAME = "reproduction-scheduler.sqlite"
@@ -175,23 +180,42 @@ class _SchedulingRequest:
     supervisor_pid: int
 
 
-def poll_permit(
+def poll_work_permit(
     run_root: Path,
     request: SchedulerPermitRequest,
     *,
     checkpointed_at: str,
     expected_state: Literal["absent", "stopped"],
 ) -> SchedulerDecision:
-    """Atomically lock grant admission through exact run-local attachment."""
+    """Admit native Job4 work using the shared fairness and conflict rules.
+
+    Only the native job authority is opened, including other dead permit owners.
+    Unsupported jobs require explicit resolution; no version fallback occurs.
+    """
+
+    return _poll_with_job(
+        run_root, request, checkpointed_at, expected_state, open_work_job
+    )
+
+
+def _poll_with_job(
+    run_root: Path,
+    request: SchedulerPermitRequest,
+    checkpointed_at: str,
+    expected_state: Literal["absent", "stopped"],
+    open_job: JobOpener,
+) -> SchedulerDecision:
 
     _validate_scheduler_request(request)
     if not _timestamp(checkpointed_at) or expected_state not in {"absent", "stopped"}:
         raise ActionError("reproduction.scheduler.invalid", "invalid permit attachment")
     with _coordinator_lock(request.identity.project_root):
-        with open_locked_job(run_root) as store:
+        with open_job(run_root) as store:
             _validate_accepted_request(store, run_root, request)
             with _open_scheduler_database(request.identity.project_root) as db:
-                decision = _poll_permit_locked(db, request, run_root.resolve(), store)
+                decision = _poll_permit_locked(
+                    db, request, run_root.resolve(), store, open_job=open_job
+                )
             if decision.disposition == "granted":
                 assert decision.permit is not None
                 _after_scheduler_grant_before_attach(decision, store)
@@ -213,14 +237,20 @@ def _poll_permit_locked(
     db: sqlite3.Connection,
     request: SchedulerPermitRequest,
     current_run_root: Path,
-    current_store: LockedJobStore,
+    current_store: LockedWorkJob,
+    *,
+    open_job: JobOpener = open_work_job,
 ) -> SchedulerDecision:
     """Compute and commit one scheduler decision under the caller's mutex."""
 
     db.execute("BEGIN")
     _audit_scheduler_state(db, request.identity.project_root)
     removed_permits = _recoverable_dead_permit_ids(
-        db, request.identity.project_root, current_run_root, current_store
+        db,
+        request.identity.project_root,
+        current_run_root,
+        current_store,
+        open_job=open_job,
     )
     removed_waiters = _dead_waiter_tickets(db)
     existing = _permit_for_identity(db, request.identity)
@@ -236,7 +266,7 @@ def _poll_permit_locked(
 
 
 def _validate_accepted_request(
-    store: LockedJobStore, run_root: Path, request: SchedulerPermitRequest
+    store: LockedWorkJob, run_root: Path, request: SchedulerPermitRequest
 ) -> None:
     accepted = store.load_accepted_scheduling(
         ExecutionIdentity(
@@ -271,8 +301,7 @@ def _validate_accepted_request(
     if (
         owner.run_id != request.identity.run_id
         or owner.status is not None
-        or owner.phase
-        not in {"accepted", "planning", "preflight", "executing", "comparing"}
+        or owner.phase not in PERMIT_ADMISSION_PHASES
         or owner.stop_requested_at is not None
         or owner.owner is None
         or owner.owner.state != "running"
@@ -608,15 +637,22 @@ def cancel_run_waiters(project_root: Path, run_id: str) -> SchedulerDelta | None
             return SchedulerDelta(removed_waiter_tickets=tickets)
 
 
-def reconcile_run_admission(
+def reconcile_work_admission(
     project_root: Path, run_root: Path
 ) -> SchedulerDelta | None:
-    """Reconcile every coordinator row for one dead run before terminalization."""
+    """Reconcile native grants using only native owner and accepted claim proof."""
+
+    return _reconcile_run_with_job(project_root, run_root, open_work_job)
+
+
+def _reconcile_run_with_job(
+    project_root: Path, run_root: Path, open_job: JobOpener
+) -> SchedulerDelta | None:
 
     removed_waiters: list[int] = []
     removed_permits: list[str] = []
     with _coordinator_lock(project_root):
-        with open_locked_job(run_root) as store:
+        with open_job(run_root) as store:
             owner = store.load_scheduler_owner()
             with _open_scheduler_database(project_root) as db:
                 _audit_scheduler_state(db, project_root)
@@ -718,7 +754,7 @@ def reconcile_run_admission(
 
 def reconcile_permit(
     identity: SchedulerIdentity,
-    owner_projection: SchedulerOwnerProjection,
+    owner_projection: WorkSchedulerOwner,
 ) -> SchedulerReconciliation:
     """Reconcile only an exact terminal permit across scheduler and run state."""
 
@@ -761,8 +797,8 @@ def reconcile_permit(
 def _reconcile_scheduler_state(
     db: sqlite3.Connection,
     identity: SchedulerIdentity,
-    owner: SchedulerOwnerProjection,
-    checkpoint: CheckpointProjection | None,
+    owner: WorkSchedulerOwner,
+    checkpoint: WorkPermitCheckpoint | None,
     has_running_worker: bool,
 ) -> SchedulerReconciliation:
     current = _permit_for_identity(db, identity)
@@ -787,7 +823,7 @@ def _reconcile_scheduler_state(
 
 def _reconcile_waiter(
     db: sqlite3.Connection,
-    owner: SchedulerOwnerProjection,
+    owner: WorkSchedulerOwner,
     waiter: sqlite3.Row,
     has_running_worker: bool,
 ) -> SchedulerReconciliation:
@@ -806,12 +842,12 @@ def _reconcile_waiter(
 
 
 def _reconcile_absent_permit(
-    checkpoint: CheckpointProjection | None, has_running_worker: bool
+    checkpoint: WorkPermitCheckpoint | None, has_running_worker: bool
 ) -> SchedulerReconciliation:
     if checkpoint is None:
         return SchedulerReconciliation(None, None)
     if (
-        checkpoint.state in {"succeeded", "failed", "stopped"}
+        checkpoint.state in {"succeeded", "failed", "completed", "stopped"}
         and not has_running_worker
     ):
         return SchedulerReconciliation(checkpoint.permit_id, None)
@@ -824,7 +860,7 @@ def _reconcile_absent_permit(
 def _reconcile_unattached_permit(
     db: sqlite3.Connection,
     identity: SchedulerIdentity,
-    owner: SchedulerOwnerProjection,
+    owner: WorkSchedulerOwner,
     current: SchedulerPermitProjection,
     has_running_worker: bool,
 ) -> SchedulerReconciliation:
@@ -849,7 +885,7 @@ def _reconcile_attached_permit(
     db: sqlite3.Connection,
     identity: SchedulerIdentity,
     current: SchedulerPermitProjection,
-    checkpoint: CheckpointProjection,
+    checkpoint: WorkPermitCheckpoint,
     has_running_worker: bool,
 ) -> SchedulerReconciliation:
     if checkpoint.permit_id != current.permit_id:
@@ -859,7 +895,10 @@ def _reconcile_attached_permit(
         )
     if checkpoint.state == "active":
         return SchedulerReconciliation(None, None)
-    if checkpoint.state not in {"succeeded", "failed", "stopped"} or has_running_worker:
+    if (
+        checkpoint.state not in {"succeeded", "failed", "completed", "stopped"}
+        or has_running_worker
+    ):
         raise ActionError(
             "reproduction.scheduler.reconciliation_required",
             "terminal scheduler permit retains live ownership",
@@ -1151,7 +1190,9 @@ def _recoverable_dead_permit_ids(
     db: sqlite3.Connection,
     project_root: Path,
     current_run_root: Path,
-    current_store: LockedJobStore,
+    current_store: LockedWorkJob,
+    *,
+    open_job: JobOpener = open_work_job,
 ) -> tuple[str, ...]:
     permit_ids: list[str] = []
     for permit in _dead_permits(db, project_root):
@@ -1160,7 +1201,7 @@ def _recoverable_dead_permit_ids(
             if run_root == current_run_root:
                 owner = current_store.load_scheduler_owner()
             else:
-                with open_locked_job(run_root) as store:
+                with open_job(run_root) as store:
                     owner = store.load_scheduler_owner()
         except (JobStoreError, OSError) as error:
             raise ActionError(
@@ -1194,7 +1235,7 @@ def _dead_permit_run_root(
 
 
 def _require_recoverable_dead_permit(
-    permit: SchedulerPermitProjection, owner: SchedulerOwnerProjection
+    permit: SchedulerPermitProjection, owner: WorkSchedulerOwner
 ) -> None:
     identity = permit.identity
     matching_checkpoints = tuple(
@@ -1520,13 +1561,13 @@ def _before_scheduler_commit(_operation: str, _db: sqlite3.Connection) -> None:
 
 
 def _after_scheduler_grant_before_attach(
-    _decision: SchedulerDecision, _store: LockedJobStore
+    _decision: SchedulerDecision, _store: LockedWorkJob
 ) -> None:
     """Test injection point after scheduler commit and before run attachment."""
 
 
 def _after_run_permit_attachment(
-    _decision: SchedulerDecision, _store: LockedJobStore
+    _decision: SchedulerDecision, _store: LockedWorkJob
 ) -> None:
     """Test injection point after run attachment and before poll return."""
 

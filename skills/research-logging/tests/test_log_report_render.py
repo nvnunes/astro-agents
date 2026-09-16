@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from log_commands.context import LogContext
 from log_commands.model import ActionError
-from log_commands.reproduction_report_render import render_reproduction_report
+from log_commands.reproduction_saved_report import render_saved_report
+from log_commands.reproduction_saved_storage import publish_saved_run
 from log_commands.validation_cli import render_validation
-from research_log_result_store import result_snapshot, result_transaction
-from research_log_result_store import results_lock as store_results_lock
+from research_log_result_store import result_snapshot
 from research_log_validation_test_support import mechanical_log
+from test_reproduction_canonical_records import mixed_run
 from validation.controller import ValidationRequest, validate
 from validation.domain import (
     CheckDiagnostic,
@@ -108,82 +110,71 @@ class ReportRenderRecoveryTests(unittest.TestCase):
             report = root / "reproduction.md"
             report.write_text("prior report\n", encoding="utf-8")
             _reproduction_result(root)
-            log = SimpleNamespace(root=root, summary=root / "study.md")
+            log = LogContext(root.with_suffix(".md"), root)
 
             with (
                 mock.patch(
-                    "log_commands.reproduction_report_render."
-                    "compose_reproduction_render_input",
+                    "log_commands.reproduction_saved_report.compose_saved_report",
                     return_value="new report\n",
                 ),
                 mock.patch(
-                    "log_commands.reproduction_report_render.atomic_write_texts",
+                    "log_commands.reproduction_saved_report.atomic_write_texts",
                     side_effect=OSError("injected write failure"),
                 ),
                 self.assertRaisesRegex(ActionError, "injected write failure") as raised,
             ):
-                render_reproduction_report(log)
+                render_saved_report(log)
 
             self.assertEqual(report.read_text(encoding="utf-8"), "prior report\n")
             self.assertFalse(_has_marker(root))
-            self.assertEqual(raised.exception.code, "reproduction.report.write_failed")
+            self.assertEqual(raised.exception.code, "results.report.write_failed")
 
     def test_retry_writes_report_and_records_marker_without_reproduction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "log"
             root.mkdir()
             _reproduction_result(root)
-            log = SimpleNamespace(root=root, summary=root / "study.md")
+            log = LogContext(root.with_suffix(".md"), root)
 
             with mock.patch(
-                "log_commands.reproduction_report_render."
-                "compose_reproduction_render_input",
+                "log_commands.reproduction_saved_report.compose_saved_report",
                 return_value="rendered only\n",
             ) as report:
-                render_reproduction_report(log)
+                render_saved_report(log)
 
             self.assertEqual(
                 (root / "reproduction.md").read_text(encoding="utf-8"),
                 "rendered only\n",
             )
             self.assertTrue(_has_marker(root))
-            report.assert_called_once_with(log)
+            report.assert_called_once()
+            self.assertEqual(report.call_args.args[0].run, _saved_result(root))
 
-    def test_reproduction_source_composition_precedes_results_lock(self) -> None:
+    def test_reproduction_render_uses_saved_facts_without_live_composition(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "log"
             root.mkdir()
             _reproduction_result(root)
-            log = SimpleNamespace(root=root, summary=root / "study.md")
-            active = False
-
-            @contextmanager
-            def observed_lock(path: Path):
-                nonlocal active
-                with store_results_lock(path):
-                    active = True
-                    try:
-                        yield
-                    finally:
-                        active = False
-
-            def compose_source_inputs(_log: object) -> str:
-                self.assertFalse(active)
-                return "source-stable report\n"
+            log = LogContext(root.with_suffix(".md"), root)
 
             with (
                 mock.patch(
-                    "log_commands.reproduction_report_render.results_lock",
-                    observed_lock,
+                    "log_commands.reproduction_planner.plan_reproduction_work",
+                    side_effect=AssertionError("must not replan current sources"),
                 ),
                 mock.patch(
-                    "log_commands.reproduction_report_render."
-                    "compose_reproduction_render_input",
-                    side_effect=compose_source_inputs,
+                    "log_commands.reproduction_work_supervision.execute_work_plan",
+                    side_effect=AssertionError("must not reproduce"),
                 ),
             ):
-                render_reproduction_report(log)
+                report = render_saved_report(log)
 
+            self.assertIn("Commands — 7", report)
+            self.assertIn("Artifacts — 4", report)
+            self.assertIn("Previous failure — 1", report)
+            self.assertEqual((root / "reproduction.md").read_text(), report)
             self.assertTrue(_has_marker(root))
 
     def test_validation_render_uses_the_stored_projection_after_source_mutation(
@@ -240,8 +231,18 @@ class ReportRenderRecoveryTests(unittest.TestCase):
 
 
 def _reproduction_result(root: Path) -> None:
-    with result_transaction(root) as db:
-        db.execute("INSERT INTO store_state VALUES ('reproduction', 1, 'study.md')")
+    publish_saved_run(root, _saved_result(root))
+
+
+def _saved_result(root: Path):
+    run = mixed_run()
+    return replace(
+        run,
+        summary=str(root.with_suffix(".md")),
+        commands=tuple(
+            replace(command, project_root=str(root.parent)) for command in run.commands
+        ),
+    )
 
 
 def _publish_clear_snapshot(root: Path, summary: Path) -> None:

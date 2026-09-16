@@ -432,20 +432,24 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
             plan = run_log(
                 project,
                 "reproduce",
+                "plan",
                 "--path",
                 str(log),
                 "--include-all",
-                "--dry-run",
+                "--format",
+                "json",
             )
             self.assertEqual(plan.returncode, 0, plan.stderr)
             plan_payload = payload(plan)
+            self.assertEqual(plan_payload["commands"]["ready_to_run"], 0)
+            self.assertEqual(plan_payload["commands"]["blocked"], 2)
             self.assertEqual(
-                plan_payload["schema"], "research-log-reproduction-plan/11"
+                {item["identity"]["cid"] for item in plan_payload["items"]},
+                {"build", "summarize"},
             )
-            self.assertEqual(plan_payload["executions"], [])
             self.assertEqual(
-                {item["reason"] for item in plan_payload["failures"]},
-                {"dependency_failed", "direct_input_changed"},
+                {item["reason"] for item in plan_payload["items"] if item["reason"]},
+                {"direct_input_changed"},
             )
             batch = run_log(
                 project,

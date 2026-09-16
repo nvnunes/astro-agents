@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence, cast
 
 from research_log_result_store import (
-    STORE_VERSION,
+    UNCHANGED_DOMAIN_STORE_VERSIONS,
     ResultStoreError,
     result_snapshot,
     result_transaction,
@@ -76,9 +76,7 @@ def rejected_producer_message(commands: tuple[dict[str, Any], ...]) -> str:
         "These arguments have no declared input/output role. Declare their actual "
         "roles using --other-inputs or --other-outputs."
     )
-    return "\n".join(
-        line[:240] + ("…" if len(line) > 240 else "") for line in lines
-    )
+    return "\n".join(line[:240] + ("…" if len(line) > 240 else "") for line in lines)
 
 
 def publish_command_diagnostic(  # noqa: PLR0913 -- closed command record contract
@@ -114,7 +112,10 @@ def publish_command_diagnostic(  # noqa: PLR0913 -- closed command record contra
     stored_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     with results_lock(log_root):
         with result_transaction(log_root) as db:
-            if int(db.execute("PRAGMA user_version").fetchone()[0]) != STORE_VERSION:
+            if (
+                int(db.execute("PRAGMA user_version").fetchone()[0])
+                not in UNCHANGED_DOMAIN_STORE_VERSIONS
+            ):
                 raise ValueError(
                     "command diagnostics require replacement validation storage"
                 )
@@ -175,7 +176,7 @@ def load_command_diagnostic(
     try:
         with result_snapshot(log_root) as db:
             version = int(db.execute("PRAGMA user_version").fetchone()[0])
-            if version != STORE_VERSION:
+            if version not in UNCHANGED_DOMAIN_STORE_VERSIONS:
                 raise ResultStoreError(
                     "command.diagnostic.schema.unsupported",
                     f"store version {version} is unsupported",

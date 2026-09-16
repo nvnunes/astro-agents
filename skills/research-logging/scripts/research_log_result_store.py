@@ -21,6 +21,7 @@ from validation.operation_state import operation_lock
 
 STORE_VERSION = 19
 REPLACEABLE_STORE_VERSIONS = frozenset({17, 18})
+UNCHANGED_DOMAIN_STORE_VERSIONS = frozenset({19, 20})
 _COMPANIONS = ("-journal", "-wal", "-shm")
 
 _SHARED_DDL = """
@@ -36,119 +37,6 @@ CREATE TABLE report_materializations (
     content_sha256 TEXT NOT NULL,
     rendered_at TEXT NOT NULL
 );
-CREATE TABLE reproduction_metadata (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    summary TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE TABLE reproduction_runs (
-    run_pk INTEGER PRIMARY KEY CHECK(run_pk >= 1),
-    run_id TEXT UNIQUE NOT NULL,
-    target_kind TEXT NOT NULL,
-    target_entry TEXT,
-    target_cid TEXT,
-    target_execution_id TEXT,
-    include_all INTEGER NOT NULL CHECK(include_all IN (0, 1)),
-    status TEXT NOT NULL,
-    accepted_at TEXT NOT NULL,
-    finished_at TEXT,
-    folder_path TEXT NOT NULL,
-    artifact_matched INTEGER NOT NULL,
-    artifact_changed INTEGER NOT NULL,
-    artifact_failed INTEGER NOT NULL,
-    artifact_comparison_failed INTEGER NOT NULL,
-    artifact_skipped INTEGER NOT NULL,
-    command_not_automatic INTEGER,
-    command_reproduction_not_needed INTEGER,
-    command_unchanged_failed INTEGER,
-    command_unchanged_blocked INTEGER,
-    command_succeeded INTEGER,
-    command_failed INTEGER,
-    command_blocked INTEGER,
-    command_total INTEGER
-);
-CREATE TABLE reproduction_run_commands (
-    run_pk INTEGER NOT NULL,
-    entry TEXT NOT NULL,
-    cid TEXT NOT NULL,
-    execution_id TEXT NOT NULL,
-    plan_order INTEGER NOT NULL CHECK(plan_order >= 0),
-    bucket TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    terminal_disposition TEXT,
-    source_digest TEXT,
-    auto_reproduce INTEGER CHECK(auto_reproduce IN (0, 1)),
-    cwd TEXT,
-    exclusive INTEGER CHECK(exclusive IN (0, 1)),
-    prior_disposition TEXT,
-    queued INTEGER CHECK(queued IN (0, 1)),
-    requires_reproduction INTEGER CHECK(requires_reproduction IN (0, 1)),
-    run_selection TEXT,
-    details_json TEXT NOT NULL,
-    recipe_json TEXT,
-    PRIMARY KEY(run_pk, entry, cid, execution_id),
-    FOREIGN KEY(run_pk) REFERENCES reproduction_runs(run_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE reproduction_run_executions (
-    run_pk INTEGER NOT NULL,
-    entry TEXT NOT NULL,
-    cid TEXT NOT NULL,
-    execution_id TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    started_at TEXT,
-    finished_at TEXT,
-    elapsed_seconds REAL,
-    PRIMARY KEY(run_pk, entry, cid, execution_id),
-    FOREIGN KEY(run_pk) REFERENCES reproduction_runs(run_pk) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE TABLE reproduction_execution_results (
-    entry TEXT NOT NULL,
-    cid TEXT NOT NULL,
-    execution_id TEXT NOT NULL,
-    disposition TEXT NOT NULL,
-    source_digest TEXT NOT NULL,
-    recorded_at TEXT NOT NULL,
-    producing_run_id TEXT NOT NULL,
-    PRIMARY KEY(entry, cid, execution_id)
-) WITHOUT ROWID;
-CREATE TABLE reproduction_artifact_results (
-    entry TEXT NOT NULL,
-    artifact TEXT NOT NULL,
-    cid TEXT,
-    execution_id TEXT,
-    outcome TEXT NOT NULL,
-    reason TEXT,
-    recorded_at TEXT NOT NULL,
-    producing_run_id TEXT NOT NULL,
-    comparison_contract TEXT,
-    comparison_profile TEXT,
-    expected_json TEXT,
-    regenerated_json TEXT,
-    evidence_contract TEXT,
-    evidence_definition TEXT,
-    PRIMARY KEY(entry, artifact)
-) WITHOUT ROWID;
-CREATE TABLE reproduction_comparison_evidence (
-    entry TEXT NOT NULL,
-    artifact TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    record_id TEXT,
-    retained_json TEXT NOT NULL,
-    regenerated_json TEXT NOT NULL,
-    tolerance_json TEXT NOT NULL,
-    matched INTEGER NOT NULL CHECK(matched IN (0, 1)),
-    PRIMARY KEY(entry, artifact, position),
-    FOREIGN KEY(entry, artifact)
-        REFERENCES reproduction_artifact_results(entry, artifact) ON DELETE CASCADE
-) WITHOUT ROWID;
-CREATE INDEX reproduction_runs_order
-    ON reproduction_runs(finished_at DESC, accepted_at DESC, run_id DESC);
-CREATE INDEX reproduction_run_commands_order
-    ON reproduction_run_commands(run_pk, plan_order);
-CREATE INDEX reproduction_run_executions_order
-    ON reproduction_run_executions(run_pk, position);
-CREATE INDEX reproduction_artifact_outcome
-    ON reproduction_artifact_results(outcome, entry, artifact);
 """
 
 _VALIDATION_V19_DDL = """
@@ -563,7 +451,10 @@ def _open_configured(path: Path, *, writable: bool) -> sqlite3.Connection:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version == 0 and writable:
             return db
-        if version not in {*REPLACEABLE_STORE_VERSIONS, STORE_VERSION}:
+        if version not in {
+            *REPLACEABLE_STORE_VERSIONS,
+            *UNCHANGED_DOMAIN_STORE_VERSIONS,
+        }:
             raise ResultStoreError(
                 "results.schema.unsupported", f"store version {version} is unsupported"
             )
@@ -739,27 +630,11 @@ def clear_validation_snapshots(log_root: Path) -> None:
 def clear_reproduction_results(log_root: Path) -> None:
     """Clear only disposable reproduction rows and its derived report marker."""
 
+    from log_commands.reproduction_saved_storage import clear_saved_reproduction
+
     with results_lock(log_root):
         with result_transaction(log_root) as db:
-            tables = {
-                row[0]
-                for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
-            for table in (
-                "reproduction_comparison_evidence",
-                "reproduction_artifact_results",
-                "reproduction_execution_results",
-                "reproduction_run_executions",
-                "reproduction_run_commands",
-                "reproduction_runs",
-                "reproduction_metadata",
-            ):
-                if table in tables:
-                    db.execute(f"DELETE FROM {table}")
-            db.execute("DELETE FROM store_state WHERE domain='reproduction'")
-            db.execute("DELETE FROM report_materializations WHERE kind='reproduction'")
+            clear_saved_reproduction(db)
 
 
 def clear_result_store(log_root: Path) -> None:

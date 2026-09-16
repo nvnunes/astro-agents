@@ -14,8 +14,9 @@ The link contains no date, outcome, failure count, currentness claim, or
 contract version. It is the summary's complete reproduction surface and has no
 matching item in `## Contents`.
 
-Record initialization installs the link together with empty
-the reproduction domain in `.cache/results.sqlite` and a generated, source-controlled
-`reproduction.md` that states no run has completed. Record, Replace, Update
+Record initialization installs only the link, not an empty result domain or
+placeholder report. Reproduce creates saved state and the compact report through
+native publication or supported explicit confirmed-empty recovery.
+Record, Replace, Update
 Summary, Repair, and Reorganize preserve the line. Reproduce owns the generated
 machine and human surfaces but never changes this summary navigation.

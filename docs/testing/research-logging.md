@@ -12,6 +12,8 @@ The completed CLI simplification program has a durable
 [finding and scenario coverage index](research-logging-cli-simplification-coverage.md).
 The replacement validation model has a durable
 [contract-to-test coverage index](research-log-validation-model-coverage.md).
+The native reproduction model has a separate
+[contract-to-test coverage index](research-log-reproduction-model-coverage.md).
 
 ## Focused Contract And Validator Checks
 
@@ -130,38 +132,38 @@ evidence for a research-logging tool change.
 
 ## Reproduction Checks
 
-For reproduction planning, comparison, and staging development, run:
+For native reproduction work, planning, execution, comparison, saved storage and
+inspection development, run:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_log_reproduction_admission.py \
-  skills/research-logging/tests/test_log_reproduction_planning.py \
-  skills/research-logging/tests/test_reproduction_job_storage.py \
-  skills/research-logging/tests/test_log_reproduction_scheduler.py \
-  skills/research-logging/tests/test_log_reproduction_execution_selection.py \
-  skills/research-logging/tests/test_log_reproduction_comparison.py \
-  skills/research-logging/tests/test_log_reproduction_results.py \
-  skills/research-logging/tests/test_log_reproduction_jobs.py \
-  skills/research-logging/tests/test_log_reproduction_empty_recovery.py \
-  skills/research-logging/tests/test_log_reproduction_promotion.py \
-  skills/research-logging/tests/test_log_reproduction_publication.py \
-  skills/research-logging/tests/test_log_reproduction_queries.py
+  test_log_reproduction_admission \
+  test_reproduction_domain test_reproduction_canonical_records \
+  test_reproduction_model_preservation test_reproduction_native_planning \
+  test_reproduction_planning_matrix test_reproduction_planning_preservation \
+  test_reproduction_plan_preview test_reproduction_accepted_storage \
+  test_reproduction_observation_storage test_reproduction_work_job \
+  test_reproduction_command_results test_reproduction_artifact_results \
+  test_reproduction_comparison_diagnostics test_reproduction_completed_run \
+  test_reproduction_saved_storage test_reproduction_work_execution \
+  test_reproduction_work_supervision test_reproduction_work_recovery \
+  test_reproduction_work_publication test_reproduction_public_jobs \
+  test_reproduction_inspection test_log_reproduction_execution_selection \
+  test_log_reproduction_promotion test_research_log_evidence_comparison
 ```
 
-For consolidated result storage, render recovery, or scaffold changes, also run
-the focused store tests:
+For shared result storage, render recovery or scaffold changes, also run:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_research_log_result_store.py \
-  skills/research-logging/tests/test_log_reproduction_empty_recovery.py \
-  skills/research-logging/tests/test_log_report_render.py \
-  skills/research-logging/tests/test_log_scaffold.py
+  test_research_log_result_store test_log_report_render test_log_scaffold \
+  test_reproduction_saved_storage test_reproduction_work_publication \
+  test_reproduction_inspection test_reproduction_public_jobs
 ```
 
-This focused command supplements rather than replaces the complete tool gate.
+These focused commands supplement rather than replace the complete tool gate.
 
 For changes to the canonical validation model, publication lifecycle, saved
 queries, or public validation projections, run:
@@ -184,7 +186,7 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 This is the focused validation model, publication, read-model, and projection
 gate. It also supplements rather than replaces the complete tool gate.
 
-The reproduction suite uses fixed-plan fixtures. Its completion coverage must
+The reproduction suite uses native accepted-work fixtures. Its completion coverage must
 exercise finding-owned admission over the fresh validation snapshot and shared
 research graph, exact command/execution/output binding, cross-type batch
 independence, blocker dependency propagation, locked fresh preparation, strict
@@ -202,7 +204,9 @@ controlled-fixture suite outside any enclosing process-observation sandbox:
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_log_reproduction_execution.py
+  test_reproduction_work_execution test_reproduction_work_supervision \
+  test_reproduction_work_recovery test_reproduction_public_jobs \
+  test_log_reproduction_execution test_log_command_verify
 ```
 
 On macOS, explicitly exercise the production Seatbelt profile as a separate
@@ -212,8 +216,8 @@ host-confinement smoke test:
 REPRODUCTION_SANDBOX_TEST=1 \
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  skills/research-logging/tests/test_log_reproduction_execution.py \
-  skills/research-logging/tests/test_log_command_verify.py
+  test_reproduction_work_execution test_reproduction_public_jobs \
+  test_log_command_verify
 ```
 
 These tests use only generated projects and synthetic workers. The enabled

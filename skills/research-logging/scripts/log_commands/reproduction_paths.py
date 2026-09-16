@@ -5,11 +5,17 @@ from __future__ import annotations
 import re
 from datetime import date
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .reproduction_saved_run import SavedRun
 
 REPRODUCTION_ROOT_NAME = "reproduction"
 JOB_STATE_NAME = "state.sqlite"
 RUN_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 RUN_LEAF_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,319}\Z")
+
+
 def resolve_project_tmp(project_root: Path) -> Path:
     """Return one accessible regular project ``tmp`` directory.
 
@@ -77,6 +83,15 @@ def canonical_run_path(accepted_at: str, leaf: str) -> PurePosixPath:
     if not _valid_run_date(run_date) or RUN_LEAF_RE.fullmatch(leaf) is None:
         raise ValueError("invalid reproduction run path component")
     return PurePosixPath("tmp", REPRODUCTION_ROOT_NAME, run_date, leaf)
+
+
+def saved_run_path(run: SavedRun) -> PurePosixPath:
+    """Locate retained diagnostics from recorded coverage/time, not live recipes."""
+
+    return canonical_run_path(
+        run.accepted_at,
+        run_leaf(Path(run.summary).stem, run.target.entry, run.run_id),
+    )
 
 
 def run_leaf(log_name: str, entry: str | None, run_id: str) -> str:

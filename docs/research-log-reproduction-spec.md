@@ -1,99 +1,557 @@
 # Research-Log Reproduction Specification
 
-## Status And Authority
+This is the normative runtime contract for mechanical reproduction, accepted
+jobs, saved results, comparison, publication and promotion. Usage guidance
+belongs to [Research Logging](research-logging.md) and the research-logging skill.
+Verification commands and coverage belong to [Research-Logging Validation](testing/research-logging.md).
+Temporary implementation plans do not define runtime contracts.
 
-Status: active implementation specification. The serial reproduction workflow
-and its maintained-log cutovers are complete. The Phase 19 version 3 parallel
-scheduling implementation and maintained-corpus exclusivity metadata cutover
-are complete.
+The key words **must**, **must not**, **should**, and **may** are normative.
 
-This document is the normative implementation contract for mechanical
-research-log reproduction, the command-oriented `pyrun.json` record, durable
-reproduction jobs, comparison, publication, and promotion. Code, tests,
-generated records, public commands, and agent-facing projections must conform
-to it.
+## Replacement Reproduction Model
 
-The [mechanical reproduction concept](../tmp/research-log-pyrun-reproduction-concept.md)
-and completed [reproduction plan](../tmp/research-log-reproduction-plan.md)
-provide historical rationale and implementation context, not current migration
-instructions. This specification owns the durable runtime contract; active
-implementation plans own only their authorized sequencing, verification, and
-completion gates. It does not teach researchers how to use the workflow;
-`docs/research-logging.md` and `skills/research-logging/` own that guidance.
+Commands and artifacts are separate counted units. Owned problems explain
+work and observed outcomes; dependency and producer links carry effects without
+copying causes to every output. Selection, admission, retry, safety, comparison
+and publication behavior remain distinct from presentation.
 
-The Phase 1 contract and the final Phase 2 resource bounds are complete. The
-bounds are fixed versioned contract values recorded in
-[Fixed Resource Bounds](#fixed-resource-bounds), not descriptions of the live
-corpus. The compact completed-model format uses the existing exact directory
-profile with opaque-byte, JSON, and table member dispatch. It requires no new
-comparison family, non-exact equality, or change to execution identity,
-authority, or graph traversal.
+### Canonical Records And Versions
 
-The key words **must**, **must not**, **should**, and **may** describe normative
-requirements.
+The current formats are plan/12, result/12, job-store 4 and shared-store 20.
+Execution-state, worker, scheduler and comparison families retain their existing
+versions. No obsolete reproduction record is decoded, migrated or resumed.
+Unsupported saved results require a new
+`log reproduce run --path LOG --recheck`.
 
-## Contract Map
+An execution identity is the closed compound object `entry`, `cid`,
+`execution_id`. An artifact identity is `entry`, `artifact`, preserving existing
+entry-relative, `<project>/` and canonical absolute identities. Same execution
+digests in different entries or CIDs remain different units. Artifact totals
+count existing reachable cases, not automatically every declared output;
+complete declared outputs remain available for execution safety and promotion.
 
-- [Authority And Boundaries](#authority-and-boundaries) defines ownership and
-  the relationship among Markdown, JSON state, validation, and reproduction.
-- [`pyrun.json`](#pyrunjson) defines executable state, identity, observation,
-  policy, publication, and lifecycle operations.
-- [Current Contract Cutover](#current-contract-cutover)
-  distinguishes the one-time data/evidence conversion from retained
-  execution-state compatibility and the bounded promotion adapter.
-- [Discovery And Planning](#discovery-and-planning) defines targets, admission,
-  graph traversal, non-automatic boundaries, cycles, and dry runs.
-- [Durable Reproduction Jobs](#durable-reproduction-jobs) defines launch,
-  status, stop, resume, recovery, and exit semantics.
-- [Execution Safety](#execution-safety) defines run-local execution, network
-  denial, write confinement, and worker ownership.
-- [Artifact Comparison](#artifact-comparison) defines exact type-aware
-  comparison, the explicit evidence-scoped exception, and defensive failure
-  behavior.
-- [Results And Currentness](#results-and-currentness) defines cumulative
-  artifact outcomes and run history.
-- [Staging And Promotion](#staging-and-promotion) defines retained changed or
-  partial outputs and copy-based whole-execution promotion.
-- [Locking And Publication](#locking-and-publication) defines scope protection,
-  concurrent entry runs, and shared-state publication.
-- [Human And Agent Interfaces](#human-and-agent-interfaces) defines
-  `reproduction.md`, ready-to-present reports, and bounded machine queries.
-- [Compatibility And Evolution](#compatibility-and-evolution) defines the
-  cutover and extension boundaries.
+| Record | Closed Fields |
+| --- | --- |
+| Command work | `identity`, `execution`, `entry_root`, `project_root`, `data_declaration`, `selection`, `source_digest`, `dependencies`, `problem_ids` |
+| Artifact work | `identity`, `producer`, `output`, `retained_path`, `baseline`, `definition_identity`, `evidence_records`, `boundary`, `problem_ids` |
+| Problem | `subject`, `code`, `stage`, `observed`, `explanation`, `locations` |
+| Command result | `identity`, `outcome`, `started_at`, `finished_at`, `argv`, `cwd`, `stdout_path`, `stderr_path`, `outputs`, `problem_ids`, `blocked_by` |
+| Artifact result | `identity`, `outcome`, `recorded_at`, `origin_run_id`, `regenerated_path`, `profile`, `expected`, `regenerated`, `not_compared_reason`, `evidence`, `problem_ids`, `definition_identity` |
+| Accepted plan | `schema`, `summary`, `target`, `settings`, `admission`, `commands`, `artifacts`, `problems`, `materials`, `evidence_only`, `scheduling`, `reusable_artifact_results` |
+| Saved run | `schema`, `summary`, `run_id`, `target`, `settings`, `accepted_at`, `finished_at`, `status`, `commands`, `artifacts`, `command_results`, `artifact_results`, `problems` |
+
+`execution` retains the existing typed `PyrunExecution` recipe and observations;
+automatic/exclusive policy and the reproduction-need flag are not duplicated
+as separately authoritative flags. Resolved `data_declaration` uses the existing
+accepted data grammar. Evidence definitions and comparison observations retain
+their existing profile-specific grammars; their immutable enclosing records
+do not invent a second evidence model. The preparation/comparison boundary
+continues to validate these definitions using the existing evidence owner.
+
+Each artifact freezes only the records selected by its existing evidence
+comparison definition, including every applicable selector and tolerance.
+Unrelated artifact records are not copied into its packet. Frozen reconstruction
+uses that same single-resource definition; it does not require unrelated
+definitions to be reconstructed from this artifact's packet.
+
+An artifact's `producer` and declared `output` are either both known or both
+null. Known bindings point to an output declared by the accepted producer recipe;
+directory members retain that declared-directory binding rather than inventing
+a separate producer output. Saved inspection does not rediscover this relation.
+
+Targets are exactly `{"kind":"log","entry":null}` or
+`{"kind":"entry","entry":"e001"}`. Settings are exactly `include_all`,
+`recheck`, `jobs`, `execution_timeout_seconds`; booleans are not integer counts.
+Jobs are positive integers; the existing timeout range remains 1–604,800 seconds.
+Saved-run `status` is `complete`: stopped or operationally failed unpublished
+jobs remain lifecycle state and do not replace the default saved run.
+
+A problem subject is a discriminated command identity (`kind: command`),
+artifact identity (`kind: artifact`) or canonical source identity
+(`kind: source`, `path`). Its stages are `prepare`, `launch`, `capture`,
+`execute`, `materialize`, `compare`. Its derived local ID is `problem-` followed
+by SHA-256 of canonical subject/code/stage/observed facts. Wording, locations
+and consumer lists do not define identity. Complete code-specific finite JSON
+facts are deeply immutable; non-string object keys, unknown envelope fields,
+partial identities and noncanonical paths fail closed. Problem references
+retain deterministic mechanical precedence. Distinct observed causes remain
+distinct even on one subject; there is no fuzzy or cross-run causal deduplication.
+
+Preparation uses `research-log-reproduction-command-source/2` for the replacement
+source digest. It hashes the recorded execution, currentness observations,
+accepted materials, output comparison identities, dependencies and all currently
+observed owned preparation problem identities. It does not hash synthesized
+cases or a primary
+display reason. A change in a secondary observed cause therefore invalidates
+the same guard even when the compact primary reason stays unchanged. Wording
+and location-only changes do not alter problem identity.
+
+Retained previous-attempt/block diagnoses belong to immutable accepted history,
+not current source identity. They remain complete in the accepted work and its
+serialized plan without mutating preparation state or causing an unchanged
+previous failure/block to retry merely because its diagnosis is retained.
+
+Preparation reads the requested native latest origins once per origin, retaining
+only requested command/artifact facts and their owned prior root/prerequisite
+and comparison diagnoses, not a cache of whole historical runs. SQL preflight
+bounds the combined native payload bytes of all distinct origins at 64 MiB before
+any full-run authentication/deserialization. Retained requested facts also share
+the 64 MiB budget. Reads authenticate complete immutable origins; retention,
+not database transfer, is sparse. Previous blocks follow existing dependency
+edges: a currently unneeded prerequisite can own the retained cause, while its
+consumer carries no copied problem and unrelated history stays excluded.
+
+Saved runs remain immutable history. Minimal latest-command origins advance
+only for selected `run`/`blocked` work; latest-artifact origins advance only
+for recorded artifact results. A selected producer invalidates its previously
+indexed output observations. Nonselected previous failure/block keeps its
+original origin, rather than making the new no-attempt run appear to own it.
+
+Normal publication combines only accepted work and durable native observations.
+Missing terminal facts for runnable work prevent publication; they never become
+a fabricated match. Nonattempted artifacts derive their reason from the recorded
+producer. When that producer lies outside the accepted target, retained boundary
+context supplies `command-not-run` for `cross_entry`/`outside_queue` or
+`skipped-by-policy` for `non_automatic`, without inventing a command in the target.
+An ownerless diagnosed preparation/comparison inability retains its artifact
+cause as `comparison-failed`. A valid comparison frozen for reuse keeps its exact
+original run/time and observed facts.
+
+The closed mechanical problem codes are `baseline_unavailable`,
+`baseline_changed`, `boundary_changed`, `boundary_unavailable`, `capture_failed`,
+`comparator_error`, `content_changed`, `cross_log_generated_input`,
+`dependency_cycle`, `direct_input_changed`, `direct_input_unavailable`,
+`execution_exception`, `execution_failed`, `execution_timeout`,
+`evidence_comparison_failed`, `evidence_context_changed`, `generation_failed`,
+`graph_limit`, `missing_input`,
+`missing_producer`, `multiple_producers`, `output_materialization_failed`,
+`output_missing`, `participating_code_changed`, `participating_code_unavailable`,
+`reproduction.input.unavailable`, `resource_limit`, `safety_failure`,
+`script_changed`, `script_unavailable`, `unsupported_format`, `validation_blocked`.
+Policy, dependency effects, stop/cleanup and operational `reproduction.run.invalid`
+are not additional research-problem codes.
+
+Accepted admission retains its existing closed schema and complete per-command
+finding-owned decisions. Materials retain exact role/identity/kind/fingerprint
+and input selection fields; evidence-only observations retain their existing
+resource/selection/fingerprint and consuming definition identities. Scheduling
+rows contain exactly `identity`, `order`, `read_paths`, `write_paths`, `run_path`,
+`writable_paths`. Order preserves the existing complete one-based sequence and
+selected dependencies precede consumers. Policy flags and complete output sets
+are obtained from command work, not persisted again in scheduling rows.
+Only completed, inventory-qualified prior comparisons are eligible for reuse;
+their referenced diagnoses are retained with the accepted plan.
+
+Artifact results retain the exact accepted `definition_identity` when evidence
+defines the comparison, independently of the profile actually used. The original
+comparator first tries its byte/typed rule and invokes the evidence profile only
+for changed content; an equal text/array comparison still retains the accepted
+evidence definition. The identity is null when no evidence definition applies.
+This is the aggregate single-resource comparison identity. Individual retained
+evidence records keep their existing per-selector definition identities, which
+are a different identity space and are not required to equal the aggregate.
+This preserves the existing evidence-definition fact rather than inferring it
+from today's registry. Reuse is eligible only for nonselected work, the same
+accepted baseline, and exactly equal work/result `definition_identity` for every
+comparison profile, including matching null when no evidence definition applies.
+
+Native run-local acceptance stores normalized work/relationships and one
+canonical plan digest. Reconstruction must agree with that digest; valid but
+altered relationships or header facts are not silently reaccepted. Preparation
+and terminal observations reference one shared run-local problem store.
+Acceptance membership identifies only the problems frozen in the plan, so a
+runtime diagnosis cannot mutate the accepted plan. Terminal results retain their
+own canonical digests and exact command/artifact relationships. Transaction and
+operational checkpoint ownership remain with the job store.
+
+The native Job4 executor, `execute_work_recipe`, runs only same-identity
+frozen accepted work under the existing process, confinement, source/input and
+materialization guards. Native command result/problem and exited worker state
+commit atomically before scratch cleanup and caller-owned scheduler release.
+A terminal-write failure retains active scratch/grant ownership for recovery;
+a release failure retains the committed result and recovery state. Stopped work
+creates no terminal research result. Comparison submission is internal to
+`compare_work_outputs`, which binds accepted work and its generated workspace
+paths to the existing comparator rather than accepting caller-supplied results.
+Completed-run assembly reads only accepted/durable facts and requires cleaned,
+quiescent workers/grants, with SQL aggregate observation-byte preflight before
+decoding. Native scheduler admission/reconciliation uses the existing project
+fairness, conflict and ticket rules, with only accepted claims, supervisor,
+attached-grant and live-worker proof. It opens only native jobs, including dead
+permit owners; unsupported owners require explicit resolution, not fallback.
+Native stop/failure intent and fixed-plan resume remain operational controls,
+not research outcomes. The native execution-graph stage gets runnable identities
+and fixed worker/timeout settings from accepted work. Failed prerequisites retain
+only actual block links, without an invented dependent attempt. Completed work
+must pass the existing private-output currentness/materialization guards before
+reuse; a local stop becomes durable before waits are canceled. Native state
+operations serialize same-process threads before the existing nonblocking
+process mutex; external busy errors remain explicit.
+Native dead-owner recovery returns without mutations or process inspection for
+a live owner. It uses the existing run-ID-marked worker scan and termination,
+retains every survivor durably, and leaves permits, scratch and ownership open
+while cleanup is incomplete. Only an exhaustive no-survivor scan permits exact
+grant reconciliation, confined scratch cleanup and terminal ownership closure.
+Ordinary interruption becomes stopped, preserving any real operational failure;
+interrupted publication becomes the publication-only-resumable failure with its
+frozen journal intact. Recovery reads no research sources, replans nothing and
+executes nothing. Ordinary public launch/status/stop/resume and supervisor
+recovery consume this native accepted-job authority without an old-format fallback.
+
+The `supervise_work_job` lifecycle requires the exact live native owner
+and composes the fixed accepted execution graph, trusted comparison and native
+publication. Fresh/stopped routes use the accepted workspace and existing
+physical preflight; stop closes only quiescent stopped ownership and uncertain
+operational cleanup remains recoverable. Publication-only retry consumes frozen
+completed facts without opening a workspace, preflighting, executing or replanning.
+Ordinary `log reproduce run` freezes fresh native preparation and registers the
+actual detached supervisor before releasing its inherited start gate. The
+supervisor executes, compares the complete declared output set, acknowledges
+eligible reproduction-requirement clearing, and publishes immutable saved facts.
+Requirement clearing retains the exact accepted/current recipe and observation
+guard and job-then-entry lock order. Its acknowledgment follows the atomic pyrun
+flag write, so retry can acknowledge an already-cleared flag without executing.
+Complete production does not require equal outputs; partial/failed/blocked/stopped
+work cannot clear early. Native status exposes lifecycle/checkpoint progress and
+available retained diagnostics even before saved publication.
+
+Native publication commits an immutable saved run and advances the reproduction
+generation atomically. `publish_saved_run` replaces unsupported reproduction
+cache tables only, without translating old rows or changing validation and
+command-diagnostic domains. An exact run-ID retry or uncertain-acknowledgement
+lookup through `lookup_saved_run_generation` recognizes the committed run at
+the current generation; it does not reapply latest indexes or lower that
+generation after another run publishes. Conflicting facts for an existing run
+ID fail closed. Compact report materialization is subsequent and recoverable
+without execution or replanning. Native job publication additionally freezes its
+completion time before any shared write, acknowledging result and report
+generations in a minimal recovery journal, without copying the saved payload.
+`publish_work_job` retries the exact accepted/durable facts after lost result
+acknowledgment, report failure, terminal acknowledgment failure, or loss of the
+disposable shared result domain. Only actual report acknowledgment closes the
+job and supervisor lease; already completed publication is non-mutating.
+A publication failure can resume only with its frozen journal, complete durable
+facts, quiescent attempts and an absent or exited prior supervisor lease. Resume
+clears operational failure and returns to publishing; it cannot admit execution
+permits or replan. Ordinary job acceptance, supervision and publication now use
+this lifecycle. Explicit promotion resolves the native complete staged output
+observations and preserves the existing baseline/confinement/reservation and
+copy/rollback guards. It does not rewrite saved historical outcomes or their
+latest-observation indexes; report recovery renders the committed saved summary.
+
+Explicit whole-log recheck with no command or artifact work can replace obsolete
+reproduction history with an empty-confirmation receipt. The receipt records only
+canonical summary, confirmation time and domain generation; it invents no run or
+execution. Saved summary/report show confirmed zero totals, lists are empty and
+explicit run IDs remain missing. Absent or supported history remains unchanged.
+A receipt retry can recover an interrupted report write, and normal publication
+removes the receipt. Version 20 is the single replacement format, including this
+receipt table; incomplete staged schemas are not supported or migrated.
+
+Detail pages known recipe/result/diagnosis/output collections using `--section`
+and `--cursor`. Each page returns at most 50 items, exact matched/returned/remaining
+counts and a shell-safe continuation command. Cursors bind immutable run identity,
+compound item identity, domain generation, section and output format. The scalar
+outcome and primary explanation remain visible; collection paging changes no
+saved fact.
+
+Comparison diagnosis is captured during the existing comparison, not by an
+extra reporting pass. It includes the first available differing line, JSON
+path, table row, byte offset or directory member; expected/regenerated summaries
+are bounded and explicitly mark truncated values. Actual caught error type and
+message survive category classification. Evidence comparisons retain their
+existing complete per-evidence records and identify differing evidence IDs.
+The existing `kind` profile remains a valid unequal comparison. These additions
+do not change normalization, tolerances, equality, resource limits or baseline
+rejection. The caller still verifies the accepted evidence-only context before
+comparing outputs; changed context records `evidence_context_changed` rather
+than accepting a comparison against a different definition.
+
+Saved records retain one problem at its actual owner. Dependency and producer
+links carry effects; copied per-output failures, summary buckets, independently
+persisted accounting reasons and totals are absent. Unknown/duplicate identities
+and dangling references fail closed. Saved command results cover run-selected
+commands; locally blocked work may be represented by its preparation cause or
+a blocked result. Artifact results cover every counted artifact. A carried
+comparison retains its original run/time instead of pretending it was newly
+performed. A missing prior comparison never becomes an invented match.
+
+Terminal command results derive directly from the same-identity actual
+invocation, completion time and valid unique declared output observations,
+not by reconciling a second checkpoint outcome. Success requires zero exit,
+no execution/capture/materialization failure and the complete declared output
+set; missing outputs produce a failure naming the exact missing members.
+Failed execution retains valid partial outputs, original return code and caught
+code/type/message/stage. Capture name, required flag, error type and message
+remain in the command-owned diagnosis even when another error is primary.
+Materialization records the actual caught error in that same invocation.
+Stopped attempts produce no terminal research result; prerequisite-blocked
+commands retain only prerequisite links, never invented invocation/output facts.
+
+An artifact-owned preparation diagnosis may be referenced by its accepted
+producer when the baseline guard blocks that command; the single diagnosis
+remains artifact-owned. This uses the existing producer binding, not another
+causal graph. Unrelated owners and unreferenced diagnoses are invalid. Shared
+source diagnoses must refer to facts actually retained by their accepted consumers.
+
+### Classification And Count Equations
+
+Selection leaves are `run`, `blocked`, `not_needed`, `previous_failure`,
+`previous_block`, `skipped_by_policy`. Attempt outcomes are `succeeded`,
+`failed`, `blocked`; blocked means no attempt. Launch/capture/materialization
+failures inside an attempt are failed command results, not prerequisite blocks.
+A failed producer blocks dependent attempts through the existing dependency
+links. Independent work may proceed. Operational persistence and cleanup
+failures stay at run lifecycle ownership.
+
+The single command classifier derives `not-run`, `skipped-by-policy`,
+`succeeded`, `failed`, `blocked`. Not-run reasons are `not-needed`,
+`previous-failure`, `previous-block`; failed/blocked reasons are exact retained
+mechanical cause codes selected by deterministic existing precedence, never
+parsed from prose. Detail retains all contributing causes, not just that primary
+reason. `--status selected` means succeeded, failed or blocked.
+
+Artifact statuses are `matched`, `not-matched`, `not-compared`. Non-comparison
+reasons are exactly `command-failed`, `command-blocked`, `command-not-run`,
+`skipped-by-policy`, `comparison-failed`. Unequal outputs do not turn a succeeded
+command into a failed command. Completed comparisons retain profile and
+expected/regenerated observations; unequal/error comparisons retain their
+artifact-owned pinpointing diagnosis. Missing diagnostic files qualify
+availability, never the saved classification.
+
+The hierarchy obeys these equations over the complete recorded target:
+
+```text
+Commands total = Not run + Skipped by policy + Selected
+Not run = Not needed + Previous failure + Previous block
+Selected = Succeeded + Failed + Blocked
+Failed = sum(Failed reason counts)
+Blocked = sum(Blocked reason counts)
+Artifacts total = Matched + Not matched + Not compared
+Not compared = sum(Not compared reason counts)
+```
+
+Reason counts describe affected units, not the number of root problems. Counts,
+list status/reason filters and detail use the same classifier. Filter matching
+is exact primary-reason matching; filters do not search diagnostic prose or
+secondary causes. Unknown statuses/reasons and incompatible selector/filter
+combinations are errors. Plan counts instead describe Ready to run, Blocked,
+Not needed, Previous failure, Previous block and Skipped by policy; they predict
+neither successful execution nor artifact matches.
+
+### Ownership Mapping And Removal Conditions
+
+| Existing Family Or Representation | Replacement Owner And Preserved Meaning |
+| --- | --- |
+| `_Failure` script unavailable/changed | One execution-owned preparation problem with exact script path and expected/observed/error facts; shared source ownership when the exact script is shared. Affected work references it. |
+| Participating code unavailable/changed | One source-owned preparation problem per exact canonical code subject and observation, referenced by its consumers; same-basename unrelated files stay distinct. |
+| Missing/direct input unavailable or changed; retained boundary unavailable or changed | The actual input/source subject and its preparation facts; consumer prerequisites or ownerless artifact boundary cases retain their existing scope and eligibility. |
+| Missing/multiple producer; cross-log generated input; dependency cycle | The actual unresolved artifact/source or cycle-owned preparation cause, with existing producer/dependency links; no invented command for an ownerless artifact. Preserve local blocks and independent progress. |
+| Baseline unavailable/changed | Artifact-owned preparation/comparison diagnosis at the existing detection boundary; retain baseline guard behavior rather than allowing a different baseline. |
+| Validation exclusion | Retain each applicable blocking validation finding and its bounded diagnosis separately; affected command work references that finding-derived cause. Orphans stay nonblocking. Do not aggregate findings into a combined Reproduce problem or repair packet, or copy a finding into one failure per output. |
+| `non_automatic`, policy/outside-queue case | Selection/boundary handling, not an attempted failure. Preserve not-needed-before-policy precedence and include-all independence. |
+| `outside_entry` verified case | Existing accepted scope/boundary, not a failed command. Do not count a command outside the target just to own this artifact. |
+| Currentness / `requires_reproduction` / `source_digest` | Preparation only; exact need, unchanged failure/block suppression and complete source-closure invalidation. A match never decides command eligibility. |
+| Old command snapshot and synthesized `details` | Canonical command work; original recipe/data/roots and all problem references, without duplicated eligibility flags or case-derived reason lists. |
+| Checkpoint child exit, timeout, execution exception or generation failure | Command result and one command-owned attempted-execution problem with original stage/code/message/type, timing, invocation and available output/stream paths. |
+| Capture or output materialization failure/missing output | Command result and command-owned problem at capture/materialize stage; preserve partial output availability and attempt classification. |
+| Dependency skip / `dependency_failed` | Blocked command result with prerequisite references; affected artifacts are Not compared / Command blocked. Do not manufacture another root diagnosis. |
+| Equal/changed comparison | Artifact result Matched/Not matched, original profile/fingerprints/evidence observations; inequality has an artifact-owned bounded difference diagnosis. |
+| Comparator/evidence error, unsupported format or comparison resource failure | Artifact result Not compared / Comparison failed and artifact-owned problem retaining caught error type/message and available selector/member/row/key/shape observations. Equality/tolerances do not change. |
+| Graph/depth/resource limit or safety failure | Retain the existing local-vs-operational detection boundary: a local prerequisite diagnosis or an operation failure, never a blanket remapping based on the code alone. |
+| `stop_requested`, worker survived/cleanup incomplete, journal/callback failure | Private durable job lifecycle and operational diagnosis; no invented normally published command result. Resume/attempt/cleanup rules remain unchanged. |
+| Cumulative artifacts/current-run buckets/count reconciliation | Immutable per-run work/results/problems plus minimal latest identity indexes for retry/reuse. Saved inspection never reprojects current topology. |
+
+Planning and admission own current work and preparation problems.
+`reproduction_work_plan`, accepted storage and `reproduction_work_job`
+own immutable acceptance and genuine operational state. Physical execution and
+the original profile comparators own runtime observations.
+`reproduction_saved_storage` owns saved reproduction DDL/history;
+publication, inspection and report rendering consume those accepted and durable
+facts. There is no cumulative issue projection, adapter registry, extra causal
+graph or public problem browser.
+
+### Exact Synthetic Presentation Examples
+
+These examples fix expected presentation independently of the renderer. They
+are synthetic, not maintained research outcomes. Text uses the final log
+directory name and compact UTC month/day; JSON retains canonical full identities
+and timestamps. Explicit zeroes are not omitted. Reason labels are human-readable
+forms of the exact mechanical code; filtering still uses the code.
+
+The mixed saved fixture has seven commands: one of each Not run child, one
+policy exclusion, one success, one failed producer and its blocked consumer.
+The successful command has equal and unequal outputs; the other two artifacts
+were not compared. The consumer reaches the producer's one execution diagnosis
+through its prerequisite reference; it does not carry a copied diagnosis ID.
+
+```text
+Log: study
+Run: reproduce-mixed
+Saved: Sep 15
+Target: Log
+Status: Complete
+
+Commands — 7
+  Not run — 3
+    Not needed — 1
+    Previous failure — 1
+    Previous block — 1
+  Skipped by policy — 1
+  Selected — 3
+    Succeeded — 1
+    Failed — 1
+      Execution failed — 1
+    Blocked — 1
+      Execution failed — 1
+
+Artifacts — 4
+  Matched — 1
+  Not matched — 1
+  Not compared — 2
+    Command blocked — 1
+    Command failed — 1
+```
+
+The corresponding current-plan fixture instead has the producer's unavailable
+script disclosed before acceptance: one ready command and two blocked commands,
+with the same three Not run leaves and policy exclusion. Artifact total is four;
+the preview contains no predicted Matched/Not matched counts. Its first page is
+the complete five-item attention list (Ready, Blocked, Previous failure/block),
+with returned 5, remaining 0 and cursor null. The blocked consumer's explanation
+points to the producer's known unavailable script, not a fabricated new defect.
+
+```text
+Log: study
+Target: Log
+Commands — 7
+  Ready to run — 1
+  Blocked — 2
+  Not needed — 1
+  Previous failure — 1
+  Previous block — 1
+  Skipped by policy — 1
+Artifacts — 4
+```
+
+Command detail for the failed producer leads with `Failed — Producer exited
+with status 2.` It retains exact entry/CID/execution identity, the recorded
+`python scripts/producer.py` invocation and working directory, declared
+inputs/outputs, stage Execute, code `execution_failed`, observed return code 2,
+original timing and stdout/stderr locations. The consumer detail leads with
+Blocked and the same diagnosis plus its producer prerequisite reference; it
+does not imply the consumer ran. Missing stream files are explicitly unavailable
+while the retained return-code diagnosis stays visible. A cause with no recorded
+exception type does not acquire an invented exception type.
+
+Artifact detail for `e001/data/unequal.txt` leads with `Not matched — Line 3
+differs.` It identifies the successful producing command, retained and regenerated
+paths, Text comparison profile, expected/regenerated fingerprints and the retained
+observation `line: 3, expected: "2", actual: "3"`. A missing regenerated file
+qualifies availability, not the stored mismatch or its line/value diagnosis.
+
+Missing saved results have no run, target counts or invented zero outcomes:
+
+```text
+Log: study
+Saved results: Unavailable
+Reproduce this log to create saved results.
+```
+
+A confirmed empty saved log has complete identity/run/date/status and zero in
+every command/artifact leaf. In a root view containing the mixed log and that
+empty log, the two tables are exactly:
+
+| Log | Saved | Target | Total | Not run | Policy | Succeeded | Failed | Blocked |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| study | Sep 15 | Log | 7 | 3 | 1 | 1 | 1 | 1 |
+| empty | Sep 15 | Log | 0 | 0 | 0 | 0 | 0 | 0 |
+| Total | | | 7 | 3 | 1 | 1 | 1 | 1 |
+
+| Log | Total | Matched | Not matched | Not compared |
+| --- | ---: | ---: | ---: | ---: |
+| study | 4 | 1 | 1 | 2 |
+| empty | 0 | 0 | 0 | 0 |
+| Total | 4 | 1 | 1 | 2 |
+
+Entry-targeted runs replace Target Log with their exact entry; they do not become
+whole-log results. Missing/error rows use em dashes and are disclosed below the
+tables; aggregates include only available recorded targets and are qualified
+when coverage is incomplete. `reproduction.md` adds only its Reproduction heading
+to the same single-log saved summary, without these detail inventories/examples.
+
+### Inspection Bounds, Cursors And Errors
+
+Default saved inspection selects the latest complete run in descending finished
+time, then descending accepted time, then descending run ID. Explicit `--run-id`
+selects only that immutable run, never a cumulative view or a different entry's
+history. The native saved-store boundary owns this ordering for single-log and
+root inspection.
+
+Accepted plan and saved-run JSON retain the existing 64 MiB bound. Each work,
+result or problem collection has a fixed 100,000-record ceiling, with linear
+problem construction measured separately from necessary output/dependency
+links. A complete problem diagnosis is bounded at 16 KiB. Stream excerpts retain
+the existing 16 KiB per-stream tail; a complete inspection response is bounded
+at 128 KiB. Collection sections/pages contain at most 50 items, with exact
+matched/returned/remaining counts and navigation. These are fixed contracts,
+not corpus-sized or configurable limits. Exceeding a scalar/record byte bound
+fails closed rather than silently truncating the diagnosis. Stream or collection
+excerpt truncation is explicitly disclosed and full retained paths are supplied.
+
+Recorded relative stream paths resolve beneath the accepted run's canonical
+dated directory, using saved coverage, acceptance time, run ID and project root.
+The existing project `tmp` symlink contract applies; inspection does not scan
+other runs or current registries. Absolute stream paths must lie inside that
+same logical or resolved run directory. Stream-component symlinks are rejected.
+Missing retained files affect availability only, never saved classification.
+
+Replacement-model report recovery renders only `# Reproduction` followed by
+the shared saved single-log `show` body. Under the reproduction-publication
+and shared-results locks, it writes the report and advances its materialization
+marker for the exact saved generation. A failed write or marker update leaves
+saved facts queryable and recovery retryable. Recovery never executes, replans,
+or reads live inventory or registries. Normal publication uses the same renderer.
+
+The opaque URL-safe cursor is bounded at 2 KiB and contains exactly `schema`,
+`kind`, `binding`, `offset`; schema is `research-log-reproduction-cursor/1`, kind
+is `commands`, `artifacts` or `plan`, binding is SHA-256, and offset is a
+nonnegative integer, not boolean. Saved-list binding includes canonical log,
+run ID, reproduction generation, kind, every filter and format. Plan binding
+includes the freshly evaluated complete source identity, target, every policy
+and runtime setting and format. A continuation reruns read-only preparation;
+it does not consult a saved preview cache. Changed bindings are stale errors,
+not mixed pages. Summary totals always describe the complete target.
+
+Public errors use `reproduction.results.missing`,
+`reproduction.results.unsupported`, `reproduction.results.invalid`,
+`reproduction.run.unknown`, `reproduction.selector.invalid`,
+`reproduction.identity.unknown`, `reproduction.cursor.invalid`,
+`reproduction.cursor.stale`, `reproduction.limit.exceeded`. Missing results are
+unavailable, not zero. A supported confirmed empty target has explicit zeroes.
+Unsupported reads are nonmutating and direct the researcher to explicit recheck.
+Missing retained diagnostics are availability fields, not a different outcome.
 
 ## Versioned Surfaces
 
-The initial implementation must use these versions:
-
-| Surface | Version |
+| Surface | Current version |
 | --- | --- |
-| Execution-state file | `research-log-pyrun/v6` |
-| Execution identity | `pyrun-exec/v2:<sha256>` |
+| Execution state | `research-log-pyrun/v6` |
+| Execution identity | `pyrun-exec/v2` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Shared result store | `<log>/.cache/results.sqlite`, SQLite `user_version=19`; versions 17 and 18 are recognized only as replacement-required validation state, and the physical shared schema is owned by the [mechanical-validator specification](research-log-mechanical-validator-spec.md#retained-validation-snapshots) |
-| Reproduction result projection | `research-log-reproduction-result/11` |
-| Per-log summary | `research-log-reproduction-summary/5` |
-| Cross-log summary | `research-log-reproduction-root-summary/5` |
-| Durable run store | run-local `state.sqlite`, SQLite `user_version=3` |
-| Run status projection | `research-log-reproduction-status/7` |
-| Accepted plan | `research-log-reproduction-plan/11` |
-| Command list | `research-log-reproduction-command-list/3` |
-| Command detail | `research-log-reproduction-command/3` |
-| Project scheduling coordinator | `reproduction-scheduler.sqlite`, SQLite `user_version=2` |
-| Comparison dispatch | `research-log-reproduction-comparison/1` |
-| Evidence-scoped comparison | `research-log-evidence-scoped-comparison/1` |
-| Evidence-scoped result detail | `research-log-evidence-scoped-comparison-result/1` |
-| Isolated command-verification result | `research-log-command-verification-result/1` |
+| Accepted plan | `research-log-reproduction-plan/12` |
+| Saved run | `research-log-reproduction-result/12` |
+| Durable job | run-local `state.sqlite`, user_version 4 |
+| Shared results | `<log>/.cache/results.sqlite`, user_version 19 without reproduction, 20 with native reproduction |
+| Operational status | `research-log-reproduction-status/7` |
+| Project scheduler | `reproduction-scheduler.sqlite`, user_version 2 |
+| Comparison | `research-log-reproduction-comparison/1` |
+| Evidence comparison | `research-log-evidence-scoped-comparison/1` |
+| Evidence detail | `research-log-evidence-scoped-comparison-result/1` |
+| Isolated verification | `research-log-command-verification-result/1` |
 
-Reproduction uses durable run-local state, status/7, and the consolidated
-result-store schema. Older job files are
-immutable but unsupported: the CLI reports `reproduction.run.unsupported` and
-directs the caller to start a new current-format run.
-
-Execution IDs version only their identity algorithm and canonicalization.
-Schema, runner, standard-environment, execution-contract, and comparison
-versions must not cause incidental execution-ID churn.
+Schema and comparison versions do not incidentally alter execution identity.
 
 ## Fixed Resource Bounds
 
@@ -102,9 +560,9 @@ CLI settings. A decoder rejects an over-limit durable file. Planning,
 execution, comparison, and publication fail explicitly on an over-limit
 operation; they never truncate, sample, or silently narrow it.
 
-The initial limits were selected with measured retained-corpus headroom. They
-remain unchanged as the corpus evolves; revisions follow the explicit process
-in [Compatibility And Evolution](#compatibility-and-evolution).
+Work/result/problem and inspection bounds additionally apply as defined in
+[Inspection Bounds, Cursors And Errors](#inspection-bounds-cursors-and-errors).
+Limits are fixed contracts, not dynamically chosen from the current corpus.
 
 ### Execution State And Serialization
 
@@ -125,13 +583,13 @@ in [Compatibility And Evolution](#compatibility-and-evolution).
 | Resource | Limit |
 | --- | ---: |
 | Reachable executions per log target | 2,048 |
-| Artifact cases per target | 10,000 |
+| Reachable artifacts per target | 10,000 |
 | Total graph nodes | 16,384 |
 | Total graph edges | 32,768 |
 | Dependency depth | 64 |
 | Boundaries per plan | 10,000 |
-| Failures per plan | 10,000 |
-| Dry-run plan encoded bytes | 64 MiB |
+| Owned preparation problems per plan | 100,000 (native work-record ceiling) |
+| Accepted plan encoded bytes | 64 MiB |
 
 An entry target uses the same ceilings but cannot traverse a command outside
 the selected entry. Graph limits do not authorize broader scope.
@@ -182,58 +640,6 @@ stage; it does not permit publishing `stopped` while a worker survives.
 Streams, iterators, chunked decoders, and memory maps must enforce logical
 limits without first allocating the bounded maximum. Nested container members
 also consume the ordinary file, path, and directory limits.
-
-### Cumulative Results
-
-| Resource | Limit |
-| --- | ---: |
-| Consolidated result-store data per domain | 64 MiB |
-| Current artifact records | 10,000 |
-| Current command records | 10,000 |
-| Retained or availability-unknown run records | 10,000 |
-
-History pruning follows the filesystem-availability rules below. Reaching a
-result limit is an explicit publication failure; it does not authorize
-discarding available run history or current artifact state.
-
-## Terminology
-
-- **Execution recipe:** the normalized structural information required to
-  invoke one child process and associate its direct inputs and complete output
-  set.
-- **Authored CID token:** an explicit `--cid VALUE` runner option. A canonical
-  positive integer is a numeric shorthand; any other valid value is a full CID.
-- **Derived CID:** the valid command ID obtained from a Python program's lexical
-  filename without its `.py` suffix when `--cid` is absent.
-- **Command ID (CID), or effective CID:** the full authored CID, the derived
-  program stem plus `-N` for numeric shorthand `--cid N`, or the derived CID
-  when `--cid` is absent. It is the stable entry-unique owner shared by every
-  expansion of one command or loop.
-- **Execution ID:** the stable `pyrun-exec/v2:<digest>` identity of one expanded
-  child-parameter vector within a CID.
-- **Reproduction run:** one durable entry- or log-target reproduction job.
-- **Run ID:** the opaque, filesystem-safe identity of one reproduction run. It
-  is distinct from every execution ID and is preserved by resume.
-- **Observed execution state:** retained fingerprints for the directly executed
-  script, participating local Python code, direct inputs, and complete outputs.
-- **Confirmation:** whether one complete recipe and its observations were
-  established by an eligible successful execution.
-- **Artifact case:** one evidence-relevant retained generated file or directory
-  evaluated independently.
-- **Evidence root:** a retained source artifact selected by an `evidence.json`
-  record in the requested target.
-- **Retained boundary:** a fingerprint-verified input whose producer is outside
-  the permitted execution scope or is excluded from automatic reproduction.
-- **Scope lock:** the one existing research-log operation lock held for the
-  selected entry or log throughout an active run.
-- **Publication mutex:** the brief log-local lock used to serialize shared
-  reproduction-result and report writes.
-- **Execution reference:** the compound `{entry, cid, execution_id}` identity
-  of one planned execution. An execution ID alone is not unique across CIDs or
-  entries.
-- **Scheduling permit:** one project-coordinated ordinary or exclusive grant
-  held from immediately before worker launch until terminal attempt state is
-  durable and no worker from that attempt survives.
 
 ## Authority And Boundaries
 
@@ -753,578 +1159,36 @@ observation, retained execution baseline, and evidence presentation baseline.
 
 ## Discovery And Planning
 
-### Public Target
-
-The public launch form is:
-
-```text
-log reproduce --path LOG [--entry ENTRY] [--include-all] [--recheck] [--jobs N] [--execution-timeout-seconds SECONDS] [--dry-run [--summary]]
-```
-
-Omitting `--entry` selects exactly one complete log. Supplying `--entry`
-selects exactly that stable entry. There is no single-command, multi-log,
-all-log, or project-wide reproduction operation.
-
-`--jobs` accepts a positive decimal integer and defaults to 1. It is the maximum
-number of concurrently active executions in this run, not a promise that the
-cap can be reached. Graph readiness, path conflicts, project-wide exclusive
-coordination, and available work may reduce concurrency. The accepted value is
-immutable; status, stop, resume, recovery, and publication cannot override it.
-
-`--execution-timeout-seconds` accepts an integer from 1 through 604,800 and
-defaults to 300. The accepted value is an immutable per-command wall-clock
-runtime limit measured from child launch. Queue and scheduling wait time do not
-consume it. Status and resume retain the accepted limit and do not accept an
-override.
-
-Log and entry targets retain their existing evidence and command selection.
-Use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID` for one
-current recorded invocation. It is isolated and synchronous, does not create a
-run, does not apply automatic-policy admission, cannot resume or publish, and
-never changes execution metadata, validation, results, or promotion state.
-
-### Admission Gate
-
-Before accepting or previewing work, reproduction evaluates the current log
-once under the ordinary log lock. Admission consumes that evaluation's fresh,
-complete `ValidationSnapshot`, its shared live `ResearchGraph`, and the exact
-selected executions. It never reads retained validation rows or published
-validation files. A whole-operation evaluation error, a completed validation
-snapshot containing failed checks, or an unresolved log-owned blocker rejects
-preparation. The failed-snapshot case reports `reproduction.validation.failed`;
-validation has no incomplete outcome.
-
-Each selected persisted execution must bind to exactly one command through a
-`COMMAND_EXECUTION` edge and that command must account for the execution's
-complete canonical output set. An absent, multiple, or partial binding fails
-closed as `reproduction.validation.scope_unresolved`.
-
-Admission is finding-owned. Conformance, Evidence, and Provenance findings
-block according to their typed owner and graph context: log-owned
-findings reject the complete plan; entry-owned findings exclude selected work
-in that physical entry; and command-, execution-, material-, or record-attached
-findings exclude only attached selected executions. An unanchored blocking
-finding fails closed unless it is explicitly an unrelated missing-producer or
-unresolved-summary finding. Independent work remains eligible. After direct
-decisions, execution dependencies propagate upstream blockers to selected
-downstream work.
-
-All Orphans findings are nonblocking. Reproduce obtains output-currentness and
-pending-work conclusions directly from the shared evaluation path; those
-conditions are not validation findings. Runnable recipes with pending
-reproduction work are deliberately eligible. Repair batches may combine
-validation findings of different types, but they carry no
-admission authority and cannot widen or suppress a finding's effect. The
-accepted plan records one admitted or excluded decision per selected execution,
-including its blocking finding IDs. A global blocker rejects preparation and is
-therefore never persisted in an accepted plan. The closed admission record has
-exactly `schema`, `validation_snapshot_id`, `rules_version`, `evaluated_at`, and
-`executions`; each execution record has exactly `entry`, `cid`, `execution_id`,
-`disposition`, and `blocking_finding_ids`.
-
-Validation normalizes split documents such as `e001a` and `e001b` to their
-physical stable `e001` entry owner while building the graph. Existing same-ID
-documents retain the identical mapping.
-
-### Graph Construction
-
-Validation constructs one bounded neutral `ResearchGraph` from the current
-`evidence.json`, `data.json`, and `pyrun.json` observations it has already
-loaded. Reproduction consumes that graph for exact binding, dependency
-traversal, and admission. It retains ownership of target selection and
-scheduling, but does not reconstruct a second graph or consume validation
-chains. Graph construction:
-
-1. resolve every target evidence source to its declared data item;
-2. stop at `origin: true` inputs;
-3. for each generated artifact, find exactly one owning execution by canonical
-   output identity;
-4. resolve every direct execution input through its owning `data.json`; and
-5. repeat until every branch reaches an origin or retained boundary.
-
-The in-memory output-to-execution index is derived from the loaded execution
-maps and is not persisted. Input names do not establish cross-entry artifact
-identity; canonical resolved artifact targets do.
-
-Entry-level reproduction must not execute a command owned by another entry. A
-generated cross-entry dependency becomes a fingerprint-verified retained
-boundary. Log-level reproduction must not execute a command outside the log.
-A source entering a log from outside it must be a declared origin; a cross-log
-generated input is invalid provenance.
-
-For a source outside the current Git project, the plan uses its exact authored
-`data.json` location as the boundary or failure artifact identity. External
-origins remain fingerprint-verified boundaries. An external non-origin source
-is reported as `cross_log_generated_input`; it does not abort planning for
-independent in-scope executions.
-
-Every selected execution includes the complete inherited local Python code
-dependency projection. Missing or changed participating code affects
-admission, planning, currentness, and guarded resume exactly as the final
-authoring contract requires.
-
-### Non-Automatic Boundary
-
-By default, a valid `auto_reproduce: false` execution with
-`requires_reproduction: false` is classified as reproduction not needed before
-policy is considered; its retained outputs bound traversal, so upstream work
-is not selected solely for that current command. Planning stops before every
-remaining non-automatic execution. Its retained output may serve as a boundary
-only when its current fingerprint and required provenance state are valid.
-This boundary is planning metadata, not an artifact outcome.
-
-`--include-all` includes automatic and non-automatic executions within the same
-selected entry or log boundary and traverses their upstream closure. It does
-not widen the target or bypass validation. Scope is immutable after run
-acceptance. The CLI must not prompt to widen it.
-
-### Selection Policy
-
-Incremental selection is the default. A current execution with
-`requires_reproduction: false` needs no execution and does not require a saved
-reproduction result. Of the commands that still require reproduction,
-non-automatic commands are skipped by policy unless `--include-all` is present.
-Every evidence-relevant command also has a source-closure digest. An unchanged
-prior terminal failure or block prevents an eligible command from being
-retried, but remains visible as that prior failure or block rather than being
-classified as reproduction not needed. A remaining command is
-selected when it has no applicable terminal state, its source closure changed,
-or selected upstream work can change an input it consumes. Selection propagates
-through only that command's reachable downstream closure; unrelated commands
-do not need reproduction.
-
-The source closure covers the canonical execution record after omitting only
-`requires_reproduction`, including the recipe and environment; current script,
-participating-code, direct-input, dependency-output, retained-boundary, and
-comparison-baseline fingerprints; dependency identities; per-output comparison
-definition identities; and localized planning disposition, reason, and failure
-dependencies. It therefore represents the complete current reason that the
-saved terminal disposition remains applicable.
-
-`--recheck` selects every runnable execution in the current evidence-relevant
-closure under the chosen log or entry target and automatic-reproduction policy, including
-executions for which reproduction is not otherwise needed. Commands that remain
-locally blocked are projected as blocked rather than executed. Recheck preserves execution
-grouping, dependency order, target boundaries, retained boundaries, and
-artifact-level result identity. It does not bypass validation admission,
-repair a graph failure, or make an otherwise ineligible case runnable.
-
-All-execution inclusion and selection policy are independent. `--recheck`
-alone stops at verified retained non-automatic boundaries. `--recheck
---include-all` also selects non-automatic executions. Neither flag implies the
-other.
-
-Recheck is a launch-time planning input. The emitted plan records each
-command's exact source digest; `run`, `not_needed`, `unchanged`, or `blocked`
-selection; and the prior `failed` or `blocked` disposition only for an
-`unchanged` selection. Selection and prior disposition remain separate facts.
-The plan is the durable authority for execution and resume. It requires no persistent
-selection-policy field. Commands that consume an accepted run or only query
-published state do not accept `--recheck`.
-
-### Failures And Parallel Ordering
-
-Missing or multiple producers, invalid boundaries, resource-limit violations,
-and cycles are mechanical artifact failures. A reachable dependency cycle
-fails every affected component member with reason `dependency_cycle`; no
-execution in the cycle runs. Independent acyclic components may continue.
-Artifacts not attempted after a required upstream failure are `skipped` with
-reason `dependency_failed`.
-
-The planner groups cases by execution reference, assigns every execution one
-stable topological order, and preserves artifact-level result identity. Runtime
-uses that order as the ready-queue tie breaker; completion order never changes
-the plan, case ordering, or publication ordering. An execution becomes ready
-only after every selected dependency has terminal durable state. A failed
-execution blocks only its transitive dependents with `dependency_failed`;
-independent ready work continues.
-
-The scheduler launches no ready execution that conflicts with running managed
-work. Each execution has canonical read, write, run-directory, and
-runner-writable claims derived from the accepted recipe and run layout. Two
-executions conflict when their output sets overlap, one writes an input read by
-the other, their run directories coincide, or their writable claims overlap or
-contain one another. Shared read-only inputs do not conflict. Claim comparison
-uses resolved normalized paths and rejects unsafe aliases rather than guessing.
-The run admits at most `jobs` active execution references at once.
-
-An execution with `exclusive: true` additionally requires the project-wide
-exclusive permit defined in [Project-Wide Scheduling](#project-wide-scheduling).
-Once any exclusive execution is ready, its durable waiter prevents new ordinary
-admissions project-wide. Existing ordinary work drains, the oldest stable
-exclusive waiter runs alone, and later ordinary arrivals cannot starve it.
-Multiple exclusive waiters use the coordinator's monotonic ticket, run ID, and
-stable plan order as their deterministic priority tuple.
-
-The executor must persist a producer's terminal checkpoint and output
-availability before releasing its scheduling permit or making dependents ready.
-Worker completion observed only in memory is insufficient. A failed producer's
-durable checkpoint similarly precedes dependent skips.
-
-An input beneath a declared directory output depends on that directory's
-producer just as an exact file output does. If that producer fails, the
-consumer is skipped with `dependency_failed`; the missing regenerated member
-must not abort independent work in the run.
-Its default incremental policy selects commands that still require
-reproduction, except for unchanged cached failures and blocks, plus the
-reachable downstream commands that those selections may affect. It must not
-infer command selection from prior artifact matches, and it must not preserve
-downstream terminal state when selected upstream work can invalidate it.
-
-Graph node, edge, depth, execution, and projection limits are fixed and
-code-owned in [Fixed Resource Bounds](#fixed-resource-bounds). Exceeding a
-limit fails the affected planning operation; it never silently narrows the
-graph.
-
-### Frozen Scheduling Fixtures
-
-The controlled contract fixture at
-`skills/research-logging/tests/fixtures/parallel-reproduction-contract.json`
-defines the minimum synthetic scheduling cases: two independent commands under
-`jobs: 2`; a failed producer whose dependent is skipped while independent work
-completes; and an exclusive waiter across two runs that closes ordinary
-admission, drains active work, runs alone, and releases the queued ordinary
-execution. Implementation tests may add cases, but must preserve these fixture
-names and outcomes. The fixtures execute no maintained research command.
-
-### Dry Run
-
-`--dry-run` applies the same admission, discovery, graph construction, automatic
-policy, incremental-or-recheck selection, and safety preflight as a real
-launch. By default, it emits one
-deterministic `research-log-reproduction-plan/11` projection with exactly
-`schema`, `summary`, `target`, `include_all`, `jobs`,
-`execution_timeout_seconds`, `admission`, `commands`, `comparison_context`,
-`cases`, `executions`, `boundaries`, and `failures`.
-
-`--summary` is valid only with `--dry-run` and replaces the complete JSON
-projection on standard output with a bounded human projection. For log and
-entry targets, it reports the target, admission state, incremental-or-recheck and automatic-or-all selection,
-concurrency cap, per-command runtime limit, artifact-case count, runnable
-ordinary and exclusive execution counts, localized planning-failure count,
-boundary count, scheduling-path-claim
-completeness, and per-entry runnable and exclusive counts. The entry table is
-limited to the first 20 stable entry IDs and reports the number omitted.
-Complete JSON remains available without `--summary`. The summary is
-presentation only; it applies the same complete planning and final source
-recheck and does not alter the deterministic plan contract. Historical
-result/11 execution rows are not dry-run summaries and supply neither plan nor
-boundary semantics.
-
-`target` follows the target grammar below. Cases are sorted by canonical log
-entry order and artifact path. Each case has exactly `entry`, `artifact`, `cid`,
-`execution_id`, `disposition`, and `reason`; `disposition` is `run`, `current`,
-or `failed`, and `reason` is null only when no qualification is needed.
-
-Executions are in deterministic run order and each has exactly `order`,
-`entry`, `cid`, `execution_id`, `depends_on`, `outputs`, `auto_reproduce`, `exclusive`,
-`read_paths`, `write_paths`, `run_path`, and `writable_paths`. The four path
-claim fields are the immutable normalized scheduling projection; path arrays
-are sorted and unique. Before a run ID exists, run-local claims use the
-`<run>/...` portable prefix and project paths use `<project>/...`; acceptance
-resolves them beneath the chosen canonical run and project roots without
-changing their identity or creating dry-run state. `depends_on` and `outputs`
-are sorted unique identity arrays. A dependency reference is the
-fully qualified string `<entry>:<cid>:<execution_id>` because a parameter
-identity may legitimately occur under more than one CID or entry;
-`execution_id` itself remains exactly the ID recorded in that CID's
-`pyrun.json` bucket. Boundaries are
-sorted and each has
-exactly `kind`, `entry`, `name`, `artifact`, and `fingerprint`; `kind` is
-`origin`, `cross_entry`, `non_automatic`, or `outside_queue`. The last kind is
-used when an in-scope plan treats a producer as a retained boundary. Fields
-inapplicable to a boundary kind are null rather than omitted. Historical
-result/11 execution targets are passive rows with exactly `kind`, `entry`,
-`cid`, and `execution_id`; they have no current planning or boundary semantics. Failures
-are sorted artifact projections with exactly
-`entry`, `artifact`, `outcome`, `reason`, and `dependencies`.
-
-`admission` records the fresh validation snapshot identity, rules version,
-evaluation time, and one admitted or excluded decision for every selected
-execution. Each decision is keyed by `{entry, cid,
-execution_id}` and records its exact blocking finding IDs. It explains
-acceptance; it is not a live freshness token and names no published validation
-file. `commands`
-is the immutable selection and accounting inventory. Each compound `{entry,
-cid, execution_id}` record retains its recipe, policy, selection reason, working
-directory, and accepted execution observations. `executions` references those
-command records and owns topological order, dependency references, complete
-output membership, and scheduling claims.
-
-`comparison_context` freezes each comparison definition and separately
-identified evidence-only current observations. It is not an authority-file
-manifest. The plan retains no whole-log source snapshot or validation
-result/projection path or digest.
-
-Before an invocation launches, the runner compares its script, helpers, and
-resolved inputs with its accepted observations. Before comparison it verifies
-retained output-baseline bytes against the recorded observations, then uses the
-frozen exact or evidence-scoped definition. Changed planned sources,
-declarations, inputs, helpers, or comparison definitions require a new run.
-There is no whole-log rescan, published-validation recheck, or snapshot
-certification during execution, resume, or publication.
-
-Preview uses the same locked preparation as launch and releases the lock before
-returning. It writes no run, workspace, checkpoint, result, report, cache, or
-preview token; lock infrastructure is its only permitted side effect. Launch
-prepares independently and never accepts a preview as certification.
-
-## Durable Reproduction Jobs
-
-### Launch And Identity
-
-A non-dry launch with one or more selected executions creates one durable
-background job, persists its immutable accepted plan and initial run state,
-then releases the preparation lock before it starts its
-supervisor, emits its run ID, and returns immediately. The job is independent
-of the invoking terminal and agent turn. There is no foreground mode.
-
-A non-dry launch with no selected executions normally performs a no-op
-reproduction reconciliation. It creates no run ID, run folder, worker,
-reproduction-result write, or reproduction-report write. Like every non-dry
-launch, it first evaluates and publishes current mechanical validation under
-the normal locks; that validation snapshot and `validation.md` are separate from
-reproduction state. The sole exception after that validation publication is
-explicitly launched empty-target whole-log recheck recovery of unsupported
-generated reproduction results, as specified in
-[Compatibility And Evolution](#compatibility-and-evolution): it acquires the
-scope and publication locks and atomically replaces the reproduction result
-and report, while still creating no run or worker. Standard output is the
-standard per-log summary using the
-current plan's command partition: commands for which reproduction is not
-needed, policy exclusions, and any blocked commands. Succeeded and failed
-are zero because no command ran. Current artifact state remains a separate
-tree. The latest completed run may be identified as historical context, but
-its command counts must not replace the current reconciliation. This terminal
-summary is returned immediately even when localized artifact planning failures
-are present.
-
-A run ID is an opaque, lowercase, filesystem-safe unique token produced by the
-CLI. It is immutable and names the durable state, output workspace, diagnostics,
-and staging paths for the life of the run. It is not derived from Markdown or
-an execution recipe.
-
-The accepted target, execution/entry/log kind, all-execution inclusion policy, `jobs`
-value, and per-command runtime limit are immutable.
-Management commands use only the recorded scope:
-
-```text
-log reproduce status --path LOG --run-id RUN_ID [--json]
-log reproduce stop --path LOG --run-id RUN_ID
-log reproduce resume --path LOG --run-id RUN_ID
-```
-
-They must reject `--entry`, `--include-all`, `--jobs`, and
-`--execution-timeout-seconds`.
-
-### Durable State
-
-Each accepted run directory contains `state.sqlite`, the durable job authority.
-It stores one immutable accepted plan and mutable state, checkpoints,
-comparison context, and publication-retry state in typed tables. It is never a
-result-store projection or a JSON aggregate. The plan owns the target,
-selection, settings, command inventory, dependencies, recipes, comparison
-context, and admission; mutable job rows own only operational state. Result
-clearing never rewrites this database, staged outputs, diagnostics, retained
-baselines, or entry-root `pyrun.json` observations.
-
-`target` is exactly `{kind: "log", entry: null}` or
-`{kind: "entry", entry: ENTRY}`. Entry IDs use the stable entry grammar. The
-accepted plan fixes this target, `include_all`, `jobs`, timeout, and command
-membership. Resume cannot add commands or change any accepted setting; current
-runs have no one-execution target.
-
-The `runs` row owns immutable run metadata and paths. The normalized
-`accepted_*` rows are the single accepted plan/11 authority: admission,
-commands, recipes, materials, dependencies, outputs, claims, cases,
-boundaries, failures, and comparison definitions. They are inserted once and
-are not lifecycle history.
-
-The single `run_state` row owns mutable run lifecycle and aggregate artifact
-counts. Its `status` is null while active and otherwise `complete`, `stopped`,
-or `failed`. Its `phase` is `accepted`, `planning`, `preflight`, `executing`,
-`comparing`, `publishing`, `stopping`, or null; a terminal status requires a
-null phase. Lifecycle timestamps and the latest execution and operational
-diagnostics are columns of this row. A complete run has no operational
-failure, even when artifact outcomes include failures.
-
-Each accepted execution may own one `execution_checkpoints` row keyed by its
-accepted command identity. That row records `active`, `succeeded`, `failed`, or
-`stopped`, its current permit or exact released-permit tombstone, checkpoint
-time, first start, finish, accumulated elapsed time, failure fields, diagnostic
-paths, and scratch ownership. `checkpoint_outputs` stores its canonical output
-fingerprints as child rows. A stopped checkpoint is the only resumable
-execution state; failed and succeeded are terminal within the run. Timing
-begins at the first supervised child launch and accumulates only active
-supervised runtime. Stop preserves the first start, leaves finish null, and
-adds the next active interval on resume.
-
-`run_owner` stores the one supervisor lease. `workers` stores bounded worker
-rows with worker and parent identity, optional accepted execution identity,
-PID, `running` or `exited` state, registration time, and latest observation.
-Only running rows are live; exited rows are retained but hold no permit.
-`staged_executions`, staged diagnostic rows, artifact comparison and evidence
-rows, `execution_effects`, and `publication_state` separately own comparison,
-external `pyrun.json` mutation, and publication-retry progress. No table stores
-a whole-plan, checkpoint-history, active-execution, or worker JSON array.
-
-The public status/7 object is a bounded projection of those rows, not another
-durable record. It orders active executions by accepted plan order and derives
-them from active checkpoints with attached permits. It derives active and
-surviving workers from running worker rows, execution timings from checkpoint
-rows, `total_executions` from accepted execution rows, aggregate outcomes and
-diagnostics from `run_state`, and resumability from stopped lifecycle or the
-exact failed-publication retry state. Its `timestamps` fields are null when the
-corresponding lifecycle event has not occurred.
-
-The database therefore durably retains the run identity, accepted plan,
-lifecycle, progress, supervisor and worker ownership, execution checkpoints
-and outputs, comparisons, requirement-effect checkpoints, and
-publication-retry state.
-Checkpoint transactions distinguish `succeeded`, `failed`, and `stopped` work
-from an active execution after process or host failure. Cardinality and byte
-limits are defined in [Fixed Resource Bounds](#fixed-resource-bounds) and do
-not weaken this state contract. There are no current-format plan, run,
-checkpoint, scratch-owner, supervisor, or staging JSON records.
-
-Every durable-state read validates one bounded SQLite snapshot and its typed
-rows. A reader must not combine rows from different snapshots. A canonical
-historical JSON directory without `state.sqlite`, or a `state.sqlite` with an
-unsupported `user_version`, fails as `reproduction.run.unsupported`. Malformed
-SQLite or a malformed selected projection fails as `reproduction.run.invalid`;
-cross-row corruption fails as `reproduction.run.invariant`. Missing, busy, or
-unsafe current stores retain their specific `reproduction.run.missing`,
-`reproduction.run.busy`, or `reproduction.run.path_unsafe` result. Writers use
-short transactions while holding the run-state lock; callbacks retain the
-already accepted immutable run ID rather than rediscovering it from mutable
-state.
-
-### Status
-
-Default status is concise human text. `--json` emits one deterministic
-`research-log-reproduction-status/7` object containing exactly `schema`,
-`run_id`, `summary`, `target`, `include_all`, `jobs`,
-`execution_timeout_seconds`, `status`, `phase`,
-`active_executions`, `active_workers`, `execution_timings`, `completed_executions`, `total_executions`,
-`artifact_outcomes`, `timestamps`, `latest_execution_diagnostic`,
-`operational_failure`, `surviving_workers`, and `resumable`. The values are the
-strict projection of run-local `state.sqlite` rows.
-`resumable` is true only for a stopped run or the explicit publication-retry
-case; it is not attempt lineage or a selector for replanning.
-`active_executions` uses the run-state execution-reference shape and order.
-`active_workers` contains every current worker record associated with those
-references and is empty when no execution is active.
-`execution_timings` contains only launched executions, in stable plan order,
-with exactly `entry`, `cid`, `execution_id`, `state`, `started_at`, `finished_at`,
-`elapsed_seconds`, and `failure`. These fields are the checkpoint timing,
-terminal-state, and diagnostic projection. Planned-but-queued executions are absent, so status does not
-misrepresent queue time as execution time.
-`surviving_workers` is normally empty and, while stopping cleanup remains
-incomplete, contains the exact sorted worker records still observed alive.
-
-Agents and scheduled monitors must consume JSON rather than parse human text.
-
-### Run And Artifact States
-
-Terminal run statuses are:
-
-- `complete`: the job reached its normal endpoint and reproduction-result
-  publication succeeded;
-- `stopped`: execution is not active, the run retains resumable same-path
-  state, and the scope lock has been released; and
-- `failed`: an operational failure prevented final artifact-result
-  publication.
-
-`stopping` is an active phase, not a terminal status. Artifact changes or
-failures do not make a successfully published run operationally failed. A
-complete run may contain any artifact outcome.
-When run-level failure cleanup is still active, `phase: "stopping"` together
-with a non-null `operational_failure` is the durable failed-terminal intent.
-Recovery preserves that intent, finishes worker and permit cleanup, and then
-publishes `status: "failed"`; it must not reinterpret the transition as a user
-stop.
-
-Callback, checkpoint, worker-history, and run-state persistence errors are
-control-plane failures, not research-command outcomes. Such a failure stops and
-reconciles the affected worker tree, preserves terminal operational intent, and
-ends the run as `failed` after cleanup. If a child was launched, that launch
-consumes its attempt in the run even when the control plane cannot publish a
-research result; same-run resume must not invoke it again. Genuine child exits,
-capture failures, output materialization failures, comparisons, and dependency
-skips remain execution or artifact outcomes.
-
-### Stop
-
-`stop` is the sole user operation for ending active work without deleting it.
-It cancels this run's project-scheduler waiters, signals every active supervised
-worker tree for graceful shutdown, waits one fixed code-owned grace period, then
-force-terminates every survivor. It does not wait for active executions to
-finish naturally.
-
-The run becomes `stopped` and releases its scope lock only after no supervised
-worker or scheduling permit remains. It retains the same run ID, workspace path, checkpoints,
-partial outputs, and diagnostics.
-
-If forced termination leaves a survivor, the run remains active in `stopping`,
-records exact survivor worker rows in `state.sqlite`, and keeps the scope
-durably excluded even if the failed supervisor releases its inherited lock
-descriptors. The stop request returns nonzero. Repeating `stop` retries the
-bounded cleanup.
-
-### Resume
-
-`resume` is available only for a stopped run or the explicit publication-retry
-case. It reacquires reproduction reservation ownership, reloads exactly the
-accepted plan and validated checkpoint/staging inventory, then rechecks state
-under run-state serialization. It preserves completed successful and failed
-outcomes, comparisons, dependency skips, elapsed time, workspace, and run ID.
-It launches only never-started work and work stopped without a durable terminal
-outcome, after cleaning that invocation's incomplete outputs and scratch. It
-does not replan, reread current source to adopt repairs, rerun failed work, or
-accept options. `--recheck` applies only to initial launch.
-
-For a current-format publication failure, resume reuses every durable
-comparison, terminal failed attempt, dependency skip, and succeeded checkpoint
-and performs no second research-command attempt. Older jobs are unsupported
-and require a new current-format run.
-
-### One-Attempt Rule
-
-Within one immutable run, each compound `(entry, cid, execution_id)` launches at
-most once after it has a durable terminal outcome. Multiple artifact cases and
-dependent branches reuse that result. A failed execution remains failed, its
-dependents are skipped with `dependency_failed`, and independent executions
-continue. Resume may restart only interrupted work without a durable terminal
-outcome; it never creates a continuation plan or accepted-attempt history.
-
-### Recovery
-
-Host or supervisor recovery performs reconciliation and worker cleanup only. It
-must never restart research execution automatically. Every formerly active run
-is reconciled, surviving registered workers receive the same bounded cleanup,
-and its project-scheduler waiters and permits are reconciled under the scheduler
-mutex. The run becomes reason-coded `stopped` only after no worker or permit
-remains, except that a `stopping` run with non-null `operational_failure`
-preserves that durable intent and becomes `failed` after cleanup. The scope
-remains excluded by either the live descriptor lock or the current SQLite
-owner/worker lifecycle until quiescent reconciliation is durable. Execution
-continues only after explicit `resume` passes ordinary guards.
-
-### Exit Status
-
-Process exit status reports whether the requested CLI operation succeeded, not
-the eventual run or artifact outcome:
-
-- launch returns zero after durable acceptance;
-- status returns zero after retrieving the requested run regardless of its
-  state;
-- dry run returns zero only for a valid stable plan;
-- stop, resume, and promotion return zero only when the requested operation
-  succeeds; and
-- invalid input, refusal, conflict, or operational failure returns nonzero.
-
-Artifact and run outcomes remain in durable status and results. They are never
-encoded in launch or status exit status.
+Discovery selects maintained logs using the ordinary project registry; it does
+not itself validate or reproduce. Fresh preview and launch target exactly one
+log or entry and use the same typed planner after a complete fresh mechanical
+evaluation. Preview is read-only. Launch holds normal preparation/publication
+locks briefly, accepts immutable work, then releases them before execution.
+
+Inventory includes every recorded execution in the target. Evidence reachability
+and complete declared output traversal preserve the existing artifact inventory.
+Origin inputs are verified retained boundaries. An entry target cannot schedule
+a producer outside that entry; a verified external producer remains boundary
+context. A whole-log target does not import commands from another log.
+
+Admission binds each expanded execution to its recorded command and the shared
+research graph. Applicable blocking validation findings exclude only their
+owned work; orphan findings and reproduction-required observations do not
+block reproduction. Excluded work retains the exact finding diagnosis.
+Ambiguous/missing producer and direct input/source guards remain local causes.
+Dependency cycles and failed prerequisites block related work; independent
+components remain eligible.
+
+Selection precedence is not-needed before automatic policy. Incremental work
+runs when reproduction is required or currentness has changed, except an
+unchanged prior failed/block source closure is not retried. `--include-all`
+allows nonautomatic work but does not independently retry an unchanged failure.
+`--recheck` retries current work without bypassing policy; use both flags when
+explicitly reproducing all recorded recipes. Required upstream changes propagate
+to downstream selected work in deterministic dependency order. Participating
+script/code/input changes invalidate the complete command source closure;
+comparison definitions and baseline observations qualify comparison reuse, not
+execution success. Saved inspection never recomputes this live currentness.
 
 ## Execution Safety
 
@@ -1449,9 +1313,9 @@ stable before comparison.
 
 If the root command remains active after its accepted runtime limit, the
 supervisor terminates the complete worker tree through the same bounded cleanup
-path used by stop. It writes a failed checkpoint with reason
+path used by stop. It durably records a failed command result with reason
 `execution_timeout` and a message naming the exceeded limit. The timeout is an
-execution outcome: dependants are skipped with `dependency_failed`, independent
+execution outcome: dependants are blocked by that prerequisite, independent
 commands continue, and retained stdout and stderr remain queryable.
 
 The preflight and runtime must reject unresolved absolute outputs, path escape,
@@ -1473,7 +1337,7 @@ comparison is the default. One generated file may explicitly select the
 evidence-scoped exception defined below; no exception is inferred from format,
 name, execution, or an observed difference.
 
-Comparison applies to each artifact case independently after its complete
+Comparison applies to each artifact independently after its complete
 execution output set is available. Type-aware profiles compare decoded logical
 content so incidental serialization differences do not create a change where
 the approved profile defines them as irrelevant. A format without a recognized
@@ -1526,7 +1390,7 @@ are defined in [Fixed Resource Bounds](#fixed-resource-bounds).
 
 Exceeding a limit, encountering an unsupported representation, or failing a
 decoder is never a match or change. A successfully regenerated artifact whose
-comparison cannot complete has outcome `comparison_failed` with a precise
+comparison cannot complete has status `not-compared` and reason `comparison-failed` with a precise
 reason such as `resource_limit`, `unsupported_format`, or `comparator_error`.
 It and every available sibling output are retained for diagnosis.
 
@@ -1570,224 +1434,19 @@ regenerated evidence. It does not weaken the exact retained-value comparison
 against Markdown.
 
 Every applicable record must match. A completed comparison with a differing
-selected value is `changed`. A missing value, invalid or incompatible
+selected value is `not-matched`. A missing value, invalid or incompatible
 selection, failed transformation, or other inability to evaluate the declared
-contract is `comparison_failed` with reason
+contract is `not-compared` with a comparison problem
 `evidence_comparison_failed`. Regenerated output remains retained under the
 ordinary run policy.
 
 The definition identity covers the artifact declaration plus the complete
 applicable evidence records, including sources, locators, transformations, and
 tolerances. A relevant `data.json` or `evidence.json` change therefore makes a
-prior artifact result stale. Evidence-scoped comparison is introduced only for
+prior comparison ineligible for reuse during fresh preparation. Evidence-scoped comparison is introduced only for
 one reviewed legitimate nondeterministic artifact at a time after researcher
 approval of its evidence set and smallest scientifically justified tolerance;
 it is never populated across the corpus automatically.
-
-## Results And Currentness
-
-### Artifact Outcomes
-
-The artifact outcomes are:
-
-- `matched`: the artifact was regenerated and compared equal;
-- `changed`: the artifact was regenerated and compared unequal;
-- `failed`: the artifact was not regenerated because its own production or
-  graph condition failed;
-- `comparison_failed`: the artifact was regenerated but comparison could not
-  complete; and
-- `skipped`: the artifact was not attempted because a required prior condition
-  prevented it.
-
-Outcome and currentness are separate. Reason codes are a closed versioned
-machine vocabulary. At minimum, cycles use `dependency_cycle` with `failed`,
-and downstream blocking uses `dependency_failed` with `skipped`. A default
-non-automatic or permitted cross-entry dependency is boundary metadata rather than an
-artifact outcome. When the selected evidence root itself is non-automatic or is
-produced outside an entry target, that selected artifact is respectively
-`skipped` with reason `non_automatic` or `outside_entry`.
-
-The current reason vocabulary is `baseline_changed`, `baseline_unavailable`,
-`boundary_changed`, `boundary_unavailable`, `capture_failed`,
-`comparator_error`, `content_changed`, `cross_log_generated_input`,
-`dependency_cycle`, `dependency_failed`, `direct_input_changed`,
-`direct_input_unavailable`, `evidence_comparison_failed`,
-`execution_exception`, `execution_failed`, `execution_timeout`,
-`generation_failed`, `graph_limit`, `missing_input`, `missing_producer`,
-`multiple_producers`, `output_materialization_failed`, `output_missing`,
-`outside_entry`, `outside_queue`, `participating_code_changed`,
-`participating_code_unavailable`, `reproduction.run.invalid`, `resource_limit`,
-`safety_failure`, `script_changed`, `script_unavailable`, `non_automatic`, `stop_requested`,
-`unsupported_format`, `validation_blocked`, `worker_cleanup_incomplete`, and
-`worker_survived`.
-
-### Authoritative Result
-
-`<log>/.cache/results.sqlite` is the sole disposable local authority for
-queryable reproduction results. The reproduction domain stores normalized
-artifact, execution, command, and terminal-run projection rows keyed by their
-stable identities. It has no maintained aggregate JSON encoding.
-
-In consolidated store schema v19, each retained run has a positive internal
-`run_pk`; the public `run_id` remains the only run identity exposed by reports,
-queries, exports, or producing-run fields. Run-command and run-execution
-junctions use `WITHOUT ROWID` composite primary keys. A historical command row
-stores its queryable scalar fields, including its stable CID, once, plus one
-bounded `details_json` list and one bounded `recipe_json` object. Historical
-execution rows and command-to-execution relationships are CID-qualified. There
-is no `detail_json` copy of those same values, and the unchanged public
-command-detail object is reconstructed only for a selected row or explicit
-export. A version-17 or version-18 store is never translated as validation input; its
-reproduction-domain rows survive the first successful version-19 validation
-replacement transaction unchanged.
-
-Cumulative publication and explicit export enforce the 64 MiB domain ceiling
-with a canonical incremental encoder over normalized rows. The encoder stops
-at the first over-limit chunk before constructing the aggregate result object;
-publication rolls back the whole selected-key merge on failure. Ordinary
-summary, artifact, command, and history queries continue to decode only their
-selected bounded projection.
-
-`summary` is the maintained summary path. `updated_at` is the latest successful
-result publication time. `artifacts` is sorted by
-canonical log entry order, then artifact path. The pair `(entry, artifact)` is
-unique. `runs` is sorted by descending accepted time, then run ID, and has one
-record per retained or availability-unknown run.
-
-`commands` is sorted by canonical log entry order, CID, then execution ID. The
-triple `(entry, cid, execution_id)` is unique. Each record stores the most recently
-published terminal `succeeded`, `failed`, or `blocked` disposition, the exact
-source-closure digest to which it applies, publication time, and publishing run
-ID. A changed artifact still belongs to a `succeeded` command because command
-completion and artifact matching are separate facts.
-
-Every artifact record has exactly `entry`, `artifact`, `cid`, `execution_id`,
-`outcome`, `reason`, `recorded_at`, `run_id`, and `comparison`. `reason` is null
-for `matched`; it is a required code for every other outcome. `comparison` is
-null when comparison was not attempted. Otherwise it has exactly `contract`,
-`profile`, `expected`, and `regenerated`, except that an evidence-scoped
-artifact also has the complete group `evidence_contract`,
-`evidence_definition`, and `evidence`. The definition is a SHA-256 identity;
-the evidence array retains every record identity, retained and regenerated
-selection projections, tolerance, and match result. On the exact
-whole-artifact fast path the group is present with an empty evidence array.
-`expected` and `regenerated` are the
-closed observed fingerprint forms; a comparison failure that could not observe
-one side uses null for that side. Detailed differences and decoder diagnostics
-otherwise remain in the run directory.
-`execution_id` is null only for a pre-execution graph failure that has no
-resolvable producer; `matched` and `changed` always identify an execution.
-Generated-output artifact identities are normalized entry-relative or
-`<project>/...` paths. A pre-execution failure or boundary for a declared
-resource outside the project retains its canonical absolute POSIX identity so
-the result identifies the same resource as `data.json`; noncanonical absolute
-forms remain invalid.
-
-Every run item has exactly the fields shown. `command_outcomes` reconciles
-every command execution unit in the selected log or entry into seven
-mutually exclusive categories:
-
-- `reproduction_not_needed` is a command whose current `pyrun.json` state says
-  it needs no reproduction;
-- `unchanged_failed` is a command that still requires reproduction but was not
-  retried because its unchanged source closure retains a prior failure;
-- `unchanged_blocked` is a command that still requires reproduction but was not
-  retried because its unchanged source closure retains a prior block;
-- `not_automatic` is a remaining command omitted by the default automatic
-  policy;
-- `succeeded` is an attempted command that reached its complete mechanical
-  endpoint, regardless of whether its artifacts matched;
-- `failed` is an attempted command that did not reach that endpoint; and
-- `blocked` is a command selected for the current reconciliation but not
-  attempted because of a localized planning blocker or another selected
-  command's failure.
-
-`total` is exactly the sum of those seven values. Each target command is
-counted once even when it produces several artifacts. New publications always
-record the complete mapping. `command_records` is the immutable, canonically
-ordered historical query projection for those same commands. It retains the
-accepted recipe, working directory, policy and exclusivity flags, queue and
-requirement state, accepted selection and prior disposition, source digest,
-planning detail, accounting bucket and reason, and terminal disposition. Its
-bucket totals must exactly equal `command_outcomes`. Later command metadata or
-terminal publications never reinterpret these records.
-
-One run ID owns one accepted plan and each selected execution owns at most one
-terminal outcome. Resume completes only never-started or stopped work in that
-fixed plan, or retries its publication; it never merges a later attempt under
-the same run ID. Artifact mismatch does not keep the command queue unresolved:
-a command that ran to completion is a durable execution success regardless of
-comparison outcome.
-
-The `executions` array records one explicit timing projection for each launched
-execution in accepted execution order. Planned work that never launched has no
-timing item. Timing is
-diagnostic only: it does not affect identity, currentness, selection,
-comparison, or reproduction-requirement update. Its target follows the run-state
-target grammar. `status` is `complete`, `stopped`, or `failed`; an active run is
-read through status and is added to the published index only when a lifecycle
-event safely publishes it. `finished_at` is null for a resumable stopped run.
-Artifact outcome counts use all five required keys. `folder.path` is the
-normalized project-relative run directory; `availability` is `available` or
-`unknown`.
-A conclusively absent directory causes the whole run item to be removed rather
-than persisting an `absent` value. Current artifact records retain their run ID
-after that historical run item is removed; run-directory retention is not a
-precondition for retaining the authoritative artifact outcome.
-
-Unknown fields, duplicate artifact or command pairs, duplicate run IDs, invalid
-ordering, or inconsistent counts fail decoding. The cardinality and byte limits in
-[Fixed Resource Bounds](#fixed-resource-bounds) do not change this field
-grammar.
-
-### Cumulative Publication
-
-A run that reaches its normal mechanical endpoint publishes every selected
-artifact outcome, including non-success outcomes. Final artifact publication
-depends on completion of the requested mechanical operation, not universal
-matching.
-
-Entry-level publication replaces only selected current cases and actually
-regenerated supporting outputs for that entry. It preserves unrelated entry
-and log cases and never claims log-level completion. Log-level publication
-reconciles the complete selected log closure. The same publication replaces
-newly terminal command records, preserves unchanged command records, and prunes
-records no longer reachable from current execution state.
-
-A stopped run or an operational failure before final reproduction publication
-leaves the current artifact map unchanged. Confirmations already written for
-matched executions remain intact. A publication failure may be retried from
-the durable comparison and publication rows through the guarded resume route without
-rerunning terminal execution attempts. Terminal lifecycle events may still
-update the run index and human Runs table without publishing partial artifact
-outcomes.
-
-### Currentness
-
-Every artifact and command result records `recorded_at`, the commit time of that result to
-the reproduction domain, regardless of outcome. A result is implicitly
-stale when the producing execution has a non-null `last_run_at` later than
-`recorded_at`. Recipe, script, code, input, validation, and dependency changes
-may also make a case ineligible or require new work under the graph contract.
-
-Incremental command currentness is exact digest equality between the saved
-command record and the newly planned source closure. Artifact result
-currentness remains a reporting concern; it is not used to infer reusable
-command state.
-
-Currentness is derived when planning, querying, or rendering. Ordinary
-`pyrun` never reads reproduction results. Neither file is rewritten merely to
-mark a result stale, and v1 has no currentness cache.
-
-Results no longer reachable from current `evidence.json` are ignored immediately
-and contribute to no entry or log coverage. A later reproduction
-publication may prune them. Ordinary `pyrun` and read-only reporting do not
-rewrite results merely to remove them.
-
-For evidence-scoped artifacts, currentness also requires the recorded
-evidence-definition identity to equal the identity derived from current
-`data.json` and `evidence.json`. A mismatch is stale as
-`comparison_changed`, even when the producing execution has not rerun.
 
 ## Staging And Promotion
 
@@ -1814,7 +1473,7 @@ or entry directories. `<log>` and `<entry>` are stable normalized
 filesystem-safe identifiers.
 
 Acceptance creates only the shared `reproduction/` root, the applicable date
-directory, and the accepted run directory. A dry run or read-only lookup
+directory, and the accepted run directory. A preview or read-only lookup
 creates none of them. Existing-run lookup takes only the immutable run ID and
 scans the immediate date directories for the exact matching leaf. Zero matches
 is not found; more than one match is an integrity failure. There is no date
@@ -1822,14 +1481,11 @@ argument, persistent run index, or legacy-path lookup.
 
 The directory contains run-local `state.sqlite`, one project-layout
 `workspace/`, private runtime and diagnostic directories, and the retained
-execution output trees. Identity-scoped comparison rows in `state.sqlite` are
-the durable staging index. Each comparison retains byte count, completion,
-diagnostic paths, entry/CID/execution identity, workspace path, and the closed
-artifact set. Each artifact row records its declared kind, availability,
-exact staged path, outcome and reason, comparison profile, retained and
-regenerated fingerprints, and any evidence-scoped detail. The comparison and
-artifact rows commit atomically before the separate `pyrun.json` requirement
-effect is attempted.
+execution output trees. Native accepted work and durable command/artifact observations in
+`state.sqlite` are the staging authority. Command results preserve the complete
+declared output inventory; artifact results retain staged paths, comparison
+profiles, fingerprints and applicable evidence. Comparisons commit before the
+separate acknowledged `pyrun.json` requirement effect.
 
 Reproduction must never overwrite or delete a retained run directory or its
 staged output trees. There is no discard, cleanup, or supersede command. A
@@ -1857,544 +1513,94 @@ manually deleted staging material fails inspection or promotion clearly but
 does not invalidate an already published reproduction result.
 
 Promotion is a researcher-directed research mutation. It atomically updates
-retained outputs, the related `pyrun.json`, and reproduction state. It must not
+retained outputs and the related `pyrun.json`. Immutable saved outcomes and
+latest-observation indexes remain unchanged; any report recovery renders only
+the committed summary. It must not
 change `data.json` declarations, evidence records or their artifact baselines,
 or run validation. It leaves the retained run-local staged sources intact.
 
-## Locking And Publication
-
-### Scope Locks
-
-Reproduction uses the existing lock implementation beneath
-`<log>/.cache/research-log-operations/`. Reproduction-only reservations are
-separate from ordinary source-operation locks: a log target holds exclusive
-`reproduction-log.lock`; an entry target holds shared `reproduction-log.lock`
-and exclusive `reproduction-entry-ENTRY.lock`. They exclude overlapping
-reproduction targets while allowing distinct-entry runs. A reservation is held
-from accepted launch or resume through worker and permit cleanup; normal log
-and entry locks are never held while research commands execute.
-
-Before acceptance, a serialized active-target check rejects overlap:
-
-- an entry conflicts with the same entry and its enclosing log;
-- a log conflicts with itself and every entry in that log; and
-- distinct entries in one log may run concurrently.
-
-Reproduction reservations coordinate only overlapping reproduction targets.
-They do not hold ordinary source-editing or `pyrun` publication locks for a
-run's lifetime. Those operations retain their existing short operation locks;
-source edits after acceptance are unsupported and require a new run when an
-invocation-scoped observation detects them.
-
-### Project-Wide Scheduling
-
-Project-wide ordinary and exclusive permits use the existing operation-lock
-implementation at the current Git project root, alongside rather than replacing
-entry and log scope locks. A brief project scheduler mutex protects one bounded
-SQLite coordinator beneath the project operation-state directory. Its normalized
-tables contain the ticket counter, waiting exclusive tickets, active permits,
-and their ordered path claims. This is coordination state, not research state
-or a reproduction result.
-
-The coordinator path is
-`<project>/.cache/research-log-operations/reproduction-scheduler.sqlite`; its
-mutex is `reproduction-scheduler.lock` in the same operation-state directory.
-It uses SQLite `user_version=2`. `scheduler_state` owns the nonnegative,
-monotonically increasing next ticket. `scheduler_waiters` owns the ticket,
-run/entry/CID/execution identity, accepted plan order, supervisor PID, and
-registration time. `scheduler_permits` owns the permit ID, kind, same accepted
-identity and order, supervisor PID, accepted run path, and grant time.
-`scheduler_claims` owns each ordered `read`, `write`, or `writable` absolute
-normalized path. An exclusive permit is the only active permit. Empty tables
-remain valid coordinator state; neither the database nor mutex is execution or
-research authority.
-
-An ordinary permit is admitted only when it conflicts with no active permit and
-no exclusive ticket is waiting. An exclusive execution first records its ticket,
-which closes ordinary admission, then waits without holding the scheduler mutex.
-After active permits drain, the first `(ticket, run_id, plan_order)` tuple
-becomes the sole active exclusive permit. A later ticket cannot overtake it. Scheduling never reserves
-unrelated host processes or coordinates projects that do not share the current
-Git root.
-
-The lock order is reproduction reservation, normal log/entry operation lock,
-promotion-index mutex, scheduler mutex, run-state lock, entry-local
-reproduction-requirement lock, log publication mutex. No code may acquire an
-earlier lock while holding a later one. The scheduler mutex is never held while waiting for
-capacity, running or stopping workers, comparing artifacts, publishing results,
-or invoking validation. A transition that touches coordinator and run state
-takes scheduler then run locks. Permit admission validates the exact accepted
-execution, plan order, kind, resolved claims, and durable running supervisor
-before creating a scheduler row. It commits the grant before attaching the
-same permit ID to the checkpoint. A crash between those commits is reconciled
-from the exact accepted identity and live owner; a retry after attachment is
-idempotent. Release deletes the scheduler permit before clearing the exact
-checkpoint permit. The checkpoint retains the released permit ID as a tombstone
-so only an exact retry is idempotent after interruption.
-
-A scheduling permit is released only after the attempt's `succeeded`, `failed`,
-or `stopped` checkpoint is durable and every registered worker is gone. An
-incomplete stop or recovery retains the active permit and a current SQLite
-owner/worker exclusion while a worker survives; the failed supervisor may
-release its inherited descriptor only after that durable exclusion exists.
-A stopped waiter removes its ticket before releasing its scope lock. Recovery
-reconciles coordinator entries against strict run state and live supervised
-process identity; it may remove a proved-dead waiter or permit but never infer a
-completed attempt or launch work. Coordinator corruption or unavailable process
-inspection is an operational refusal, not permission to bypass exclusion.
-Permit admission also reconciles an entry whose supervisor is dead when its
-canonical owner run is already terminal, records no active execution, and records
-no surviving worker. If those conditions cannot be proved, admission fails with
-`reproduction.scheduler.reconciliation_required` instead of waiting indefinitely;
-the owner run must be inspected or recovered before retrying.
-
-Historical reproduction jobs are never rewritten, migrated, deleted, or
-decoded. A canonical historical JSON run directory without `state.sqlite` is
-recognized only by its path. Status, stop, resume, recovery, promotion, and
-publication reject it with
-`reproduction.run.unsupported` and direct the caller to start a new current
-run. It creates no new file and never blocks current-format admission or
-scheduling because it owns no scheduler rows.
-
-### Shared Publication
-
-Concurrent distinct-entry runs share the reproduction domain of
-`.cache/results.sqlite` and `reproduction.md`. Their shared writes must use one
-brief log-local publication mutex built on the existing lock infrastructure.
-It is not a reproduction scope lock and is not held during planning, execution,
-comparison, or per-execution reproduction-requirement update.
-
-Publication holds the run-state lock, then this publication mutex, then the
-result-store lock. It reloads current shared state, verifies retained accepted
-invocation and comparison evidence, and commits the selected result keys as one
-result-store transaction. Before releasing the locks it records the returned
-generation in `state.sqlite`; report composition, file replacement, and the
-checked report marker follow without repeating that result transaction.
-
-A failure before the result transaction commits returns the durable publication
-stage to `ready`. A failure after it commits retains `result_committed` and is
-report-only on explicit resume. If the process dies before recording the
-generation, the unique run ID and immutable run metadata distinguish `absent`,
-`exact`, and `conflict`. An exact match records the current reproduction
-generation and materializes the current aggregate; this may be a later
-generation committed by another completed run. A conflict fails closed. The
-publisher never reads or writes validation state.
-
-### Reproduction Requirement And Post-Reproduction Validation
-
-When a command reaches its complete mechanical endpoint, reproduction atomically changes only that execution's
-`requires_reproduction` field to false in its entry-local `pyrun.json`. This is
-independent of artifact comparison:
-matched, changed, and comparison-failed outputs all belong to a completed
-command. The update takes the owning short entry guard; active-run reservations
-and promotion conflicts remain checked independently. Each update is
-independent and durable; no later execution or publication outcome restores
-the requirement.
-
-After reproduction-result publication succeeds and the run becomes complete,
-the supervisor releases its reproduction scope lock without invoking validation.
-Validation owns its domain in `.cache/results.sqlite` and `validation.md` only when explicitly
-requested. Reproduction performs neither targeted refresh nor full validation.
-A later validation outcome does not change the completed reproduction status,
-reproduction requirements, or reproduction results.
-
-### Promotion Conflicts
-
-Promotion acquires the producing entry's normal operation lock. It is rejected
-while that entry or enclosing log is under reproduction and whenever an active
-accepted plan records a promoted artifact as an input or retained comparison
-baseline. While active, promotion publishes its complete output set in operation
-state so a newly prepared reproduction with an intersecting accepted input or
-comparison baseline is likewise rejected.
-Its shared-state changes use the publication mutex.
-
 ## Human And Agent Interfaces
 
-### Generated Files And Cutover
-
-Reproduction owns:
+There are no aliases or implicit launch route.
 
 ```text
-<log>/.cache/results.sqlite
-<log>/reproduction.md
+log reproduce plan --path LOG [--entry ENTRY] [--include-all] [--recheck]
+  [--jobs N] [--execution-timeout-seconds N] [--cursor CURSOR] [--format text|json]
+log reproduce run --path LOG [--entry ENTRY] [--include-all] [--recheck]
+  [--jobs N] [--execution-timeout-seconds N]
+log reproduce show (--path LOG | --root PROJECT) [--run-id RUN] [--format text|json]
+log reproduce list commands --path LOG [--run-id RUN] [--entry ENTRY]
+  [--status STATUS] [--reason REASON] [--cursor CURSOR] [--format text|json]
+log reproduce list artifacts --path LOG [--run-id RUN] [--entry ENTRY] [--cid CID]
+  [--status STATUS] [--reason REASON] [--cursor CURSOR] [--format text|json]
+log reproduce detail command --path LOG --entry ENTRY --cid CID --execution-id ID
+  [--run-id RUN] [--section SECTION] [--cursor CURSOR] [--format text|json]
+log reproduce detail artifact --path LOG --entry ENTRY --artifact ARTIFACT
+  [--run-id RUN] [--section SECTION] [--cursor CURSOR] [--format text|json]
+log reproduce render --path LOG
+log reproduce status --path LOG --run-id RUN [--json]
+log reproduce stop --path LOG --run-id RUN
+log reproduce resume --path LOG --run-id RUN
+log reproduce promote --path LOG --run-id RUN --cid CID --execution-id ID
 ```
 
-Validation continues to own its result-store domain and `validation.md`.
-Cutover removes the legacy Reproduction result section from `validation.md`.
-Validation may link to `reproduction.md` but must not duplicate reproduction
-state.
+`--run-id` is valid only for single-log saved inspection. Root show uses separate
+compact command/artifact tables, exact totals, unavailable rows and entry-target
+coverage qualifications. Single-log show and `reproduction.md` share the compact
+hierarchy; reports contain no diagnostic inventories. Use list/detail to debug,
+plan to inspect current work, and status to inspect an accepted job's lifecycle.
+Run returns the newly accepted job, not a substituted older saved result.
+No runnable work creates neither a job nor a saved run; the explicit empty
+whole-log obsolete-history recovery exception uses a zero-confirmation receipt.
 
-The machine JSON paths are ignored cache state. The former
-`reproduction/results.json`, `validation/results.json`, and
-`validation/batches.json` locations are removed during the path cutover and are
-never read as fallbacks. A missing reproduction result means a cold cache; a
-new reproduction rebuilds current outcomes instead of reconstructing them from
-Markdown.
+## Locking And Publication
 
-Every maintained summary receives:
+Scope reservations use an exclusive reproduction-log lock for log targets,
+or a shared log lock plus exclusive entry lock for entry targets. They remain
+held through worker/permit/scratch cleanup. Overlapping targets are excluded;
+distinct entry targets may run concurrently. Normal source/publication locks
+are never held while commands execute.
 
-```markdown
-Reproduction: [latest report](<log>/reproduction.md)
-```
+The scheduler uses its existing project-wide SQLite coordinator, exclusive
+ticket fairness and exact read/write/writable claims. Poll authenticates accepted
+claims and live owner before attaching a grant under the job mutex.
+Grant-before-attachment and attachment-before-return interruptions are retryable.
+Exact unchanged polls perform no writes. Wrong identities cannot release grants;
+release is idempotent only for an already absent exact grant. Dead-owner grants
+or waiters require quiescent native proof; live/surviving workers exclude reuse.
 
-Scaffold creates neither an empty result store nor a placeholder report. The
-first completed reproduction creates the reproduction domain and derives the
-report. Removing result data never touches a run-local `state.sqlite`, retained
-baselines, or `pyrun.json`; surviving reports are nonauthoritative and cannot
-rebuild results. Because current successful commands remain cache-independent,
-rebuilding the machine result requires an
-explicit `--recheck` reproduction.
+The detached start gate registers the actual child PID before execution.
+Stop is durable intent, not a fabricated command failure. Fixed-plan resume
+uses immutable acceptance and completed native facts; relaunchable stopped
+attempts receive fresh scratch. Publication-only resume opens no workspace and
+performs no preflight, execution, planning or research-file reads.
 
-### Human Report
-
-`reproduction.md` is deterministic, generated, source-controlled,
-nonauthoritative human output.
-No researcher or agent edits it. One centralized compositor produces both the
-file and the complete ready-to-present output of:
-
-```text
-log reproduce report --path LOG [--entry ENTRY]
-```
-
-The same CLI owns compact per-log and cross-log projections:
-
-```text
-log reproduce report --path LOG --summary [--format json]
-log reproduce report --root PROJECT --summary [--format json]
-```
-
-The per-log JSON uses `research-log-reproduction-summary/5` and includes
-nullable `resolved` beside the latest completed run ID. The cross-log JSON uses
-`research-log-reproduction-root-summary/5`; its coverage object reports
-resolved and unresolved completed logs separately. Human summaries name an
-unresolved latest run as resumable, and the generated Runs table distinguishes
-`complete (resolved)` from `complete (unresolved)` without changing the stored
-run status.
-
-The complete per-log CLI report must use the same counts, vocabulary,
-ordering, and wording as the file projection. A reproduction agent presents compact
-output unchanged by default and does not parse generated files or reconstruct
-a summary. It requests the complete per-log report only when the researcher
-asks for artifact or run detail.
-
-The removed single-execution presentation route previously accepted a run ID.
-Aggregate report routes operate only on log or entry state; they do not inspect
-run IDs. Ordinary `status --run-id` remains the current lifecycle inspection
-route for an accepted aggregate run. Historical result/11 rows may retain prior
-one-command observations for read-only rendering, but they are not current
-reports or lifecycle state.
-
-The compact per-log projection has two visibly separate trees. The command tree
-starts with every command in the target, separates commands whose reproduction
-was not retried, commands skipped by policy, and commands selected for
-execution. The reproduction-not-retried count combines commands that need no
-reproduction with unchanged prior failures and blocks retained without another
-attempt; it does not expose those prior dispositions. The tree nests
-`Succeeded`, `Failed`, and `Blocked` below the selected count. The artifact
-tree starts with every current reachable artifact, separates `Matched`, `Not
-matched`, and `Not compared`, then nests the reasons for non-comparison. A current
-`matched` result contributes to `Matched`, a current `changed` result contributes
-to `Not matched`, and failed, comparison-failed, or skipped results
-contribute to `Not compared`. These three artifact categories are mutually
-exclusive and sum exactly to artifact `Total`.
-
-Non-comparison reasons are listed as `comparison failed`, `command failed`,
-`command blocked`, and `command skipped`. Zero-count reasons are omitted, and
-`command skipped` is always the last visible reason.
-An artifact skipped because a dependency failed is blocked; policy- or
-scope-skipped artifacts remain skipped. A pre-execution planning failure is
-also reported as command blocked, using the command's terminal disposition;
-it is not reported as command failed merely because the artifact outcome is
-`failed`.
-
-The projection explicitly states that command and artifact totals are different
-units and need not match because one command may produce several artifacts.
-It also states that a succeeded command ran to completion and that matching is
-reported separately at the artifact level.
-An older result without command accounting explicitly asks for a new
-reproduction run; the report does not reconstruct historical counts. The
-cross-log projection has one row per canonically discovered maintained summary,
-two compact tables, separate
-accounted totals, and explicit counts of complete, not-yet-reproduced, and
-unavailable logs. Its JSON form uses the schemas listed in
-[Versioned Surfaces](#versioned-surfaces).
-
-The complete report header contains the latest completed run and the same two
-summary trees. It omits the report-generation timestamp. It has no aggregate pass/fail headline.
-
-The current-state body has one section per entry in canonical log order. Each
-heading contains the stable entry ID and human title and links to the exact
-entry document. Unresolvable metadata falls back to the stable ID or logical
-entry path without suppressing results. Each section contains:
-
-| Artifact | Status |
-| --- | --- |
-| `data/result.csv` | matched |
-| `images/result.png` | **changed** |
-
-Artifact paths are relative to the entry when possible and ordered
-deterministically. Every current artifact is shown, including matches. Every
-status other than `matched`, including stale state, is bold. The report has no
-detail limit or overflow omission: no non-matched or stale artifact may be
-hidden.
-
-After entry sections, a Runs table has exactly `Run ID`, `Target`, `Run
-status`, `Time`, and `Folder`. It lists retained or availability-unknown runs
-in deterministic reverse chronological order. An available directory is linked
-by project-relative path.
-
-When regenerating a report, history is pruned only if the applicable filesystem
-and `<project>/tmp` parent are available and the exact run directory is
-conclusively absent. An unavailable mount, broken or unavailable `tmp` target,
-permission failure, or I/O error preserves the row and renders diagnostic
-material unavailable. Removing run history never removes current artifact
-results.
-
-Human names, sentences, status labels, entry headings, and path presentation
-come from one centralized catalog keyed internally by artifact outcome and
-reason. The report must not expose internal reason codes, execution IDs,
-fingerprints, or raw observed state. The public Run ID column is the intentional
-exception.
-
-### Bounded Artifact Queries
-
-Agents diagnose current cases through:
-
-```text
-log reproduce artifacts list --path LOG [--entry ENTRY] [--outcome OUTCOME] [--artifact PATH]
-log reproduce artifacts show --path LOG --entry ENTRY --artifact PATH
-```
-
-`list` returns at most 50 current artifact records in deterministic order and
-always includes exact matched, returned, and omitted counts. Entry, outcome,
-and artifact filters are exact and combinable. It accepts no glob, regular
-expression, fuzzy match, pagination, or adjustable limit.
-
-`show` returns the complete current structured result for one exact entry and
-artifact path. It fails on zero or multiple matches rather than broadening the
-selection.
-
-Both commands read the latest completed published record as-is, expose its
-publication time, and fail precisely for absent, ambiguous, malformed, or
-unsupported state. They never validate, reproduce, repair, publish, clean up,
-or write a file. Run-specific diagnosis remains on `status --json`.
-
-### Bounded Command Queries
-
-Agents inspect the command units behind compact command counts through:
-
-```text
-log reproduce commands list --path LOG [--bucket BUCKET] [--entry ENTRY] [--reason REASON] [--run-id RUN_ID] [--format text|json]
-log reproduce commands show --path LOG --entry ENTRY --cid CID --execution-id EXECUTION_ID [--run-id RUN_ID] [--format text|json]
-```
-
-Without `--run-id`, both commands select the latest completed run. `list`
-returns at most 50 deterministic records and always reports exact matched,
-returned, and omitted counts. Its public buckets are
-`reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
-`blocked`; entry, bucket, and exact reason filters are combinable. `show`
-returns one exact entry/CID-qualified execution, including its recorded recipe,
-working directory, automatic-reproduction policy, run selection, accounting
-reason, declared inputs and outputs, and any available planning detail. The
-list includes an `error` object for failed and unchanged-failed commands:
-`type`, a single-line `message` limited to 512 characters, `source`
-(`stderr`, `stdout`, `checkpoint`, or `unavailable`), and `truncated`.
-Other rows have `error: null`. Recognized exception and argument-error lines
-come from bounded retained log tails; otherwise the checkpoint failure is
-used. Missing diagnostics are explicit. These summaries describe recorded
-errors, not inferred root causes. The retained run is loaded once per listing.
-The text list displays the error type and message and prints a shell-safe
-`commands show` invocation for every returned
-row, preserving the caller's executable and log-path spelling.
-
-These queries use the same seven-category accounting projection that produced
-the selected run's compact counts. They read that run's immutable
-`command_records` and reconcile every projected row against its published
-totals before returning it. For a launched command, `show` also resolves the
-selected run's exact retained directory and newest terminal checkpoint for the
-compound entry/CID/execution identity. Command detail schema
-`research-log-reproduction-command/3` includes the checkpoint failure,
-timing, and observed outputs plus retained stdout and stderr projections. Each
-stream projection records its project-relative path, availability, byte count,
-whether it was truncated, and at most the final 16 KiB with terminal control
-characters sanitized. A missing, removed, invalid, or unavailable run
-directory or stream is reported explicitly without hiding the immutable
-command record. The query never consults current `pyrun.json`, reinterprets
-historical policy, or requires another reproduction because a command was
-changed, removed, or reclassified after publication.
-
-The reproduction-result contract centrally decides whether a run has current
-command-query metadata. Command queries do not provide a partial compatibility
-path when it does not. Both `list` and `show` fail with
-`reproduction.command.schema_unsupported` and instruct the caller to run
-reproduction with `--recheck` to rebuild the generated result. They do not
-reconstruct command rows from an accepted run directory, terminal command
-records, aggregate counts, or current command metadata. Malformed records in a
-current command-query projection are invalid rather than outdated.
-
-Both commands are bounded read-only queries. They never validate, reproduce,
-repair, publish, clean up, or write a file. Run-level lifecycle diagnosis
-remains on `status --json`; per-command retained diagnostics belong to
-`commands show`.
-
-### Agent Monitoring
-
-After launching a durable job, an agent may offer to create a scheduled status
-check. It may create that task only after the user confirms. The scheduled task
-reads deterministic status JSON and reports meaningful progress, failure,
-completion, or required action. It never controls the job.
+Result publication owns the reproduction-publication lock then the shared
+results lock. An immutable saved run and domain generation commit atomically.
+Report writing/materialization acknowledgment follows; interruption is recovered
+from frozen job observations and publication journal. Exact retries recognize
+the original committed run rather than reapplying latest indexes. Requirement
+clearing uses job then entry lock and acknowledges only after the atomic flag
+write. Promotion retains its existing short reservation/install/rollback locks.
 
 ## Compatibility And Evolution
 
-The original execution and reproduction cutover is complete. Ordinary `pyrun`
-and Reproduce require `pyrun.json`; neither executes legacy
-`pyrun-outputs.json` records or derives reproduction recipes from Markdown. The
-legacy validation Reproduction section is not a current report surface.
+Reproduction is replacement-only: no migration, legacy readers, old-job resume
+or CLI aliases. Explicit recheck installs/replaces only the reproduction domain;
+validation and command-diagnostic domains remain intact. Reads and preview never
+replace unsupported state. Jobs are not disposable cache and must be resolved
+under their owning implementation before incompatible cutover. Retained research
+and debugging files are not deleted or translated.
 
-Parallel scheduling uses `research-log-pyrun/v6`. A current reproduction job
-uses run-local SQLite `user_version=3`, one accepted
-`research-log-reproduction-plan/11`, and the public
-`research-log-reproduction-status/7` projection. JSON
-`research-log-reproduction-run/7` and every earlier accepted reproduction job
-format are unsupported immutable history: no current consumer decodes them
-with defaults, resumes them, or transfers their execution provenance. Start a
-new SQLite-backed run instead. The maintained-corpus execution-state cutover
-is complete.
+This does not remove the separately owned read-only legacy output-record
+validation contract or change current pyrun recipe grammar.
+Future contract/bound changes require explicit design, tests and documentation;
+corpus growth does not dynamically adjust limits.
 
-The result reader accepts only the current consolidated result-store schema.
-Missing, malformed, busy, or unsupported stores fail precisely and do not fall
-back to old JSON, reports, or run directories. A writer creates an absent store
-but never overwrites malformed or unsupported state. A later reproduction may
-publish fresh current results only through its normal accepted-plan path.
+## Current Command-Verification Boundary
 
-An explicitly launched whole-log `--recheck` also recovers unsupported results
-when the accepted target is completely empty: no recorded commands (including
-nonautomatic commands), artifact cases, boundaries, or planning failures. Under
-the whole-log scope and publication locks, it uses the accepted no-work plan and
-atomically replaces only the generated result and human
-report with canonical empty, not-yet-reproduced state. It creates no run,
-claims no successful execution, and invokes no research execution or worker;
-the enclosing non-dry launch has already evaluated and published current
-mechanical validation before reaching this recovery. Supported history and
-absent results remain unchanged. A dry-run preview never performs this
-recovery; incremental, partial, policy-skipped, and blocked no-work targets do
-not gain unsupported-state replacement authority.
-
-Mechanical validation uses direct execution association and an output-owner
-index for current execution state. It has no legacy output projection or
-targeted-refresh adapter. This does not authorize legacy declaration or
-execution-state decoding, recording, reproduction, or baseline transfer.
-
-The following changes require explicit version review:
-
-- execution identity or canonicalization;
-- schema field grammar or semantics;
-- comparison dispatch or equality semantics;
-- artifact outcome or reason vocabulary;
-- run status or resume semantics;
-- scope or authority boundaries; and
-- publication or locking guarantees.
-
-Numeric bounds may be revised from measured retained-corpus evidence without
-changing semantic policy, but their versioned owner and compatibility effect
-must be explicit. A new comparison family, non-exact comparison, multi-log
-scope, agent equivalence judgment, or broader artifact registry is not an
-implicit extension.
-
-## Current Implementation Boundary
-
-Command-oriented version 6 execution state, parallel planning and scheduling,
-safety, run-local execution, exact and evidence-scoped artifact comparison,
-durable comparison records, immediate requirement clearing, independent result
-publication, current projection, bounded read-only queries, durable job
-control, immutable completed-run command inspection, fixed-plan stop/resume,
-publication retry, lost-supervisor reconciliation, explicit
-post-reproduction validation, and whole-execution copy-based promotion are
-implemented. The maintained-corpus exclusivity cutover is complete, and earlier
-execution-state schemas are rejected.
-Promotion has no validation refresh; reproduction has no targeted-validation
-path. Maintained-corpus initialization and the bounded
-entry-level cutover evaluation are complete. Full maintained-corpus
-reproduction remains gated by the reproduction plan. The frozen result and
-status fixtures remain the compatibility boundary.
-
-Validation admission reaches Reproduce through finding-owned per-execution
-decisions over validation's shared live `ResearchGraph`. Reproduce reads no
-retained validation projection and reconstructs no second owner/dependency
-graph. Repair batches have no admission authority.
-
-## Part 3.C Current Command Verification Boundary
-
-The current isolated verification operation is:
-
-```text
-log command verify --path LOG --entry ENTRY --cid CID --execution-id ID [--execution-timeout-seconds SECONDS] [--format text|json]
-```
-
-It uses current declarations and retained output
-baselines in an isolated synchronous workspace. It never creates a run or
-changes generated results, reports, validation, promotion, or execution
-metadata. Bare reproduction targets are only log or entry. Current accepted
-plans are plan/11, their mutable lifecycle lives in run-local SQLite
-`user_version=3`, and status/7 is a derived public projection. State rows bind
-each planned command and execution to its stable CID. JSON run/7 is
-unsupported historical job state, not a current mutable record. Earlier plans
-are rejected without migration. Result/11 retains passive read-only rendering
-of historical one-command rows.
-
-`command-verification` requires one exact stable entry, one stable CID, and one complete
-lowercase `pyrun-exec/v2:<64 hexadecimal digits>` identity. It resolves exactly one
-current Markdown invocation whose recorded recipe remains identical. Unknown,
-malformed, absent, ambiguous, or changed-recipe selections fail before a
-workspace exists. The operation has no dry run, planning, admission, automatic
-policy, scheduling, resume, status, report, publication, validation, or
-promotion lifecycle.
-
-It accepts `--execution-timeout-seconds` from 1 through 604,800; the default is
-300 seconds and applies to the isolated child wall-clock execution. It first
-holds the reproduction reservation and then the ordinary log lock while loading
-authority. It releases the log lock during execution, reacquires it to confirm
-that authority and retained baselines are unchanged, and retains the
-reservation for the complete synchronous call. A reservation conflict fails
-before workspace creation.
-
-The authority snapshot includes the current summary, entry declarations,
-recorded execution, current command and source files, declared direct inputs,
-evidence comparison definitions, and every retained output baseline. Current
-inputs are reported beside their recorded observations; a historical input
-difference is information, not an adoption. The operation consumes an
-available current direct input even when it differs from the recorded
-observation, and reports that difference. It refuses unavailable or unsafe
-inputs, changed retained baselines, and any authority, source, input, baseline,
-or comparison context that changes during the call. It never adopts a new
-recipe, declaration, participating-code observation, input observation, or
-evidence rule.
-
-After preflight, the retained workspace is
-`<project>/tmp/command-verification/YYYY-MM-DD/command-verification-<log>-<entry>-<random>/`.
-Private outputs and stdout/stderr diagnostics remain there for inspection.
-After workspace creation, it is retained for every terminal outcome, including
-unavailable and cancelled calls. Selector, authority, input, baseline, and
-isolation-preflight failures that occur before creation return a null workspace.
-The operation confines child outputs to that workspace and must not modify
-retained research inputs, baselines, `pyrun.json`, reproduction cache,
-generated report, validation cache, requirement flags, or promotion state.
-
-Its only machine result is one `research-log-command-verification-result/1` object.
-It has exactly `schema`, `summary`, `entry`, `cid`, `execution_id`, `status`,
-`exit_status`, `published:false`, nullable `workspace`, `execution`, `inputs`,
-`outputs`, `diagnostics`, and `limitations`. `execution` reports return code,
-checkpoint state, failure, recorded policy fields, and current source records;
-`inputs` report recorded and current fingerprints plus historical difference;
-`outputs` report isolated paths and comparison outcomes; diagnostics carry
-stdout/stderr text and paths. `limitations` includes `selected_command_only`.
-No result has a run ID, plan, publication, or promotion field.
-Text is the default presentation; `--format json` emits the machine result.
-
-`matched` exits 0; `different` exits 1; `worker_cleanup_incomplete` exits 2;
-and `execution_failed`, `comparison_unavailable`, and `unavailable` exit 3.
-An interrupt or termination produces `cancelled` with exit 130 or 143 unless
-worker cleanup is incomplete, which takes precedence. Timeout is an execution
-failure. Cancellation stops the supervised process tree; cleanup retains
-diagnostics and the workspace, and an incomplete cleanup is never masked as a
-successful cancellation. Entry or full validation is the only clearance path.
+`log command verify` executes one isolated recorded invocation through the same
+physical confinement/capture/comparison owners. It owns no reproduction job or
+saved history, does not clear reproduction requirements, promote outputs or
+replace validation snapshots. See the command-verification contract and usage
+guidance for its independent selectors and retained debugging workspace.

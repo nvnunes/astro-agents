@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping, Sequence, cast
 from research_log_result_store import (
     REPLACEABLE_STORE_VERSIONS,
     STORE_VERSION,
+    UNCHANGED_DOMAIN_STORE_VERSIONS,
     ResultStoreError,
     replace_validation_schema,
     result_snapshot,
@@ -96,7 +97,7 @@ def publish_validation_snapshot(
         if version in REPLACEABLE_STORE_VERSIONS:
             replace_validation_schema(db)
             db.execute(f"PRAGMA user_version={STORE_VERSION}")
-        elif version != STORE_VERSION:
+        elif version not in UNCHANGED_DOMAIN_STORE_VERSIONS:
             raise ResultStoreError(
                 "results.schema.unsupported",
                 f"store version {version} is unsupported",

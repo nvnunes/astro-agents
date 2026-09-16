@@ -1,0 +1,71 @@
+# Research-Log Reproduction Model Coverage
+
+This index maps the current reproduction contract to production owners and
+representative exact tests. The [reproduction specification](../research-log-reproduction-spec.md)
+owns behavior; this index owns coverage navigation, not another contract.
+Update the owning implementation, specification and corresponding coverage when
+behavior changes. Refactor-equivalence evidence and passing commands belong in
+the active implementation plan; the [complete tool gate](research-logging.md#complete-tool-gate)
+remains mandatory.
+
+## Work And Classification
+
+| Contract | Production owner | Exact scenarios |
+| --- | --- | --- |
+| Closed work/results, identities, ownership and one diagnosis shared by related work | `reproduction_domain`, `reproduction_work`, `reproduction_run`, `reproduction_work_plan` | `test_reproduction_canonical_records.ReproductionCanonicalRecordTests.test_closed_work_and_result_round_trips`; `test_problem_links_have_actual_owners_and_no_unused_diagnoses`; `test_shared_source_problems_link_only_to_accepted_consumers` |
+| Exact command/artifact hierarchy, parent equations, explicit zero and current-plan counts without predicted outcomes | `reproduction_summary`, `reproduction_saved_run` | `test_reproduction_canonical_records.ReproductionCanonicalRecordTests.test_exact_mixed_counts_and_parent_equations`; `test_current_plan_counts_do_not_predict_results`; `test_empty_saved_target_has_explicit_zeroes_not_unavailable_counts` |
+| Distinct CIDs/entries even for equal execution digests; canonical ordering and bounded linear fan-out | `reproduction_work_plan`, `reproduction_saved_run` | `test_reproduction_canonical_records.ReproductionCanonicalRecordTests.test_equal_execution_digests_in_different_cids_and_entries_stay_distinct`; `test_directory_member_fanout_retains_one_diagnosis_and_linear_record_growth`; `test_reordering_preserves_canonical_identity_and_count_results` |
+
+Test names after the first fully qualified name in a cell belong to that same
+module/class.
+
+## Preparation And Immutable Acceptance
+
+| Contract | Production owner | Exact scenarios |
+| --- | --- | --- |
+| Original target, graph, source-closure, policy, boundary, cycle and incremental/recheck selection | `reproduction_planner`, `reproduction_admission`, `validation.research_graph` | All authored scenarios in `test_reproduction_planning_matrix.NativePlanningMatrixTests` and `test_reproduction_planning_preservation.NativePlanningPreservationTests`; `test_reproduction_native_planning.NativePlanningTests` |
+| Fresh public preview without validation/result writes, complete classification and bounded action-row continuation | `reproduction_plan_preview`, `reproduction_jobs` | `test_reproduction_plan_preview.ReproductionPreviewTests.test_public_plan_uses_native_preparation_without_saved_or_validation_writes` |
+| Native accepted bytes/roots/materials, relational ownership, digest authentication and no current filesystem decode | `reproduction_accepted_storage`, `reproduction_work_plan` | `test_reproduction_accepted_storage.AcceptedWorkStorageTests.test_exact_typed_plan_roundtrip_is_read_only_and_source_independent`; `test_each_relation_inventory_is_bounded_before_materialization`; `test_reproduction_canonical_records.ReproductionCanonicalRecordTests.test_accepted_command_decoding_does_not_recheck_any_filesystem_paths`; `test_native_lookups_return_the_accepted_objects_without_decoding` |
+| Public selectors/settings, preparation-lock handoff and repeated exclusion probes | `reproduction_jobs` | `test_reproduction_public_jobs.PublicNativeJobsTests.test_public_entry_run_freezes_all_selector_and_runtime_settings`; `test_scope_lock_probe_rechecks_exclusion_after_descriptors_are_owned` |
+
+## Execution, Scheduling And Recovery
+
+| Contract | Production owner | Exact scenarios |
+| --- | --- | --- |
+| Real accepted execution with no live metadata readers; terminal facts before release | `reproduction_work_execution`, `reproduction_command_results` | `test_reproduction_work_execution.NativeExecutionTests.test_real_success_retains_actual_invocation_and_commits_before_release`; `test_real_nonzero_exit_keeps_one_original_diagnosis_and_partial_output`; `test_real_timeout_records_failure_before_releasing_permit_and_scratch` |
+| Dependency failure blocks only dependents; independent progress and no fabricated attempts/diagnosis copies | `reproduction_work_supervision` | `test_reproduction_work_supervision.NativeSupervisionTests.test_real_graph_runs_dependencies_and_uses_generated_inputs`; `test_failed_root_blocks_only_dependents_without_attempts_or_copied_problems` |
+| Authenticated claims, exact retry/release, exclusive ticket fairness and dead unattached waiter removal | `reproduction_scheduler`, `reproduction_work_job` | `test_reproduction_work_job.WorkJobTests.test_native_scheduler_exact_repoll_is_byte_mtime_and_dml_free`; `test_native_scheduler_release_binds_identity_and_exact_absence_is_idempotent`; `test_native_scheduler_exclusive_tickets_are_monotonic_and_fair`; `test_native_scheduler_dead_unattached_waiter_is_removed_before_admission` |
+| Root-bound jobs and source/settings immutability | `reproduction_work_job` | `test_reproduction_work_job.WorkJobTests.test_native_open_rejects_copied_job_at_another_run_root_readonly`; `test_reproduction_accepted_storage.AcceptedWorkStorageTests.test_exact_typed_plan_roundtrip_is_read_only_and_source_independent`; `test_each_relation_inventory_is_bounded_before_materialization` |
+| Fixed-plan stop/resume, exact owner closure and publication-only resume without workspace/execution | `reproduction_work_supervision`, `reproduction_jobs` | `test_reproduction_work_supervision.NativeSupervisionTests.test_supervisor_stops_then_resumes_same_acceptance`; `test_supervisor_publishes_and_closes_exact_owner`; `test_supervisor_publication_retry_never_executes_or_opens_workspace` |
+| Live owner nonmutation, exhaustive survivor registration, interrupted scratch/grant cleanup and control exclusion | `reproduction_work_recovery`, `reproduction_process_recovery` | `test_reproduction_work_recovery.NativeRecoveryTests.test_live_owner_is_nonmutating_without_process_scan`; `test_repeated_survivor_scan_preserves_registration`; `test_recovery_completes_reachable_cleanup_cuts_without_reexecution`; `test_reproduction_work_supervision.NativeSupervisionTests.test_full_supervisor_survivor_failure_keeps_lease_and_public_control_exclusion` |
+| Production confinement denies network and retained writes; isolated verification is nonpublishing | `reproduction_execution`, `command_verification` | Enabled `test_reproduction_work_execution.NativeExecutionTests.test_production_seatbelt_denies_network_and_retained_write`; enabled `test_log_command_verify.CommandVerificationTests.test_production_seatbelt_denies_network_and_retained_write`; `test_command_verification_never_calls_durable_mutation_sinks` |
+
+## Comparison And Explicit Promotion
+
+| Contract | Production owner | Exact scenarios |
+| --- | --- | --- |
+| Original whole-artifact profiles and evidence-scoped equality, tolerances and resource checks | `reproduction_comparison`, `validation.evidence_comparison` | `test_research_log_evidence_comparison`; `test_reproduction_artifact_results.ArtifactResultObservationTests.test_closed_profile_goldens_preserve_exact_existing_comparison_rules`; `test_actual_accepted_evidence_preserves_match_decisions_without_registry_reads` |
+| Baseline and auxiliary evidence guards, accepted-only definitions and retained pinpointing diagnostics | `reproduction_artifact_results` | `test_reproduction_artifact_results.ArtifactResultObservationTests.test_changed_retained_baseline_cannot_become_a_match`; `test_changed_frozen_auxiliary_evidence_rejects_even_equal_output`; `test_absent_accepted_definition_never_falls_back_to_authored_live_rules`; `test_caught_json_exception_type_and_message_are_not_discarded` |
+| Complete declared outputs including uncited outputs; partial comparison retry without replacing earlier facts | `reproduction_work_execution` | `test_reproduction_work_execution.NativeExecutionTests.test_uncited_output_keeps_full_comparison_coverage`; `test_partial_comparison_retry_keeps_first_fact_and_completes_second` |
+| Requirement write-before-ack retry, original accepted/current recipe guard and no early clear | `reproduction_requirements`, `reproduction_work_job` | `test_reproduction_public_jobs.PublicNativeJobsTests.test_requirement_write_before_ack_retry_does_not_execute_again`; `test_requirement_interruption_before_write_has_no_effect_or_ack`; `test_reproduction_work_job.WorkJobTests.test_success_requires_all_recipe_outputs_not_just_counted_artifacts`; `test_stopped_attempt_is_not_result_and_requires_cleanup_before_resume` |
+| Complete staged output copy and exact updated output observations without rewriting history | `reproduction_promotion` | `test_reproduction_public_jobs.PublicNativeJobsTests.test_native_promotion_copies_complete_outputs_without_rewriting_saved_run`; `test_native_promotion_report_failure_rolls_back_outputs_and_pyrun` |
+| Destination recheck, multi-output rollback, displaced-original recovery, safe staging and lock order | `reproduction_promotion` | `test_log_reproduction_promotion.ReproductionPromotionTests.test_install_rolls_back_earlier_output_when_later_baseline_races`; `test_failed_restore_keeps_displaced_original_for_recovery`; `test_current_replacement_and_restore_failure_keeps_its_original`; `test_promotion_reads_run_state_before_publication_lock` |
+| Failed/unknown selectors, forged staging path and actual active outside-entry boundary reader | `reproduction_promotion`, `reproduction_jobs` | `test_reproduction_public_jobs.PublicNativeJobsTests.test_native_promotion_rejects_failed_unknown_and_foreign_staging`; `test_native_promotion_conflicts_with_actual_outside_entry_boundary_reader`; `test_log_reproduction_promotion.ReproductionPromotionTests.test_incomplete_or_unbound_staging_cannot_reach_promotion` |
+
+## Saved Storage, Publication And Inspection
+
+| Contract | Production owner | Exact scenarios |
+| --- | --- | --- |
+| Lazy version-20 reproduction-only replacement without decoding obsolete rows; unrelated domains/research unchanged | `reproduction_saved_storage`, `research_log_result_store` | `test_reproduction_saved_storage.SavedRunStorageTests.test_replacement_discards_old_only_and_roundtrips_native_frozen_facts`; `test_unsupported_read_is_nonmutating_and_does_not_decode_old_reproduction`; `test_unchanged_domain_publication_preserves_native_reproduction_history` |
+| Atomic rollback, lost commit acknowledgment and immutable history/minimal latest target indexes | `reproduction_saved_storage` | `test_reproduction_saved_storage.SavedRunStorageTests.test_native_publication_insertion_failure_rolls_back_replacement_and_generation`; `test_exact_native_commit_is_recognized_after_lost_acknowledgement`; `test_selected_producer_prunes_old_output_indexes_but_preserves_history`; `test_nonselected_previous_failure_keeps_original_latest_origin` |
+| Explicit genuinely empty recheck uses a receipt, not a fabricated run; report interruption recovery | `reproduction_saved_storage`, `reproduction_jobs` | `test_reproduction_saved_storage.SavedRunStorageTests.test_empty_replacement_is_receipt_only_and_preserves_other_domains`; `test_reproduction_public_jobs.PublicNativeJobsTests.test_explicit_empty_recheck_confirms_without_creating_job_or_run`; `test_empty_recheck_recovers_report_without_replacing_receipt` |
+| Frozen ordinary publication and result/report/terminal crash recovery with zero execution/replanning | `reproduction_work_publication`, `reproduction_saved_report` | `test_reproduction_work_publication.NativePublicationTests.test_lost_result_acknowledgment_reuses_exact_frozen_completion`; `test_report_failure_keeps_committed_facts_queryable_and_recovers`; `test_terminal_job_write_cut_recovers_already_materialized_report` |
+| Original comparison exception and mismatch diagnosis persist without source files | `reproduction_observation_storage` | `test_reproduction_observation_storage.ObservationStorageTests.test_differing_artifact_diagnosis_survives_sqlite_without_files`; `test_comparison_exception_survives_sqlite_without_files` |
+| Independent single/root summary goldens, unavailable/entry coverage and summary-only report | `reproduction_inspection`, `reproduction_root_summary`, `reproduction_saved_report` | `test_reproduction_inspection.SavedInspectionTests.test_public_mixed_summary_matches_independent_golden_without_source_reads`; `test_root_tables_match_independent_golden_for_mixed_and_empty_targets`; `test_root_unavailable_and_entry_coverage_are_explicit_not_zeroes`; `test_render_is_exact_show_body_and_only_changes_report_materialization` |
+| Actual public combined filters, complete 50/50/3 pagination and section/cursor binding | `reproduction_inspection`, `reproduction_inspection_cli` | `test_reproduction_inspection.SavedInspectionTests.test_detail_pages_cover_large_output_collections_and_reject_stale_cursors`; `test_pages_cover_all_items_and_bind_every_filter_format_and_generation`; `test_public_historical_show_filtered_artifacts_and_detail_selectors` |
+| Predecode relation/aggregate/header bounds and immutable corruption errors | `reproduction_saved_storage`, `reproduction_observation_storage` | `test_reproduction_saved_storage.SavedRunStorageTests.test_corrupted_inventory_is_bounded_before_typed_reconstruction`; `test_aggregate_byte_budget_is_checked_before_fetching_native_payloads`; `test_header_byte_budget_is_checked_before_fetching_settings`; `test_reproduction_observation_storage.ObservationStorageTests.test_valid_changed_result_payload_is_detected_read_only` |
+
+All implementation module names above are within `log_commands` unless an
+explicit shared or `validation` namespace is shown. Compilation, Ruff, mypy,
+the zero-growth complexity ratchet, complete regression suite and deterministic
+agent-surface harness remain the gates routed by [Research-Logging Validation](research-logging.md).

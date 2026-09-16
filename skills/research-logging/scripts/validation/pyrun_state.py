@@ -23,6 +23,8 @@ from .pyrun_contract import (
     recipe_script_parameters,
 )
 from .pyrun_outputs import (
+    canonical_code_path,
+    canonical_output_path,
     code_target_path,
     output_target_path,
     portable_code_path,
@@ -826,11 +828,18 @@ def parse_pyrun_execution(
     subject: object,
     entry_root: Path,
     project_root: Path | None = None,
+    accepted: bool = False,
 ) -> PyrunExecution:
-    """Decode one in-memory accepted execution without reading ``pyrun.json``."""
+    """Decode one execution; accepted records use frozen roots, not live paths."""
 
     execution = _decode_execution(
-        value, str(subject), entry_root=entry_root.resolve(), project_root=project_root
+        value,
+        str(subject),
+        entry_root=Path(os.path.abspath(entry_root))
+        if accepted
+        else entry_root.resolve(),
+        project_root=project_root,
+        accepted=accepted,
     )
     if PYRUN_EXECUTION_RE.fullmatch(str(subject)) is not None and (
         execution_id(execution.recipe) != subject
@@ -1100,6 +1109,7 @@ def _decode_execution(
     *,
     entry_root: Path,
     project_root: Path | None,
+    accepted: bool = False,
 ) -> PyrunExecution:
     fields = {
         "environment_profile",
@@ -1144,13 +1154,14 @@ def _decode_execution(
         subject,
         entry_root=entry_root,
         project_root=project_root,
+        accepted=accepted,
     )
     observed = _decode_observed(
-        value.get("observed"),
+        value,
         recipe,
         subject,
         entry_root=entry_root,
-        allow_partial=requires_reproduction,
+        accepted=accepted,
     )
     return PyrunExecution(
         requires_reproduction,
@@ -1171,6 +1182,7 @@ def _decode_recipe(
     *,
     entry_root: Path,
     project_root: Path | None,
+    accepted: bool = False,
 ) -> ExecutionRecipe:
     fields = {
         "environment",
@@ -1216,11 +1228,19 @@ def _decode_recipe(
     for key, kind in outputs.items():
         if not isinstance(key, str) or kind not in {"file", "directory"}:
             _invalid(subject, {"output": key, "kind": kind})
-        canonical = portable_output_path(
-            key,
-            entry_root=entry_root,
-            project_root=project_root,
-            authored=True,
+        canonical = (
+            canonical_output_path(
+                key,
+                entry_root=entry_root,
+                project_root=project_root or entry_root,
+            )
+            if accepted
+            else portable_output_path(
+                key,
+                entry_root=entry_root,
+                project_root=project_root,
+                authored=True,
+            )
         )
         if canonical != key or not _bounded_path(key):
             _invalid(subject, {"output": key, "canonical": canonical})
@@ -1234,7 +1254,11 @@ def _decode_recipe(
         _decode_parameter_roles(value.get("parameter_roles"), parameters, subject),
     )
     _require_nonoverlapping_outputs(
-        recipe, entry_root=entry_root, project_root=project_root, subject=subject
+        recipe,
+        entry_root=entry_root,
+        project_root=project_root,
+        subject=subject,
+        accepted=accepted,
     )
     return recipe
 
@@ -1282,8 +1306,11 @@ def _decode_observed(
     subject: str,
     *,
     entry_root: Path,
-    allow_partial: bool,
+    accepted: bool = False,
 ) -> ObservedExecution:
+    execution = cast(Mapping[str, Any], value)
+    allow_partial = execution["requires_reproduction"]
+    value = execution.get("observed")
     fields = {"code", "inputs", "outputs", "script"}
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"observed_fields": _fields(value)})
@@ -1306,7 +1333,9 @@ def _decode_observed(
         output_names
     ).issubset(recipe_output_names):
         _invalid(subject, {"reason": "observed_output_keys"})
-    code = _decode_code(value.get("code"), subject, entry_root=entry_root)
+    code = _decode_code(
+        value.get("code"), subject, entry_root=entry_root, accepted=accepted
+    )
     raw_script = value.get("script")
     script = (
         None
@@ -1348,7 +1377,11 @@ def _decode_fingerprint_map(
 
 
 def _decode_code(
-    value: object, subject: str, *, entry_root: Path
+    value: object,
+    subject: str,
+    *,
+    entry_root: Path,
+    accepted: bool = False,
 ) -> tuple[tuple[str, Fingerprint], ...]:
     if not isinstance(value, Mapping) or len(value) > MAX_CODE_PATHS:
         _invalid(subject, {"code": _fields(value)})
@@ -1357,8 +1390,16 @@ def _decode_code(
     for key, raw in value.items():
         if not isinstance(key, str) or not _bounded_path(key):
             _invalid(subject, {"code_path": key})
-        canonical = portable_code_path(key, entry_root=entry_root)
-        target = code_target_path(canonical, entry_root=entry_root).absolute()
+        canonical = (canonical_code_path if accepted else portable_code_path)(
+            key, entry_root=entry_root
+        )
+        target = (
+            entry_root.parent.parent / canonical.removeprefix("<log>/")
+            if accepted and canonical.startswith("<log>/")
+            else entry_root / canonical
+            if accepted
+            else code_target_path(canonical, entry_root=entry_root)
+        ).absolute()
         if canonical != key or target in resolved:
             _invalid(subject, {"code_path": key, "reason": "alias"})
         resolved.add(target)
@@ -1417,8 +1458,11 @@ def _require_nonoverlapping_outputs(
     entry_root: Path,
     project_root: Path | None,
     subject: object,
+    accepted: bool = False,
 ) -> None:
-    targets = _output_targets(recipe, entry_root=entry_root, project_root=project_root)
+    targets = _output_targets(
+        recipe, entry_root=entry_root, project_root=project_root, accepted=accepted
+    )
     for index, left in enumerate(targets):
         for right in targets[index + 1 :]:
             if _paths_overlap(left, right):
@@ -1430,13 +1474,20 @@ def _output_targets(
     *,
     entry_root: Path,
     project_root: Path | None,
+    accepted: bool = False,
 ) -> tuple[Path, ...]:
     return tuple(
-        output_target_path(
-            key,
-            entry_root=entry_root,
-            project_root=project_root,
-            authored=True,
+        (
+            (project_root or entry_root) / key.removeprefix("<project>/")
+            if accepted and key.startswith("<project>/")
+            else entry_root / key
+            if accepted
+            else output_target_path(
+                key,
+                entry_root=entry_root,
+                project_root=project_root,
+                authored=True,
+            )
         ).absolute()
         for key, _ in recipe.outputs
     )

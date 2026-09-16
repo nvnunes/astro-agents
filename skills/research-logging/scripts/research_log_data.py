@@ -54,9 +54,7 @@ INPUT_TOKEN_RE = re.compile(
     r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
     r"(?::(?P<projection>commit))?>(?:/(?P<member>.+))?\Z"
 )
-INPUT_TOKEN_CANDIDATE_RE = re.compile(
-    r"<[A-Za-z0-9][A-Za-z0-9_-]*(?::commit)?>"
-)
+INPUT_TOKEN_CANDIDATE_RE = re.compile(r"<[A-Za-z0-9][A-Za-z0-9_-]*(?::commit)?>")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 RESERVED_NAMES = frozenset({"log", "project", "theme"})
@@ -141,8 +139,11 @@ def parse_fingerprint(
     algorithm = value.get("algorithm")
     if kind is None:
         kind = (
-            "file" if algorithm == "sha256" else
-            "git-repository" if algorithm == GIT_COMMIT_ALGORITHM else "directory"
+            "file"
+            if algorithm == "sha256"
+            else "git-repository"
+            if algorithm == GIT_COMMIT_ALGORITHM
+            else "directory"
         )
     digest = value.get("digest")
     if not isinstance(digest, str) or (
@@ -668,14 +669,19 @@ def data_file_from_fields(
         or len(raw_inputs) > MAX_INPUTS
     ):
         _invalid(path, {"inputs": raw_inputs})
-    root = entry_root.resolve()
+    root = entry_root.absolute()
     inputs: list[InputResource] = []
     for index, raw in enumerate(raw_inputs):
         if not isinstance(raw, Mapping):
             _invalid(path, {"input": index})
         value = cast(Mapping[str, Any], raw)
         required = {
-            "name", "kind", "location", "identity", "origin", "canonical_target",
+            "name",
+            "kind",
+            "location",
+            "identity",
+            "origin",
+            "canonical_target",
             "reference_entry",
         }
         allowed = required | {"reproduction_comparison"}
@@ -696,9 +702,9 @@ def data_file_from_fields(
             }
             if key in value
         }
-        decoded = _decode_input(direct, f"{path}:inputs[{index}]", root)
-        if decoded.canonical_target != target:
-            _invalid(path, {"input": index, "reason": "target_mismatch"})
+        decoded = _decode_input(
+            direct, f"{path}:inputs[{index}]", root, accepted_target=target
+        )
         reference = value["reference_entry"]
         if reference is not None and (
             not isinstance(reference, str)
@@ -1203,6 +1209,7 @@ def _decode_input(
     entry_root: Path,
     *,
     loading: frozenset[Path] = frozenset(),
+    accepted_target: str | None = None,
 ) -> InputResource:
     if not isinstance(value, Mapping):
         _invalid(subject, {"type": type(value).__name__})
@@ -1216,7 +1223,9 @@ def _decode_input(
     kind = value.get("kind")
     if kind not in {"file", "directory", "git-repository"}:
         _invalid(subject, {"kind": kind})
-    location, target = _location(value.get("location"), subject, entry_root)
+    location, target = _location(
+        value.get("location"), subject, entry_root, accepted_target=accepted_target
+    )
     origin = value.get("origin")
     if not isinstance(origin, bool):
         _invalid(subject, {"origin": origin})
@@ -1330,7 +1339,9 @@ def _name(value: object, subject: str) -> str:
     return value
 
 
-def _location(value: object, subject: str, entry_root: Path) -> tuple[str, str]:
+def _location(
+    value: object, subject: str, entry_root: Path, *, accepted_target: str | None = None
+) -> tuple[str, str]:
     if (
         not isinstance(value, str)
         or not value
@@ -1340,6 +1351,11 @@ def _location(value: object, subject: str, entry_root: Path) -> tuple[str, str]:
     if "://" in value:
         _invalid(subject, {"location": value, "reason": "remote"})
     _validate_posix_location(value, subject)
+    if accepted_target is not None:
+        _validate_posix_location(accepted_target, subject)
+        if not Path(accepted_target).is_absolute():
+            _invalid(subject, {"target": accepted_target})
+        return value, accepted_target
     lexical = Path(value) if Path(value).is_absolute() else entry_root / value
     if is_entry_material_root(lexical, entry_root):
         _invalid(subject, {"location": value, "reason": "artifact_root"})
@@ -1370,9 +1386,7 @@ def _validate_local_symlink_surface(path: Path, entry_root: Path, subject: str) 
 
 def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
     pure = PurePosixPath(member)
-    if (
-        resource.kind != "directory" or not _valid_input_member(member)
-    ):
+    if resource.kind != "directory" or not _valid_input_member(member):
         _invalid(subject, {"member": member, "resource": resource.name})
     root = Path(resource.canonical_target)
     target = root.joinpath(*pure.parts)
@@ -1412,9 +1426,7 @@ def parse_resource_identity(
     return _resource_identity(value, subject, kind)
 
 
-def _resource_identity(
-    value: object, subject: str, kind: object
-) -> ResourceIdentity:
+def _resource_identity(value: object, subject: str, kind: object) -> ResourceIdentity:
     if not isinstance(value, Mapping):
         _invalid(subject, {"identity": value})
     value = cast(Mapping[str, Any], value)
@@ -1434,9 +1446,7 @@ def _resource_identity(
             _invalid(subject, {"identity": dict(value), "kind": kind})
         return ResourceIdentity(GIT_COMMIT_ALGORITHM, commit=commit)
     if algorithm in {"sha256", "directory-sha256-v1"}:
-        if (
-            set(value) != {"algorithm"}
-        ):
+        if set(value) != {"algorithm"}:
             _invalid(subject, {"identity": dict(value)})
         if algorithm == "directory-sha256-v1" and kind != "directory":
             _invalid(subject, {"identity": dict(value), "kind": kind})
@@ -1452,11 +1462,7 @@ def _identity_files_identity(
     kind: object,
 ) -> ResourceIdentity:
     files = _identity_files(value.get("files"), subject)
-    if (
-        set(value)
-        != {"algorithm", "files"}
-        or kind != "directory"
-    ):
+    if set(value) != {"algorithm", "files"} or kind != "directory":
         _invalid(subject, {"identity": dict(value), "kind": kind})
     return ResourceIdentity("identity-files-sha256-v1", files=files)
 
@@ -1467,11 +1473,7 @@ def _identity_pattern_identity(
     kind: object,
 ) -> ResourceIdentity:
     patterns = _identity_patterns(value.get("patterns"), subject)
-    if (
-        set(value)
-        != {"algorithm", "patterns"}
-        or kind != "directory"
-    ):
+    if set(value) != {"algorithm", "patterns"} or kind != "directory":
         _invalid(subject, {"identity": dict(value), "kind": kind})
     return ResourceIdentity("identity-patterns-sha256-v1", patterns=patterns)
 

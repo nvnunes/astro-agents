@@ -11,7 +11,7 @@ from typing import Any, Mapping, NoReturn, cast
 
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
-from .entry_materials import is_entry_material_path
+from .entry_materials import ENTRY_MATERIAL_DIRECTORY_NAMES, is_entry_material_path
 from .errors import MechanicalContractError
 from .file_publication import atomic_replace_text, install_path
 from .json_codec import V2JsonError, decode_json
@@ -204,6 +204,42 @@ def portable_output_path(
     )
 
 
+def canonical_output_path(value: str, *, entry_root: Path, project_root: Path) -> str:
+    """Validate an accepted portable key without rechecking today's symlinks.
+
+    Live preparation still uses ``portable_output_path`` and its filesystem
+    boundary checks. Saved keys have already passed those checks at acceptance.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode()) > MAX_STRING_BYTES
+    ):
+        _invalid("output", {"path": value})
+    root, project = (
+        Path(os.path.abspath(entry_root)),
+        Path(os.path.abspath(project_root)),
+    )
+    lexical, declared = _output_lexical_path(
+        value, root=root, project=project, authored=True
+    )
+    if declared:
+        if lexical.is_relative_to(root):
+            _invalid("output", {"path": value, "reason": "project_path_alias"})
+        return value
+    parts = value.split("/")
+    if (
+        parts[0] not in ENTRY_MATERIAL_DIRECTORY_NAMES
+        or any(part in {"", ".", ".."} for part in parts)
+        or "\\" in value
+        or any(character in value for character in "<>")
+        or lexical != root.joinpath(*parts)
+    ):
+        _invalid("output", {"path": value, "reason": "not_entry_material"})
+    return value
+
+
 def _output_lexical_path(
     raw: str, *, root: Path, project: Path, authored: bool
 ) -> tuple[Path, bool]:
@@ -329,10 +365,19 @@ def output_target_path(
 def portable_code_path(value: str | Path, *, entry_root: Path) -> str:
     """Return one canonical entry-relative or log-relative Python code identity."""
 
+    return _code_identity(value, root=entry_root.resolve())
+
+
+def canonical_code_path(value: str, *, entry_root: Path) -> str:
+    """Validate an accepted code key against its frozen lexical root."""
+
+    return _code_identity(value, root=Path(os.path.abspath(entry_root)))
+
+
+def _code_identity(value: str | Path, *, root: Path) -> str:
     raw = value.as_posix() if isinstance(value, Path) else value
     if not isinstance(raw, str) or not raw or len(raw.encode()) > MAX_STRING_BYTES:
         _invalid("code", {"path": raw})
-    root = entry_root.resolve()
     log = root.parent.parent
     if Path(raw).is_absolute():
         lexical = Path(os.path.abspath(raw))

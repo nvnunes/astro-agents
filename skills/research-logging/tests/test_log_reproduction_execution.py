@@ -5,19 +5,13 @@ from __future__ import annotations
 import importlib
 import io
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
-from log_commands.reproduction_contract import (
-    ReproductionPlan,
-    accepted_command,
-    accepted_invocation,
-)
-from reproduction_fixed_plan_test_support import accepted_plan
+from log_commands.reproduction_domain import ExecutionRef
+from log_commands.reproduction_work_plan import ReproductionPlan
 from stream_capture import StreamCapture, StreamDestination
-from test_log_reproduction_planning import _Fixture, _plan
+from test_reproduction_canonical_records import blocked_plan
 
 EXECUTION = importlib.import_module("log_commands.reproduction_execution")
 
@@ -35,52 +29,52 @@ class ReproductionExecutionTests(unittest.TestCase):
         )
         launched = EXECUTION._LaunchedProcess(mock.Mock(), capture)
 
-        failure_code, failure_message = EXECUTION._finish_streams(
-            launched, None, None
+        outcome = EXECUTION._finish_streams(
+            launched, EXECUTION._ProcessOutcome(0, False, None, None, ())
         )
 
-        self.assertEqual(failure_code, "capture_failed")
-        self.assertIn("capture unavailable", failure_message or "")
+        self.assertEqual(outcome.failure_code, "capture_failed")
+        self.assertIn("capture unavailable", outcome.failure_message or "")
+        self.assertEqual(outcome.error_type, "OSError")
+        self.assertEqual(outcome.failure_stage.value, "capture")
+        self.assertIsInstance(outcome.capture_failures[0].error, OSError)
+
+    def test_launch_exception_retains_original_type_message_and_stage(self) -> None:
+        prepared = mock.Mock(entry="e001", execution_id="accepted-execution")
+        prepared.environment = {EXECUTION.RUNNER_MARKER: "accepted-marker"}
+        registry = mock.Mock()
+        registry.stop_all.return_value = ()
+        registry.records.return_value = ()
+        callbacks = EXECUTION._RunCallbacks(
+            lambda: False, 300, lambda at: None, lambda workers: None
+        )
+        with (
+            mock.patch.object(EXECUTION, "_WorkerRegistry", return_value=registry),
+            mock.patch.object(
+                EXECUTION,
+                "_launch_process",
+                side_effect=OSError("original launch failure"),
+            ),
+        ):
+            outcome, started_at, elapsed = EXECUTION._run_prepared(
+                prepared, ("actual-runner",), mock.Mock(), callbacks
+            )
+        self.assertEqual(
+            (outcome.failure_code, outcome.failure_message),
+            ("execution_exception", "original launch failure"),
+        )
+        self.assertEqual(outcome.error_type, "OSError")
+        self.assertEqual(outcome.failure_stage.value, "launch")
+        self.assertIsNone(started_at)
+        self.assertEqual(elapsed, 0)
 
     def test_execution_requires_an_accepted_command(self) -> None:
-        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
-            accepted_command(
-                accepted_plan(), "e001", "fixture", "pyrun-exec/v2:" + "0" * 64
+        with self.assertRaisesRegex(ValueError, "outside accepted work"):
+            blocked_plan().command(
+                ExecutionRef("e001", "fixture", "pyrun-exec/v2:" + "0" * 64)
             )
-
-    def test_plan_never_carries_attempt_lineage(self) -> None:
-        self.assertNotIn("attempt", accepted_plan().serialized())
 
     def test_reader_rejects_noncanonical_plan_bytes_before_execution(self) -> None:
-        raw = json.dumps(accepted_plan().as_dict(), indent=2).encode()
+        raw = json.dumps(blocked_plan().as_dict(), indent=2).encode()
         with self.assertRaisesRegex(ValueError, "not canonical"):
             ReproductionPlan.from_json(raw)
-
-    def test_accepted_invocation_does_not_reload_current_entry_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            fixture = _Fixture(Path(directory))
-            entry = fixture.entry(1)
-            raw = entry.root / "data" / "raw.txt"
-            output = entry.root / "data" / "output.txt"
-            raw.write_text("raw\n", encoding="utf-8")
-            output.write_text("output\n", encoding="utf-8")
-            fixture.write_data(
-                entry,
-                [
-                    fixture.item(entry, "raw", raw, origin=True),
-                    fixture.item(entry, "output", output, origin=False),
-                ],
-            )
-            fixture.evidence(entry, "output")
-            identity, execution = fixture.execution(
-                entry, "build", {"raw": raw}, {"output": output}
-            )
-            fixture.write_pyrun(entry, [(identity, execution)])
-            plan = _plan(fixture, entry)
-            with mock.patch(
-                "log_commands.reproduction_contract.load_pyrun_state",
-                side_effect=AssertionError("must not reload pyrun"),
-                create=True,
-            ):
-                accepted = accepted_invocation(plan, entry.id, "build", identity)
-            self.assertEqual(accepted.execution_id, identity)

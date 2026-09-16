@@ -73,9 +73,9 @@ identity, cache compatibility, or evolution requires it.
 | Canonical validation snapshot | `research-log-validation-snapshot/3` |
 | Authoring results | `research-log-authoring-result/1` |
 | Command diagnostics | `research-log-command-diagnostic/1` |
-| Isolated command verification | `research-log-command-verification-result/1`; lifecycle semantics are owned by the [reproduction specification](research-log-reproduction-spec.md#part-3c-current-command-verification-boundary) |
+| Isolated command verification | `research-log-command-verification-result/1`; lifecycle semantics are owned by the [reproduction specification](research-log-reproduction-spec.md#current-command-verification-boundary) |
 | Validation response schemas | `research-log-validation-run/1`, `research-log-validation-root-run/1`, `research-log-validation-show/1`, `research-log-validation-finding-list/1`, `research-log-validation-batch-list/1`, `research-log-validation-blocked-list/1`, `research-log-validation-failed-list/1`, `research-log-validation-finding-detail/1`, and `research-log-validation-batch-detail/1` |
-| Shared result store | `<log>/.cache/results.sqlite`; SQLite `user_version=19` owns canonical validation snapshots and independent command diagnostics. Versions 17 and 18 are recognized only as replacement-required state and are never read as validation input. This specification owns the validation tables, while the [reproduction specification](research-log-reproduction-spec.md#authoritative-result) owns reproduction-domain semantics and `research-log-reproduction-result/11` |
+| Shared result store | `<log>/.cache/results.sqlite`; SQLite versions 19/20 preserve canonical validation snapshots and independent command diagnostics. Shared initialization creates version 19 without a reproduction domain; native reproduction publication installs version 20. Versions 17/18 require replacement and are never validation input. This specification owns validation tables; the [reproduction specification](research-log-reproduction-spec.md#replacement-reproduction-model) owns its separate saved-run domain. |
 | Former finding and result queries | Removed without aliases or compatibility status |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |

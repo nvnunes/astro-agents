@@ -14,13 +14,14 @@ REPORT_CONTEXT = importlib.import_module("validation.report_context")
 
 class PresentationTests(unittest.TestCase):
     def test_catalog_covers_the_approved_emitted_code_inventory(self) -> None:
-        self.assertEqual(len(REPORT_CONTEXT.CATALOG), 151)
+        self.assertEqual(len(REPORT_CONTEXT.CATALOG), 152)
         self.assertTrue(
             {
                 "orphan.generated.residue",
                 "pyrun.command.missing",
                 "pyrun.command.recipe_changed",
                 "pyrun.command.stale",
+                "provenance.output.signature_mismatch",
             }
             <= set(REPORT_CONTEXT.CATALOG)
         )
@@ -56,12 +57,16 @@ class PresentationTests(unittest.TestCase):
             "locator.expect.identities",
             "locator.expect.shape",
             "provenance.output.reproduction_required",
-            "provenance.output.signature_mismatch",
         }
         self.assertEqual(candidates - non_codes - set(REPORT_CONTEXT.CATALOG), set())
 
     def test_catalog_preserves_repair_wording_for_representative_findings(self) -> None:
         cases = {
+            "provenance.output.signature_mismatch": (
+                "Output Producer Signature Mismatch",
+                "The retained output's producer signature disagrees with its recorded "
+                "invocation.",
+            ),
             "data.fingerprint.unobserved": (
                 "Unobserved Generated Fingerprint",
                 "The generated material lacks the required retained execution "

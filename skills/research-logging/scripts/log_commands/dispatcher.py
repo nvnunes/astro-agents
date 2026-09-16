@@ -6,7 +6,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Mapping, NoReturn, Sequence
+from typing import TYPE_CHECKING, Mapping, NoReturn, Sequence
+
+if TYPE_CHECKING:
+    from .reproduction_saved_run import RunSettings, RunTarget
 
 from research_log_result_store import ResultStoreError
 
@@ -403,7 +406,9 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     _entry_arguments(verify, path_required=True)
     verify.add_argument("--cid", required=True)
     verify.add_argument("--execution-id", required=True)
-    from .reproduction_contract import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+    from .reproduction_invocation import (
+        DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    )
 
     verify.add_argument(
         "--execution-timeout-seconds",
@@ -466,7 +471,9 @@ def _dispatch_command_lifecycle(
     return ActionResult(
         "command.release",
         "dry-run" if args.dry_run else "changed" if count else "unchanged",
-        "command.released", bool(count), records=({"reservations": count},),
+        "command.released",
+        bool(count),
+        records=({"reservations": count},),
     )
 
 
@@ -744,64 +751,81 @@ def _dispatch_validate(arguments: Sequence[str]) -> int:
     return run_validate_cli(arguments)
 
 
-def _dispatch_reproduction_report(arguments: Sequence[str]) -> int:
-    """Render the current aggregate reproduction report or summary."""
+def _dispatch_reproduce(arguments: Sequence[str]) -> int:
+    if arguments and arguments[0] == "plan":
+        return _dispatch_reproduction_plan(arguments[1:])
+    if arguments and arguments[0] in {"show", "list", "detail", "render"}:
+        from .reproduction_inspection_cli import dispatch
 
-    parser = argparse.ArgumentParser(prog="log reproduce report")
-    selection = parser.add_mutually_exclusive_group(required=True)
-    selection.add_argument("--path", type=Path)
-    selection.add_argument("--root", type=Path)
+        return dispatch(arguments)
+    return _dispatch_reproduction_execution(arguments)
+
+
+def _reproduction_options(args: argparse.Namespace) -> tuple[RunTarget, RunSettings]:
+    from .reproduction_domain import ReproductionDomainError
+    from .reproduction_saved_run import RunSettings, RunTarget
+
+    try:
+        target = (
+            RunTarget("entry", args.entry) if args.entry is not None else RunTarget()
+        )
+    except ReproductionDomainError as error:
+        raise ActionError("reproduction.selector.invalid", str(error)) from error
+    try:
+        settings = RunSettings(
+            args.include_all, args.recheck, args.jobs, args.execution_timeout_seconds
+        )
+    except ReproductionDomainError as error:
+        code = (
+            "reproduction.jobs.invalid"
+            if args.jobs < 1
+            else "reproduction.execution_timeout.invalid"
+        )
+        raise ActionError(code, str(error)) from error
+    return target, settings
+
+
+def _dispatch_reproduction_plan(arguments: Sequence[str]) -> int:
+    from .reproduction_invocation import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+    from .reproduction_jobs import preview_reproduction
+    from .reproduction_plan_preview import render_plan_page
+
+    parser = argparse.ArgumentParser(prog="log reproduce plan")
+    parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
-    parser.add_argument("--summary", action="store_true")
+    parser.add_argument("--include-all", action="store_true")
+    parser.add_argument("--recheck", action="store_true")
+    parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument(
+        "--execution-timeout-seconds",
+        type=int,
+        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    )
+    parser.add_argument("--cursor")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(arguments)
-    if args.root is not None and not args.summary:
-        parser.error("--root requires --summary")
-    if args.entry is not None and (args.root is not None or args.summary):
-        parser.error("--entry is available only for a full per-log report")
-    if args.format == "json" and not args.summary:
-        parser.error("--format json requires --summary")
-    from .reproduction_queries import (
-        compose_root_reproduction_summary,
-        reproduction_report,
-        reproduction_summary,
-        reproduction_summary_text,
-        root_reproduction_summary,
+    target, settings = _reproduction_options(args)
+    value = preview_reproduction(
+        resolve_log(args.path),
+        target,
+        settings,
+        cursor=args.cursor,
+        format=args.format,
     )
-
-    if args.root is not None:
-        report_summary = root_reproduction_summary(args.root)
-        output = (
-            json.dumps(report_summary, ensure_ascii=False, sort_keys=True) + "\n"
-            if args.format == "json"
-            else compose_root_reproduction_summary(report_summary)
-        )
-        print(output, end="")
-        coverage = report_summary["coverage"]
-        assert isinstance(coverage, Mapping)
-        return 3 if coverage["unavailable"] else 0
-    log = resolve_log(args.path)
-    if not args.summary:
-        print(reproduction_report(log, entry=args.entry), end="")
-    elif args.format == "json":
-        print(json.dumps(reproduction_summary(log), ensure_ascii=False, sort_keys=True))
-    else:
-        print(reproduction_summary_text(log), end="")
+    print(
+        json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if args.format == "json"
+        else render_plan_page(value),
+        end="\n" if args.format == "json" else "",
+    )
     return 0
 
 
-def _dispatch_reproduce(arguments: Sequence[str]) -> int:
-    from .reproduction_contract import (
+def _dispatch_reproduction_execution(arguments: Sequence[str]) -> int:
+    from .reproduction_invocation import (
         DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-        ReproductionRuntime,
     )
 
-    if arguments and arguments[0] == "report":
-        return _dispatch_reproduction_report(arguments[1:])
-    if arguments and arguments[0] == "artifacts":
-        return _dispatch_reproduction_artifacts(arguments[1:])
-    if arguments and arguments[0] == "commands":
-        return _dispatch_reproduction_commands(arguments[1:])
     if arguments and arguments[0] == "promote":
         parser = argparse.ArgumentParser(prog="log reproduce promote")
         parser.add_argument("--path", required=True, type=Path)
@@ -821,7 +845,14 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         return 0
     if arguments and arguments[0] in {"status", "stop", "resume"}:
         return _dispatch_reproduction_job(arguments[0], arguments[1:])
-    parser = argparse.ArgumentParser(prog="log reproduce")
+    from .reproduction_jobs import launch_reproduction
+
+    parser = argparse.ArgumentParser(prog="log reproduce run")
+    if not arguments or arguments[0] != "run":
+        parser.error(
+            "choose plan, run, show, list, detail, render, "
+            "status, stop, resume or promote"
+        )
     parser.add_argument("--path", required=True, type=Path)
     parser.add_argument("--entry")
     parser.add_argument("--include-all", action="store_true")
@@ -832,58 +863,16 @@ def _dispatch_reproduce(arguments: Sequence[str]) -> int:
         type=int,
         default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
         metavar="SECONDS",
-        help="maximum runtime for each command (default: 300 seconds)",
     )
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument(
-        "--summary",
-        action="store_true",
-        help="print a bounded human summary of a dry-run plan",
+    args = parser.parse_args(arguments[1:])
+    target, settings = _reproduction_options(args)
+    launch = launch_reproduction(
+        resolve_log(args.path),
+        target,
+        settings,
     )
-    args = parser.parse_args(arguments)
-    _validate_reproduction_arguments(parser, args)
-    log = resolve_log(args.path)
-    from .reproduction_jobs import dry_run_reproduction, launch_reproduction
-    from .reproduction_planner import ReproductionSelection
-
-    selection = ReproductionSelection(
-        "recheck" if args.recheck else "incremental",
-    )
-
-    if args.dry_run:
-        plan = dry_run_reproduction(
-            log,
-            entry=args.entry,
-            include_all=args.include_all,
-            runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
-            selection=selection,
-        )
-        if args.summary:
-            from .reproduction_contract import format_reproduction_plan_summary
-
-            print(
-                format_reproduction_plan_summary(plan, recheck=args.recheck),
-                end="",
-            )
-        else:
-            print(plan.serialized())
-    else:
-        launch = launch_reproduction(
-            log,
-            entry=args.entry,
-            include_all=args.include_all,
-            runtime=ReproductionRuntime(args.jobs, args.execution_timeout_seconds),
-            selection=selection,
-        )
-        print(launch.render(), end="")
+    print(launch.render(), end="")
     return 0
-
-
-def _validate_reproduction_arguments(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> None:
-    if args.summary and not args.dry_run:
-        parser.error("--summary requires --dry-run")
 
 
 def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
@@ -919,107 +908,4 @@ def _dispatch_reproduction_job(action: str, arguments: Sequence[str]) -> int:
         print(args.run_id)
     else:
         print(resume_reproduction(log, args.run_id))
-    return 0
-
-
-def _dispatch_reproduction_artifacts(arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="log reproduce artifacts")
-    actions = parser.add_subparsers(dest="action", required=True)
-    listing = actions.add_parser("list", help="List current reproduction artifacts")
-    listing.add_argument("--path", required=True, type=Path)
-    listing.add_argument("--entry")
-    listing.add_argument("--outcome")
-    listing.add_argument("--artifact")
-    showing = actions.add_parser("show", help="Show one reproduction artifact")
-    showing.add_argument("--path", required=True, type=Path)
-    showing.add_argument("--entry", required=True)
-    showing.add_argument("--artifact", required=True)
-    args = parser.parse_args(arguments)
-    from .reproduction_queries import (
-        list_reproduction_artifacts,
-        show_reproduction_artifact,
-    )
-
-    log = resolve_log(args.path)
-    if args.action == "list":
-        result = list_reproduction_artifacts(
-            log,
-            entry=args.entry,
-            outcome=args.outcome,
-            artifact=args.artifact,
-        )
-    else:
-        result = show_reproduction_artifact(
-            log, entry=args.entry, artifact=args.artifact
-        )
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
-
-
-def _dispatch_reproduction_commands(arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="log reproduce commands")
-    actions = parser.add_subparsers(dest="action", required=True)
-    listing = actions.add_parser(
-        "list", help="List current completed-run command accounting"
-    )
-    listing.add_argument("--path", required=True, type=Path)
-    listing.add_argument("--bucket")
-    listing.add_argument("--entry")
-    listing.add_argument("--cid")
-    listing.add_argument("--reason")
-    listing.add_argument("--run-id")
-    showing = actions.add_parser(
-        "show", help="Show one current completed-run command record"
-    )
-    showing.add_argument("--path", required=True, type=Path)
-    showing.add_argument("--entry", required=True)
-    showing.add_argument("--cid", required=True)
-    showing.add_argument("--execution-id", required=True)
-    showing.add_argument("--run-id")
-    for subparser in (listing, showing):
-        subparser.add_argument("--format", choices=("text", "json"), default="text")
-    args = parser.parse_args(arguments)
-    from .reproduction_queries import (
-        CommandListFilters,
-        compose_reproduction_command,
-        compose_reproduction_command_list,
-        list_reproduction_commands,
-        show_reproduction_command,
-    )
-
-    log = resolve_log(args.path)
-    if args.action == "list":
-        result = list_reproduction_commands(
-            log,
-            CommandListFilters(
-                bucket=args.bucket,
-                entry=args.entry,
-                cid=args.cid,
-                reason=args.reason,
-                run_id=args.run_id,
-            ),
-        )
-        output = (
-            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
-            if args.format == "json"
-            else compose_reproduction_command_list(
-                result,
-                path=args.path,
-                program=Path(sys.argv[0]),
-            )
-        )
-    else:
-        result = show_reproduction_command(
-            log,
-            entry=args.entry,
-            cid=args.cid,
-            execution_id=args.execution_id,
-            run_id=args.run_id,
-        )
-        output = (
-            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
-            if args.format == "json"
-            else compose_reproduction_command(result)
-        )
-    print(output, end="")
     return 0

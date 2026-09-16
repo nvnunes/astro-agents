@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import struct
 from dataclasses import dataclass
 from decimal import Decimal
@@ -42,6 +44,47 @@ class EvidenceComparisonOutcome:
 
     matched: bool
     records: tuple[Mapping[str, object], ...]
+
+
+def valid_evidence_comparison_record(value: Mapping[str, object]) -> bool:
+    """Validate the existing comparison-result/1 record without rerunning evidence.
+
+    This is the unchanged persisted observation grammar, shared by both record
+    consumers during cutover. It does not recompute match or tolerance decisions.
+    """
+
+    fields = {"definition", "expected", "id", "matched", "regenerated", "tolerance"}
+    expected, regenerated, tolerance = (
+        value.get("expected"),
+        value.get("regenerated"),
+        value.get("tolerance"),
+    )
+    if (
+        set(value) != fields
+        or not isinstance(value.get("definition"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", cast(str, value["definition"])) is None
+        or not isinstance(value.get("id"), str)
+        or re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", cast(str, value["id"]))
+        is None
+        or not isinstance(value.get("matched"), bool)
+        or not isinstance(expected, list)
+        or not isinstance(regenerated, list)
+        or not expected
+        or len(expected) != len(regenerated)
+        or not all(isinstance(item, Mapping) for item in (*expected, *regenerated))
+        or tolerance is not None
+        and (
+            not isinstance(tolerance, Mapping)
+            or set(tolerance) != {"absolute"}
+            or not isinstance(tolerance.get("absolute"), str)
+        )
+    ):
+        return False
+    try:
+        json.dumps(value, allow_nan=False, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def evidence_comparison_definitions(

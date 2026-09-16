@@ -8,9 +8,10 @@ import itertools
 import json
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from itertools import islice
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, Sequence, cast
+from typing import Any, Callable, Iterator, Mapping, Sequence, cast
 
 from research_log_data import (
     Fingerprint,
@@ -22,39 +23,23 @@ from research_log_data import (
     parse_resource_identity,
 )
 from validation.errors import MechanicalContractError
-from validation.evidence import EvidenceFile
 from validation.evidence_comparison import (
     EVIDENCE_COMPARISON_RESULT_CONTRACT,
     EvidenceComparisonDefinition,
     compare_evidence_scoped,
     definition_for_target,
-    evidence_comparison_definitions,
 )
 from validation.pyrun_outputs import output_target_path
-from validation.pyrun_state import (
-    PyrunCommand,
-    PyrunFile,
-    load_pyrun_state,
-    validated_pyrun_serialization,
-)
 
-from .context import LogContext, resolve_entry
 from .model import ActionError
-from .reproduction_contract import (
-    AcceptedInvocation,
-    ReproductionPlan,
-    accepted_invocation,
-    accepted_typed_comparison,
-    successful_checkpoint_state,
-)
+from .reproduction_comparison_context import ComparisonContext
 from .reproduction_execution import (
     ExecutionAttempt,
-    ReproductionWorkspace,
-    _attempt_root,
     _fingerprint,
-    _output_paths,
 )
-from .storage import atomic_write_text, entry_lock
+from .reproduction_invocation import (
+    AcceptedInvocation,
+)
 
 COMPARISON_CONTRACT = "research-log-reproduction-comparison/1"
 MAX_REGULAR_BYTES = 1 << 40
@@ -132,6 +117,7 @@ class ArtifactComparison:
     regenerated: Mapping[str, object] | None
     evidence_definition: str | None = None
     evidence: tuple[Mapping[str, object], ...] = ()
+    observed: Mapping[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         comparison: dict[str, object] | None = None
@@ -174,16 +160,6 @@ class ExecutionComparison:
         )
 
 
-@dataclass(frozen=True)
-class CurrentRequirementContext:
-    """Fixed inputs for one SQLite-owned external requirement effect."""
-
-    log: LogContext
-    plan: ReproductionPlan
-    run_root: Path
-    project_root: Path
-
-
 def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
     """Compare one artifact path using its closed, suffix-selected v1 profile."""
 
@@ -191,10 +167,12 @@ def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
     profile: str | None = None
     expected_fingerprint = _observed_fingerprint(expected)
     regenerated_fingerprint = _observed_fingerprint(regenerated)
+    context = ComparisonContext()
     try:
         profile = _profile(expected, regenerated)
-        equal = _compare_with_profile(expected, regenerated, profile)
+        equal = _compare_with_profile(expected, regenerated, profile, context=context)
     except _ComparisonFailure as error:
+        context.error(error.__cause__ or error)
         return ArtifactComparison(
             artifact,
             "comparison_failed",
@@ -202,8 +180,10 @@ def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
             profile,
             expected_fingerprint,
             regenerated_fingerprint,
+            observed=context.observed,
         )
-    except MemoryError:
+    except MemoryError as error:
+        context.error(error)
         return ArtifactComparison(
             artifact,
             "comparison_failed",
@@ -211,8 +191,10 @@ def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
             profile,
             expected_fingerprint,
             regenerated_fingerprint,
+            observed=context.observed,
         )
-    except Exception:
+    except Exception as error:
+        context.error(error)
         return ArtifactComparison(
             artifact,
             "comparison_failed",
@@ -220,6 +202,7 @@ def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
             profile,
             expected_fingerprint,
             regenerated_fingerprint,
+            observed=context.observed,
         )
     return ArtifactComparison(
         artifact,
@@ -228,421 +211,8 @@ def compare_artifacts(expected: Path, regenerated: Path) -> ArtifactComparison:
         profile,
         expected_fingerprint,
         regenerated_fingerprint,
+        observed=context.observed,
     )
-
-
-def compare_current_execution_outputs(
-    log: LogContext,
-    plan: ReproductionPlan,
-    workspace: ReproductionWorkspace,
-    attempt: ExecutionAttempt,
-    *,
-    recorded_at: str,
-) -> ExecutionComparison:
-    """Compare one SQLite-owned execution and commit its identity-local result."""
-
-    from .reproduction_job_storage import (
-        ArtifactComparisonWrite,
-        ComparisonEvidence,
-        ExecutionComparisonWrite,
-        record_execution_comparison,
-    )
-
-    source_entry = resolve_entry(log, attempt.entry)
-    accepted = accepted_invocation(
-        plan, attempt.entry, attempt.cid, attempt.execution_id
-    )
-    execution = accepted.execution
-    private_project = _attempt_root(
-        workspace, attempt.entry, attempt.cid, attempt.execution_id
-    )
-    private_entry = private_project / source_entry.root.resolve().relative_to(
-        workspace.source_project.resolve()
-    )
-    output_paths = _output_paths(
-        execution, entry_root=private_entry, project_root=private_project
-    )
-    definitions: dict[str, EvidenceComparisonDefinition | None] = {}
-    unavailable: set[str] = set()
-    accepted_definitions: dict[str, str | None] = {}
-    for artifact, _kind in execution.recipe.outputs:
-        expected = output_target_path(
-            artifact,
-            entry_root=source_entry.root,
-            project_root=workspace.source_project,
-        )
-        comparison = accepted_typed_comparison(
-            plan, attempt.entry, attempt.cid, attempt.execution_id, artifact
-        )
-        definitions[artifact] = _accepted_definition(comparison, accepted, expected)
-        definition_identity = (
-            comparison.definition.get("definition_identity")
-            if comparison is not None
-            else None
-        )
-        accepted_definitions[artifact] = cast(str | None, definition_identity)
-        if isinstance(definition_identity, str) and not _evidence_only_context_matches(
-            plan, attempt.entry, definition_identity
-        ):
-            unavailable.add(artifact)
-    compared = compare_execution_artifacts(
-        accepted,
-        attempt,
-        output_paths,
-        entry_root=source_entry.root,
-        project_root=workspace.source_project,
-        definition_overrides=definitions,
-        evidence_context_changed=frozenset(unavailable),
-    )
-    by_artifact = {item.artifact: item for item in compared.artifacts}
-    baselines = dict(execution.observed.outputs)
-    writes = []
-    retained_bytes = 0
-    for artifact, kind in execution.recipe.outputs:
-        source = output_paths[artifact]
-        available = source.exists() and not source.is_symlink()
-        staged_path = None
-        if available:
-            try:
-                staged_path = source.relative_to(workspace.run_root).as_posix()
-            except ValueError as error:
-                raise ActionError(
-                    "reproduction.staging.path_invalid", str(source)
-                ) from error
-            retained_bytes += _available_bytes(source, kind)
-        result = by_artifact[artifact]
-        baseline = baselines.get(artifact)
-        if baseline is None:
-            raise ActionError(
-                "reproduction.comparison.invalid",
-                f"accepted output baseline is missing: {artifact}",
-            )
-        writes.append(
-            ArtifactComparisonWrite(
-                artifact,
-                kind,
-                available,
-                staged_path,
-                cast(Any, result.outcome),
-                result.reason,
-                result.profile,
-                result.expected,
-                result.regenerated,
-                result.evidence_definition,
-                baseline.as_dict(),
-                accepted_definitions[artifact],
-                tuple(
-                    ComparisonEvidence(
-                        str(item["id"]),
-                        {
-                            "definition": item["definition"],
-                            "selection": item["expected"],
-                        },
-                        {"selection": item["regenerated"]},
-                        {"value": item["tolerance"]},
-                        bool(item["matched"]),
-                    )
-                    for item in result.evidence
-                ),
-            )
-        )
-    diagnostics = tuple(
-        value
-        for value in (attempt.stdout, attempt.stderr)
-        if _available_run_file(workspace.run_root, value)
-    )
-    record_execution_comparison(
-        workspace.run_root,
-        ExecutionComparisonWrite(
-            attempt.entry,
-            attempt.cid,
-            attempt.execution_id,
-            compared.complete,
-            retained_bytes,
-            workspace.work_project.relative_to(workspace.run_root).as_posix(),
-            diagnostics,
-            tuple(writes),
-            recorded_at,
-        ),
-    )
-    return ExecutionComparison(
-        attempt.entry,
-        attempt.cid,
-        attempt.execution_id,
-        compared.artifacts,
-        workspace.work_project.relative_to(workspace.run_root).as_posix(),
-        compared.complete,
-    )
-
-
-def record_current_dependency_skip(
-    plan: ReproductionPlan,
-    planned: Mapping[str, object],
-    *,
-    run_root: Path,
-    recorded_at: str,
-) -> ExecutionComparison:
-    """Commit one dependency-blocked execution without inventing a checkpoint."""
-
-    from .reproduction_job_storage import (
-        ArtifactComparisonWrite,
-        ExecutionComparisonWrite,
-        record_execution_comparison,
-    )
-
-    entry = str(planned.get("entry"))
-    cid = str(planned.get("cid"))
-    execution_id = str(planned.get("execution_id"))
-    accepted = accepted_invocation(plan, entry, cid, execution_id)
-    baselines = dict(accepted.execution.observed.outputs)
-    artifacts = []
-    projected = []
-    for artifact, kind in accepted.execution.recipe.outputs:
-        baseline = baselines.get(artifact)
-        if baseline is None:
-            raise ActionError(
-                "reproduction.comparison.invalid",
-                f"accepted output baseline is missing: {artifact}",
-            )
-        comparison = accepted_typed_comparison(plan, entry, cid, execution_id, artifact)
-        accepted_definition = (
-            cast(str, comparison.definition["definition_identity"])
-            if comparison is not None
-            else None
-        )
-        artifacts.append(
-            ArtifactComparisonWrite(
-                artifact,
-                kind,
-                False,
-                None,
-                "skipped",
-                "dependency_failed",
-                None,
-                baseline.as_dict(),
-                None,
-                None,
-                baseline.as_dict(),
-                accepted_definition,
-            )
-        )
-        projected.append(
-            ArtifactComparison(
-                artifact,
-                "skipped",
-                "dependency_failed",
-                None,
-                baseline.as_dict(),
-                None,
-            )
-        )
-    workspace_path = "workspace"
-    record_execution_comparison(
-        run_root,
-        ExecutionComparisonWrite(
-            entry,
-            cid,
-            execution_id,
-            False,
-            0,
-            workspace_path,
-            (),
-            tuple(artifacts),
-            recorded_at,
-        ),
-    )
-    return ExecutionComparison(
-        entry, cid, execution_id, tuple(projected), workspace_path, False
-    )
-
-
-def load_current_recorded_comparisons(
-    run_root: Path,
-    workspace: ReproductionWorkspace,
-    *,
-    verify_outputs: bool = True,
-) -> tuple[ExecutionComparison, ...]:
-    """Project durable SQLite comparison rows into the existing result model."""
-
-    from .reproduction_job_storage import load_publication_projection
-
-    projection = load_publication_projection(run_root)
-    return project_current_recorded_comparisons(
-        projection.comparisons,
-        run_root,
-        workspace,
-        verify_outputs=verify_outputs,
-    )
-
-
-def project_current_recorded_comparisons(
-    comparisons: Sequence[object],
-    run_root: Path,
-    workspace: ReproductionWorkspace,
-    *,
-    verify_outputs: bool = True,
-) -> tuple[ExecutionComparison, ...]:
-    """Project already-locked durable comparison rows without reopening the job."""
-
-    from .reproduction_job_storage import ExecutionComparisonWrite
-
-    results = []
-    for comparison in comparisons:
-        if not isinstance(comparison, ExecutionComparisonWrite):
-            raise ActionError(
-                "reproduction.staging.invalid", "comparison projection is invalid"
-            )
-        artifacts = []
-        for item in comparison.artifacts:
-            current_path = None
-            if item.staged_path is not None:
-                current_path = _safe_current_staged_path(
-                    run_root, workspace, item.staged_path
-                )
-            if verify_outputs:
-                _require_recorded_output_current(
-                    current_path,
-                    item.kind,
-                    item.regenerated,
-                    available=item.available,
-                )
-            evidence = tuple(
-                {
-                    "definition": evidence.retained.get("definition"),
-                    "expected": evidence.retained.get("selection"),
-                    "id": evidence.record_id,
-                    "matched": evidence.matched,
-                    "regenerated": evidence.regenerated.get("selection"),
-                    "tolerance": evidence.tolerance.get("value"),
-                }
-                for evidence in item.evidence
-            )
-            artifacts.append(
-                ArtifactComparison(
-                    item.artifact,
-                    item.outcome,
-                    item.reason,
-                    item.profile,
-                    item.expected,
-                    item.regenerated,
-                    item.evidence_definition,
-                    evidence,
-                )
-            )
-        results.append(
-            ExecutionComparison(
-                comparison.entry,
-                comparison.cid,
-                comparison.execution_id,
-                tuple(artifacts),
-                comparison.workspace_path,
-                comparison.complete,
-            )
-        )
-    return tuple(results)
-
-
-def _safe_current_staged_path(
-    run_root: Path, workspace: ReproductionWorkspace, value: str
-) -> Path:
-    pure = PurePosixPath(value)
-    if (
-        pure.is_absolute()
-        or "\\" in value
-        or any(part in {"", ".", ".."} for part in pure.parts)
-        or pure.as_posix() != value
-    ):
-        raise ActionError("reproduction.staging.invalid", "output path is invalid")
-    path = run_root.joinpath(*pure.parts)
-    try:
-        resolved = path.resolve()
-        if not any(
-            resolved.is_relative_to(root.resolve())
-            for root in (workspace.work_project, workspace.staging_root)
-        ):
-            raise ValueError(value)
-    except ValueError as error:
-        raise ActionError(
-            "reproduction.staging.invalid", "output path escapes workspace"
-        ) from error
-    return path
-
-
-def clear_current_reproduction_requirement(
-    context: CurrentRequirementContext,
-    result: ExecutionComparison,
-    *,
-    recorded_at: str,
-) -> bool:
-    """Reconcile one exact ``pyrun.json`` mutation with its durable effect row."""
-
-    from .reproduction_job_storage import (
-        ExecutionIdentity,
-        RequirementEffect,
-        open_locked_job,
-    )
-
-    identity = ExecutionIdentity(result.entry, result.cid, result.execution_id)
-    entry = resolve_entry(context.log, result.entry)
-    with open_locked_job(context.run_root) as store:
-        effect = store.load_requirement_effect(identity)
-        if not effect.accepted_requires_reproduction:
-            return False
-        if effect.comparison_recorded_at is None:
-            raise ActionError(
-                "reproduction.requirement.comparison_missing",
-                "requirement clearing requires a durable comparison",
-            )
-        if effect.requirement_cleared_at is not None:
-            return False
-        with entry_lock(entry):
-            accepted = accepted_invocation(
-                context.plan, result.entry, result.cid, result.execution_id
-            )
-            state = load_pyrun_state(
-                entry.root / "pyrun.json",
-                entry_root=entry.root,
-                project_root=context.project_root,
-            )
-            current = state.execution(result.cid, result.execution_id)
-            if current is None:
-                raise ActionError(
-                    "reproduction.requirement.execution_missing", result.execution_id
-                )
-            if (
-                current.recipe.as_dict() != accepted.execution.recipe.as_dict()
-                or current.observed.as_dict() != accepted.execution.observed.as_dict()
-            ):
-                raise ActionError(
-                    "reproduction.requirement.execution_changed",
-                    "current execution no longer matches the accepted execution",
-                )
-            if current.requires_reproduction:
-                command = state.commands.get(result.cid)
-                if command is None:
-                    raise ActionError(
-                        "reproduction.requirement.execution_missing",
-                        f"{result.cid}:{result.execution_id}",
-                    )
-                executions = dict(command.executions)
-                executions[result.execution_id] = replace(
-                    current, requires_reproduction=False
-                )
-                commands = dict(state.commands)
-                commands[result.cid] = PyrunCommand(executions)
-                candidate = PyrunFile(state.path, state.entry_root, commands)
-                atomic_write_text(
-                    state.path,
-                    validated_pyrun_serialization(
-                        candidate, project_root=context.project_root
-                    ),
-                )
-            store.record_requirement_effect(
-                RequirementEffect(
-                    result.entry, result.cid, result.execution_id, recorded_at
-                )
-            )
-    return True
 
 
 def compare_execution_artifacts(  # noqa: PLR0913
@@ -707,64 +277,15 @@ def compare_execution_artifacts(  # noqa: PLR0913
         attempt.execution_id,
         tuple(results),
         None,
-        successful_checkpoint_state(attempt.checkpoint.state),
+        attempt.checkpoint.state == "succeeded",
     )
 
 
-def _accepted_definition(
-    comparison: object, accepted: object, expected: Path
-) -> EvidenceComparisonDefinition | None:
-    """Build one frozen evidence comparator without reopening evidence metadata."""
-
-    from .reproduction_contract import AcceptedComparison, AcceptedInvocation
-
-    if comparison is None:
-        return None
-    if (
-        not isinstance(comparison, AcceptedComparison)
-        or not isinstance(accepted, AcceptedInvocation)
-        or accepted.data is None
-    ):
-        raise ActionError(
-            "reproduction.comparison.invalid", "invalid accepted comparison"
-        )
-    resource = next(
-        (
-            item
-            for item in accepted.data.inputs
-            if item.canonical_target == expected.resolve().as_posix()
-        ),
-        None,
-    )
-    if resource is None:
-        raise ActionError(
-            "reproduction.comparison.invalid", "accepted comparison target is missing"
-        )
-    evidence = EvidenceFile(
-        Path("/accepted/evidence.json"), accepted.data.entry_root, comparison.records
-    )
-    definition = evidence_comparison_definitions(accepted.data, evidence)
-    value = definition_for_target(definition, expected)
-    if value is None or value.identity != comparison.definition.get(
-        "definition_identity"
-    ):
-        raise ActionError(
-            "reproduction.comparison.changed", "accepted comparison definition changed"
-        )
-    return value
-
-
-def _evidence_only_context_matches(
-    plan: ReproductionPlan, entry: str, definition_identity: str
+def _evidence_only_rows_match(
+    rows: Sequence[Mapping[str, object]], entry: str, definition_identity: str
 ) -> bool:
-    """Reobserve only frozen evidence-only resources used by one definition."""
+    """Observe the same frozen auxiliary selections for one consuming definition."""
 
-    rows = plan.comparison_context.get("evidence_only", ())
-    if not isinstance(rows, list):
-        raise ActionError(
-            "reproduction.comparison.context_invalid",
-            "accepted evidence-only context is invalid",
-        )
     for row in rows:
         if not isinstance(row, Mapping):
             raise ActionError(
@@ -772,7 +293,7 @@ def _evidence_only_context_matches(
                 "accepted evidence-only row is invalid",
             )
         comparisons = row.get("comparisons")
-        if row.get("entry") != entry or not isinstance(comparisons, list):
+        if row.get("entry") != entry or not isinstance(comparisons, (list, tuple)):
             continue
         if definition_identity not in comparisons:
             continue
@@ -787,35 +308,6 @@ def _evidence_only_context_matches(
         if observed != expected:
             return False
     return True
-
-
-def verify_evidence_only_context(plan: ReproductionPlan) -> None:
-    """Require every frozen auxiliary evidence selection to retain its bytes."""
-
-    rows = plan.comparison_context.get("evidence_only", ())
-    if not isinstance(rows, list):
-        raise ActionError(
-            "reproduction.publication.material_invalid",
-            "accepted evidence-only context is invalid",
-        )
-    for row in rows:
-        if not isinstance(row, Mapping):
-            raise ActionError(
-                "reproduction.publication.material_invalid",
-                "accepted evidence-only row is invalid",
-            )
-        resource = row.get("resource")
-        expected = row.get("fingerprint")
-        if not isinstance(resource, str) or not isinstance(expected, Mapping):
-            raise ActionError(
-                "reproduction.publication.material_invalid",
-                "accepted evidence-only row is invalid",
-            )
-        if _observed_evidence_selection(row) != expected:
-            raise ActionError(
-                "reproduction.publication.material_changed",
-                f"accepted evidence-only material changed: {resource}",
-            )
 
 
 def _observed_evidence_selection(
@@ -853,7 +345,7 @@ def _compare_execution_output(
     attempt: ExecutionAttempt,
     definition: EvidenceComparisonDefinition | None,
 ) -> ArtifactComparison:
-    if not successful_checkpoint_state(attempt.checkpoint.state):
+    if attempt.checkpoint.state != "succeeded":
         return ArtifactComparison(
             artifact,
             "failed",
@@ -892,6 +384,7 @@ def _compare_execution_output(
             compared.expected,
             compared.regenerated,
             definition.identity,
+            observed=compared.observed,
         )
     return _compare_evidence_change(
         artifact,
@@ -923,7 +416,9 @@ def _compare_evidence_change(
 ) -> ArtifactComparison:
     try:
         evidence_result = compare_evidence_scoped(definition, regenerated=regenerated)
-    except MechanicalContractError:
+    except MechanicalContractError as error:
+        context = ComparisonContext()
+        context.error(error)
         return ArtifactComparison(
             artifact,
             "comparison_failed",
@@ -932,6 +427,7 @@ def _compare_evidence_change(
             compared.expected,
             compared.regenerated,
             definition.identity,
+            observed=context.observed,
         )
     return ArtifactComparison(
         artifact,
@@ -942,6 +438,15 @@ def _compare_evidence_change(
         compared.regenerated,
         definition.identity,
         evidence_result.records,
+        {
+            "differing_evidence": [
+                str(item["id"])
+                for item in evidence_result.records
+                if not item["matched"]
+            ][:50]
+        }
+        if not evidence_result.matched
+        else {},
     )
 
 
@@ -957,10 +462,20 @@ def _profile(expected: Path, regenerated: Path) -> str:
     return _SUFFIX_PROFILES.get(expected.suffix.lower(), "opaque_file")
 
 
-def _compare_with_profile(expected: Path, regenerated: Path, profile: str) -> bool:
+def _compare_with_profile(
+    expected: Path,
+    regenerated: Path,
+    profile: str,
+    *,
+    context: ComparisonContext | None = None,
+) -> bool:
     if profile == "kind":
+        if context is not None:
+            context.difference(
+                "artifact kind", _path_kind(expected), _path_kind(regenerated)
+            )
         return False
-    comparators = {
+    comparators: dict[str, Callable[..., bool]] = {
         "directory": _compare_directories,
         "image": _compare_images,
         "json": _compare_json,
@@ -973,41 +488,63 @@ def _compare_with_profile(expected: Path, regenerated: Path, profile: str) -> bo
     if comparator is None:
         raise _ComparisonFailure("unsupported_format", f"unknown profile: {profile}")
     if profile == "directory":
-        return comparator(expected, regenerated)
+        return _compare_directories(expected, regenerated, context=context)
     left_identity = _regular_identity(expected)
     right_identity = _regular_identity(regenerated)
-    equal = comparator(expected, regenerated)
+    equal = comparator(expected, regenerated, context=context)
     _require_unchanged(expected, left_identity)
     _require_unchanged(regenerated, right_identity)
     return equal
 
 
-def _compare_bytes(expected: Path, regenerated: Path) -> bool:
+def _compare_bytes(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     left = _regular_identity(expected)
     right = _regular_identity(regenerated)
     if left[2] != right[2]:
+        if context is not None:
+            context.difference("byte length", left[2], right[2])
         return False
     equal = True
+    offset = 0
     with expected.open("rb") as first, regenerated.open("rb") as second:
         while True:
             left_chunk = first.read(IO_CHUNK_BYTES)
             right_chunk = second.read(IO_CHUNK_BYTES)
             if left_chunk != right_chunk:
+                if context is not None:
+                    index = next(
+                        index
+                        for index, pair in enumerate(
+                            itertools.zip_longest(left_chunk, right_chunk)
+                        )
+                        if pair[0] != pair[1]
+                    )
+                    context.difference(
+                        f"byte {offset + index}",
+                        left_chunk[index] if index < len(left_chunk) else None,
+                        right_chunk[index] if index < len(right_chunk) else None,
+                    )
                 equal = False
                 break
             if not left_chunk:
                 break
+            offset += len(left_chunk)
     _require_unchanged(expected, left)
     _require_unchanged(regenerated, right)
     return equal
 
 
-def _compare_text(expected: Path, regenerated: Path) -> bool:
+def _compare_text(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     left_identity = _regular_identity(expected)
     right_identity = _regular_identity(regenerated)
     equal = left_identity[2] == right_identity[2]
     left_decoder = codecs.getincrementaldecoder("utf-8")("strict")
     right_decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    line = 1
     try:
         with expected.open("rb") as first, regenerated.open("rb") as second:
             while True:
@@ -1016,7 +553,22 @@ def _compare_text(expected: Path, regenerated: Path) -> bool:
                 left_text = left_decoder.decode(left_chunk, final=not left_chunk)
                 right_text = right_decoder.decode(right_chunk, final=not right_chunk)
                 if left_text != right_text:
+                    if context is not None:
+                        index = next(
+                            (
+                                index
+                                for index, pair in enumerate(zip(left_text, right_text))
+                                if pair[0] != pair[1]
+                            ),
+                            min(len(left_text), len(right_text)),
+                        )
+                        context.difference(
+                            f"line {line + left_text[:index].count(chr(10))}",
+                            left_text[index : index + 256],
+                            right_text[index : index + 256],
+                        )
                     equal = False
+                line += left_text.count("\n")
                 if not left_chunk and not right_chunk:
                     break
     except UnicodeDecodeError as error:
@@ -1026,10 +578,12 @@ def _compare_text(expected: Path, regenerated: Path) -> bool:
     return equal
 
 
-def _compare_json(expected: Path, regenerated: Path) -> bool:
+def _compare_json(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     left = _load_json(expected)
     right = _load_json(regenerated)
-    return _json_equal(left, right)
+    return _json_equal(left, right, context=context)
 
 
 def _load_json(path: Path) -> object:
@@ -1082,42 +636,82 @@ def _preflight_json_depth(raw: bytes) -> None:
             depth -= 1
 
 
-def _json_equal(left: object, right: object) -> bool:
-    stack = [(left, right)]
+def _json_equal(
+    left: object, right: object, *, context: ComparisonContext | None = None
+) -> bool:
+    stack = [(left, right, "$")]
     while stack:
-        first, second = stack.pop()
+        first, second, location = stack.pop()
         if type(first) is not type(second):
-            return False
+            return _json_difference(context, location, first, second)
         if isinstance(first, dict):
             second_dict = cast(dict[object, object], second)
             if first.keys() != second_dict.keys():
-                return False
-            stack.extend((value, second_dict[key]) for key, value in first.items())
+                return _json_difference(
+                    context,
+                    location + " keys",
+                    list(islice(first, 4)),
+                    list(islice(second_dict, 4)),
+                )
+            stack.extend(
+                (value, second_dict[key], location + "[" + json.dumps(key)[:256] + "]")
+                for key, value in first.items()
+            )
         elif isinstance(first, list):
             second_list = cast(list[object], second)
             if len(first) != len(second_list):
-                return False
-            stack.extend(zip(first, second_list, strict=True))
+                return _json_difference(
+                    context, location + " length", len(first), len(second_list)
+                )
+            stack.extend(
+                (value, other, f"{location}[{index}]")
+                for index, (value, other) in enumerate(
+                    zip(first, second_list, strict=True)
+                )
+            )
         elif first != second:
-            return False
+            return _json_difference(context, location, first, second)
         elif isinstance(first, float) and first == 0.0:
             if math.copysign(1.0, first) != math.copysign(1.0, cast(float, second)):
-                return False
+                return _json_difference(context, location, first, second)
     return True
 
 
-def _compare_table(expected: Path, regenerated: Path) -> bool:
+def _json_difference(
+    context: ComparisonContext | None,
+    location: str,
+    expected: object,
+    regenerated: object,
+) -> bool:
+    if context is not None:
+        context.difference(location, expected, regenerated)
+    return False
+
+
+def _compare_table(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     delimiter = "\t" if expected.suffix.lower() == ".tsv" else ","
     first = _table_rows(expected, delimiter)
     second = _table_rows(regenerated, delimiter)
     equal = True
     sentinel = object()
-    for left, right in itertools.zip_longest(first, second, fillvalue=sentinel):
+    for row, (left, right) in enumerate(
+        itertools.zip_longest(first, second, fillvalue=sentinel), 1
+    ):
         if left is sentinel or right is sentinel:
+            if context is not None:
+                context.difference(
+                    f"row {row} availability",
+                    left is not sentinel,
+                    right is not sentinel,
+                )
             equal = False
         elif not _table_row_equal(
             cast(tuple[object, ...], left), cast(tuple[object, ...], right)
         ):
+            if context is not None:
+                context.difference(f"row {row}", left, right)
             equal = False
     return equal
 
@@ -1179,28 +773,40 @@ def _table_cell_equal(left: object, right: object) -> bool:
     return _float_scalar_equal(left, cast(float, right))
 
 
-def _compare_arrays(expected: Path, regenerated: Path) -> bool:
+def _compare_arrays(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     suffix = expected.suffix.lower()
     if suffix in {".npy", ".npz"}:
-        return _compare_numpy_container(expected, regenerated, suffix)
+        return _compare_numpy_container(expected, regenerated, suffix, context=context)
     if suffix in {".h5", ".hdf5"}:
-        return _compare_hdf5(expected, regenerated)
+        return _compare_hdf5(expected, regenerated, context=context)
     if suffix == ".mat":
         with expected.open("rb") as handle:
             expected_hdf5 = handle.read(8) == b"\x89HDF\r\n\x1a\n"
         with regenerated.open("rb") as handle:
             regenerated_hdf5 = handle.read(8) == b"\x89HDF\r\n\x1a\n"
         if expected_hdf5 != regenerated_hdf5:
+            if context is not None:
+                context.difference(
+                    "MAT container format", expected_hdf5, regenerated_hdf5
+                )
             return False
         return (
-            _compare_hdf5(expected, regenerated)
+            _compare_hdf5(expected, regenerated, context=context)
             if expected_hdf5
-            else _compare_mat(expected, regenerated)
+            else _compare_mat(expected, regenerated, context=context)
         )
     raise _ComparisonFailure("unsupported_format", "unknown array container")
 
 
-def _compare_numpy_container(expected: Path, regenerated: Path, suffix: str) -> bool:
+def _compare_numpy_container(
+    expected: Path,
+    regenerated: Path,
+    suffix: str,
+    *,
+    context: ComparisonContext | None = None,
+) -> bool:
     try:
         import numpy as np
     except ImportError as error:
@@ -1211,7 +817,7 @@ def _compare_numpy_container(expected: Path, regenerated: Path, suffix: str) -> 
         if suffix == ".npy":
             left = np.load(expected, mmap_mode="r", allow_pickle=False)
             right = np.load(regenerated, mmap_mode="r", allow_pickle=False)
-            return _numpy_array_equal(left, right)
+            return _numpy_array_equal(left, right, context=context)
         _preflight_npz(expected)
         _preflight_npz(regenerated)
         with (
@@ -1219,9 +825,15 @@ def _compare_numpy_container(expected: Path, regenerated: Path, suffix: str) -> 
             np.load(regenerated, allow_pickle=False) as second,
         ):
             if sorted(first.files) != sorted(second.files):
+                if context is not None:
+                    context.difference(
+                        "array members", sorted(first.files), sorted(second.files)
+                    )
                 return False
             for name in sorted(first.files):
-                if not _numpy_array_equal(first[name], second[name]):
+                if not _numpy_array_equal(
+                    first[name], second[name], context=context, location=name
+                ):
                     return False
             return True
     except _ComparisonFailure:
@@ -1231,7 +843,12 @@ def _compare_numpy_container(expected: Path, regenerated: Path, suffix: str) -> 
 
 
 def _numpy_array_equal(
-    left: object, right: object, *, allow_object: bool = False
+    left: object,
+    right: object,
+    *,
+    allow_object: bool = False,
+    context: ComparisonContext | None = None,
+    location: str = "array",
 ) -> bool:
     import numpy as np
 
@@ -1239,20 +856,31 @@ def _numpy_array_equal(
     first = np.asanyarray(left)
     second = np.asanyarray(right)
     if first.dtype != second.dtype or first.shape != second.shape:
+        if context is not None:
+            context.difference(
+                location + " dtype/shape",
+                {"dtype": str(first.dtype), "shape": first.shape},
+                {"dtype": str(second.dtype), "shape": second.shape},
+            )
         return False
     if first.dtype.hasobject:
         if not allow_object:
             raise _ComparisonFailure(
                 "unsupported_format", "object arrays are unsupported"
             )
-        return _object_array_equal(first, second)
+        return _object_array_equal(first, second, context=context, location=location)
     if first.size > MAX_ARRAY_MEMBERS:
         raise _ComparisonFailure("resource_limit", "array member limit exceeded")
     if first.nbytes + second.nbytes > MAX_WORKING_MEMORY and not memory_mapped:
         raise _ComparisonFailure("resource_limit", "array exceeds working memory")
     if first.dtype.fields is not None:
         return all(
-            _numpy_array_equal(first[name], second[name])
+            _numpy_array_equal(
+                first[name],
+                second[name],
+                context=context,
+                location=location + "." + name,
+            )
             for name in first.dtype.names or ()
         )
     left_flat = first.reshape(-1)
@@ -1260,12 +888,20 @@ def _numpy_array_equal(
     for start in range(0, first.size, ARRAY_CHUNK_MEMBERS):
         left_chunk = left_flat[start : start + ARRAY_CHUNK_MEMBERS]
         right_chunk = right_flat[start : start + ARRAY_CHUNK_MEMBERS]
-        if not _primitive_array_equal(left_chunk, right_chunk):
+        if not _primitive_array_equal(
+            left_chunk, right_chunk, context=context, location=location, offset=start
+        ):
             return False
     return True
 
 
-def _object_array_equal(left: object, right: object) -> bool:
+def _object_array_equal(
+    left: object,
+    right: object,
+    *,
+    context: ComparisonContext | None = None,
+    location: str = "array",
+) -> bool:
     import numpy as np
 
     first = np.asanyarray(left)
@@ -1275,8 +911,10 @@ def _object_array_equal(left: object, right: object) -> bool:
     if first.nbytes + second.nbytes > MAX_WORKING_MEMORY:
         raise _ComparisonFailure("resource_limit", "array exceeds working memory")
     nodes = [0]
-    for a, b in zip(first.flat, second.flat, strict=True):
+    for index, (a, b) in enumerate(zip(first.flat, second.flat, strict=True)):
         if not _object_value_equal(a, b, depth=1, nodes=nodes):
+            if context is not None:
+                context.difference(f"{location} flat index {index}", a, b)
             return False
     return True
 
@@ -1320,23 +958,82 @@ def _object_ndarray_equal(
     )
 
 
-def _primitive_array_equal(left: object, right: object) -> bool:
+def _primitive_array_equal(
+    left: object,
+    right: object,
+    *,
+    context: ComparisonContext | None = None,
+    location: str = "array",
+    offset: int = 0,
+) -> bool:
     import numpy as np
 
     first = np.asanyarray(left)
     second = np.asanyarray(right)
     if first.dtype.kind == "c":
         return _primitive_array_equal(
-            first.real, second.real
-        ) and _primitive_array_equal(first.imag, second.imag)
+            first.real,
+            second.real,
+            context=context,
+            location=location + ".real",
+            offset=offset,
+        ) and _primitive_array_equal(
+            first.imag,
+            second.imag,
+            context=context,
+            location=location + ".imag",
+            offset=offset,
+        )
     if first.dtype.kind == "f":
         nan_equal = np.isnan(first) & np.isnan(second)
         ordinary_equal = first == second
         if not bool(np.all(nan_equal | ordinary_equal)):
+            _array_difference(
+                context,
+                (location, offset),
+                first,
+                second,
+                ~(nan_equal | ordinary_equal),
+            )
             return False
         zeros = ordinary_equal & (first == 0)
-        return bool(np.array_equal(np.signbit(first[zeros]), np.signbit(second[zeros])))
-    return bool(np.array_equal(first, second))
+        equal = bool(
+            np.array_equal(np.signbit(first[zeros]), np.signbit(second[zeros]))
+        )
+        if not equal:
+            _array_difference(
+                context,
+                (location, offset),
+                first,
+                second,
+                zeros & (np.signbit(first) != np.signbit(second)),
+            )
+        return equal
+    equal = bool(np.array_equal(first, second))
+    if not equal:
+        _array_difference(context, (location, offset), first, second, first != second)
+    return equal
+
+
+def _array_difference(
+    context: ComparisonContext | None,
+    region: tuple[str, int],
+    first: object,
+    second: object,
+    unequal: object,
+) -> None:
+    """Retain a scalar from the already loaded bounded comparison chunk."""
+
+    if context is None:
+        return
+    import numpy as np
+
+    index = int(np.argmax(np.asanyarray(unequal)))
+    context.difference(
+        f"{region[0]} flat index {region[1] + index}",
+        np.asanyarray(first).flat[index].item(),
+        np.asanyarray(second).flat[index].item(),
+    )
 
 
 def _float_scalar_equal(left: float, right: float) -> bool:
@@ -1363,7 +1060,9 @@ def _preflight_npz(path: Path) -> None:
         raise _ComparisonFailure("comparator_error", str(error)) from error
 
 
-def _compare_hdf5(expected: Path, regenerated: Path) -> bool:
+def _compare_hdf5(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     try:
         import h5py
     except ImportError as error:
@@ -1372,18 +1071,24 @@ def _compare_hdf5(expected: Path, regenerated: Path) -> bool:
         with h5py.File(expected, "r") as first, h5py.File(regenerated, "r") as second:
             left_names = _hdf5_names(first)
             right_names = _hdf5_names(second)
-            if left_names != right_names or not _hdf5_attrs_equal(
-                first.attrs, second.attrs
+            if left_names != right_names:
+                return _json_difference(
+                    context, "HDF5 members", left_names, right_names
+                )
+            if not _hdf5_attrs_equal(
+                first.attrs, second.attrs, context=context, location="/"
             ):
                 return False
             for name, kind in left_names:
                 left = first[name]
                 right = second[name]
-                if not _hdf5_attrs_equal(left.attrs, right.attrs):
+                if not _hdf5_attrs_equal(
+                    left.attrs, right.attrs, context=context, location=name
+                ):
                     return False
                 if kind == "dataset":
                     if not isinstance(right, h5py.Dataset) or not _hdf5_dataset_equal(
-                        left, right
+                        left, right, context=context, location=name
                     ):
                         return False
             return True
@@ -1418,27 +1123,57 @@ def _hdf5_names(root: object) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(result))
 
 
-def _hdf5_attrs_equal(left: object, right: object) -> bool:
+def _hdf5_attrs_equal(
+    left: object,
+    right: object,
+    *,
+    context: ComparisonContext | None = None,
+    location: str = "/",
+) -> bool:
     first = cast(Any, left)
     second = cast(Any, right)
     if sorted(first.keys()) != sorted(second.keys()):
+        if context is not None:
+            context.difference(
+                location + " attributes", sorted(first.keys()), sorted(second.keys())
+            )
         return False
     for name in sorted(first.keys()):
-        if not _numpy_array_equal(first[name], second[name], allow_object=True):
+        if not _numpy_array_equal(
+            first[name],
+            second[name],
+            allow_object=True,
+            context=context,
+            location=location + "@" + name,
+        ):
             return False
     return True
 
 
-def _hdf5_dataset_equal(left: object, right: object) -> bool:
+def _hdf5_dataset_equal(
+    left: object,
+    right: object,
+    *,
+    context: ComparisonContext | None = None,
+    location: str = "dataset",
+) -> bool:
     first = cast(Any, left)
     second = cast(Any, right)
     if first.dtype != second.dtype or first.shape != second.shape:
+        if context is not None:
+            context.difference(
+                location + " dtype/shape",
+                {"dtype": str(first.dtype), "shape": first.shape},
+                {"dtype": str(second.dtype), "shape": second.shape},
+            )
         return False
     members = math.prod(first.shape) if first.shape else 1
     if members > MAX_ARRAY_MEMBERS:
         raise _ComparisonFailure("resource_limit", "array member limit exceeded")
     if not first.shape:
-        return _numpy_array_equal(first[()], second[()], allow_object=True)
+        return _numpy_array_equal(
+            first[()], second[()], allow_object=True, context=context, location=location
+        )
     row_members = max(1, math.prod(first.shape[1:]))
     itemsize = max(1, first.dtype.itemsize)
     if row_members * itemsize * 2 > MAX_WORKING_MEMORY:
@@ -1453,13 +1188,19 @@ def _hdf5_dataset_equal(left: object, right: object) -> bool:
     for start in range(0, first.shape[0], step):
         selection = slice(start, min(first.shape[0], start + step))
         if not _numpy_array_equal(
-            first[selection], second[selection], allow_object=True
+            first[selection],
+            second[selection],
+            allow_object=True,
+            context=context,
+            location=f"{location} rows {selection.start}:{selection.stop}",
         ):
             return False
     return True
 
 
-def _compare_mat(expected: Path, regenerated: Path) -> bool:
+def _compare_mat(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     try:
         from scipy.io import loadmat, whosmat
     except ImportError as error:
@@ -1472,6 +1213,10 @@ def _compare_mat(expected: Path, regenerated: Path) -> bool:
             (name, shape, dtype) for name, shape, dtype in whosmat(regenerated)
         )
         if first_names != second_names:
+            if context is not None:
+                context.difference(
+                    "MAT variables/dtype/shape", first_names, second_names
+                )
             return False
         for name, shape, _dtype in first_names:
             if math.prod(shape) > MAX_ARRAY_MEMBERS:
@@ -1484,7 +1229,9 @@ def _compare_mat(expected: Path, regenerated: Path) -> bool:
                 raise _ComparisonFailure(
                     "resource_limit", "MAT member exceeds working memory"
                 )
-            if not _numpy_array_equal(left, right, allow_object=True):
+            if not _numpy_array_equal(
+                left, right, allow_object=True, context=context, location=name
+            ):
                 return False
         return True
     except _ComparisonFailure:
@@ -1493,7 +1240,9 @@ def _compare_mat(expected: Path, regenerated: Path) -> bool:
         raise _ComparisonFailure("comparator_error", str(error)) from error
 
 
-def _compare_images(expected: Path, regenerated: Path) -> bool:
+def _compare_images(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     try:
         from PIL import Image
     except ImportError as error:
@@ -1503,7 +1252,9 @@ def _compare_images(expected: Path, regenerated: Path) -> bool:
             left_frames = getattr(first, "n_frames", 1)
             right_frames = getattr(second, "n_frames", 1)
             if left_frames != right_frames:
-                return False
+                return _json_difference(
+                    context, "image frame count", left_frames, right_frames
+                )
             pixels = 0
             for frame in range(left_frames):
                 first.seek(frame)
@@ -1514,13 +1265,22 @@ def _compare_images(expected: Path, regenerated: Path) -> bool:
                         "resource_limit", "image pixel limit exceeded"
                     )
                 if first.size != second.size or first.mode != second.mode:
-                    return False
+                    return _json_difference(
+                        context,
+                        f"frame {frame} size/mode",
+                        {"size": first.size, "mode": first.mode},
+                        {"size": second.size, "mode": second.mode},
+                    )
                 bands = max(1, len(first.getbands()))
                 rows = max(1, MAX_WORKING_MEMORY // max(1, first.width * bands * 2))
                 for top in range(0, first.height, rows):
                     box = (0, top, first.width, min(first.height, top + rows))
-                    if first.crop(box).tobytes() != second.crop(box).tobytes():
-                        return False
+                    left_bytes = first.crop(box).tobytes()
+                    right_bytes = second.crop(box).tobytes()
+                    if left_bytes != right_bytes:
+                        return _image_difference(
+                            context, frame, box, left_bytes, right_bytes
+                        )
             return True
     except _ComparisonFailure:
         raise
@@ -1528,12 +1288,39 @@ def _compare_images(expected: Path, regenerated: Path) -> bool:
         raise _ComparisonFailure("comparator_error", str(error)) from error
 
 
-def _compare_directories(expected: Path, regenerated: Path) -> bool:
+def _image_difference(
+    context: ComparisonContext | None,
+    frame: int,
+    box: tuple[int, int, int, int],
+    expected: bytes,
+    regenerated: bytes,
+) -> bool:
+    """Retain the first different byte in the already decoded image region."""
+
+    if context is not None:
+        index = next(
+            index
+            for index, (a, b) in enumerate(zip(expected, regenerated, strict=True))
+            if a != b
+        )
+        context.difference(
+            f"frame {frame} rows {box[1]}:{box[3]} byte {index}",
+            expected[index],
+            regenerated[index],
+        )
+    return False
+
+
+def _compare_directories(
+    expected: Path, regenerated: Path, *, context: ComparisonContext | None = None
+) -> bool:
     left = _directory_members(expected)
     right = _directory_members(regenerated)
     left_projection = tuple((relative, kind) for relative, kind, _ in left)
     right_projection = tuple((relative, kind) for relative, kind, _ in right)
     if left_projection != right_projection:
+        if context is not None:
+            context.difference("directory members", left_projection, right_projection)
         return False
     for (relative, kind, left_path), (_, _, right_path) in zip(
         left, right, strict=True
@@ -1541,7 +1328,18 @@ def _compare_directories(expected: Path, regenerated: Path) -> bool:
         if kind == "directory":
             continue
         profile = _profile(left_path, right_path)
-        if not _compare_with_profile(left_path, right_path, profile):
+        child_context = ComparisonContext() if context is not None else None
+        if not _compare_with_profile(
+            left_path, right_path, profile, context=child_context
+        ):
+            if context is not None:
+                context.difference(
+                    f"member {relative}",
+                    "retained member",
+                    "different regenerated member",
+                )
+                if child_context is not None:
+                    context.observed["member_comparison"] = child_context.observed
             return False
     return left_projection == tuple(
         (relative, kind) for relative, kind, _path in _directory_members(expected)

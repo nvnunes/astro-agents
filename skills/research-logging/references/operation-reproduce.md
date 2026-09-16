@@ -1,138 +1,85 @@
 # Reproduce Operation Instructions
 
 Use this operation only when the researcher explicitly asks to reproduce a
-maintained research log or one entry. Reproduce is a
-mechanical CLI workflow, separate from Record, Review, and Validate. It plans
-and executes from JSON authority, retains regenerated outputs in a project-local
-run folder, compares them with retained artifacts, and publishes generated
-reproduction state. Completed executions clear their reproduction requirement.
-After successful publication, the CLI
-does not invoke validation. Run Validate explicitly when a current validation
-outcome is required; reproduction does not copy the project into the run folder.
+maintained research log or entry. Reproduce mechanically plans from recorded
+JSON authority, executes under confinement, compares regenerated outputs, and
+publishes its own saved results. It does not judge scientific meaning or use
+Markdown as execution authority.
 
-Read `references/file-reproduction-records.md` before launching or reporting a
-run. When an admission failure or requested repair requires interpreting the
-authored command form or its effective CID, also read
-`references/file-entry-commands.md`; Reproduce itself keeps that Markdown
-read-only.
+Read `references/file-reproduction-records.md` before launching or reporting.
+Read `references/file-entry-commands.md` when an admission failure or requested
+repair requires interpreting authored command form or effective CID.
 
 ## Boundaries
 
-- Treat the maintained summary, entries, commands, scripts, retained artifacts,
-  `data.json`, `evidence.json`, `retention.json`, and authored prose as
-  read-only. Dry-run preparation evaluates without publishing validation. A
-  non-dry launch first publishes the fresh completed validation snapshot under
-  the normal validation locks, then accepts and runs the reproduction plan.
-  After that preparation publication, Reproduce writes only its generated job,
-  result, and report paths and may change only `requires_reproduction: true` to
-  `requires_reproduction: false` for a completed execution in `pyrun.json`.
-  There is no automatic post-run validation; a later explicit Validate owns any
-  subsequent validation publication.
-- Do not interpret Markdown as execution authority, select commands, repair a
-  recipe, judge scientific meaning, or decide whether a changed artifact should
-  replace retained research material.
-- Do not edit research-facing prose or evidence presentation. The only human
-  report owned by this operation is generated `reproduction.md`.
-- Whole-artifact exact comparison remains the default. Reproduce may apply an
-  authored evidence-scoped rule, but it never creates, changes, or guesses that
-  rule or its evidence-level tolerance.
-- Never add `--include-all` unless the researcher explicitly authorizes the
-  non-automatic executions for that run. Omission is the normal default.
-- Do not invoke promotion automatically. Promotion is a separate, explicit
-  research mutation performed only with researcher direction.
+- Keep research summaries, entries, scripts, registries, retained artifacts and
+  prose read-only. Preview evaluates without publishing. Real launch publishes
+  fresh completed validation under its normal locks before accepting work.
+- After preparation, write only generated job/result/report paths and the
+  existing eligible `requires_reproduction: true` to `false` effect in
+  `pyrun.json`. Complete production and comparison are required; unequal
+  artifacts remain complete production. Failed, partial, blocked or stopped
+  work cannot clear early.
+- Never repair recipes, change evidence rules or tolerances, select changed
+  outputs for adoption, or promote automatically. Promotion needs separate
+  researcher direction.
+- Use whole-artifact exact comparison by default. Apply only an already-authored
+  evidence-scoped exception; never infer one from changed results.
+- Never add `--include-all` without explicit authorization for nonautomatic
+  commands. Recheck alone does not authorize them.
+- Do not copy the project into the workspace or edit generated records by hand.
+  No validation runs automatically after reproduction publication.
 
 ## Preview Or Launch
 
 Resolve the extensionless `scripts/log` entrypoint from this skill package.
-Choose exactly one log or stable entry; multiple logs require separate commands.
-
-Preview prepares one deterministic plan under the log lock without creating a
-run ID, directory, checkpoint, result, report, cache entry, or other durable
-state. The lock infrastructure is the preview's only filesystem side effect:
+Target one log or stable entry; multiple logs require separate commands.
 
 ```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+<skill>/scripts/log reproduce plan --path <log> [--entry <entry>] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
-  [--execution-timeout-seconds <seconds>] --dry-run --summary
-```
-
-Use `--summary` for the bounded CLI-owned human projection. Present it
-unchanged; do not request or parse the complete JSON plan. Programmatic
-consumers that need the complete deterministic plan may omit `--summary`.
-
-Launch the same scope by omitting both `--dry-run` and `--summary`:
-
-```bash
-<skill>/scripts/log reproduce --path <log> [--entry <entry>] \
+  [--execution-timeout-seconds <seconds>] [--cursor <cursor>] [--format text|json]
+<skill>/scripts/log reproduce run --path <log> [--entry <entry>] \
   [--include-all] [--recheck] [--jobs <positive-integer>] \
   [--execution-timeout-seconds <seconds>]
 ```
 
-Without `--entry`, the target is exactly the named log. With `--entry`, the
-target is exactly that entry. Evidence dependencies outside the selected scope
-remain boundaries; the CLI never widens the run by executing commands from
-another entry or log.
+Plan is a bounded current-work view, not saved history or a launch token.
+Present its text unchanged and follow returned cursors when more action rows
+are needed. It creates no run, result, report or cache; ordinary lock
+infrastructure is its only filesystem side effect. Launch prepares afresh rather
+than consuming a previous preview.
 
-For explicitly requested verification after a script or recorded local-code
-repair, use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID`.
-It is synchronous and isolated, retains private outputs and diagnostics, and
-preserves `pyrun.json` and all generated records. It has no admission,
-automatic-policy, run, resume, report, validation, publication, or promotion
-lifecycle; its outputs cannot be promoted.
-Do not use it to bypass changed recipe parameters/declarations or establish
-new participating-code observations; those need a supported adoption route.
+Selection defaults to incremental. Not-needed precedes automatic policy;
+unchanged previous failure/block is not retried. `--recheck` retries currently
+eligible work without bypassing blockers or policy. Artifact matches do not
+decide whether execution is needed. State which selection is used.
 
-`--jobs` defaults to `1`, preserving serial execution. A larger value is an
-immutable per-run concurrency cap: dependency readiness, conflicting path
-claims, and project-wide exclusivity may keep actual concurrency lower. Before
-a parallel launch, use the dry-run summary to verify the cap, runnable and
-exclusive counts, and complete path claims. Entry-local execution state must
-use `research-log-pyrun/v6`; earlier schemas are unsupported.
+Keep useful partial plans: attributable source/input/boundary/baseline and
+validation-admission causes block their owning work and dependents while
+independent commands may run. Entry targets never schedule outside-entry
+producers; other logs never become execution scope. Do not conflate
+Reproduce-owned currentness with validation findings.
 
-Each command defaults to a 300-second wall-clock runtime limit. Use
-`--execution-timeout-seconds` on launch or dry run to accept a different limit;
-resume retains it and does not accept an override. Exceeding the limit records
-an `execution_timeout` failure, terminates the supervised process tree, and
-does not prevent independent commands from running.
+`--jobs` defaults to 1; accepted path conflicts, dependencies and project-wide
+exclusivity can reduce concurrency. Review the plan before parallel launch.
+The per-command wall-clock limit defaults to 300 seconds. Exceeding it records
+`execution_timeout`, terminates the supervised tree and leaves independent work
+eligible. Resume preserves both accepted settings. Current execution authority
+is `research-log-pyrun/v6`; earlier schemas are unsupported.
 
-The default selection is incremental. A current execution with
-`requires_reproduction: false` does not need execution and does not require
-saved reproduction state. A command that still requires reproduction is
-selected together with only the downstream commands its work may affect. Artifact matches are not
-used to decide whether reproduction is needed. When the researcher explicitly
-asks to recheck, check again, or rerun commands for which reproduction is not
-needed, add `--recheck`. Recheck selects every
-currently runnable eligible command but does not bypass a planning blocker.
-State whether the preview or launch uses incremental or recheck selection.
+Run prints a durable run ID and returns while the CLI-owned detached job
+continues. A no-runnable-work invocation instead returns current reconciliation
+and normally writes no job or saved result. Present that output immediately;
+do not substitute an older saved summary.
 
-Treat a valid partial plan as useful work. Fresh preparation evaluates the log
-once under the log lock and derives admission from that evaluation, not from a
-previously published validation snapshot. Dry run keeps that evaluation
-in-memory; non-dry launch publishes it before plan acceptance. A pre-existing changed or missing
-script, participating code file, direct input, retained boundary, or comparison
-baseline fails only its owning execution when the planner can identify it;
-dependants are skipped and independent executions remain runnable. These are
-Reproduce planning conditions; currentness mismatches remain Reproduce-owned,
-while missing required research material may independently be a validation
-finding. Do not conflate or reinterpret the two during reproduction.
-
-The default run first classifies a current execution with
-`requires_reproduction: false` as reproduction not needed, even when
-`auto_reproduce` is false. Its retained outputs bound traversal. The default
-run then excludes remaining executions with `auto_reproduce: false`.
-`--include-all` includes them and requires separate explicit researcher
-authorization. A request to recheck does not authorize non-automatic
-execution. When commands are selected for execution, a real launch prints a
-run ID after durable acceptance and returns immediately. The background job is
-CLI-owned and does not depend on the launching agent or terminal remaining
-active. When a launch selects no executions, it instead prints the standard
-current reconciliation immediately. Present that output unchanged: it is the
-completed result of the invocation, not a planning failure, and it must not be
-replaced with the latest completed run's historical command counts.
+For explicitly requested isolated verification after script/local-code repair,
+use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID`.
+It is synchronous, retains private diagnostics/outputs, preserves metadata and
+results, and cannot resume, promote, clear requirements or adopt changed recipe
+parameters/declarations or newly observed participating code.
 
 ## Observe Or Control A Run
-
-Use the immutable run ID for every later action:
 
 ```bash
 <skill>/scripts/log reproduce status --path <log> --run-id <run-id>
@@ -141,138 +88,83 @@ Use the immutable run ID for every later action:
 <skill>/scripts/log reproduce resume --path <log> --run-id <run-id>
 ```
 
-Use ordinary status for people. Agents and scheduled monitors use `--json` and
-must not parse human text or generated files. `stop` is the sole stopping
-action. It preserves diagnostics and completed checkpoints for an explicit
-`resume`. Resume loads the same accepted plan and keeps its run ID, target,
-include-all authorization, command inventory, and jobs cap. It never replans,
-adopts source edits, or reruns a durable successful or failed command. It
-launches only never-started work and work stopped without a durable terminal
-outcome, after cleaning that invocation's incomplete generated outputs and
-scratch. Source edits after acceptance require a new run; an unnoticed edit
-can invalidate conclusions and requires explicit reassessment. A run whose
-only failure is result publication may retry publication from durable terminal
-evidence without executing a command. Status reports every active execution
-and worker; queued work is not presented as execution time. Its JSON projection
-reports whether the run is resumable. Resume always reuses accepted settings
-and cannot accept selectors, `--jobs`, or `--recheck`.
+Use text status for people and JSON for agents/monitors. Status is operational
+lifecycle, not artifact outcome; queued work is not execution time. Stop is the
+sole stopping action and preserves diagnostics and completed results.
 
-Accepted run folders live at
-`<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`,
-where the date comes from immutable UTC `accepted_at`. All lifecycle commands
-still use only `--run-id`; agents do not derive or supply the date.
+Resume uses the same accepted Plan12/Job4, run ID, scope, authorization and
+settings. It never replans or reruns durable terminal success/failure. Only
+never-started or stopped nonterminal work may launch after safe cleanup.
+Source changes require a new run. Publication-only recovery uses frozen facts
+with no execution. Surviving workers preserve exclusion; never sweep unrelated
+temporary paths. Old jobs are unsupported and remain unchanged; resolve them
+under their owning implementation before incompatible cutover.
 
-A scheduled monitor is optional. Offer to create one only after a run is
-accepted, and create it only after the user confirms. It should report
-meaningful status changes, completion, failure, or required user action and
-must never stop, resume, promote, or otherwise control the run.
+Run folders are
+`<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`.
+The immutable UTC acceptance date organizes paths; lookup uses run ID alone.
+Do not move or discard retained runs or derive a date selector.
 
-## Report The Result
+Offer an optional scheduled monitor only after acceptance and create it only
+after confirmation. It reports meaningful changes, completion/failure or user
+action; it never stops, resumes or promotes.
 
-For a broader launched run, immediately retrieve the centralized human projection:
+## Present Saved Results Or Diagnose
+
+After a broader run completes, retrieve the saved summary:
 
 ```bash
-<skill>/scripts/log reproduce report --path <log> --summary
+<skill>/scripts/log reproduce show --path <log> [--run-id <run-id>]
+<skill>/scripts/log reproduce show --root <project>
 ```
 
-Present the returned compact report unchanged. Its command tree relates total
-commands to commands whose reproduction was not retried, policy-skipped
-commands, and selected commands, then relates
-selected commands to succeeded, failed, and blocked outcomes.
-Its artifact tree relates current reachable artifacts to matched, not-matched, and
-not-compared outcomes, including separate failed, blocked, comparison-failed,
-and skipped reasons. Comparison-failed appears first and skipped appears last.
-The totals are different units because one command may produce several
-artifacts. Do not combine them or reconstruct either tree yourself.
+Present the CLI-owned hierarchy or two root tables unchanged. Command and
+artifact totals are different units. A dash is unavailable, not zero.
+Saved inspection uses immutable selected-run facts, never current registries.
+Omit run ID for the latest saved target; it is valid only with a single log.
+No-work reconciliation is already the result of that invocation.
 
-Do not wait for the researcher to ask for this summary. If the launch itself
-returned a no-execution reconciliation, present that CLI-owned summary
-immediately instead; there is no run to observe and no follow-up report command
-to substitute for it.
-
-For a cross-log overview, use the CLI-owned aggregation:
+Use bounded list/detail for diagnosis, not SQLite, generated Markdown or a
+complete diagnostic report:
 
 ```bash
-<skill>/scripts/log reproduce report --root <project> --summary
+<skill>/scripts/log reproduce list commands --path <log> [--run-id <run-id>] \
+  [--entry <entry>] [--status <status>] [--reason <reason>] [--cursor <cursor>]
+<skill>/scripts/log reproduce list artifacts --path <log> [--run-id <run-id>] \
+  [--entry <entry>] [--cid <cid>] [--status <status>] [--reason <reason>] [--cursor <cursor>]
+<skill>/scripts/log reproduce detail command --path <log> --entry <entry> \
+  --cid <cid> --execution-id <id> [--run-id <run-id>] [--section <section>] [--cursor <cursor>]
+<skill>/scripts/log reproduce detail artifact --path <log> --entry <entry> \
+  --artifact <artifact> [--run-id <run-id>] [--section <section>] [--cursor <cursor>]
 ```
 
-Present its two tables and coverage line unchanged. A dash means the value is
-unavailable, not zero. Use `--format json` with either summary route only for a
-programmatic consumer. If the CLI reports an unsupported generated result
-schema, launch whole-log reproduction with `--recheck`; do not resume a partial
-publication or reconstruct historical counts.
+These routes also accept `--format text|json`. Use the list's exact detail
+invocation, then section/cursor continuations for retained invocation, all
+causes, output/comparison facts and available bounded stdout/stderr tails.
+Missing/truncated diagnostics qualify availability, not saved outcome.
+Never soften failed/blocked/not-matched/not-compared results. Evidence-scoped
+matching does not mean whole-file equality.
 
-If that whole-log target contains no recorded commands or artifact cases, the
-launch still replaces unsupported generated results with empty state and a
-not-yet-reproduced report. It creates no run and executes nothing. Preview is
-read-only; omit `--dry-run --summary` to perform the recovery. A target with
-policy-skipped commands or blockers is not empty. Do not enable nonautomatic
-commands or delete research state to force this route.
+`reproduction.md` contains only the same compact summary as single-log show.
+Use `log reproduce render --path LOG` for report-only recovery without
+replanning or execution. Unsupported results require separately authorized
+`log reproduce run --path LOG --recheck`; never translate old results.
+An explicit genuinely empty whole-log recheck may replace obsolete history with
+an empty-confirmation receipt and report, with no fabricated run or execution.
+Policy skips or blockers are not empty work.
 
-When the researcher asks for every artifact, retained run, or entry-specific
-detail, retrieve the complete report instead:
+Run Validate explicitly when current validation is required; later validation
+does not rewrite historical reproduction outcomes or restore cleared flags.
+
+## Explicit Promotion
+
+Only with researcher direction:
 
 ```bash
-<skill>/scripts/log reproduce report --path <log> [--entry <entry>]
+<skill>/scripts/log reproduce promote --path <log> --run-id <run-id> \
+  --cid <cid> --execution-id <execution-id>
 ```
 
-Never hide or soften `changed`, `failed`, `comparison_failed`, `skipped`, or
-stale artifact results in that detail. Run status describes operational
-completion and is independent of artifact outcomes. A later explicit validation
-finding or failure does not invalidate completed reproduction work.
-
-An evidence-scoped artifact may report `matched` even when its complete file
-fingerprint differs. In that case, use the bounded artifact `show` result when
-the researcher needs the complete recorded per-evidence comparison. Do not
-describe the whole files as equal.
-
-For researcher-directed diagnosis, obtain bounded machine detail instead of
-opening generated JSON:
-
-```bash
-<skill>/scripts/log reproduce artifacts list --path <log> [--entry <entry>] [--outcome <outcome>] [--artifact <path>]
-<skill>/scripts/log reproduce artifacts show --path <log> --entry <entry> --artifact <path>
-<skill>/scripts/log reproduce commands list --path <log> [--bucket <bucket>] [--entry <entry>] [--reason <reason>] [--run-id <run-id>] [--format text|json]
-<skill>/scripts/log reproduce commands show --path <log> --entry <entry> --cid <cid> --execution-id <execution-id> [--run-id <run-id>] [--format text|json]
-```
-
-Use the command routes whenever the researcher asks which commands make up a
-compact command count. The public list buckets are
-`reproduction-not-retried`, `skipped-by-policy`, `succeeded`, `failed`, and
-`blocked`. Omit `--run-id` for the latest completed run. Present text output
-unchanged unless a programmatic consumer needs JSON. Completed-run queries use
-the selected run's immutable historical records and never reinterpret them
-through current `pyrun.json`. Failed-command listings include a concise error
-type and message for triage and grouping without individual drill-down calls.
-JSON rows expose the same summary in `error`, including its source and
-truncation flag. Each text list row provides the exact
-`commands show` invocation for that command. Use it to retrieve the retained
-checkpoint failure, timing, observed outputs, diagnostic paths, and bounded
-stderr and stdout tails. Command queries do not partially support a run whose
-command-query schema is unsupported. If either route reports that state, run
-reproduction with `--recheck` to rebuild the generated result; do not
-reconstruct missing command identity or accounting from its run directory,
-generated JSON, Markdown, terminal records, aggregate counts, or current
-command metadata.
-
-Do not select a changed result for adoption. A research agent acting with
-researcher direction may inspect the retained complete execution output set
-and then copy it into the log through:
-
-```bash
-<skill>/scripts/log reproduce promote --path <log> --run-id <run-id> --cid <cid> --execution-id <execution-id>
-```
-
-Promotion copies every related output together and retains the run-local source.
-It does not move or discard the run folder.
-
-## Current Reproduction Boundary
-
-`log reproduce` accepts only whole-log or stable-entry targets. It has no
-one-command repair mode, and run-ID single-execution presentation is removed.
-Each current run stores one immutable plan/11 and mutable checkpoint
-state in its run-local `state.sqlite`; stopped work resumes only that accepted
-plan. Use `log command verify` for one current invocation. Historical result/11
-execution rows remain read-only. Canonical historical JSON jobs without
-`state.sqlite` are unsupported and left unchanged; start a new run instead of
-asking Reproduce to migrate or repair one.
+Promotion copies the complete related native staged output set under existing
+baseline, confinement, reservation and rollback guards. It leaves staged sources
+and saved historical outcomes intact.

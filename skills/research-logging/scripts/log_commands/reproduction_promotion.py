@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence, cast
 
-from research_log_data import Fingerprint, parse_fingerprint
-from research_log_paths import REPRODUCTION_REPORT, RESULTS_STORE
+from research_log_data import Fingerprint
+from research_log_paths import REPRODUCTION_REPORT
 from validation.operation_state import operation_directory, operation_lock
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
@@ -24,7 +24,6 @@ from validation.pyrun_state import (
     load_pyrun_state,
     validated_pyrun_serialization,
 )
-from validation.report_context import load_report_context
 
 from .context import (
     LogContext,
@@ -32,26 +31,18 @@ from .context import (
     resolve_project_root,
 )
 from .model import ActionError
-from .reproduction_contract import (
-    ReproductionPlan,
-    accepted_invocation,
-)
+from .reproduction_domain import CommandOutcome
 from .reproduction_execution import _fingerprint
-from .reproduction_job_storage import (
+from .reproduction_job_control import (
     JobStoreError,
-    load_publication_projection,
-    load_run_status,
     recognize_run_directory,
 )
 from .reproduction_jobs import _find_run, load_accepted_plan
 from .reproduction_paths import iter_canonical_run_roots
-from .reproduction_planner import project_reproduction_state
-from .reproduction_result_storage import load_reproduction_report_projection
-from .reproduction_results import (
-    compose_reproduction_report,
-    project_current_results,
-    reconcile_run_folders,
-)
+from .reproduction_run import ArtifactResult
+from .reproduction_work import CommandWork
+from .reproduction_work_job import open_work_job
+from .reproduction_work_plan import ReproductionPlan
 from .storage import atomic_write_text, atomic_write_texts, entry_lock
 
 MAX_ACTIVE_RUNS = 100_000
@@ -97,7 +88,9 @@ class _InstalledOutput:
 
 @dataclass(frozen=True)
 class _StagingBundle:
-    record: Mapping[str, object]
+    work: CommandWork
+    artifacts: tuple[ArtifactResult, ...]
+    workspace_path: str
 
 
 @dataclass(frozen=True)
@@ -121,8 +114,8 @@ def promote_execution(
 
     run_root = _find_run(log, run_id)
     plan = load_accepted_plan(run_root)
-    bundle = _load_current_bundle(run_root, run_id, cid, execution_id)
-    entry_id = _required_string(bundle.record, "entry")
+    bundle = _load_staging_bundle(run_root, run_id, cid, execution_id)
+    entry_id = bundle.work.identity.entry
     entry = resolve_entry(log, entry_id)
     project = resolve_project_root(log.root)
     with entry_lock(entry):
@@ -151,184 +144,130 @@ def promote_execution(
     )
 
 
-def _load_current_bundle(
+def _load_staging_bundle(
     run_root: Path, run_id: str, cid: str, execution_id: str
 ) -> _StagingBundle:
-    """Project one complete staged execution from the current SQLite store."""
-
-    try:
-        projection = load_publication_projection(run_root)
-    except JobStoreError as error:
-        raise ActionError(error.code, str(error)) from error
-    if projection.identity.run_id != run_id:
-        raise ActionError(
-            "reproduction.promotion.execution_missing", "run identity changed"
+    """Resolve native complete production without requiring equal comparisons."""
+    with open_work_job(run_root) as job:
+        if job.accepted.run_id != run_id:
+            raise ActionError(
+                "reproduction.promotion.execution_missing", "run identity changed"
+            )
+        matches = [
+            work
+            for work in job.accepted.plan.commands
+            if work.identity.cid == cid and work.identity.execution_id == execution_id
+        ]
+        if len(matches) != 1:
+            raise ActionError(
+                "reproduction.promotion.execution_missing",
+                f"expected one staged execution, found {len(matches)}",
+            )
+        work = matches[0]
+        result = job.load_command_result(work.identity)
+        if result is None or result.outcome is not CommandOutcome.SUCCEEDED:
+            raise ActionError(
+                "reproduction.promotion.incomplete", "staged execution is incomplete"
+            )
+        artifacts = tuple(
+            job.load_artifact_result(artifact.identity)
+            for artifact in job.accepted.plan.artifacts
+            if artifact.producer == work.identity
         )
-    matches = [
-        item
-        for item in projection.comparisons
-        if item.cid == cid and item.execution_id == execution_id
-    ]
-    if len(matches) != 1:
-        raise ActionError(
-            "reproduction.promotion.execution_missing",
-            f"expected one staged execution, found {len(matches)}",
-        )
-    comparison = matches[0]
-    if not comparison.complete:
-        raise ActionError(
-            "reproduction.promotion.incomplete", "staged execution is incomplete"
-        )
-    outputs = []
-    workspace = PurePosixPath(comparison.workspace_path)
-    for item in comparison.artifacts:
-        staged = item.staged_path
-        if staged is not None:
-            try:
-                staged = PurePosixPath(staged).relative_to(workspace).as_posix()
-            except ValueError as error:
-                raise ActionError(
-                    "reproduction.promotion.staging_invalid",
-                    f"staged output is outside its workspace: {item.artifact}",
-                ) from error
-        outputs.append(
+        if any(artifact is None for artifact in artifacts) or (
             {
-                "artifact": item.artifact,
-                "available": item.available,
-                "expected": item.expected,
-                "kind": item.kind,
-                "outcome": item.outcome,
-                "profile": item.profile,
-                "reason": item.reason,
-                "regenerated": item.regenerated,
-                "staged": staged,
+                artifact.identity.artifact
+                for artifact in artifacts
+                if artifact is not None
             }
+            != {name for name, _ in work.execution.recipe.outputs}
+        ):
+            raise ActionError(
+                "reproduction.promotion.incomplete",
+                "complete output comparisons are missing",
+            )
+        return _StagingBundle(
+            work,
+            tuple(artifact for artifact in artifacts if artifact is not None),
+            job.accepted.workspace_path,
         )
-    return _StagingBundle(
-        {
-            "bytes": comparison.retained_bytes,
-            "complete": True,
-            "diagnostics": list(comparison.diagnostics),
-            "entry": comparison.entry,
-            "cid": comparison.cid,
-            "execution_id": comparison.execution_id,
-            "outputs": outputs,
-            "path": comparison.workspace_path,
-        },
-    )
 
 
-def _resolve_outputs(
-    context: _PromotionResolution,
-) -> tuple[_PromotedOutput, ...]:
-    accepted = accepted_invocation(
-        context.plan, context.entry_id, context.cid, context.execution_id
-    )
+def _resolve_outputs(context: _PromotionResolution) -> tuple[_PromotedOutput, ...]:
+    work = context.bundle.work
     state = load_pyrun_state(
         context.entry_root / "pyrun.json",
         entry_root=context.entry_root,
         project_root=context.project,
     )
     execution = state.execution(context.cid, context.execution_id)
-    if execution is None:
-        raise ActionError(
-            "reproduction.promotion.execution_changed", "execution is no longer current"
-        )
-    if (
-        execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
-        or execution.observed.as_dict() != accepted.execution.observed.as_dict()
+    if execution is None or (
+        execution.recipe.as_dict() != work.execution.recipe.as_dict()
+        or execution.observed.as_dict() != work.execution.observed.as_dict()
     ):
         raise ActionError(
             "reproduction.promotion.execution_changed",
             "current execution no longer matches accepted promotion baseline",
         )
-    raw_outputs = context.bundle.record.get("outputs")
-    bundle_path = context.bundle.record.get("path")
-    if not isinstance(raw_outputs, list) or not isinstance(bundle_path, str):
-        raise ActionError(
-            "reproduction.promotion.staging_invalid", "invalid staged output list"
-        )
-    records = _index_staged_outputs(raw_outputs)
-    expected = dict(accepted.execution.recipe.outputs)
-    if set(records) != set(expected):
+    records = {
+        artifact.identity.artifact: artifact for artifact in context.bundle.artifacts
+    }
+    if set(records) != {name for name, _ in execution.recipe.outputs}:
         raise ActionError(
             "reproduction.promotion.output_set_changed",
-            "staged outputs do not equal the current execution output set",
+            "staged output inventory changed",
         )
-    bundle_root = _safe_run_path(context.run_root, bundle_path)
-    results: list[_PromotedOutput] = []
-    for artifact, kind in accepted.execution.recipe.outputs:
-        record = records[artifact]
-        staged_path = record.get("staged")
-        if (
-            record.get("available") is not True
-            or record.get("kind") != kind
-            or not isinstance(staged_path, str)
-            or record.get("regenerated") is None
-        ):
-            raise ActionError(
-                "reproduction.promotion.incomplete",
-                f"staged output is incomplete: {artifact}",
-            )
-        staged = _safe_run_path(bundle_root, staged_path)
-        destination = output_target_path(
-            artifact, entry_root=context.entry_root, project_root=context.project
-        )
-        baseline = dict(accepted.execution.observed.outputs).get(artifact)
-        if (
-            baseline is None
-            or not destination.exists()
-            or destination.is_symlink()
-            or _fingerprint(destination, kind) != baseline
-        ):
-            raise ActionError(
-                "reproduction.promotion.baseline_changed",
-                "promotion destination no longer matches accepted baseline: "
-                f"{artifact}",
-            )
-        fingerprint = parse_fingerprint(record["regenerated"], f"promotion:{artifact}")
-        if (
-            staged.is_symlink()
-            or not staged.exists()
-            or _fingerprint(staged, kind) != fingerprint
-        ):
-            raise ActionError(
-                "reproduction.promotion.staged_changed",
-                f"staged output changed or disappeared: {artifact}",
-            )
-        results.append(
-            _PromotedOutput(artifact, kind, staged, destination, baseline, fingerprint)
-        )
-    return tuple(results)
+    return tuple(
+        _resolve_promoted_output(context, artifact, kind, records[artifact])
+        for artifact, kind in execution.recipe.outputs
+    )
 
 
-def _index_staged_outputs(
-    raw_outputs: Sequence[object],
-) -> Mapping[str, Mapping[str, object]]:
-    records: dict[str, Mapping[str, object]] = {}
-    output_fields = {
-        "artifact",
-        "available",
-        "expected",
-        "kind",
-        "outcome",
-        "reason",
-        "regenerated",
-        "staged",
-        "profile",
-    }
-    for value in raw_outputs:
-        if not isinstance(value, Mapping) or set(value) != output_fields:
-            raise ActionError(
-                "reproduction.promotion.staging_invalid", "invalid staged output"
-            )
-        artifact = value.get("artifact")
-        if not isinstance(artifact, str) or artifact in records:
-            raise ActionError(
-                "reproduction.promotion.staging_invalid", "duplicate staged output"
-            )
-        records[artifact] = value
-    return records
+def _resolve_promoted_output(
+    context: _PromotionResolution, artifact: str, kind: str, record: ArtifactResult
+) -> _PromotedOutput:
+    work = context.bundle.work
+    destination = output_target_path(
+        artifact, entry_root=context.entry_root, project_root=context.project
+    )
+    baseline = dict(work.execution.observed.outputs).get(artifact)
+    if (
+        baseline is None
+        or not destination.exists()
+        or destination.is_symlink()
+        or _fingerprint(destination, kind) != baseline
+    ):
+        raise ActionError(
+            "reproduction.promotion.baseline_changed",
+            f"promotion destination no longer matches accepted baseline: {artifact}",
+        )
+    if record.regenerated_path is None or record.regenerated is None:
+        raise ActionError(
+            "reproduction.promotion.incomplete",
+            f"staged output is incomplete: {artifact}",
+        )
+    bundle_root = _safe_run_path(context.run_root, context.bundle.workspace_path)
+    try:
+        expected = destination.relative_to(context.project)
+        staged_relative = Path(record.regenerated_path).relative_to(bundle_root)
+    except ValueError as error:
+        raise ActionError("reproduction.promotion.staging_invalid", artifact) from error
+    if staged_relative != expected:
+        raise ActionError(
+            "reproduction.promotion.staging_invalid", f"foreign output path: {artifact}"
+        )
+    staged = _safe_run_path(bundle_root, staged_relative.as_posix())
+    fingerprint = record.regenerated
+    if (
+        staged.is_symlink()
+        or not staged.exists()
+        or _fingerprint(staged, kind) != fingerprint
+    ):
+        raise ActionError(
+            "reproduction.promotion.staged_changed",
+            f"staged output changed or disappeared: {artifact}",
+        )
+    return _PromotedOutput(artifact, kind, staged, destination, baseline, fingerprint)
 
 
 def _begin_promotion(
@@ -377,18 +316,17 @@ def _require_no_active_input_overlap(
     except OSError as error:
         raise ActionError("reproduction.promotion.state_invalid", str(error)) from error
     for run_root in run_roots:
-        if recognize_run_directory(run_root) != "current":
+        if recognize_run_directory(run_root, project) != "current":
             continue
         try:
-            status = load_run_status(run_root)
+            with open_work_job(run_root) as job:
+                status = job.load_run_control()
         except JobStoreError as error:
             raise ActionError(error.code, str(error)) from error
         if status.status is not None:
             continue
         plan = load_accepted_plan(run_root)
-        materials = cast(
-            Sequence[Mapping[str, object]], plan.comparison_context["materials"]
-        )
+        materials = plan.materials
         inputs = {
             Path(cast(str, item["identity"])).resolve()
             for item in materials
@@ -419,9 +357,7 @@ def _publish_promotion(
     outputs: Sequence[_PromotedOutput],
 ) -> None:
     project = resolve_project_root(log.root)
-    text_candidates, prior_text = _metadata_candidates(
-        log, resolution, outputs
-    )
+    text_candidates, prior_text = _metadata_candidates(log, resolution, outputs)
     installed: tuple[_InstalledOutput, ...] = ()
     try:
         installed = _install_outputs(project, outputs)
@@ -485,12 +421,7 @@ def _metadata_candidates(
             "reproduction.promotion.execution_changed",
             "execution is no longer current",
         )
-    accepted = accepted_invocation(
-        resolution.plan,
-        resolution.entry_id,
-        resolution.cid,
-        resolution.execution_id,
-    )
+    accepted = resolution.bundle.work
     if (
         execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
         or execution.observed.as_dict() != accepted.execution.observed.as_dict()
@@ -554,25 +485,11 @@ def _metadata_candidates(
 def _report_candidates(
     log: LogContext, outputs: Sequence[_PromotedOutput]
 ) -> Mapping[Path, str]:
-    project = resolve_project_root(log.root)
-    result_path = log.root / RESULTS_STORE
-    results = reconcile_run_folders(
-        load_reproduction_report_projection(result_path, project_root=project),
-        project_root=project,
-    )
-    projected, currentness = project_current_results(
-        results,
-        project_reproduction_state(log),
-    )
-    context = load_report_context(log.summary)
-    return {
-        log.root / REPRODUCTION_REPORT: compose_reproduction_report(
-            projected,
-            context=context,
-            currentness=currentness,
-            folder_links_from=log.root,
-        ),
-    }
+    """Render immutable saved facts; promotion does not rewrite research outcomes."""
+    from .reproduction_inspection import load_inspection
+    from .reproduction_saved_report import compose_saved_report
+
+    return {log.root / REPRODUCTION_REPORT: compose_saved_report(load_inspection(log))}
 
 
 def _install_outputs(

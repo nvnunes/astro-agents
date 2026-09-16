@@ -27,12 +27,14 @@ from log_commands.context import EntryContext
 from log_commands.current_invocations import entry_invocations
 from log_commands.dispatcher import _dispatch_command, main
 from log_commands.model import ActionError
+from log_commands.reproduction_domain import ExecutionRef
 from log_commands.reproduction_execution import (
     ExecutionAttempt,
     ExecutionCheckpoint,
     ReproductionControlPlaneError,
     observe_output_fingerprint,
 )
+from reproduction_planning_test_support import _Fixture
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import (
     Fingerprint,
@@ -40,7 +42,6 @@ from research_log_data import (
     ResourceIdentity,
     observe_fingerprint,
 )
-from test_log_reproduction_planning import _Fixture
 from validation.output_bindings import OutputBindingError, project_output_bindings
 from validation.pyrun_state import (
     ExecutionRecipe,
@@ -784,7 +785,7 @@ class CommandVerificationTests(unittest.TestCase):
             data["inputs"][0]["origin"] = False
             data_path.write_text(json.dumps(data), encoding="utf-8")
             with mock.patch(
-                "log_commands.reproduction_execution.execute_current_reproduction_plan",
+                "log_commands.reproduction_work_supervision.execute_work_plan",
                 side_effect=AssertionError(
                     "command verification must not launch a producer"
                 ),
@@ -800,7 +801,7 @@ class CommandVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity, bundle = self._pattern_directory_fixture(Path(directory))
             with mock.patch(
-                "log_commands.reproduction_execution.execute_current_reproduction_plan",
+                "log_commands.reproduction_work_supervision.execute_work_plan",
                 side_effect=AssertionError(
                     "command verification must not launch a producer"
                 ),
@@ -929,10 +930,10 @@ class CommandVerificationTests(unittest.TestCase):
 
         sinks = (
             "log_commands.reproduction_jobs.launch_reproduction",
-            "log_commands.reproduction_job_storage.record_execution_comparison",
-            "log_commands.reproduction_publication.publish_completed_reproduction",
+            "log_commands.reproduction_observation_storage.write_artifact_observation",
+            "log_commands.reproduction_work_publication.publish_work_job",
             "log_commands.reproduction_promotion.promote_execution",
-            "log_commands.reproduction_comparison.clear_current_reproduction_requirement",
+            "log_commands.reproduction_requirements.clear_completed_requirement",
         )
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))
@@ -1750,9 +1751,7 @@ class CommandVerificationTests(unittest.TestCase):
 
     def test_signal_exit_mapping_and_cleanup_precedence(self) -> None:
         invocation = SimpleNamespace(
-            entry="e001",
-            cid="repair",
-            execution_id="pyrun-exec/v2:" + "0" * 64,
+            identity=ExecutionRef("e001", "repair", "pyrun-exec/v2:" + "0" * 64),
             execution=SimpleNamespace(observed=SimpleNamespace(inputs=())),
         )
         authority = SimpleNamespace(invocation=invocation, inputs={}, sources=())
@@ -1765,13 +1764,19 @@ class CommandVerificationTests(unittest.TestCase):
             attempt = ExecutionAttempt(
                 "e001",
                 "repair",
-                invocation.execution_id,
+                invocation.identity.execution_id,
                 None,
                 True,
                 None,
                 None,
                 ExecutionCheckpoint(
-                    "e001", "repair", invocation.execution_id, "stopped", "", None, ()
+                    "e001",
+                    "repair",
+                    invocation.identity.execution_id,
+                    "stopped",
+                    "",
+                    None,
+                    (),
                 ),
                 (),
                 "stdout",
@@ -1792,13 +1797,19 @@ class CommandVerificationTests(unittest.TestCase):
         survivor = ExecutionAttempt(
             "e001",
             "repair",
-            invocation.execution_id,
+            invocation.identity.execution_id,
             None,
             True,
             "worker_cleanup_incomplete",
             "survivor",
             ExecutionCheckpoint(
-                "e001", "repair", invocation.execution_id, "failed", "", None, ()
+                "e001",
+                "repair",
+                invocation.identity.execution_id,
+                "failed",
+                "",
+                None,
+                (),
             ),
             (),
             "stdout",

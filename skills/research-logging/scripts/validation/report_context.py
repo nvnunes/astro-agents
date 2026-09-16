@@ -560,6 +560,12 @@ CATALOG: Mapping[str, FindingPresentation] = {
         "The recorded execution no longer matches the current producing command.",
         "path",
     ),
+    "provenance.output.signature_mismatch": FindingPresentation(
+        "Output Producer Signature Mismatch",
+        "The retained output's producer signature disagrees with its recorded "
+        "invocation.",
+        "path",
+    ),
     "provenance.output.signature_unsupported": FindingPresentation(
         "Unsupported Output Signature",
         "The output record uses a signature form no longer accepted by the validator.",

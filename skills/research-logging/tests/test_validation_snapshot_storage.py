@@ -39,7 +39,10 @@ def _seed_v17(root: Path) -> None:
     path = STORE.result_store_path(root)
     path.parent.mkdir(parents=True)
     with sqlite3.connect(path) as db:
-        db.executescript(STORE._SHARED_DDL)
+        baseline = (
+            Path(__file__).parent / "fixtures/result-store-execution-baseline-v19.sql"
+        ).read_text()
+        db.executescript(baseline.split("CREATE TABLE validation_snapshots", 1)[0])
         db.executescript(STORE._VALIDATION_V19_DDL)
         db.execute(
             "CREATE TABLE validation_batch_nodes ("

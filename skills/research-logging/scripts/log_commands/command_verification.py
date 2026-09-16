@@ -49,14 +49,15 @@ from .reproduction_comparison import (
     ExecutionComparison,
     compare_execution_artifacts,
 )
-from .reproduction_contract import (
-    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
-    MAX_EXECUTION_TIMEOUT_SECONDS,
-    AcceptedInvocation,
-)
+from .reproduction_domain import ExecutionRef
 from .reproduction_execution import (
     execute_isolated_invocation,
     preflight_isolated_invocation,
+)
+from .reproduction_invocation import (
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    MAX_EXECUTION_TIMEOUT_SECONDS,
+    AcceptedInvocation,
 )
 from .reproduction_paths import resolve_project_tmp
 from .storage import log_lock, reproduction_log_reservation
@@ -172,9 +173,7 @@ def _verify_command(
             / date.today().isoformat()
         )
         random_identity = secrets.token_hex(8)
-        name = (
-            f"command-verification-{log.root.name}-{request.entry}-{random_identity}"
-        )
+        name = f"command-verification-{log.root.name}-{request.entry}-{random_identity}"
         workspace = root / name
         # All selector, input, binding, path, and confinement failures happen
         # before this retained workspace exists.
@@ -346,7 +345,10 @@ def _load_authority(
         }
     )
     invocation = AcceptedInvocation(
-        entry.id, request.cid, request.execution_id, execution, data, {}
+        ExecutionRef(entry.id, request.cid, request.execution_id),
+        entry.root,
+        execution,
+        data,
     )
     inputs, sources, snapshot = _snapshot(entry, project, invocation, definitions)
     return _VerificationAuthority(
@@ -594,9 +596,9 @@ def _result(  # noqa: PLR0913
         status, exit_status = "different", 1
     return CommandVerificationResult(
         log.summary.as_posix(),
-        invocation.entry,
-        invocation.cid,
-        invocation.execution_id,
+        invocation.identity.entry,
+        invocation.identity.cid,
+        invocation.identity.execution_id,
         status,
         exit_status,
         str(workspace),

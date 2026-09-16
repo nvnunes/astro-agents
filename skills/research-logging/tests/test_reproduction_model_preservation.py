@@ -342,7 +342,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 )
             self.assertNotEqual(*digests)
 
-    def test_cross_entry_admission_references_one_problem_per_original_finding(self):
+    def test_cross_entry_pending_observation_remains_reproduce_owned(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture, upstream, identities = fanout_fixture(Path(directory), 1)
             downstream = fixture.entry(2)
@@ -386,21 +386,27 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 plan = prepare_plan(fixture, None)
             state = project.call_args.args[0]
             problems = [
-                p for p in state.problems.values() if p.code == "validation_blocked"
+                p for p in state.problems.values() if p.code == "script_unavailable"
             ]
             self.assertEqual(len(problems), 1)
             problem = problems[0]
+            producer = ("e001", "producer", identities["producer"])
+            self.assertEqual(state.command_problem_ids[producer], [problem.problem_id])
+            self.assertEqual(
+                problem.subject.path,
+                (upstream.root / "scripts/producer.py").as_posix(),
+            )
+            self.assertFalse(
+                any(
+                    item.code == "validation_blocked"
+                    for item in state.problems.values()
+                )
+            )
             for key in (
-                ("e001", "producer", identities["producer"]),
+                producer,
                 ("e002", "consumer", consumer[0]),
             ):
-                self.assertIn(problem.problem_id, state.command_problem_ids[key])
-                self.assertEqual(state.admission_decisions[key].disposition, "excluded")
-            self.assertEqual(problem.subject.path, fixture.log.summary.as_posix())
-            self.assertEqual(
-                [item.as_dict() for item in problem.locations],
-                list(problem.observed["finding"]["source_locations"]),
-            )
+                self.assertEqual(state.admission_decisions[key].disposition, "admitted")
             self.assertEqual(
                 {item["identity"]["cid"] for item in plan.scheduling}, {"independent"}
             )

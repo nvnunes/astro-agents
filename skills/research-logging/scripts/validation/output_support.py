@@ -327,12 +327,19 @@ def execution_output_support_dict(
     """Return the compatibility result projection for one associated output.
 
     This is a generated-result representation, not a ``PyrunOutputsFile`` or
-    an execution-state conversion used for validation.
+    an execution-state conversion used for validation. Pending executions
+    preserve unavailable observations as ``None`` in this projection.
     """
 
-    fingerprint = dict(execution.observed.outputs)[output]
+    fingerprint = dict(execution.observed.outputs).get(output)
+    if fingerprint is None and not execution.requires_reproduction:
+        _fail(
+            "provenance.output.execution_unassociated",
+            output,
+            {"output": output, "producer": invocation.identity},
+        )
     script = execution.observed.script
-    if script is None:
+    if script is None and not execution.requires_reproduction:
         _fail(
             "provenance.output.signature_mismatch",
             output,
@@ -341,13 +348,17 @@ def execution_output_support_dict(
     return {
         "code": {name: value.as_dict() for name, value in execution.observed.code},
         "confirmed": not execution.requires_reproduction,
-        "fingerprint": fingerprint.as_dict(),
+        "fingerprint": fingerprint.as_dict() if fingerprint is not None else None,
         "inputs": {name: value.as_dict() for name, value in execution.observed.inputs},
         "parameters": list(invocation.parameters),
-        "script": {
-            "fingerprint": script.as_dict(),
-            "path": execution.recipe.script,
-        },
+        "script": (
+            {
+                "fingerprint": script.as_dict(),
+                "path": execution.recipe.script,
+            }
+            if script is not None
+            else None
+        ),
     }
 
 

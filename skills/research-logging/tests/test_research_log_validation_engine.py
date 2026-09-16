@@ -1029,6 +1029,129 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertEqual(currentness["reason"], "signature_mismatch")
             self.assertEqual(currentness["observed"]["fields"], ["script_fingerprint"])
 
+    def test_pending_current_execution_accepts_unavailable_observations(self) -> None:
+        cases = (
+            ("empty", PYRUN_STATE.ObservedExecution(None, (), (), ())),
+            ("script_missing", None),
+        )
+        for label, observed in cases:
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                self.subTest(observations=label),
+            ):
+                root = Path(directory)
+                summary, entry = _log(root)
+                identity = _replace_with_pyrun_state(
+                    entry,
+                    (
+                        "--input-catalog",
+                        "<catalog>",
+                        "--output-data",
+                        "data/results.csv",
+                    ),
+                    requires_reproduction=True,
+                )
+                path = entry.parent / PYRUN_STATE.PYRUN_FILENAME
+                state = PYRUN_STATE.load_pyrun_state(
+                    path, entry_root=entry.parent, project_root=root
+                )
+                execution = state.commands["model"].executions[identity]
+                if observed is None:
+                    observed = PYRUN_STATE.ObservedExecution(
+                        None,
+                        (),
+                        (),
+                        execution.observed.outputs,
+                    )
+                write(
+                    path,
+                    PYRUN_STATE.PyrunFile(
+                        path,
+                        entry.parent,
+                        {
+                            "model": PYRUN_STATE.PyrunCommand(
+                                {identity: replace(execution, observed=observed)}
+                            )
+                        },
+                    ).serialized(),
+                )
+
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary)
+                )
+
+                assert evaluation.snapshot is not None
+                self.assertIs(evaluation.snapshot.outcome, DOMAIN.SnapshotOutcome.CLEAR)
+                self.assertFalse(evaluation.snapshot.failed_checks)
+                self.assertFalse(
+                    any(
+                        finding.type is DOMAIN.RuleArea.PROVENANCE
+                        for finding in evaluation.snapshot.findings
+                    )
+                )
+                currentness = _single_currentness_blocker(
+                    evaluation, "e001", "success-rate"
+                )
+                self.assertEqual(currentness["reason"], "required")
+                self.assertEqual(
+                    currentness["subject"],
+                    (entry.parent / "data/results.csv").resolve().as_posix(),
+                )
+                scopes = _area_outcomes(evaluation.attempt)
+                self.assertEqual(
+                    scopes[DOMAIN.RuleArea.PROVENANCE], DOMAIN.CheckOutcome.PASS
+                )
+                self.assertEqual(
+                    scopes[DOMAIN.RuleArea.EVIDENCE], DOMAIN.CheckOutcome.PASS
+                )
+                self.assertEqual(
+                    scopes[DOMAIN.RuleArea.ORPHAN], DOMAIN.CheckOutcome.PASS
+                )
+
+    def test_current_execution_rejects_incomplete_confirmed_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, entry = _log(root)
+            identity = _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            path = entry.parent / PYRUN_STATE.PYRUN_FILENAME
+            state = PYRUN_STATE.load_pyrun_state(
+                path, entry_root=entry.parent, project_root=root
+            )
+            execution = state.commands["model"].executions[identity]
+            write(
+                path,
+                PYRUN_STATE.PyrunFile(
+                    path,
+                    entry.parent,
+                    {
+                        "model": PYRUN_STATE.PyrunCommand(
+                            {
+                                identity: replace(
+                                    execution,
+                                    observed=PYRUN_STATE.ObservedExecution(
+                                        None, (), (), ()
+                                    ),
+                                )
+                            }
+                        )
+                    },
+                ).serialized(),
+            )
+
+            evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+
+            self.assertTrue(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "pyrun.state.invalid"
+                    for check in evaluation.attempt.checks
+                )
+            )
+            self.assertFalse(_reproduce_currentness(evaluation))
+
     def test_reproduction_tolerance_requires_evidence_scoped_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

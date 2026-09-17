@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,17 @@ class NativeRecoveryTests(unittest.TestCase):
     prepare_graph = graph_fixture.NativeSupervisionTests.prepare_graph
     control = graph_fixture.NativeSupervisionTests.control
     prepare = publication_fixture.NativePublicationTests.prepare
+
+    def test_obsolete_job_format_does_not_enter_current_recovery(self):
+        fixture, workspace = self.prepare_graph()
+        with sqlite3.connect(workspace.run_root / "state.sqlite") as db:
+            db.execute("PRAGMA user_version=4")
+
+        jobs._require_no_recovery_exclusion(
+            fixture.log,
+            None,
+            ignore_recovery_run_id=None,
+        )
 
     def test_terminal_publication_retains_dead_owner_exclusion_until_survivors_exit(
         self,

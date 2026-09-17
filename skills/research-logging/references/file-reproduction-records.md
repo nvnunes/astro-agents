@@ -19,21 +19,21 @@ today's registries. Use `status` for an accepted job's operational lifecycle.
 Do not parse generated SQLite or Markdown as an agent workflow.
 
 Shared initialization creates version 19 without a reproduction domain.
-Native publication installs version 20 lazily and atomically, replacing only
-obsolete reproduction tables without decoding or migrating their rows.
+Native publication installs version 21 lazily and atomically, replacing only
+obsolete version-20 reproduction tables without decoding or migrating their rows.
 Unsupported reproduction reads are nonmutating and require explicit
 `log reproduce run --path LOG --recheck`. No legacy reader or alias exists.
 
 ## Accepted Jobs And Saved Facts
 
-New jobs use Job4 `state.sqlite` and immutable Plan12 work. Commands retain
+New jobs use Job5 `state.sqlite` and immutable Plan13 work. Commands retain
 typed recipes, inputs/outputs, roots, selection and dependencies; artifacts
 retain producer/baseline/comparison bindings. Owned problems store each actual
 diagnosis once; dependency and producer links describe effects without copied
 per-output failures. Actual command and artifact results preserve observed
 invocation, timings, partial outputs, comparison values and useful diagnosis.
 
-SavedRun12 is immutable per-run history with minimal latest identity indexes
+SavedRun13 is immutable per-run history with minimal latest identity indexes
 for incremental retry/reuse. Command and artifact totals remain separate.
 `reproduction.md` contains only the same compact hierarchy as single-log
 `show`, prefixed by its heading; inventories and diagnostics belong to CLI
@@ -83,8 +83,8 @@ Jobs and safe SQLite companions are durable operational state, not disposable
 cache. Fixed-plan resume preserves accepted work and terminal results; source
 changes require a new run. Grant release and scratch cleanup require exited
 workers. Surviving workers keep exclusion active; recovery never sweeps unrelated
-temporary paths or executes research work. Obsolete jobs must be resolved under
-their owning implementation before incompatible cutover.
+temporary paths or executes research work. Obsolete jobs are never decoded,
+translated, or resumed; start a new explicit `--recheck` run instead.
 
 Promotion is a separate researcher-directed mutation. It copies one complete
 native staged output set under existing baseline, confinement, reservation and

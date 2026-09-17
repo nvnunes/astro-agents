@@ -61,7 +61,7 @@ def command(
         ObservedExecution(
             FINGERPRINT,
             (),
-            (),
+            Fingerprint("python-effective-code-sha256-v1", "b" * 64),
             tuple(
                 (
                     name,
@@ -121,7 +121,7 @@ def mixed_run():
     previous_block = command("prior-blocked")
     prior_block = ReproductionProblem(
         previous_block.identity,
-        "script_unavailable",
+        "effective_code_unavailable",
         ProblemStage.PREPARE,
         "Earlier required script was unavailable.",
         {"path": "scripts/prior-blocked.py", "error": "ENOENT"},
@@ -271,7 +271,7 @@ def blocked_plan():
     producer = next(work for work in run.commands if work.identity.cid == "producer")
     cause = ReproductionProblem(
         producer.identity,
-        "script_unavailable",
+        "effective_code_unavailable",
         ProblemStage.PREPARE,
         "Recorded producer script is unavailable.",
         {"path": "scripts/producer.py", "error": "ENOENT"},
@@ -454,7 +454,7 @@ class ReproductionCanonicalRecordTests(unittest.TestCase):
             )
         extra = ReproductionProblem(
             consumer.identity,
-            "script_changed",
+            "effective_code_changed",
             ProblemStage.PREPARE,
             "Unreferenced diagnosis.",
             {"path": "scripts/consumer.py"},
@@ -523,7 +523,9 @@ class ReproductionCanonicalRecordTests(unittest.TestCase):
             work.execution,
             observed=replace(
                 work.execution.observed,
-                code=(("<log>/scripts/shared.py", FINGERPRINT),),
+                effective_code=Fingerprint(
+                    "python-effective-code-sha256-v1", "c" * 64
+                ),
             ),
         )
         declaration = {
@@ -782,7 +784,7 @@ class ReproductionCanonicalRecordTests(unittest.TestCase):
         initial = command("producer", outputs=(("data/out", "directory"),))
         cause = ReproductionProblem(
             initial.identity,
-            "script_unavailable",
+            "effective_code_unavailable",
             ProblemStage.PREPARE,
             "Producer script is unavailable.",
             {"path": "scripts/producer.py", "error": "ENOENT"},

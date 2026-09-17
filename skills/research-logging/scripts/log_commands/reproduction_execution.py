@@ -28,6 +28,8 @@ from typing import (
 )
 
 import psutil
+from effective_code import EffectiveCodeError, analyze_effective_code
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
     DataFile,
@@ -43,7 +45,7 @@ from research_log_data import (
 from stream_capture import StreamCapture, StreamDestination, StreamFailure
 from validation.file_publication import install_path, sync_directory
 from validation.output_bindings import OutputBindingError, project_output_bindings
-from validation.pyrun_outputs import code_target_path, output_target_path
+from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
     script_target_path,
@@ -674,23 +676,41 @@ def _isolated_current_invocation(
 def _verify_accepted_source_observations(
     prepared: _PreparedExecution, entry_root: Path, workspace: ReproductionWorkspace
 ) -> None:
-    """Require retained script and helper bytes to match this invocation's plan."""
+    """Require the accepted effective-code tree to remain current."""
 
     script = script_target_path(
         prepared.execution.recipe.script,
         entry_root=entry_root,
         project_root=workspace.source_project,
     )
-    observed = prepared.execution.observed
+    python_context = PythonExecutionContext.for_research_script(
+        script,
+        entry_root=entry_root,
+        log_root=entry_root.parent.parent,
+        project_root=workspace.source_project,
+    )
     try:
-        if script.is_symlink() or _fingerprint(script, "file") != observed.script:
-            raise ValueError("script observation changed")
-        for name, fingerprint in observed.code:
-            helper = code_target_path(name, entry_root=entry_root)
-            if helper.is_symlink() or _fingerprint(helper, "file") != fingerprint:
-                raise ValueError(f"helper observation changed: {name}")
-    except (OSError, ValueError) as error:
-        raise ActionError("reproduction.source.changed", str(error)) from error
+        result = analyze_effective_code(
+            script,
+            project_root=workspace.source_project,
+            import_roots=python_context.import_roots,
+        )
+    except EffectiveCodeError as error:
+        raise ActionError("reproduction.source.unavailable", str(error)) from error
+    current = (
+        Fingerprint(
+            result.fingerprint.algorithm,
+            digest=result.fingerprint.digest,
+        )
+        if result.fingerprint is not None
+        and "PYTHONPATH" not in dict(prepared.execution.recipe.environment)
+        else None
+    )
+    if current != prepared.execution.observed.effective_code or current is None:
+        raise ActionError(
+            "reproduction.source.changed",
+            "effective-code observation changed or is unavailable",
+        )
 
 
 def _verify_accepted_input_observations(
@@ -778,7 +798,12 @@ def _prepare_execution(
         work_entry,
         output_paths,
         tuple(command),
-        _execution_environment(execution, workspace, entry_id, cid, execution_id),
+        _execution_environment(
+            execution,
+            workspace,
+            source_entry.root,
+            ExecutionRef(entry_id, cid, execution_id),
+        ),
         captures,
         stdout_path,
         stderr_path,
@@ -1255,26 +1280,44 @@ def _regenerated_input_path(
 def _execution_environment(
     execution: PyrunExecution,
     workspace: ReproductionWorkspace,
-    entry: str,
-    cid: str,
-    execution_id_value: str,
+    source_entry: Path,
+    reference: ExecutionRef,
 ) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(dict(execution.recipe.environment))
-    execution_root = _attempt_runtime_root(workspace, entry, cid, execution_id_value)
+    execution_root = _attempt_runtime_root(
+        workspace,
+        reference.entry,
+        reference.cid,
+        reference.execution_id,
+    )
     execution_root.mkdir(parents=True, exist_ok=True)
     roots = {
         "MPLCONFIGDIR": execution_root / "matplotlib",
         "XDG_CACHE_HOME": execution_root / "cache",
         "MATLAB_PREFDIR": execution_root / "matlab",
+        "PYTHONPYCACHEPREFIX": execution_root / "pycache",
     }
     for path in roots.values():
         path.mkdir(exist_ok=True)
     environment.update({name: str(path) for name, path in roots.items()})
-    identity = execution_id_value.rsplit(":", 1)[-1]
-    environment[RUNNER_MARKER] = f"{workspace.run_id}:{entry}:{cid}:{identity}"
+    identity = reference.execution_id.rsplit(":", 1)[-1]
+    environment[RUNNER_MARKER] = (
+        f"{workspace.run_id}:{reference.entry}:{reference.cid}:{identity}"
+    )
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    return environment
+    script = script_target_path(
+        execution.recipe.script,
+        entry_root=source_entry,
+        project_root=workspace.source_project,
+    )
+    python_context = PythonExecutionContext.for_research_script(
+        script,
+        entry_root=source_entry,
+        log_root=source_entry.parent.parent,
+        project_root=workspace.source_project,
+    )
+    return python_context.environment(environment)
 
 
 def _output_paths(

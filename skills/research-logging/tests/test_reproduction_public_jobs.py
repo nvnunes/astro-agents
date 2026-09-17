@@ -597,7 +597,10 @@ class PublicNativeJobsTests(unittest.TestCase):
         )
         self.assertEqual(promoted.recipe, work.execution.recipe)
         self.assertEqual(promoted.observed.inputs, work.execution.observed.inputs)
-        self.assertEqual(promoted.observed.code, work.execution.observed.code)
+        self.assertEqual(
+            promoted.observed.effective_code,
+            work.execution.observed.effective_code,
+        )
         self.assertEqual(load_inspection(fixture.log).run, before.run)
 
     def test_native_promotion_rejects_failed_unknown_and_foreign_staging(

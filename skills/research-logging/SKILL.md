@@ -44,7 +44,11 @@ Choose the core operation:
   `pyrun.json` collectively provide authored pre-acceptance graph/execution
   authority; after acceptance, the immutable plan in run-local `state.sqlite`
   owns durable execution, resume, and job state. `results.sqlite` owns only
-  disposable query results. Reproduce never becomes Record, Review, or Validate.
+  disposable query results. Code currentness comes from the nullable
+  project-local effective-code fingerprint, not raw script bytes. Execution
+  and analysis share the runner-owned import context defined by
+  `references/file-script.md`. Reproduce
+  never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, repair batch, finding type,
   malformed or legacy state, transaction residue, or other identified log
   defect: read `references/operation-repair.md`. Correction language such as

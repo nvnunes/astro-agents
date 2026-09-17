@@ -66,7 +66,34 @@ exclusivity can reduce concurrency. Review the plan before parallel launch.
 The per-command wall-clock limit defaults to 300 seconds. Exceeding it records
 `execution_timeout`, terminates the supervised tree and leaves independent work
 eligible. Resume preserves both accepted settings. Current execution authority
-is `research-log-pyrun/v6`; earlier schemas are unsupported.
+is `research-log-pyrun/v7`; earlier schemas are unsupported. Effective-code
+mismatch and unavailable effective code select and block the same work, but
+retain distinct diagnoses. Raw script-byte changes alone do not select
+reproduction. Reproduction executes with the same runner-owned
+script/entry/log/project import context used to compute current effective code.
+
+When an explicitly approved maintenance plan requires replacement of v6
+execution state or reconciliation of existing v7 observations after import
+cleanup, use the bounded state owner rather than an ordinary research run:
+
+```bash
+<project>/.conda/bin/python \
+  <skill>/scripts/migrate_pyrun_effective_code.py --root <project> --dry-run
+<project>/.conda/bin/python \
+  <skill>/scripts/migrate_pyrun_effective_code.py --root <project> --apply
+<project>/.conda/bin/python \
+  <skill>/scripts/migrate_pyrun_effective_code.py --root <project> \
+  --refresh-current --dry-run
+<project>/.conda/bin/python \
+  <skill>/scripts/migrate_pyrun_effective_code.py --root <project> \
+  --refresh-current --apply
+```
+
+Always reconcile a dry run before applying. The v7 refresh recomputes only
+current effective-code observations and preserves every reproduction
+requirement; it does not execute research, clear work, or replace retained
+outputs. Do not use this one-time maintenance owner as a routine alternative
+to `pyrun` or Reproduce.
 
 Run prints a durable run ID and returns while the CLI-owned detached job
 continues. A no-runnable-work invocation instead returns current reconciliation
@@ -77,7 +104,7 @@ For explicitly requested isolated verification after script/local-code repair,
 use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID`.
 It is synchronous, retains private diagnostics/outputs, preserves metadata and
 results, and cannot resume, promote, clear requirements or adopt changed recipe
-parameters/declarations or newly observed participating code.
+parameters/declarations or newly observed effective code.
 
 ## Observe Or Control A Run
 
@@ -92,13 +119,13 @@ Use text status for people and JSON for agents/monitors. Status is operational
 lifecycle, not artifact outcome; queued work is not execution time. Stop is the
 sole stopping action and preserves diagnostics and completed results.
 
-Resume uses the same accepted Plan12/Job4, run ID, scope, authorization and
+Resume uses the same accepted Plan13/Job5, run ID, scope, authorization and
 settings. It never replans or reruns durable terminal success/failure. Only
 never-started or stopped nonterminal work may launch after safe cleanup.
 Source changes require a new run. Publication-only recovery uses frozen facts
 with no execution. Surviving workers preserve exclusion; never sweep unrelated
-temporary paths. Old jobs are unsupported and remain unchanged; resolve them
-under their owning implementation before incompatible cutover.
+temporary paths. Old jobs are unsupported and remain unchanged; start a new
+`--recheck` run rather than decoding, translating, or resuming them.
 
 Run folders are
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`.

@@ -1,7 +1,7 @@
 """Native accepted work and atomic attempt facts for replacement durable jobs.
 
-This authority stores Plan12 directly, separately from genuine scheduler state.
-Job4 owns ordinary launch and lifecycle control; older jobs are never decoded.
+This authority stores Plan13 directly, separately from genuine scheduler state.
+Job5 owns ordinary launch and lifecycle control; older jobs are never decoded.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ from .reproduction_run import RUN_ID_RE, ArtifactResult, CommandResult
 from .reproduction_saved_run import MAX_WORK_RECORDS, SavedRun
 from .reproduction_work_plan import MAX_PLAN_BYTES, PLAN_SCHEMA, ReproductionPlan
 
-WORK_JOB_VERSION = 4
+WORK_JOB_VERSION = 5
 _THREAD_LOCK = threading.RLock()
 PERMIT_ADMISSION_PHASES = frozenset(
     {"accepted", "planning", "preflight", "executing", "comparing"}
@@ -178,7 +178,7 @@ CREATE TABLE requirement_acknowledgments (
 
 @dataclass(frozen=True)
 class WorkJobAcceptance:
-    """Immutable run location and Plan12 facts, accepted in one transaction.
+    """Immutable run location and Plan13 facts, accepted in one transaction.
 
     ``project_root`` binds canonical temporary paths, including empty targets.
     Workspace/diagnostics are safe run-relative directories. There is no prior
@@ -323,7 +323,7 @@ def _validate_acceptance(run_root: Path, accepted: WorkJobAcceptance) -> None:
 
 
 def create_work_job(run_root: Path, accepted: WorkJobAcceptance) -> RunIdentity:
-    """Atomically create Job4 and its immutable native plan at a canonical root.
+    """Atomically create Job5 and its immutable native plan at a canonical root.
 
     Existing jobs, unsafe paths and malformed acceptance fail without replacement.
     Failure before commit rolls back and removes only newly created state files.
@@ -380,7 +380,7 @@ def create_work_job(run_root: Path, accepted: WorkJobAcceptance) -> RunIdentity:
 
 @contextmanager
 def open_work_job(run_root: Path) -> Iterator["LockedWorkJob"]:
-    """Hold the job mutex and expose only typed, native Job4 operations.
+    """Hold the job mutex and expose only typed, native Job5 operations.
 
     Opening authenticates accepted work and its canonical location. No earlier
     schema is decoded and no current registry/source is needed for reconstruction.
@@ -759,7 +759,7 @@ class LockedWorkJob:
     def load_accepted_scheduling(
         self, identity: ExecutionIdentity
     ) -> AcceptedSchedulingProjection:
-        """Derive genuine claims from authenticated Plan12, never copied flags."""
+        """Derive genuine claims from authenticated Plan13, never copied flags."""
 
         key = ExecutionRef(identity.entry, identity.cid, identity.execution_id)
         work = self.accepted.plan.command(key)

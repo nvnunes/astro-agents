@@ -22,6 +22,7 @@ from validation.pyrun_state import (
     PyrunExecution,
     PyrunFile,
     PyrunStateError,
+    changed_execution,
     clear_reproduction_requirement_locked,
     empty_pyrun_state,
     execution_id,
@@ -37,6 +38,10 @@ from validation.pyrun_state import (
 
 def _fingerprint(character: str = "a") -> Fingerprint:
     return Fingerprint("sha256", digest=character * 64)
+
+
+def _effective_fingerprint(character: str = "a") -> Fingerprint:
+    return Fingerprint("python-effective-code-sha256-v1", digest=character * 64)
 
 
 def _recipe(
@@ -78,7 +83,7 @@ def _execution(
         ObservedExecution(
             _fingerprint("b"),
             tuple((name, _fingerprint("c")) for name in recipe.inputs),
-            (("scripts/helper.py", _fingerprint("d")),),
+            _effective_fingerprint("d"),
             tuple((name, _fingerprint("e")) for name, _ in recipe.outputs),
         ),
     )
@@ -104,6 +109,30 @@ def _state(entry: Path, *executions: PyrunExecution) -> PyrunFile:
 
 
 class PyrunStateContractTests(unittest.TestCase):
+    def test_pythonpath_recipe_change_discards_effective_code(self) -> None:
+        stored = _execution()
+        for old_environment, new_environment in (
+            ((('PYTHONPATH', 'src'),), (('MODE', 'exact'),)),
+            ((('MODE', 'exact'),), (('PYTHONPATH', 'src'),)),
+        ):
+            with self.subTest(
+                old_environment=old_environment,
+                new_environment=new_environment,
+            ):
+                old_recipe = replace(stored.recipe, environment=old_environment)
+                old = replace(stored, recipe=old_recipe)
+                current_recipe = replace(stored.recipe, environment=new_environment)
+                current = pyrun_state_module.CurrentExecution(
+                    "pyrun-exec/v2:" + "f" * 64,
+                    mock.Mock(auto_reproduce=True, exclusive=False),
+                    current_recipe,
+                )
+                changed = changed_execution(
+                    pyrun_state_module.ExecutionChange(current, old)
+                )
+
+                self.assertIsNone(changed.observed.effective_code)
+
     def test_script_identity_accepts_canonical_entry_and_log_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -244,7 +273,7 @@ class PyrunStateContractTests(unittest.TestCase):
             ObservedExecution(
                 _fingerprint("1"),
                 (("catalog", _fingerprint("2")),),
-                (),
+                _effective_fingerprint("4"),
                 (("data/result.csv", _fingerprint("3")),),
             ),
         )
@@ -339,7 +368,7 @@ class PyrunStateContractTests(unittest.TestCase):
                 _execution(),
                 requires_reproduction=True,
                 last_run_at=None,
-                observed=ObservedExecution(None, (), (), ()),
+                observed=ObservedExecution(None, (), None, ()),
             )
             state = _state(entry, pending)
             (entry / PYRUN_FILENAME).write_text(state.serialized(), encoding="utf-8")
@@ -349,6 +378,60 @@ class PyrunStateContractTests(unittest.TestCase):
             )
 
             self.assertEqual(loaded, state)
+
+    def test_effective_code_is_exact_nullable_v7_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            execution = _execution()
+            identity = execution_id(execution.recipe)
+            path = entry / PYRUN_FILENAME
+            canonical = json.loads(_state(entry, execution).serialized())
+            observed = canonical["commands"]["build"]["executions"][identity][
+                "observed"
+            ]
+            for value in (
+                {"algorithm": "sha256", "digest": "d" * 64},
+                {
+                    "algorithm": "python-effective-code-sha256-v1",
+                    "digest": "D" * 64,
+                },
+                {"algorithm": "python-effective-code-sha256-v1"},
+                {},
+                [],
+            ):
+                with self.subTest(value=value):
+                    candidate = json.loads(json.dumps(canonical))
+                    candidate["commands"]["build"]["executions"][identity][
+                        "observed"
+                    ]["effective_code"] = value
+                    path.write_text(
+                        json.dumps(candidate, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(PyrunStateError):
+                        load_pyrun_state(path, entry_root=entry, project_root=root)
+
+            observed["effective_code"] = None
+            path.write_text(
+                json.dumps(canonical, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                load_pyrun_state(
+                    path, entry_root=entry, project_root=root
+                ).commands["build"].executions[identity].observed.effective_code
+            )
+
+            canonical["schema"] = "research-log-pyrun/v6"
+            path.write_text(
+                json.dumps(canonical, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                PyrunStateError, "pyrun.state.schema.unsupported"
+            ):
+                load_pyrun_state(path, entry_root=entry, project_root=root)
 
     def test_retained_migration_fixture_and_legacy_rejection(self) -> None:
         fixtures = Path(__file__).parent / "fixtures"
@@ -443,8 +526,8 @@ class PyrunStateContractTests(unittest.TestCase):
                         load_pyrun_state(path, entry_root=entry, project_root=root)
 
             path.write_text(
-                '{"commands":{},"schema":"research-log-pyrun/v6",'
-                '"schema":"research-log-pyrun/v6"}\n',
+                '{"commands":{},"schema":"research-log-pyrun/v7",'
+                '"schema":"research-log-pyrun/v7"}\n',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(PyrunStateError, "duplicate JSON key"):

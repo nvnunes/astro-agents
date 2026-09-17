@@ -34,7 +34,11 @@ from log_commands.reproduction_execution import (
     ReproductionControlPlaneError,
     observe_output_fingerprint,
 )
-from reproduction_planning_test_support import _Fixture
+from reproduction_planning_test_support import (
+    _effective_fingerprint,
+    _fingerprint,
+    _Fixture,
+)
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import (
     Fingerprint,
@@ -431,7 +435,7 @@ class CommandVerificationTests(unittest.TestCase):
             ObservedExecution(
                 Fingerprint("sha256", hashlib.sha256(script.read_bytes()).hexdigest()),
                 (("bundle", observe_fingerprint(resource).fingerprint),),
-                (),
+                _effective_fingerprint(script, fixture.root.resolve()),
                 (
                     (
                         "data/result.txt",
@@ -543,7 +547,7 @@ class CommandVerificationTests(unittest.TestCase):
                         ),
                     ),
                 ),
-                (),
+                _effective_fingerprint(script, fixture.root.resolve()),
                 (("data/bundle", observe_output_fingerprint(bundle, "directory")),),
             ),
         )
@@ -699,6 +703,61 @@ class CommandVerificationTests(unittest.TestCase):
                 .resolve()
                 .is_relative_to((fixture.root / "tmp").resolve())
             )
+
+    def test_verification_uses_the_log_shared_import_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, identity = self._fixture(Path(directory))
+            entry_root = next(
+                (fixture.log_root / "entries").glob("*/pyrun.json")
+            ).parent
+            entry = EntryContext(fixture.log, "e001", entry_root.resolve())
+            log_scripts = fixture.log_root / "scripts"
+            log_scripts.mkdir(exist_ok=True)
+            (log_scripts / "shared_helper.py").write_text(
+                "def render(value):\n    return value\n",
+                encoding="utf-8",
+            )
+            script = entry.root / "scripts/repair.py"
+            script.write_text(
+                "from pathlib import Path\nimport sys\n"
+                "from shared_helper import render\n"
+                "Path(sys.argv[-1]).write_text(render(Path(sys.argv[-3]).read_text()))\n",
+                encoding="utf-8",
+            )
+            state = load_pyrun_state(
+                entry.root / "pyrun.json",
+                entry_root=entry.root,
+                project_root=fixture.root.resolve(),
+            )
+            execution = state.execution("repair", identity)
+            self.assertIsNotNone(execution)
+            assert execution is not None
+            fixture.write_pyrun(
+                entry,
+                [
+                    (
+                        identity,
+                        replace(
+                            execution,
+                            observed=replace(
+                                execution.observed,
+                                script=_fingerprint(script),
+                                effective_code=_effective_fingerprint(
+                                    script, fixture.root.resolve()
+                                ),
+                            ),
+                        ),
+                    )
+                ],
+            )
+
+            result = verify_command(
+                fixture.log,
+                CommandVerificationRequest("e001", "repair", identity),
+            )
+
+            self.assertEqual(result.status, "matched")
+            self.assertEqual(result.exit_status, 0)
 
     def test_absent_selector_fails_before_workspace_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

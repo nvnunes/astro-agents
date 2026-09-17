@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, NoReturn, cast
 
+from effective_code import FINGERPRINT_ALGORITHM
 from research_log_data import DataContractError, Fingerprint, parse_fingerprint
 
 from .errors import MechanicalContractError
@@ -23,18 +24,15 @@ from .pyrun_contract import (
     recipe_script_parameters,
 )
 from .pyrun_outputs import (
-    canonical_code_path,
     canonical_output_path,
-    code_target_path,
     output_target_path,
-    portable_code_path,
     portable_output_path,
 )
 
 if TYPE_CHECKING:
     from .commands import Invocation
 
-PYRUN_SCHEMA = "research-log-pyrun/v6"
+PYRUN_SCHEMA = "research-log-pyrun/v7"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
@@ -52,7 +50,6 @@ MAX_PARAMETERS = 4_096
 MAX_INPUTS = 128
 MAX_OUTPUTS = 256
 MAX_ENVIRONMENT = 64
-MAX_CODE_PATHS = 256
 MAX_STRING_BYTES = 8 * 1024
 MAX_PATH_BYTES = 2 * 1024
 
@@ -87,18 +84,22 @@ class ExecutionRecipe:
 
 @dataclass(frozen=True)
 class ObservedExecution:
-    """Available observations for one script, input, code, and output set."""
+    """Available observations for one script, input, code tree, and output set."""
 
     script: Fingerprint | None
     inputs: tuple[tuple[str, Fingerprint], ...]
-    code: tuple[tuple[str, Fingerprint], ...]
+    effective_code: Fingerprint | None
     outputs: tuple[tuple[str, Fingerprint], ...]
 
     def as_dict(self) -> dict[str, object]:
         """Return the exact persisted observation projection."""
 
         return {
-            "code": {name: value.as_dict() for name, value in self.code},
+            "effective_code": (
+                self.effective_code.as_dict()
+                if self.effective_code is not None
+                else None
+            ),
             "inputs": {name: value.as_dict() for name, value in self.inputs},
             "outputs": {name: value.as_dict() for name, value in self.outputs},
             "script": self.script.as_dict() if self.script is not None else None,
@@ -323,7 +324,7 @@ def pending_execution(current: CurrentExecution) -> PyrunExecution:
         PYRUN_ENVIRONMENT_PROFILE,
         PYRUN_EXECUTION_CONTRACT,
         current.recipe,
-        ObservedExecution(None, (), (), ()),
+        ObservedExecution(None, (), None, ()),
         current.invocation.exclusive,
     )
 
@@ -340,6 +341,11 @@ def changed_execution(change: ExecutionChange) -> PyrunExecution:
             exclusive=change.current.invocation.exclusive,
         )
     same_script = old.recipe.script == new.script
+    same_effective_code_context = (
+        same_script
+        and "PYTHONPATH" not in dict(old.recipe.environment)
+        and "PYTHONPATH" not in dict(new.environment)
+    )
     inputs = tuple(
         (name, value) for name, value in old.observed.inputs if name in set(new.inputs)
     )
@@ -360,7 +366,11 @@ def changed_execution(change: ExecutionChange) -> PyrunExecution:
         ObservedExecution(
             old.observed.script if same_script else None,
             inputs,
-            old.observed.code if same_script else (),
+            (
+                old.observed.effective_code
+                if same_effective_code_context
+                else None
+            ),
             outputs,
         ),
         change.current.invocation.exclusive,
@@ -622,7 +632,11 @@ def script_target_path(
         return Path(os.path.abspath(project_root)).joinpath(
             *Path(key.removeprefix("<project>/")).parts
         )
-    return code_target_path(key, entry_root=entry_root)
+    if key.startswith("<log>/"):
+        return Path(os.path.abspath(entry_root)).parent.parent.joinpath(
+            *Path(key.removeprefix("<log>/")).parts
+        )
+    return Path(os.path.abspath(entry_root)).joinpath(*Path(key).parts)
 
 
 def validate_output_paths(
@@ -1311,7 +1325,7 @@ def _decode_observed(
     execution = cast(Mapping[str, Any], value)
     allow_partial = execution["requires_reproduction"]
     value = execution.get("observed")
-    fields = {"code", "inputs", "outputs", "script"}
+    fields = {"effective_code", "inputs", "outputs", "script"}
     if not isinstance(value, Mapping) or set(value) != fields:
         _invalid(subject, {"observed_fields": _fields(value)})
     value = cast(Mapping[str, Any], value)
@@ -1333,21 +1347,17 @@ def _decode_observed(
         output_names
     ).issubset(recipe_output_names):
         _invalid(subject, {"reason": "observed_output_keys"})
-    code = _decode_code(
-        value.get("code"), subject, entry_root=entry_root, accepted=accepted
-    )
+    effective_code = _decode_effective_code(value.get("effective_code"), subject)
     raw_script = value.get("script")
     script = (
         None
         if raw_script is None and allow_partial
         else _decode_fingerprint(raw_script, subject, kind="file")
     )
-    if script is None and code:
-        _invalid(subject, {"reason": "observed_code_without_script"})
     return ObservedExecution(
         script,
         inputs,
-        code,
+        effective_code,
         outputs,
     )
 
@@ -1376,35 +1386,18 @@ def _decode_fingerprint_map(
     return tuple(sorted(result))
 
 
-def _decode_code(
-    value: object,
-    subject: str,
-    *,
-    entry_root: Path,
-    accepted: bool = False,
-) -> tuple[tuple[str, Fingerprint], ...]:
-    if not isinstance(value, Mapping) or len(value) > MAX_CODE_PATHS:
-        _invalid(subject, {"code": _fields(value)})
-    result: list[tuple[str, Fingerprint]] = []
-    resolved: set[Path] = set()
-    for key, raw in value.items():
-        if not isinstance(key, str) or not _bounded_path(key):
-            _invalid(subject, {"code_path": key})
-        canonical = (canonical_code_path if accepted else portable_code_path)(
-            key, entry_root=entry_root
-        )
-        target = (
-            entry_root.parent.parent / canonical.removeprefix("<log>/")
-            if accepted and canonical.startswith("<log>/")
-            else entry_root / canonical
-            if accepted
-            else code_target_path(canonical, entry_root=entry_root)
-        ).absolute()
-        if canonical != key or target in resolved:
-            _invalid(subject, {"code_path": key, "reason": "alias"})
-        resolved.add(target)
-        result.append((key, _decode_fingerprint(raw, subject, kind="file")))
-    return tuple(sorted(result))
+def _decode_effective_code(value: object, subject: str) -> Fingerprint | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"algorithm", "digest"}:
+        _invalid(subject, {"effective_code": value})
+    algorithm = value.get("algorithm")
+    digest = value.get("digest")
+    if algorithm != FINGERPRINT_ALGORITHM or not isinstance(digest, str):
+        _invalid(subject, {"effective_code": value})
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        _invalid(subject, {"effective_code": value})
+    return Fingerprint(FINGERPRINT_ALGORITHM, digest=digest)
 
 
 def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> str:

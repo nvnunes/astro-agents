@@ -102,7 +102,7 @@ class AcceptedWorkStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture, entry, _ = fanout_fixture(Path(directory))
             (entry.root / "scripts/producer.py").write_text(
-                "# changed\n", encoding="utf-8"
+                "VALUE = 1\n", encoding="utf-8"
             )
             with mock.patch.object(
                 planner, "_canonical_plan", wraps=planner._canonical_plan

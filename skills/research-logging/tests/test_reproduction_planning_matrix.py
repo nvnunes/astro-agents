@@ -11,7 +11,11 @@ from log_commands import reproduction_planner as planner
 from log_commands.reproduction_completed_run import RunCompletion, complete_saved_run
 from log_commands.reproduction_domain import NotComparedReason, WorkSelection
 from log_commands.reproduction_work_plan import ReproductionPlan
-from reproduction_planning_test_support import _fingerprint, _Fixture
+from reproduction_planning_test_support import (
+    _effective_fingerprint,
+    _fingerprint,
+    _Fixture,
+)
 from research_log_cli_test_support import fixture_parameter_roles
 from test_reproduction_canonical_records import WHEN
 from validation.engine import (
@@ -394,7 +398,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
             )
             fixture.write_pyrun(entry, [upstream, downstream, independent])
             (entry.root / upstream[1].recipe.script).write_text(
-                "# changed\n", encoding="utf-8"
+                "VALUE = 1\n", encoding="utf-8"
             )
 
             plan = prepare(fixture, entry)
@@ -407,7 +411,10 @@ class NativePlanningMatrixTests(unittest.TestCase):
                     "independent": WorkSelection.RUN,
                 },
             )
-            self.assertEqual({item.code for item in plan.problems}, {"script_changed"})
+            self.assertEqual(
+                {item.code for item in plan.problems},
+                {"effective_code_changed"},
+            )
             self.assertEqual(len(plan.problems), 1)
             upstream_work = next(
                 item for item in plan.commands if item.identity.cid == "upstream"
@@ -417,6 +424,76 @@ class NativePlanningMatrixTests(unittest.TestCase):
             )
             self.assertEqual(downstream_work.dependencies, (upstream_work.identity,))
             self.assertFalse(downstream_work.problem_ids)
+
+    def test_effective_code_owns_currentness_not_raw_script_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data/raw.txt"
+            output = entry.root / "data/output.txt"
+            raw.write_text("raw\n", encoding="utf-8")
+            output.write_text("output\n", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            identity, execution = fixture.execution(
+                entry,
+                "build",
+                {"raw": raw},
+                {"output": output},
+                requires_reproduction=False,
+            )
+            fixture.write_pyrun(entry, [(identity, execution)])
+            script = entry.root / execution.recipe.script
+            script.write_text("# build\n# raw bytes changed\n", encoding="utf-8")
+
+            raw_only = prepare(fixture, entry)
+
+            self.assertEqual(run_ids(raw_only), [])
+            self.assertEqual(
+                raw_only.commands[0].selection,
+                WorkSelection.NOT_NEEDED,
+            )
+            self.assertEqual(raw_only.problems, ())
+
+            missing = replace(
+                execution,
+                requires_reproduction=True,
+                observed=replace(execution.observed, effective_code=None),
+            )
+            fixture.write_pyrun(entry, [(identity, missing)])
+
+            unavailable = prepare(fixture, entry)
+
+            self.assertEqual(run_ids(unavailable), [])
+            self.assertEqual(unavailable.commands[0].selection, WorkSelection.BLOCKED)
+            self.assertEqual(
+                {item.code for item in unavailable.problems},
+                {"effective_code_unavailable"},
+            )
+
+            provisional = replace(
+                execution,
+                requires_reproduction=True,
+                observed=replace(
+                    execution.observed,
+                    script=_fingerprint(script),
+                    effective_code=_effective_fingerprint(
+                        script, fixture.root.resolve()
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [(identity, provisional)])
+
+            selected = prepare(fixture, entry)
+
+            self.assertEqual(run_ids(selected), [identity])
+            self.assertEqual(selected.problems, ())
 
     def test_missing_direct_input_is_local_to_its_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -460,7 +537,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 (raw, "raw"),
                 (first_output, "first"),
                 (second_output, "second"),
-                (shared, "# shared"),
+                (shared, "VALUE = 1\n"),
             ):
                 path.write_text(value, encoding="utf-8")
             fixture.write_data(
@@ -480,6 +557,8 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 identity, execution = fixture.execution(
                     entry, name, {"raw": raw}, {name: output}
                 )
+                script = entry.root / execution.recipe.script
+                script.write_text("import shared\n", encoding="utf-8")
                 executions.append(
                     (
                         identity,
@@ -487,13 +566,15 @@ class NativePlanningMatrixTests(unittest.TestCase):
                             execution,
                             observed=replace(
                                 execution.observed,
-                                code=(("scripts/shared.py", _fingerprint(shared)),),
+                                effective_code=_effective_fingerprint(
+                                    script, fixture.root.resolve()
+                                ),
                             ),
                         ),
                     )
                 )
             fixture.write_pyrun(entry, executions)
-            shared.write_text("# changed", encoding="utf-8")
+            shared.write_text("VALUE = 2\n", encoding="utf-8")
 
             plan = prepare(fixture, entry)
             self.assertEqual(run_ids(plan), [])
@@ -501,12 +582,12 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 all(item.selection is WorkSelection.BLOCKED for item in plan.commands)
             )
             self.assertEqual(
-                {item.code for item in plan.problems}, {"participating_code_changed"}
+                {item.code for item in plan.problems}, {"effective_code_changed"}
             )
-            self.assertEqual(len(plan.problems), 1)
+            self.assertEqual(len(plan.problems), 2)
             self.assertTrue(
                 all(
-                    item.problem_ids == (plan.problems[0].problem_id,)
+                    len(item.problem_ids) == 1
                     for item in plan.commands
                 )
             )
@@ -554,7 +635,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 ObservedExecution(
                     execution[1].observed.script,
                     (),
-                    (),
+                    execution[1].observed.effective_code,
                     (("<project>/shared/result.txt", _fingerprint(shared)),),
                 ),
             )

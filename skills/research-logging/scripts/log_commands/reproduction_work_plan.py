@@ -1,4 +1,4 @@
-"""Typed plan/12 acceptance boundary, shared by fresh preview and real launch."""
+"""Typed plan/13 acceptance boundary, shared by fresh preview and real launch."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from .reproduction_work import (
     validate_producer,
 )
 
-PLAN_SCHEMA = "research-log-reproduction-plan/12"
+PLAN_SCHEMA = "research-log-reproduction-plan/13"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 
 
@@ -300,7 +300,7 @@ class ReproductionPlan:
             )
 
     def as_dict(self) -> dict[str, object]:
-        """Return the complete closed plan/12 field set, not preview pagination."""
+        """Return the complete closed plan/13 field set, not preview pagination."""
 
         return {
             "schema": PLAN_SCHEMA,
@@ -329,7 +329,7 @@ class ReproductionPlan:
 
     @classmethod
     def from_json(cls, raw: bytes) -> ReproductionPlan:
-        """Read only plan/12; unsupported durable jobs are never translated."""
+        """Read only plan/13; unsupported durable jobs are never translated."""
 
         if len(raw) > MAX_PLAN_BYTES:
             raise ReproductionDomainError("accepted plan exceeds its fixed byte bound")

@@ -1,7 +1,7 @@
 """Normalized immutable work rows for replacement run-local job acceptance.
 
 The run store owns transactions, lifecycle rows and its accepted run header.
-These private helpers store only plan/12 components. Recipe/evidence grammars
+These private helpers store only plan/13 components. Recipe/evidence grammars
 and reference validation remain owned by the typed plan; no older plan or job
 is read or translated here.
 """
@@ -321,7 +321,7 @@ def _require_relation_bounds(
 def _load_accepted_work(
     db: sqlite3.Connection, run_id: str, header: Mapping[str, object]
 ) -> ReproductionPlan:
-    """Reconstruct only plan/12 from the run header and normalized work facts.
+    """Reconstruct only plan/13 from the run header and normalized work facts.
 
     The domain validates the complete closed plan and all owner/reference and
     scheduling claims. No current registry, graph or retained file is read.

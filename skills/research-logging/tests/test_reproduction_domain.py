@@ -29,7 +29,7 @@ def problem(subject=None, **changes):
 
     return ReproductionProblem(
         subject or ExecutionRef("e001", "producer", EXECUTION_ID),
-        changes.pop("code", "script_unavailable"),
+        changes.pop("code", "effective_code_unavailable"),
         changes.pop("stage", ProblemStage.PREPARE),
         changes.pop("explanation", "Recorded script is unavailable."),
         changes.pop("observed", {"path": "scripts/producer.py", "error": "ENOENT"}),
@@ -86,7 +86,7 @@ class ReproductionDomainTests(unittest.TestCase):
         for changed in (
             replace(original, subject=ExecutionRef("e002", "producer", EXECUTION_ID)),
             replace(original, subject=SourceRef("scripts/producer.py")),
-            replace(original, code="script_changed"),
+            replace(original, code="effective_code_changed"),
             replace(original, stage=ProblemStage.LAUNCH),
             replace(original, observed={"path": "scripts/other.py", "error": "ENOENT"}),
         ):
@@ -188,7 +188,7 @@ class ReproductionDomainTests(unittest.TestCase):
             classification = classify_command(selection, outcome, problem())
             self.assertEqual(
                 (classification.status, classification.reason),
-                (expected, "script_unavailable"),
+                (expected, "effective_code_unavailable"),
             )
 
     def test_impossible_command_result_combinations_fail_closed(self):

@@ -35,7 +35,7 @@ from log_commands.reproduction_work_supervision import (
     WorkPlanControl,
     execute_work_plan,
 )
-from reproduction_planning_test_support import _fingerprint
+from reproduction_planning_test_support import _effective_fingerprint, _fingerprint
 from test_reproduction_canonical_records import WHEN
 from test_reproduction_model_preservation import fanout_fixture
 from validation.engine import (
@@ -99,7 +99,11 @@ class NativeSupervisionTests(unittest.TestCase):
                         replace(
                             execution,
                             observed=replace(
-                                execution.observed, script=_fingerprint(script)
+                                execution.observed,
+                                script=_fingerprint(script),
+                                effective_code=_effective_fingerprint(
+                                    script, project
+                                ),
                             ),
                         ),
                     )

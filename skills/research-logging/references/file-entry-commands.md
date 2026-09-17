@@ -157,7 +157,10 @@ full descriptive CIDs instead when stable meaning is clearer than numbering.
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable
 `--env NAME=value` runner options only for additional result-affecting
 environment values. They require the `--` separator, are normalized into the
-execution signature, and cannot override the two runner-managed names.
+execution signature, and cannot override runner-managed cache names.
+The runner also supplies the same script/entry/log/project Python import order
+used by effective-code analysis; do not author `PYTHONPATH` or mutate
+`sys.path` to reach project-local helpers.
 Both runners also create fresh scratch under `/private/tmp` and assign `TMPDIR`
 after authored environment values. Do not supply a scratch path; scripts use
 `tempfile` and finish children before returning. Scratch is removed once workers
@@ -332,8 +335,10 @@ After creating or changing an entry Python script, input declaration, `pyrun`
 symlink, or recorded command, run the command from the entry root and confirm
 its saved outputs can be read before presenting them. `pyrun` updates the
 entry-root `pyrun.json` only after successful execution and complete output
-observation, provided the script and direct input bytes also remained stable
-across execution; do not edit that file by hand. Add
+observation, provided the script, effective code, and direct input bytes also
+remained stable across execution; do not edit that file by hand. Unsupported
+effective code does not prevent execution: `pyrun` quietly records a null
+fingerprint. Add
 `--auto-reproduce=false` before `--` only for simulation, model training, or
 comparable commands that should not run during automatic reproduction:
 
@@ -356,7 +361,7 @@ the option does not alter the execution ID or reserve unrelated host work.
 ```
 
 For later changes, use [Synchronize A Recorded Command](#synchronize-a-recorded-command).
-Execution state must use `research-log-pyrun/v6`;
+Execution state must use `research-log-pyrun/v7`;
 earlier schemas are unsupported. Do not edit `pyrun.json` by hand.
 
 Put complete commands under `Steps:` in the descriptive section that uses the
@@ -386,6 +391,14 @@ When parameters disappear, sync refuses and reports one exact
 those flags. Sync does not run the command or sample retained bytes. Changed or
 new recipes require reproduction; policy-only changes retain their current
 reproduction state.
+
+Sync analyzes statically reachable Python throughout the current Git project.
+When dynamic behavior prevents a complete fingerprint, sync still succeeds and
+returns bounded structured warnings naming the script, location, line, and
+construct. The warning means code currentness and reproduction are unavailable,
+not that sync or execution failed. Repair the unsupported construct when code
+change tracking is required, then rerun the command through `pyrun`; sync alone
+cannot create a successful execution observation.
 
 ## Ordinary Concurrent Work
 

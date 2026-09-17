@@ -35,7 +35,11 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertEqual(
             references,
             expected_operations
-            | {"file-reproduction-records.md", "file-validation-records.md"},
+            | {
+                "file-reproduction-records.md",
+                "file-script.md",
+                "file-validation-records.md",
+            },
         )
 
         record = reference("operation-record.md")
@@ -239,13 +243,13 @@ class RecordSurfaceTests(unittest.TestCase):
         self.assertIn("references/provenance-patterns.md", repair)
         self.assertIn("Matching card", repair)
 
-    def test_log_local_code_guidance_stays_in_script_reference(self) -> None:
+    def test_effective_code_guidance_stays_in_script_reference(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         record = reference("operation-record.md")
         script = reference("file-script.md")
 
-        self.assertIn("ordinary imports or ordinary Python child invocations", script)
-        self.assertIn("automatically records the log-local source files", script)
+        self.assertIn("ordinary imports or statically resolvable", script)
+        self.assertIn("one normalized\nfingerprint", script)
         self.assertNotIn("dependency observation", skill)
         self.assertNotIn("dependency observation", record)
 

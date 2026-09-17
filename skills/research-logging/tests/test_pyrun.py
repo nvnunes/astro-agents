@@ -1343,14 +1343,17 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((entry / "pyrun.json").read_text())
-            self.assertEqual(payload["schema"], "research-log-pyrun/v6")
+            self.assertEqual(payload["schema"], "research-log-pyrun/v7")
             record = execution_for_output(entry, "data/output.csv")
             self.assertIs(record["exclusive"], False)
             self.assertIs(record["requires_reproduction"], False)
             self.assertEqual(record["recipe"]["script"], "scripts/build.py")
             self.assertEqual(record["recipe"]["parameters"], command[3:])
             self.assertEqual(set(record["observed"]["inputs"]), {"input_csv"})
-            self.assertEqual(record["observed"]["code"], {})
+            self.assertEqual(
+                record["observed"]["effective_code"]["algorithm"],
+                "python-effective-code-sha256-v1",
+            )
             self.assertEqual(
                 record["observed"]["outputs"]["data/output.csv"]["digest"],
                 digest(entry / "data/output.csv"),
@@ -1392,29 +1395,18 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 record["recipe"]["script"], "<log>/scripts/build_shared.py"
             )
 
-    def test_records_static_helpers_with_dynamic_warning(self) -> None:
+    def test_unsupported_dynamic_import_records_no_fingerprint_silently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
-            (entry / "scripts/transitive_helper.py").write_text(
-                "VALUE = 'transitive'\n", encoding="utf-8"
-            )
-            (entry / "scripts/direct_helper.py").write_text(
-                "from transitive_helper import VALUE\n", encoding="utf-8"
-            )
             (entry / "scripts/dynamic_helper.py").write_text(
                 "VALUE = 'dynamic'\n", encoding="utf-8"
-            )
-            (entry / "scripts/not_loaded.py").write_text(
-                "VALUE = 'absent'\n", encoding="utf-8"
             )
             (entry / "scripts/build_code.py").write_text(
                 "import importlib\n"
                 "from pathlib import Path\n"
-                "import direct_helper as first\n"
-                "import direct_helper as second\n"
                 "dynamic = importlib.import_module('dynamic_helper')\n"
-                "Path('data/code.txt').write_text(first.VALUE + dynamic.VALUE)\n",
+                "Path('data/code.txt').write_text(dynamic.VALUE)\n",
                 encoding="utf-8",
             )
 
@@ -1431,26 +1423,15 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             record = execution_for_output(entry, "data/code.txt")
-            self.assertEqual(
-                record["observed"]["code"],
-                {
-                    name: {"algorithm": "sha256", "digest": digest(entry / name)}
-                    for name in (
-                        "scripts/direct_helper.py",
-                        "scripts/transitive_helper.py",
-                    )
-                },
-            )
-            self.assertIn("[dynamic_import]", result.stderr)
+            self.assertIsNone(record["observed"]["effective_code"])
+            self.assertEqual(result.stderr, "")
 
-    def test_failed_run_retains_historical_code_until_static_success(self) -> None:
+    def test_failed_run_retains_prior_effective_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
             helper = entry / "scripts/helper.py"
-            historical = entry / "scripts/historical_dynamic.py"
             helper.write_text("VALUE = 'current'\n", encoding="utf-8")
-            historical.write_text("VALUE = 'historical'\n", encoding="utf-8")
             (entry / "scripts/build_transition.py").write_text(
                 "from pathlib import Path\n"
                 "import helper\n"
@@ -1467,18 +1448,6 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             ]
             first = run(command, cwd=entry)
             self.assertEqual(first.returncode, 0, first.stderr)
-            state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
-            record = next(
-                iter(state["commands"]["test-command"]["executions"].values())
-            )
-            record["observed"]["code"]["scripts/historical_dynamic.py"] = {
-                "algorithm": "sha256",
-                "digest": digest(historical),
-            }
-            (entry / "pyrun.json").write_text(
-                json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
             before = (entry / "pyrun.json").read_bytes()
             (entry / "fail.flag").write_text("fail\n", encoding="utf-8")
 
@@ -1486,20 +1455,8 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(failed.returncode, 3)
             self.assertEqual((entry / "pyrun.json").read_bytes(), before)
-            (entry / "fail.flag").unlink()
 
-            succeeded = run(command, cwd=entry)
-
-            self.assertEqual(succeeded.returncode, 0, succeeded.stderr)
-            final_code = execution_for_output(entry, "data/transition.txt")[
-                "observed"
-            ]["code"]
-            self.assertEqual(
-                set(final_code),
-                {"scripts/helper.py"},
-            )
-
-    def test_runtime_import_paths_warn_without_dependency_claims(self) -> None:
+    def test_import_path_mutation_records_no_fingerprint_silently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1539,11 +1496,11 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = execution_for_output(entry, "data/scoped.txt")["observed"]["code"]
-            self.assertEqual(code, {})
-            self.assertIn("[import_path_mutation]", result.stderr)
+            observed = execution_for_output(entry, "data/scoped.txt")["observed"]
+            self.assertIsNone(observed["effective_code"])
+            self.assertEqual(result.stderr, "")
 
-    def test_python_child_entry_points_warn_without_dependency_claims(self) -> None:
+    def test_static_python_child_participates_in_effective_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1554,13 +1511,9 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 "import child_helper\n", encoding="utf-8"
             )
             (entry / "scripts/build_children.py").write_text(
-                "import os, subprocess, sys\n"
+                "import subprocess, sys\n"
                 "from pathlib import Path\n"
-                "child = str(Path('scripts/child.py').resolve())\n"
-                "subprocess.run([sys.executable, child], check=True)\n"
-                "environment = dict(os.environ, PYTHON=sys.executable, CHILD=child)\n"
-                "subprocess.run(['sh', '-c', '\"$PYTHON\" \"$CHILD\"'], "
-                "env=environment, check=True)\n"
+                "subprocess.run([sys.executable, 'scripts/child.py'], check=True)\n"
                 "Path('data/children.txt').write_text('done')\n",
                 encoding="utf-8",
             )
@@ -1577,9 +1530,28 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            code = execution_for_output(entry, "data/children.txt")["observed"]["code"]
-            self.assertEqual(code, {})
-            self.assertIn("[descendant_code]", result.stderr)
+            first = execution_for_output(entry, "data/children.txt")["observed"][
+                "effective_code"
+            ]
+            self.assertIsNotNone(first)
+            (entry / "scripts/child_helper.py").write_text(
+                "VALUE = 'changed'\n", encoding="utf-8"
+            )
+            rerun = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "scripts/build_children.py",
+                    "--output-data",
+                    "data/children.txt",
+                ],
+                cwd=entry,
+            )
+            self.assertEqual(rerun.returncode, 0, rerun.stderr)
+            second = execution_for_output(entry, "data/children.txt")["observed"][
+                "effective_code"
+            ]
+            self.assertNotEqual(first, second)
 
     def test_preserves_imported_package_resource_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1615,7 +1587,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 "resource\n",
             )
 
-    def test_records_spawn_and_fork_imports(self) -> None:
+    def test_spawn_and_fork_runs_record_effective_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1659,10 +1631,12 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                         cwd=entry,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    code = execution_for_output(entry, output)["observed"]["code"]
+                    effective_code = execution_for_output(entry, output)["observed"][
+                        "effective_code"
+                    ]
                     self.assertEqual(
-                        set(code),
-                        {"scripts/process_helper.py", "scripts/process_worker.py"},
+                        effective_code["algorithm"],
+                        "python-effective-code-sha256-v1",
                     )
 
     def test_changed_static_helper_publishes_no_support(self) -> None:
@@ -1692,7 +1666,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("static code changed during execution", result.stderr)
+            self.assertIn("effective code changed during execution", result.stderr)
             self.assertFalse((entry / "pyrun.json").exists())
 
     def test_process_exit_without_normal_shutdown_can_publish(self) -> None:
@@ -1721,50 +1695,17 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((entry / "pyrun.json").exists())
 
-    def test_dynamic_import_count_is_an_incomplete_coverage_warning(self) -> None:
+    def test_project_code_outside_the_current_log_participates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
-            for index in range(PYRUN_MODULE.MAX_CODE_PATHS + 1):
-                (entry / f"scripts/helper_{index}.py").write_text(
-                    f"VALUE = {index}\n", encoding="utf-8"
-                )
-            (entry / "scripts/build_excessive.py").write_text(
-                "import importlib\n"
+            project_scripts = root / "project_scripts"
+            project_scripts.mkdir()
+            helper = project_scripts / "project_helper.py"
+            helper.write_text("VALUE = 'project'\n")
+            script = project_scripts / "build_external.py"
+            script.write_text(
                 "from pathlib import Path\n"
-                f"for index in range({PYRUN_MODULE.MAX_CODE_PATHS + 1}):\n"
-                "    importlib.import_module(f'helper_{index}')\n"
-                "Path('data/excessive.txt').write_text('done')\n",
-                encoding="utf-8",
-            )
-
-            result = run(
-                [
-                    sys.executable,
-                    str(PYRUN),
-                    "scripts/build_excessive.py",
-                    "--output-data",
-                    "data/excessive.txt",
-                ],
-                cwd=entry,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("[dynamic_import]", result.stderr)
-            self.assertEqual(
-                execution_for_output(entry, "data/excessive.txt")["observed"]["code"],
-                {},
-            )
-
-    def test_excludes_project_code_outside_the_current_log(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            (root / "project_helper.py").write_text("VALUE = 'project'\n")
-            (entry / "scripts/build_external.py").write_text(
-                "import sys\n"
-                "from pathlib import Path\n"
-                "sys.path.insert(0, str(Path.cwd().parents[2]))\n"
                 "import project_helper\n"
                 "Path('data/external.txt').write_text(project_helper.VALUE)\n",
                 encoding="utf-8",
@@ -1774,7 +1715,7 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
                 [
                     sys.executable,
                     str(PYRUN),
-                    "scripts/build_external.py",
+                    "<project>/project_scripts/build_external.py",
                     "--output-data",
                     "data/external.txt",
                 ],
@@ -1783,9 +1724,26 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
 
             self.assertEqual(result.returncode, 0, result.stderr)
             record = execution_for_output(entry, "data/external.txt")
-            self.assertEqual(record["observed"]["code"], {})
+            before = record["observed"]["effective_code"]
+            self.assertIsNotNone(before)
+            helper.write_text("VALUE = 'changed'\n")
+            rerun = run(
+                [
+                    sys.executable,
+                    str(PYRUN),
+                    "<project>/project_scripts/build_external.py",
+                    "--output-data",
+                    "data/external.txt",
+                ],
+                cwd=entry,
+            )
+            self.assertEqual(rerun.returncode, 0, rerun.stderr)
+            after = execution_for_output(entry, "data/external.txt")["observed"][
+                "effective_code"
+            ]
+            self.assertNotEqual(before, after)
 
-    def test_explicit_pythonpath_warns_without_blocking_execution(self) -> None:
+    def test_explicit_pythonpath_records_no_fingerprint_silently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = make_repo(Path(directory))
             entry = make_entry(root)
@@ -1822,96 +1780,17 @@ open(a.output_data, 'wb').write(open(a.input_data, 'rb').read())
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("[import_path_environment]", result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertIsNone(
+                execution_for_output(entry, "data/site.txt")["observed"][
+                    "effective_code"
+                ]
+            )
             self.assertEqual(marker.read_text(), "loaded")
             self.assertEqual(
                 Path((entry / "data/site.txt").read_text()).resolve(),
                 (startup / "sitecustomize.py").resolve(),
             )
-
-    def test_many_short_children_add_no_static_dependency_claim(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            (entry / "scripts/shared_child_helper.py").write_text(
-                "VALUE = 'child'\n", encoding="utf-8"
-            )
-            (entry / "scripts/short_child.py").write_text(
-                "import shared_child_helper\n", encoding="utf-8"
-            )
-            (entry / "scripts/build_many_children.py").write_text(
-                "import subprocess, sys\n"
-                "from pathlib import Path\n"
-                "child = str(Path('scripts/short_child.py').resolve())\n"
-                "for _ in range(12):\n"
-                "    subprocess.run([sys.executable, child], check=True)\n"
-                "Path('data/first.txt').write_text('first')\n"
-                "Path('data/second.txt').write_text('second')\n",
-                encoding="utf-8",
-            )
-
-            result = run(
-                [
-                    sys.executable,
-                    str(PYRUN),
-                    "scripts/build_many_children.py",
-                    "--output-first",
-                    "data/first.txt",
-                    "--output-second",
-                    "data/second.txt",
-                ],
-                cwd=entry,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            record = execution_for_output(entry, "data/first.txt")
-            self.assertEqual(record["observed"]["code"], {})
-            self.assertIn("[descendant_code]", result.stderr)
-            self.assertEqual(
-                execution_for_output(entry, "data/first.txt"),
-                execution_for_output(entry, "data/second.txt"),
-            )
-
-    def test_isolated_and_detached_children_add_no_dependency_claim(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = make_repo(Path(directory))
-            entry = make_entry(root)
-            (entry / "scripts/hidden_helper.py").write_text(
-                "VALUE = 'hidden'\n", encoding="utf-8"
-            )
-            (entry / "scripts/hidden_child.py").write_text(
-                "VALUE = 'isolated'\n", encoding="utf-8"
-            )
-            (entry / "scripts/detached_child.py").write_text(
-                "import time\ntime.sleep(0.2)\nimport hidden_helper\n",
-                encoding="utf-8",
-            )
-            (entry / "scripts/build_unobserved.py").write_text(
-                "import subprocess, sys\n"
-                "from pathlib import Path\n"
-                "subprocess.run([sys.executable, '-I', "
-                "'scripts/hidden_child.py'], check=True)\n"
-                "subprocess.Popen([sys.executable, 'scripts/detached_child.py'], "
-                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
-                "stderr=subprocess.DEVNULL, start_new_session=True)\n"
-                "Path('data/unobserved.txt').write_text('done')\n",
-                encoding="utf-8",
-            )
-
-            result = run(
-                [
-                    sys.executable,
-                    str(PYRUN),
-                    "scripts/build_unobserved.py",
-                    "--output-data",
-                    "data/unobserved.txt",
-                ],
-                cwd=entry,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            record = execution_for_output(entry, "data/unobserved.txt")
-            self.assertEqual(record["observed"]["code"], {})
 
     def test_success_records_directory_output_support(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -27,4 +27,4 @@ Tooling after authoring each Markdown command, before its execution:
 ```
 
 A raw output path in a recorded command is a Conformance finding. Current state
-uses CID-scoped v6 records; earlier schemas are unsupported.
+uses CID-scoped v7 records; earlier schemas are unsupported.

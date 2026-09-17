@@ -8,6 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from effective_code import analyze_effective_code
 from log_commands.context import EntryContext, LogContext
 from log_commands.reproduction_invocation import ReproductionRuntime
 from log_commands.reproduction_planner import (
@@ -15,6 +16,7 @@ from log_commands.reproduction_planner import (
     plan_reproduction_work,
     prepare_reproduction_context,
 )
+from python_execution import PythonExecutionContext
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import Fingerprint
 from validation.engine import (
@@ -34,6 +36,32 @@ from validation.pyrun_state import (
 
 def _fingerprint(path: Path) -> Fingerprint:
     return Fingerprint("sha256", hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def _effective_fingerprint(path: Path, project_root: Path) -> Fingerprint:
+    entry = next(
+        (parent for parent in path.parents if parent.parent.name == "entries"),
+        None,
+    )
+    import_roots = None
+    if entry is not None:
+        log = entry.parent.parent
+        import_roots = PythonExecutionContext.for_research_script(
+            path,
+            entry_root=entry,
+            log_root=log,
+            project_root=project_root,
+        ).import_roots
+    analysis = analyze_effective_code(
+        path,
+        project_root=project_root,
+        import_roots=import_roots,
+    )
+    assert analysis.fingerprint is not None
+    return Fingerprint(
+        analysis.fingerprint.algorithm,
+        digest=analysis.fingerprint.digest,
+    )
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -226,7 +254,7 @@ class _Fixture:
         observed = ObservedExecution(
             _fingerprint(script),
             tuple(sorted((key, _fingerprint(path)) for key, path in inputs.items())),
-            (),
+            _effective_fingerprint(script, self.root.resolve()),
             tuple(
                 sorted(
                     (f"data/{path.name}", _fingerprint(path))

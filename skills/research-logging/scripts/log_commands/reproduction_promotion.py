@@ -35,6 +35,7 @@ from .reproduction_domain import CommandOutcome
 from .reproduction_execution import _fingerprint
 from .reproduction_job_control import (
     JobStoreError,
+    JobStoreUnsupportedError,
     recognize_run_directory,
 )
 from .reproduction_jobs import _find_run, load_accepted_plan
@@ -321,6 +322,8 @@ def _require_no_active_input_overlap(
         try:
             with open_work_job(run_root) as job:
                 status = job.load_run_control()
+        except JobStoreUnsupportedError:
+            continue
         except JobStoreError as error:
             raise ActionError(error.code, str(error)) from error
         if status.status is not None:
@@ -457,7 +460,7 @@ def _metadata_candidates(
         ObservedExecution(
             execution.observed.script,
             execution.observed.inputs,
-            execution.observed.code,
+            execution.observed.effective_code,
             tuple(
                 (name, fingerprints[name]) for name, _kind in execution.recipe.outputs
             ),

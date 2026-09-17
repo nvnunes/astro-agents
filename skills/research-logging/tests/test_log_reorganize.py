@@ -123,7 +123,7 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
         tuple((output, "file") for output in outputs),
         parameter_roles=fixture_parameter_roles(
             tuple(value for output in outputs for value in ("--output", output)),
-            (),
+            None,
             tuple((output, "file") for output in outputs),
         ),
     )
@@ -139,7 +139,7 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
         ObservedExecution(
             fingerprint,
             (),
-            (),
+            Fingerprint("python-effective-code-sha256-v1", digest="b" * 64),
             tuple(
                 (
                     output,

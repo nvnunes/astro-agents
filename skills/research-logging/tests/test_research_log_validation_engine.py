@@ -427,7 +427,7 @@ def _replace_with_pyrun_state(
                 ),
             ),
         ),
-        (),
+        None,
         (
             (
                 "data/results.csv",
@@ -544,7 +544,7 @@ def _replace_two_outputs_with_pyrun_state(
                 ),
             ),
         ),
-        (),
+        None,
         tuple(
             (
                 output,
@@ -624,7 +624,7 @@ def _replace_bundle_with_pyrun_state(
                 ),
             ),
         ),
-        (),
+        None,
         (
             (
                 "data/bundle",
@@ -1009,7 +1009,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 "provenance.output.execution_unassociated",
             )
 
-    def test_current_execution_rejects_changed_script_fingerprint(self) -> None:
+    def test_current_execution_ignores_raw_only_script_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             summary, entry = _log(root)
@@ -1023,15 +1023,11 @@ class EngineV2EndToEndTests(unittest.TestCase):
 
             evaluation = _evaluate(summary)
 
-            currentness = _single_currentness_blocker(
-                evaluation, "e001", "success-rate"
-            )
-            self.assertEqual(currentness["reason"], "signature_mismatch")
-            self.assertEqual(currentness["observed"]["fields"], ["script_fingerprint"])
+            self.assertEqual(_reproduce_currentness(evaluation), ())
 
     def test_pending_current_execution_accepts_unavailable_observations(self) -> None:
         cases = (
-            ("empty", PYRUN_STATE.ObservedExecution(None, (), (), ())),
+            ("empty", PYRUN_STATE.ObservedExecution(None, (), None, ())),
             ("script_missing", None),
         )
         for label, observed in cases:
@@ -1060,7 +1056,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     observed = PYRUN_STATE.ObservedExecution(
                         None,
                         (),
-                        (),
+                        None,
                         execution.observed.outputs,
                     )
                 write(
@@ -1132,7 +1128,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                                 identity: replace(
                                     execution,
                                     observed=PYRUN_STATE.ObservedExecution(
-                                        None, (), (), ()
+                                        None, (), None, ()
                                     ),
                                 )
                             }
@@ -2371,7 +2367,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             write(output_path, json.dumps(support, indent=2) + "\n")
             self.assertIsNotNone(_evaluate(summary).snapshot)
 
-    def test_recursive_chain_requires_each_link_and_uses_byte_identity(self) -> None:
+    def test_recursive_chain_requires_each_link_and_input_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             entry_root = entry.parent
@@ -2502,7 +2498,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             catalog.write_bytes(original)
             self.assertFalse(_evaluate(summary).attempt.findings)
             write(entry_root / "scripts" / "preprocess.py", "# changed\n")
-            self.assertTrue(_reproduce_currentness(_evaluate(summary)))
+            self.assertFalse(_reproduce_currentness(_evaluate(summary)))
 
     def test_unconfirmed_and_missing_output_records_fail_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3086,7 +3082,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                     "sha256", digest=hashlib.sha256(script.read_bytes()).hexdigest()
                 ),
                 (),
-                (),
+                None,
                 (
                     (
                         output_key,
@@ -3783,7 +3779,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 entry.read_text(encoding="utf-8") + "\nThe copied rate was `67.6%`"
                 "<!-- eid:success-rate-copy -->.\n",
             )
-            write(entry.parent / "scripts/model.py", "# changed model\n")
+            write(entry.parent / "data/catalog.csv", "id\n2\n")
 
             evaluation = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
 
@@ -5053,7 +5049,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 (DOMAIN.RuleArea.EVIDENCE, "summary.reference.missing"), failures
             )
 
-    def test_changed_script_bytes_break_execution_linked_provenance(self) -> None:
+    def test_raw_script_change_keeps_execution_linked_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))
             first = _evaluate(summary)
@@ -5076,7 +5072,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertTrue(
                 all(status is DOMAIN.CheckOutcome.PASS for status in second_provenance)
             )
-            self.assertTrue(_reproduce_currentness(second))
+            self.assertFalse(_reproduce_currentness(second))
 
     def test_input_changed_during_validation_is_unavailable_without_cache(
         self,

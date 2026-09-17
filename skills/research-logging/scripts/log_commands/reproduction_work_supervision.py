@@ -1,7 +1,7 @@
 """Supervise fixed native work through the shared coordinator and publication.
 
 Scheduling state is transient; accepted work, actual results and interrupted
-attempt recovery remain owned by Job4. No route replans. Successful execution
+attempt recovery remain owned by Job5. No route replans. Successful execution
 publishes durable native facts; publication-only retry consumes frozen completion
 without execution. The caller owns scope locks and installs the supervisor lease.
 """

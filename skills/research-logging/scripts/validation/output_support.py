@@ -204,19 +204,6 @@ def resolve_code_support(
     return _resolve_code_support(record.code, entry_root=entry_root, subject=subject)
 
 
-def resolve_execution_code(
-    execution: PyrunExecution,
-    *,
-    entry_root: Path,
-    subject: str,
-) -> tuple[ResolvedCodeSupport, ...]:
-    """Resolve code observed by one current execution without legacy output data."""
-
-    return _resolve_code_support(
-        execution.observed.code, entry_root=entry_root, subject=subject
-    )
-
-
 def _resolve_code_support(
     code: tuple[tuple[str, Fingerprint], ...],
     *,
@@ -262,7 +249,6 @@ def require_current_execution_output(
     *,
     current_output: Fingerprint,
     current_inputs: Mapping[str, Fingerprint],
-    current_code: Mapping[str, Fingerprint] | None = None,
 ) -> PyrunExecution:
     """Require current state associated with one exact command-owned output."""
 
@@ -294,20 +280,11 @@ def require_current_execution_output(
     mismatches: list[str] = []
     if observed != current_output:
         mismatches.append("output_fingerprint")
-    current_script = (
-        Fingerprint("sha256", digest=invocation.script_identity)
-        if invocation.script_identity is not None
-        else None
-    )
-    if current_script is None or execution.observed.script != current_script:
-        mismatches.append("script_fingerprint")
     expected_inputs = _output_signature_inputs(
         invocation, current_inputs=current_inputs, material=resolved.subject
     )
     if dict(execution.observed.inputs) != expected_inputs:
         mismatches.append("inputs")
-    if current_code is not None and dict(execution.observed.code) != current_code:
-        mismatches.append("code")
     if mismatches:
         _fail(
             "provenance.output.signature_mismatch",
@@ -346,7 +323,11 @@ def execution_output_support_dict(
             {"fields": ["script_fingerprint"], "producer": invocation.identity},
         )
     return {
-        "code": {name: value.as_dict() for name, value in execution.observed.code},
+        "effective_code": (
+            execution.observed.effective_code.as_dict()
+            if execution.observed.effective_code is not None
+            else None
+        ),
         "confirmed": not execution.requires_reproduction,
         "fingerprint": fingerprint.as_dict() if fingerprint is not None else None,
         "inputs": {name: value.as_dict() for name, value in execution.observed.inputs},
@@ -374,16 +355,9 @@ def output_producer_mismatches(
     expected_inputs = _output_signature_inputs(
         invocation, current_inputs=current_inputs, material=material
     )
-    current_script = (
-        Fingerprint("sha256", digest=invocation.script_identity)
-        if invocation.script_identity is not None
-        else None
-    )
     mismatches: list[str] = []
     if record.script.path != invocation.script_argument:
         mismatches.append("script")
-    if current_script is None or record.script.fingerprint != current_script:
-        mismatches.append("script_fingerprint")
     if not _parameters_match(invocation, record.parameters):
         mismatches.append("parameters")
     if dict(record.inputs) != expected_inputs:

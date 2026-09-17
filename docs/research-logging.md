@@ -601,17 +601,26 @@ Run a new or changed script through the recorded command from the entry folder
 to produce or check its saved outputs before presenting them as results.
 Within the CID, `pyrun` derives one stable execution ID from the expanded
 child-parameter vector and records the complete recipe and its output set,
-current script, parameters, inputs, and bytes separately. It also
-records bounded log-local Python source files found through ordinary static
-imports from the direct script. Packages, relative imports, cycles, and every
-syntactic conditional branch are analyzed without importing or executing code.
-A logical path through an intentional log symlink remains log-local. Changing
-a recorded helper makes the dependent execution support stale; a later
-successful run replaces the helper set with current static discoveries.
-Dynamic imports, runtime import-path changes, and separately launched Python
-entrypoints are not followed. `pyrun` warns when it recognizes those patterns,
-but missed dynamic dependencies and extra conditional dependencies are accepted
-coverage tradeoffs rather than launch blockers.
+current script, parameters, inputs, and bytes separately. It also records one
+effective-code fingerprint for statically reachable Python behavior across the
+current Git project. The analyzer parses normalized syntax without importing or
+executing project code. Comments, formatting, unreachable definitions, and
+external package implementation do not affect the fingerprint. The raw script
+fingerprint remains useful provenance but does not make reproduction stale by
+itself.
+
+Research commands use ordinary Python imports. `pyrun`, command verification,
+reproduction, and effective-code analysis share one import order: the executing
+script directory, entry `scripts/`, log `scripts/`, then the project root. Put
+shared code at the narrowest owner described above; do not add `sys.path`
+bootstrapping or an authored `PYTHONPATH` to recreate these roots.
+
+Some dynamic behavior cannot be fingerprinted safely. In that case `pyrun`
+still executes and quietly records no effective-code fingerprint. Command sync
+reports a bounded warning with the unsupported location and explains that code
+currentness and reproduction remain unavailable until the source is made
+analyzable and the command is run again. Reproduction treats a missing
+fingerprint like a mismatch for selection while reporting the distinct cause.
 Use the `--auto-reproduce=false` runner option for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
 Use the `--exclusive` runner option when managed reproduction must run the
@@ -621,7 +630,7 @@ the following line. Exclusivity is a scheduling policy, not part of the recipe
 identity, and it does not change ordinary direct execution or reserve unrelated
 host processes. For a later policy-only change, edit Markdown first and run
 `log command sync` with `--path`, `--entry`, and the effective `--cid`. Current
-execution state must use `research-log-pyrun/v6`; earlier schemas are
+execution state must use `research-log-pyrun/v7`; earlier schemas are
 unsupported.
 When stdout or stderr is retained as evidence, use
 `--capture-stdout`, `--capture-stderr`, or `--capture-stdout-stderr` as a runner
@@ -1020,7 +1029,7 @@ The jobs cap defaults to 1; dependencies, overlapping path claims and
 project-wide exclusivity may reduce actual concurrency. Each command defaults
 to a 300-second wall-clock limit; timeout terminates its supervised tree and
 leaves independent work eligible. Accepted settings cannot change on resume.
-Current execution authority is `research-log-pyrun/v6`; older schemas are
+Current execution authority is `research-log-pyrun/v7`; older schemas are
 unsupported.
 
 Observe or control the accepted job by run ID:
@@ -1088,7 +1097,7 @@ workspace exists, and publishes nothing. It reads current prerequisites,
 baselines and authored comparison rules, reports direct-input observation
 differences without adopting them, and preserves metadata/results completely.
 It cannot clear requirements, resume, promote or adopt changed recipe
-parameters/declarations or newly observed participating code.
+parameters/declarations or newly observed effective code.
 
 No validation runs automatically after reproduction publication. Run Validate
 explicitly when a current validation outcome is required; it does not rewrite

@@ -291,6 +291,78 @@ class LogCommandSyncTests(unittest.TestCase):
             self.assertEqual(after, before)
             self.assertFalse((entry / "pyrun.json").exists())
 
+    def test_unsupported_effective_code_is_a_structured_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                "./pyrun --cid build -- scripts/build.py --count 2",
+            )
+            (entry / "scripts/build.py").write_text(
+                "import importlib\nimportlib.import_module('helper')\n",
+                encoding="utf-8",
+            )
+
+            result = sync(logical)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            warnings = [
+                item
+                for item in json.loads(result.stdout)["records"]
+                if item.get("status") == "warning"
+            ]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(
+                warnings[0]["code"],
+                "command.sync.effective_code.unsupported",
+            )
+            self.assertEqual(warnings[0]["construct"], "dynamic_import")
+            self.assertIn(
+                "currentness and reproduction are unavailable",
+                warnings[0]["consequence"],
+            )
+            self.assertIn("run pyrun after repairing", warnings[0]["consequence"])
+            self.assertTrue((entry / "pyrun.json").is_file())
+
+    def test_log_shared_import_is_supported_without_a_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                "./pyrun --cid build -- scripts/build.py --count 2",
+            )
+            log_scripts = entry.parent.parent / "scripts"
+            log_scripts.mkdir()
+            (log_scripts / "shared_helper.py").write_text(
+                "VALUE = 2\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/build.py").write_text(
+                "from shared_helper import VALUE\nprint(VALUE)\n",
+                encoding="utf-8",
+            )
+
+            result = sync(logical)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            records = json.loads(result.stdout)["records"]
+            self.assertFalse(any(item.get("status") == "warning" for item in records))
+            self.assertTrue((entry / "pyrun.json").is_file())
+
+    def test_effective_code_operational_failure_is_nonmutating(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                "./pyrun --cid build -- scripts/build.py --count 2",
+            )
+            (entry / "scripts/build.py").write_text("if:\n", encoding="utf-8")
+
+            result = sync(logical, "--dry-run")
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("command.sync.effective_code.failed", result.stderr)
+            records = json.loads(result.stdout)["records"]
+            self.assertEqual(records[0]["code"], "effective_code.syntax_invalid")
+            self.assertFalse((entry / "pyrun.json").exists())
+
     def test_implicit_cid_selects_the_python_program_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(

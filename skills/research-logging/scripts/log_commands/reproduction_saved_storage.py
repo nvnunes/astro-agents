@@ -33,7 +33,7 @@ from .reproduction_saved_run import (
 )
 from .reproduction_work import ArtifactWork, CommandWork
 
-SAVED_STORE_VERSION = 20
+SAVED_STORE_VERSION = 21
 
 
 @dataclass(frozen=True)
@@ -85,12 +85,19 @@ _COLLECTIONS = {
     "artifact_results": ("reproduction_run_artifact_results", ("entry", "artifact")),
 }
 _OLD_TABLES = (
+    "reproduction_latest_commands",
+    "reproduction_latest_artifacts",
+    "reproduction_run_command_results",
+    "reproduction_run_artifact_results",
+    "reproduction_run_artifacts",
     "reproduction_comparison_evidence",
     "reproduction_artifact_results",
     "reproduction_execution_results",
     "reproduction_run_executions",
     "reproduction_run_commands",
+    "reproduction_run_problems",
     "reproduction_runs",
+    "reproduction_empty_confirmation",
     "reproduction_metadata",
 )
 
@@ -195,7 +202,10 @@ def replace_reproduction_domain(db: sqlite3.Connection) -> None:
         "SELECT 1 FROM sqlite_master WHERE type='table' "
         "AND name='reproduction_run_problems'"
     ).fetchone()
-    if version not in {19, SAVED_STORE_VERSION} or native is not None:
+    valid_source = (version == 19 and native is None) or (
+        version == 20 and native is not None
+    )
+    if not valid_source:
         raise ReproductionDomainError(
             "replacement requires the inspected execution-baseline store"
         )

@@ -44,6 +44,29 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_pyrun.py
 ```
 
+When changing effective-code analysis, currentness consumers, or the one-time
+v6-to-v7 migration utility, also run:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_effective_code.py \
+  skills/research-logging/tests/test_python_execution.py \
+  skills/research-logging/tests/test_pyrun_effective_code.py \
+  skills/research-logging/tests/test_pyrun_effective_code_migration.py \
+  skills/research-logging/tests/test_reproduction_planning_matrix.py \
+  skills/research-logging/tests/test_reproduction_planning_preservation.py \
+  skills/research-logging/tests/test_reproduction_work_execution.py \
+  skills/research-logging/tests/test_log_command_verify.py \
+  skills/research-logging/tests/test_log_reproduction_promotion.py
+```
+
+These tests map the shared import order and shadowing behavior, project
+boundary, semantic/raw distinction, unsupported diagnostics, silent `pyrun`
+fallback, pre/post source stability, ordinary/verification/reproduction
+execution, matching and unavailable planning effects, requirement clearing,
+and migration preservation, failure, idempotence, and bounds.
+
 When changing research-log section classification, evidence presentation, or
 validation behavior, also run:
 
@@ -110,7 +133,9 @@ observation sandbox and retry after the expected permission failure.
 ```bash
 ./.conda/bin/python -m py_compile skills/research-logging/scripts/log \
   skills/research-logging/scripts/pyrun \
-  skills/research-logging/scripts/pyrun_code_dependencies.py \
+  skills/research-logging/scripts/effective_code.py \
+  skills/research-logging/scripts/migrate_pyrun_effective_code.py \
+  skills/research-logging/scripts/python_execution.py \
   skills/research-logging/scripts/pyrun_worker.py \
   skills/research-logging/scripts/research_log_reservations.py \
   skills/research-logging/scripts/stream_capture.py \

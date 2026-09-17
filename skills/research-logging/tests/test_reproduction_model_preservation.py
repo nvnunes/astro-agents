@@ -25,7 +25,11 @@ from log_commands.reproduction_invocation import (
 from log_commands.reproduction_saved_storage import PreparationHistory
 from log_commands.reproduction_summary import plan_selection_counts
 from log_commands.reproduction_work import ArtifactWork, CommandWork, validate_producer
-from reproduction_planning_test_support import _Fixture, prepare_plan
+from reproduction_planning_test_support import (
+    _effective_fingerprint,
+    _Fixture,
+    prepare_plan,
+)
 from research_log_data import Fingerprint
 from validation.pyrun_state import load_pyrun_state
 
@@ -279,12 +283,14 @@ class ReproductionModelPreservationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture, entry, identities = fanout_fixture(Path(directory), 1)
             shared = entry.root / "scripts/shared.py"
-            shared.write_text("# original code\n", encoding="utf-8")
+            shared.write_text("VALUE = 1\n", encoding="utf-8")
             executions = load_pyrun_state(
                 entry.root / "pyrun.json",
                 entry_root=entry.root,
                 project_root=fixture.root,
             )
+            producer_script = entry.root / "scripts/producer.py"
+            producer_script.write_text("import shared\n", encoding="utf-8")
             fixture.write_pyrun(
                 entry,
                 [
@@ -294,16 +300,14 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                             execution,
                             observed=replace(
                                 execution.observed,
-                                code=(
-                                    (
-                                        "scripts/shared.py",
-                                        Fingerprint(
-                                            "sha256",
-                                            hashlib.sha256(
-                                                shared.read_bytes()
-                                            ).hexdigest(),
-                                        ),
-                                    ),
+                                script=Fingerprint(
+                                    "sha256",
+                                    hashlib.sha256(
+                                        producer_script.read_bytes()
+                                    ).hexdigest(),
+                                ),
+                                effective_code=_effective_fingerprint(
+                                    producer_script, fixture.root.resolve()
                                 ),
                             ),
                         )
@@ -313,11 +317,14 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     for cid, identity, execution in executions.execution_items()
                 ],
             )
-            shared.write_text("# changed code\n", encoding="utf-8")
-            script = entry.root / "scripts/producer.py"
+            shared.write_text("VALUE = 2\n", encoding="utf-8")
+            script = producer_script
             key = ("e001", "producer", identities["producer"])
             digests = []
-            for content in ("# changed script once\n", "# changed script twice\n"):
+            for content in (
+                "import shared\nVALUE = 1\n",
+                "import shared\nVALUE = 2\n",
+            ):
                 script.write_text(content, encoding="utf-8")
                 with mock.patch.object(
                     PLANNER, "_canonical_plan", wraps=PLANNER._canonical_plan
@@ -333,7 +340,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                         state.problems[reference].code
                         for reference in state.command_problem_ids[key]
                     },
-                    {"script_changed", "participating_code_changed"},
+                    {"effective_code_changed"},
                 )
                 digests.append(state.command_digests[key])
                 # Obsolete diagnostic projections cannot influence source guards.
@@ -372,7 +379,10 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     (
                         identity,
                         replace(
-                            execution, observed=replace(execution.observed, script=None)
+                            execution,
+                            observed=replace(
+                                execution.observed, effective_code=None
+                            ),
                         )
                         if cid == "producer"
                         else execution,
@@ -386,7 +396,9 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 plan = prepare_plan(fixture, None)
             state = project.call_args.args[0]
             problems = [
-                p for p in state.problems.values() if p.code == "script_unavailable"
+                p
+                for p in state.problems.values()
+                if p.code == "effective_code_unavailable"
             ]
             self.assertEqual(len(problems), 1)
             problem = problems[0]
@@ -515,7 +527,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 artifact.evidence_records[0]["document"], fields["document"]
             )
 
-    def test_missing_recorded_script_observation_has_one_owned_diagnosis(self):
+    def test_missing_recorded_effective_code_has_one_owned_diagnosis(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture, entry, identities = fanout_fixture(Path(directory))
             state = load_pyrun_state(
@@ -529,7 +541,10 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     (
                         identity,
                         replace(
-                            execution, observed=replace(execution.observed, script=None)
+                            execution,
+                            observed=replace(
+                                execution.observed, effective_code=None
+                            ),
                         )
                         if cid == "producer"
                         else execution,
@@ -545,11 +560,11 @@ class ReproductionModelPreservationTests(unittest.TestCase):
             problem = next(
                 problem
                 for problem in state.problems.values()
-                if problem.code == "script_unavailable"
+                if problem.code == "effective_code_unavailable"
             )
             self.assertIsNone(problem.observed["expected"])
             self.assertEqual(
-                problem.observed["availability"], "missing-recorded-observation"
+                problem.observed["availability"], "missing-saved-fingerprint"
             )
             self.assertEqual(
                 problem.subject.path,
@@ -564,7 +579,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     [
                         p
                         for p in state.problems.values()
-                        if p.code == "script_unavailable"
+                        if p.code == "effective_code_unavailable"
                     ]
                 ),
                 1,
@@ -580,7 +595,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     Path(directory), output_count
                 )
                 script = entry.root / "scripts/producer.py"
-                script.write_text("# changed producer\n", encoding="utf-8")
+                script.write_text("VALUE = 1\n", encoding="utf-8")
                 with (
                     mock.patch.object(
                         PLANNER, "_canonical_plan", wraps=PLANNER._canonical_plan
@@ -596,7 +611,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 self.assertEqual(len(state.problems), 1)
                 self.assertEqual(constructed.call_count, 1)
                 problem = next(iter(state.problems.values()))
-                self.assertEqual(problem.code, "script_changed")
+                self.assertEqual(problem.code, "effective_code_changed")
                 self.assertEqual(problem.subject.path, script.resolve().as_posix())
                 self.assertNotEqual(
                     problem.observed["expected"], problem.observed["actual"]
@@ -674,7 +689,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 {("e001", cid, identity) for cid, identity in identities.items()},
             )
             (entry.root / "scripts/producer.py").write_text(
-                "# changed producer\n", encoding="utf-8"
+                "VALUE = 1\n", encoding="utf-8"
             )
             before = {
                 str(p): p.read_bytes() for p in entry.root.rglob("*") if p.is_file()

@@ -61,7 +61,7 @@ identity, cache compatibility, or evolution requires it.
 | Locator language | 2; standalone locators use the `v2:` prefix |
 | Transformation language | 2; standalone transformations use the `v2:` prefix |
 | Input registry | `research-log-data/v6` |
-| `pyrun` execution state | `research-log-pyrun/v6`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
+| `pyrun` execution state | `research-log-pyrun/v7`; earlier schemas are unsupported; owned by the [reproduction specification](research-log-reproduction-spec.md#pyrunjson) |
 | Legacy output records (validation read-only) | `research-log-pyrun-outputs/v1` |
 | Retention registry | `research-log-retention/v1` |
 | Directory observations | `research-log-directory-observation/1` |
@@ -75,7 +75,7 @@ identity, cache compatibility, or evolution requires it.
 | Command diagnostics | `research-log-command-diagnostic/1` |
 | Isolated command verification | `research-log-command-verification-result/1`; lifecycle semantics are owned by the [reproduction specification](research-log-reproduction-spec.md#current-command-verification-boundary) |
 | Validation response schemas | `research-log-validation-run/1`, `research-log-validation-root-run/1`, `research-log-validation-show/1`, `research-log-validation-finding-list/1`, `research-log-validation-batch-list/1`, `research-log-validation-blocked-list/1`, `research-log-validation-failed-list/1`, `research-log-validation-finding-detail/1`, and `research-log-validation-batch-detail/1` |
-| Shared result store | `<log>/.cache/results.sqlite`; SQLite versions 19/20 preserve canonical validation snapshots and independent command diagnostics. Shared initialization creates version 19 without a reproduction domain; native reproduction publication installs version 20. Versions 17/18 require replacement and are never validation input. This specification owns validation tables; the [reproduction specification](research-log-reproduction-spec.md#replacement-reproduction-model) owns its separate saved-run domain. |
+| Shared result store | `<log>/.cache/results.sqlite`; SQLite versions 19/20/21 preserve canonical validation snapshots and independent command diagnostics. Shared initialization creates version 19 without a reproduction domain; current reproduction publication installs version 21, while version-20 reproduction is unsupported and replacement-only. Versions 17/18 require replacement and are never validation input. This specification owns validation tables; the [reproduction specification](research-log-reproduction-spec.md#replacement-reproduction-model) owns its separate saved-run domain. |
 | Former finding and result queries | Removed without aliases or compatibility status |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |
@@ -96,10 +96,12 @@ artifact is absent as a Provenance finding and every output record absent from
 the current graph as an orphan finding. Recorded `pyrun` command surfaces,
 exact path and named-input connections, `pyrun` output support, and observed
 retained material establish Provenance without an authored lineage graph.
-Resolved script bytes are part of the output-support signature. New execution
-records also retain the bounded log-local Python source files found through
-static imports by `pyrun`; Reproduce currentness and validation graph semantics for those
-observations are defined separately from command discovery.
+Resolved script identity is part of structural output support; its raw-byte
+fingerprint is informational current-source provenance. Current execution
+records retain one nullable fingerprint for statically reachable project-local
+effective code. Reproduce owns its currentness meaning. Validation reads that
+state structurally but does not turn a mismatch or unavailable fingerprint into
+a validation check.
 
 The complete specification owns:
 
@@ -2769,12 +2771,14 @@ members without mutation. Reproduce separately reports stale, recipe-changed,
 and policy-relevant currentness. The parameter-only ID excludes CID, script,
 environment, roles, declarations, captures, policies, fingerprints, and
 observations; structural association and Reproduce currentness are therefore
-separate conclusions. A pending v6 record may retain only applicable
+separate conclusions. A pending v7 record may retain only applicable
 observation subsets while `requires_reproduction` is true. A record with that
 flag false requires a script observation and exact input/output observation
-keys as part of the closed execution-state schema.
+keys as part of the closed execution-state schema; its effective-code
+observation remains nullable because unsupported analysis is an explicit
+Reproduce-owned state.
 
-Validation accepts only strict `research-log-pyrun/v6` state. An earlier schema
+Validation accepts only strict `research-log-pyrun/v7` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.
 
@@ -2861,19 +2865,18 @@ physical target. Paths are normalized, bounded, and end in `.py`.
 
 The directly executed `script.path` is not duplicated in `code`. Existing
 legacy maps retain the eligible helper files recorded when they were created;
-the read-only compatibility path does not rewrite or relabel them. Current
-successful execution instead records the static set defined below. Both forms
-remain whole-file currentness dependencies with the same canonical paths and
-fingerprints. Repeated imports and aliases are deduplicated by resolved file
-identity while retaining one canonical logical path. Every output from one
-invocation receives the same complete `code` mapping. An empty mapping records
-that the execution has no retained helper dependency.
+the read-only compatibility path does not rewrite or relabel them. They remain
+whole-file observations only inside this legacy format. Repeated imports and
+aliases are deduplicated by resolved file identity while retaining one
+canonical logical path. Every output from one invocation receives the same
+complete `code` mapping. An empty mapping records that the legacy execution has
+no retained helper dependency. Current v7 state does not contain this map.
 
 Validation requires every logical code path to resolve to an existing regular
 file and rejects two keys that resolve to the same file. A missing or non-file
 target, or a duplicate resolved identity, is
-`provenance.output.code_invalid`. Reproduce compares current code fingerprints
-with the recorded mapping when currentness is relevant; a difference is a
+`provenance.output.code_invalid`. Legacy validation compares current code fingerprints
+with the recorded mapping when support currentness is relevant; a difference is a
 `code` field in `provenance.output.signature_mismatch`. Code observations use
 the shared fingerprint service and one resolved file observation is reused
 across output records and logical aliases. When currentness is evaluated,
@@ -2883,8 +2886,9 @@ evaluation completes.
 A projected output record associates with a reconstructed invocation only when its
 output identity, script path, ordered parameters, and direct input names
 match. The reproduction requirement and output, script, input, and code fingerprints are
-currentness rather than association fields. A mismatch is retained as a
-Reproduce-owned currentness conclusion, not a validation finding. Associated records for one
+currentness rather than association fields. Raw script fingerprint differences
+remain informational; output, input, and legacy code-map differences can enter
+the legacy signature mismatch. Associated records for one
 invocation must agree on their complete `code` mappings. Structurally valid
 associated support adds one `code` input edge from each recorded file to the
 invocation when that invocation enters the evidence-rooted graph. Thus an
@@ -2893,52 +2897,52 @@ connects its helpers for orphan classification without changing validation check
 Malformed, unavailable, inconsistent, or unmatched support adds no code edge
 and suppresses no helper orphan.
 
-#### Static Python Dependency Discovery
+#### Effective-Code Analysis
 
-Before launch, `pyrun` parses the direct script and recursively resolved
-log-local Python helpers with `ast`; it never imports or executes them. An entry
-script searches its own directory, the entry `scripts/` directory, and the log
-`scripts/` directory in that order. A log-level script searches its own
-directory and the log `scripts/` directory. A project script outside the log
-may resolve from its own directory, but only logical paths beneath the current
-maintained log are eligible dependencies. Ambient or explicitly assigned
-`PYTHONPATH`, arbitrary runtime search-path changes, sibling-entry search, and
-descendant entrypoints are not emulated. An explicit `PYTHONPATH` assignment
-therefore produces a static-analysis coverage warning.
+Before launch, `pyrun` parses the direct Python script and follows statically
+reachable project-local behavior through ordinary imports, referenced
+functions, methods, values, and resolvable child Python entrypoints. The
+analysis may cross the entire current Git project and stops at that boundary;
+external package implementation does not participate. It never imports or
+executes project code and writes no graph, manifest, cache, or source copy.
+A method absent from a project-local class hierarchy ends at the project
+boundary when every base path is statically resolved and at least one reaches
+an external base; the local call and its arguments remain in the normalized
+syntax.
 
-Ordinary absolute imports resolve modules, package `__init__.py` files, and
-concrete imported submodules under the first complete search root. Relative
-imports resolve from the current package. Cycles terminate at resolved file
-identity, aliases retain the lexicographically first canonical logical path,
-and every syntactic branch is traversed. Imports under false conditions,
-`TYPE_CHECKING`, and both arms of an import fallback are therefore included
-conservatively whether or not they execute.
+The fingerprint payload is deterministic project-relative normalized syntax.
+Comments, whitespace, formatting, source positions, unrelated modules, and
+unreachable definitions do not participate. Reachable bodies, defaults,
+decorators, import-time statements, values, aliases, callbacks, resolved
+methods including methods selected directly from a statically known
+constructor, cycles, classic packages, and namespace packages do. A direct
+`__file__` Python child invocation is the statically known current entrypoint.
+The closed fingerprint algorithm is `python-effective-code-sha256-v1`.
 
-The analyzer reports bounded nonblocking static-analysis coverage warnings for
-unresolved relative imports, unresolved imports beneath a recognized local
-package, parse and resource bounds, dynamic import and code execution,
-`sys.path` mutation, and subprocess or multiprocessing entrypoint patterns.
-Ordinary unresolved standard-library or installed-package imports are outside
-the log-local claim and do not warn merely for being external. Dynamic imports,
-runtime search-path changes, and separately launched Python scripts may be
-missed; conservative branches may add helpers that never execute. Those are
-accepted coverage tradeoffs, and no runtime-tracing fallback exists.
+Dynamic imports or generated code, runtime import-path mutation including an
+explicit `PYTHONPATH`, wildcard imports, unresolved project-local attribute or
+method dispatch whose complete base hierarchy cannot be proved to terminate
+externally, and
+unresolved child Python entrypoints make the whole analysis unsupported.
+Unsupported analysis returns no partial fingerprint and does not fall back to
+hashing a containing module. It retains at most 64 deterministically ordered
+actionable locations. The analyzer reads at most 256 source files and 1 MiB per
+source. Syntax, source identity/stability, project boundary, and resource-limit
+failures are operational errors rather than unsupported language results.
 
-Discovery publishes at most 256 helpers, parses at most 4,096 source work items,
-reads at most 1 MiB per source, and reports at most 64 warnings. Reaching a
-discovery bound retains the deterministic bounded set and warns without
-blocking launch. A resolved helper with unsupported syntax retains its own
-fingerprint but has no transitive-discovery claim.
+Command sync succeeds when analysis is unsupported and publishes bounded
+structured warnings naming the script, project-relative location, line,
+construct, and consequence. Ordinary `pyrun` emits no such warning, executes
+normally, and records `effective_code: null`. Reproduction treats a missing
+fingerprint like a mismatch for work selection while preserving the distinct
+`effective_code_unavailable` diagnosis.
 
-Each discovered path retains its logical path, resolved identity, and
-pre-launch SHA-256 fingerprint. After successful child execution, `pyrun`
-requires those paths, identities, and bytes to remain unchanged before output
-observation and publication. One resolved helper is observed once through the
-project fingerprint cache. Changed, missing, or unavailable selected code
-prevents publication. A failed run retains the prior whole execution and its
-historical helper map; the next successful run atomically replaces that map
-with the current static set. No state schema, migration, forced reproduction,
-or relabeling is part of this transition.
+For supported code, `pyrun` records one pre-launch fingerprint and recomputes
+it after successful child execution. A mismatch or operational failure prevents
+output/state publication. A failed run retains the prior whole execution; a
+successful stable run atomically publishes the new raw script, effective-code,
+input, and output observations. The raw script SHA-256 is retained as exact
+source information but is not code-currentness authority.
 
 `pyrun` resolves the command from its working entry and `data.json`. Successful
 execution, stable inputs and code, and complete output observations are required

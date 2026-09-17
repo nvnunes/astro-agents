@@ -8,6 +8,8 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Iterable
 
+from effective_code import EffectiveCodeError, analyze_effective_code
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
     DataFile,
@@ -50,6 +52,7 @@ from validation.pyrun_state import (
     empty_pyrun_state,
     load_pyrun_state,
     pending_execution,
+    script_target_path,
     validated_pyrun_serialization,
 )
 
@@ -98,6 +101,16 @@ class _PreparedCommand:
     declarations: tuple[CommandDeclaration, ...]
     invocations: tuple[Invocation, ...]
     failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
+
+
+@dataclass(frozen=True)
+class _PublicationCandidate:
+    """Complete generated command-sync state and diagnostics."""
+
+    data_text: str | None
+    pyrun_text: str
+    failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
+    warnings: tuple[dict[str, object], ...]
 
 
 def sync_command(
@@ -287,6 +300,7 @@ def _finish_command(
     )
     _require_output_safety(indexed, invocations, selected_invocations)
     _require_generated_boundaries(entry, prepared.before, data, arguments, invocations)
+    warnings = _effective_code_warnings(entry, project, selected_invocations)
     pyrun_text = _candidate_pyrun_text(
         entry,
         project,
@@ -296,9 +310,118 @@ def _finish_command(
     )
     data_text = data.canonical_json() if data is not None else None
     require_artifact_access(project, writes=data_change_paths(prepared.before, data))
-    if arguments.dry_run:
-        return _publish_candidates(entry, data_text, pyrun_text, failures, dry_run=True)
-    return _publish_candidates(entry, data_text, pyrun_text, failures, dry_run=False)
+    candidate = _PublicationCandidate(data_text, pyrun_text, failures, warnings)
+    return _publish_candidates(entry, candidate, dry_run=arguments.dry_run)
+
+
+def _effective_code_warnings(
+    entry: EntryContext,
+    project: Path,
+    invocations: tuple[Invocation, ...],
+) -> tuple[dict[str, object], ...]:
+    """Return bounded warnings for scripts that cannot be fingerprinted."""
+
+    result: list[dict[str, object]] = []
+    scripts: dict[Path, tuple[tuple[str, str], ...]] = {}
+    for invocation in invocations:
+        if invocation.script is None:
+            continue
+        scripts.setdefault(
+            script_target_path(
+                invocation.script,
+                entry_root=entry.root,
+                project_root=project,
+            ),
+            invocation.environment,
+        )
+    for script, environment in sorted(
+        scripts.items(), key=lambda item: item[0].as_posix()
+    ):
+        relative = _project_relative(script, project)
+        if "PYTHONPATH" in dict(environment):
+            result.append(
+                _effective_code_warning(
+                    relative,
+                    relative,
+                    0,
+                    "import_path_environment",
+                    "explicit PYTHONPATH changes project-local import resolution",
+                )
+            )
+            continue
+        try:
+            python_context = PythonExecutionContext.for_research_script(
+                script,
+                entry_root=entry.root,
+                log_root=entry.log.root,
+                project_root=project,
+            )
+            analysis = analyze_effective_code(
+                script,
+                project_root=project,
+                import_roots=python_context.import_roots,
+            )
+        except EffectiveCodeError as error:
+            raise ActionError(
+                "command.sync.effective_code.failed",
+                "effective-code analysis failed",
+                records=(
+                    {
+                        "code": error.code,
+                        "detail": error.detail,
+                        "line": error.line,
+                        "location": error.path,
+                        "script": relative,
+                    },
+                ),
+            ) from error
+        for item in analysis.unsupported:
+            result.append(
+                _effective_code_warning(
+                    relative,
+                    item.path,
+                    item.line,
+                    item.construct,
+                    item.detail,
+                )
+            )
+        if analysis.unsupported_truncated:
+            result.append(
+                _effective_code_warning(
+                    relative,
+                    relative,
+                    0,
+                    "unsupported_locations_truncated",
+                    "additional unsupported locations were omitted",
+                )
+            )
+    return tuple(result)
+
+
+def _effective_code_warning(
+    script: str, location: str, line: int, construct: str, detail: str
+) -> dict[str, object]:
+    return {
+        "code": "command.sync.effective_code.unsupported",
+        "consequence": (
+            "effective-code currentness and reproduction are unavailable until "
+            "the script and environment can be analyzed; run pyrun after repairing "
+            "the unsupported construct"
+        ),
+        "construct": construct,
+        "detail": detail,
+        "line": line,
+        "location": location,
+        "script": script,
+        "status": "warning",
+    }
+
+
+def _project_relative(path: Path, project: Path) -> str:
+    try:
+        return path.relative_to(project).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _candidate_pyrun_text(
@@ -379,9 +502,7 @@ def _candidate_pyrun_text(
 
 def _publish_candidates(
     entry: EntryContext,
-    data_text: str | None,
-    pyrun_text: str,
-    failures: tuple[tuple[str, CommandDiscoveryFailure], ...],
+    candidate: _PublicationCandidate,
     *,
     dry_run: bool,
 ) -> ActionResult:
@@ -392,15 +513,27 @@ def _publish_candidates(
         state_path.read_text(encoding="utf-8") if state_path.exists() else None
     )
     records: list[dict[str, object]] = [
-        _diff_record(data_path, before_data, data_text),
-        _diff_record(state_path, before_pyrun, pyrun_text),
+        _diff_record(data_path, before_data, candidate.data_text),
+        _diff_record(state_path, before_pyrun, candidate.pyrun_text),
     ]
-    records.extend(_failure_record(document, failure) for document, failure in failures)
-    changed = before_data != data_text or before_pyrun != pyrun_text
+    records.extend(candidate.warnings)
+    records.extend(
+        _failure_record(document, failure)
+        for document, failure in candidate.failures
+    )
+    changed = (
+        before_data != candidate.data_text
+        or before_pyrun != candidate.pyrun_text
+    )
     if not dry_run and changed:
         residue = begin_registry_transaction(entry.log.root, entry.id)
         try:
-            atomic_write_texts({data_path: data_text, state_path: pyrun_text})
+            atomic_write_texts(
+                {
+                    data_path: candidate.data_text,
+                    state_path: candidate.pyrun_text,
+                }
+            )
         except PublicationError as error:
             if error.rollback_complete:
                 finish_guarded_publication(residue)

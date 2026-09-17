@@ -54,6 +54,11 @@ from pathlib import Path
 from threading import Event
 from typing import Mapping
 
+from effective_code import (
+    EffectiveCodeError,
+    EffectiveCodeFingerprint,
+    analyze_effective_code,
+)
 from log_commands.authoring_transactions import resource_authority
 from log_commands.context import (
     EntryContext,
@@ -61,12 +66,7 @@ from log_commands.context import (
     parse_entry_directory_name,
 )
 from log_commands.storage import entry_lock
-from pyrun_code_dependencies import (
-    MAX_CODE_PATHS,
-    CodeDiscoveryError,
-    DiscoveredCodePath,
-    discover_code,
-)
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
     DataFile,
@@ -86,7 +86,6 @@ from research_log_reservations import (
 )
 from stream_capture import StreamCapture, StreamDestination
 from validation.commands import CommandDeclarationContext, index_commands
-from validation.filesystem import file_identity
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.operation_state import (
     OperationLockError,
@@ -102,7 +101,6 @@ from validation.pyrun_contract import (
 from validation.pyrun_outputs import (
     PyrunOutputsError,
     output_target_path,
-    portable_code_path,
     portable_output_path,
 )
 from validation.pyrun_state import (
@@ -126,15 +124,6 @@ RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 CAPTURE_POLL_SECONDS = 0.05
 CAPTURE_TERMINATION_SECONDS = 1.0
 CAPTURE_DRAIN_SECONDS = 10.0
-
-
-@dataclass(frozen=True)
-class _PreparedCodeObservation:
-    """One pre-launch static helper observation awaiting stability checks."""
-
-    path: DiscoveredCodePath
-    key: str
-    fingerprint: Fingerprint
 
 
 def usage() -> int:
@@ -329,14 +318,19 @@ def _execution_layout(
     )
 
 
-def _execution_environment(explicit: dict[str, str], root: Path) -> dict[str, str]:
+def _execution_environment(
+    explicit: dict[str, str],
+    root: Path,
+    python_context: PythonExecutionContext,
+) -> dict[str, str]:
     """Return the child environment with isolated runner-owned cache roots."""
 
     environment = os.environ.copy()
     environment.update(explicit)
     environment["MPLCONFIGDIR"] = str(root / "matplotlib")
     environment["XDG_CACHE_HOME"] = str(root / "cache")
-    return environment
+    environment["PYTHONPYCACHEPREFIX"] = str(root / "pycache")
+    return python_context.environment(environment)
 
 
 def _selected_values(
@@ -670,87 +664,57 @@ def _observe_output(
     return kind, observation.fingerprint
 
 
-def _prepare_code_observations(
+def _observe_effective_code(
+    script: Path,
     *,
-    entry: Path,
-    log: Path,
-    script_path: Path,
+    project: Path,
     explicit_env: Mapping[str, str],
-    fingerprint_cache: FingerprintCache,
-) -> tuple[_PreparedCodeObservation, ...]:
-    """Discover and fingerprint one bounded pre-launch static helper set."""
+    python_context: PythonExecutionContext,
+) -> Fingerprint | None:
+    """Return one complete effective-code observation, or none if unsupported."""
 
-    try:
-        discovery = discover_code(script_path, entry_root=entry, log_root=log)
-    except (CodeDiscoveryError, OSError) as error:
-        raise SystemExit(f"pyrun: dependency discovery failed: {error}") from error
     if "PYTHONPATH" in explicit_env:
-        print(
-            "pyrun: dependency coverage incomplete [import_path_environment] "
-            "<execution>: explicit PYTHONPATH roots are not followed",
-            file=sys.stderr,
+        return None
+    try:
+        result = analyze_effective_code(
+            script,
+            project_root=project,
+            import_roots=python_context.import_roots,
         )
-    for warning in discovery.warnings:
-        location = warning.path + (f":{warning.line}" if warning.line else "")
-        print(
-            "pyrun: dependency coverage incomplete "
-            f"[{warning.code}] {location}: {warning.detail}",
-            file=sys.stderr,
-        )
-    prepared: list[_PreparedCodeObservation] = []
-    for path in discovery.paths:
-        try:
-            key = portable_code_path(path.logical, entry_root=entry)
-            current = path.resolved.stat()
-            fingerprint = fingerprint_cache.observe_regular_file(path.resolved)
-            final = path.resolved.stat()
-        except PyrunOutputsError as error:
-            raise SystemExit(f"pyrun: {error}") from error
-        except (OSError, FingerprintCacheError) as error:
-            raise SystemExit(
-                f"pyrun: could not observe static code {path.logical}: {error}"
-            ) from error
-        if (
-            path.logical.resolve(strict=True) != path.resolved
-            or file_identity(current) != path.identity
-            or file_identity(final) != path.identity
-        ):
-            raise SystemExit(
-                f"pyrun: static code changed during discovery: {path.logical}"
-            )
-        prepared.append(_PreparedCodeObservation(path, key, fingerprint.fingerprint))
-    if len(prepared) > MAX_CODE_PATHS:
-        raise AssertionError("static discovery exceeded its helper bound")
-    return tuple(prepared)
+    except EffectiveCodeError as error:
+        raise SystemExit(f"pyrun: effective-code analysis failed: {error}") from error
+    return _effective_fingerprint(result.fingerprint)
 
 
-def _confirm_code_observations(
-    prepared: tuple[_PreparedCodeObservation, ...],
+def _effective_fingerprint(
+    value: EffectiveCodeFingerprint | None,
+) -> Fingerprint | None:
+    return (
+        Fingerprint(value.algorithm, digest=value.digest) if value is not None else None
+    )
+
+
+def _confirm_effective_code(
+    expected: Fingerprint | None,
+    script: Path,
     *,
-    fingerprint_cache: FingerprintCache,
-) -> tuple[tuple[str, Fingerprint], ...]:
-    """Require pre-launch static helper paths and bytes to remain unchanged."""
+    project: Path,
+    explicit_env: Mapping[str, str],
+    python_context: PythonExecutionContext,
+) -> Fingerprint | None:
+    """Require supported effective code to remain stable through execution."""
 
-    result: list[tuple[str, Fingerprint]] = []
-    for item in prepared:
-        try:
-            resolved = item.path.logical.resolve(strict=True)
-            current = item.path.resolved.stat()
-            fingerprint = fingerprint_cache.observe_regular_file(item.path.resolved)
-            final = item.path.resolved.stat()
-        except (OSError, FingerprintCacheError) as error:
-            raise SystemExit(
-                f"pyrun: could not re-observe static code {item.key}: {error}"
-            ) from error
-        if (
-            resolved != item.path.resolved
-            or file_identity(current) != item.path.identity
-            or file_identity(final) != item.path.identity
-            or fingerprint.fingerprint != item.fingerprint
-        ):
-            raise SystemExit(f"pyrun: static code changed during execution: {item.key}")
-        result.append((item.key, item.fingerprint))
-    return tuple(result)
+    if expected is None:
+        return None
+    current = _observe_effective_code(
+        script,
+        project=project,
+        explicit_env=explicit_env,
+        python_context=python_context,
+    )
+    if current != expected:
+        raise SystemExit("pyrun: effective code changed during execution; rerun")
+    return current
 
 
 def _command_markdown(
@@ -830,11 +794,10 @@ def _confirm_execution_materials(
     expected_script: Fingerprint,
     data: DataFile | None,
     inputs: dict[str, Fingerprint],
-    code: tuple[_PreparedCodeObservation, ...],
     cache: FingerprintCache,
     *,
     stage: str = "execution",
-) -> tuple[tuple[str, Fingerprint], ...]:
+) -> None:
     """Recheck expensive observations unlocked, after reserving or executing."""
 
     try:
@@ -853,7 +816,6 @@ def _confirm_execution_materials(
         raise SystemExit(
             f"pyrun: could not re-observe execution materials: {error}"
         ) from error
-    return _confirm_code_observations(code, fingerprint_cache=cache)
 
 
 def main(argv: list[str]) -> int:
@@ -919,17 +881,16 @@ def main(argv: list[str]) -> int:
             script_path = script_target_path(
                 script_identity, entry_root=entry, project_root=root
             )
+            python_context = PythonExecutionContext.for_research_script(
+                script_path,
+                entry_root=entry,
+                log_root=log,
+                project_root=root,
+            )
             try:
                 script_observation = fingerprint_cache.observe_regular_file(script_path)
             except FingerprintCacheError as error:
                 raise SystemExit(f"pyrun: could not observe script: {error}") from error
-            prepared_code = _prepare_code_observations(
-                entry=entry,
-                log=log,
-                script_path=script_path,
-                explicit_env=explicit_env,
-                fingerprint_cache=fingerprint_cache,
-            )
             resolved_arguments = []
             for arg in script_args:
                 if material_roles.get(arg) == "output":
@@ -996,7 +957,6 @@ def main(argv: list[str]) -> int:
                         (
                             *input_paths,
                             script_path,
-                            *(item.path.resolved for item in prepared_code),
                         ),
                         tuple(path for path, _ in output_paths.values()),
                     )
@@ -1012,11 +972,20 @@ def main(argv: list[str]) -> int:
                     script_observation.fingerprint,
                     data,
                     observed_inputs,
-                    prepared_code,
                     fingerprint_cache,
                     stage="preparation",
                 )
-                environment = _execution_environment(explicit_env, Path(temporary))
+                effective_code = _observe_effective_code(
+                    script_path,
+                    project=root,
+                    explicit_env=explicit_env,
+                    python_context=python_context,
+                )
+                environment = _execution_environment(
+                    explicit_env,
+                    Path(temporary),
+                    python_context,
+                )
                 environment["TMPDIR"] = scratch
                 returncode = _run_with_captures(
                     [
@@ -1035,13 +1004,19 @@ def main(argv: list[str]) -> int:
                 if returncode != 0:
                     return returncode
             require_worker_finished(root, reservation.identity)
-            code_support = _confirm_execution_materials(
+            _confirm_execution_materials(
                 script_path,
                 script_observation.fingerprint,
                 data,
                 observed_inputs,
-                prepared_code,
                 fingerprint_cache,
+            )
+            effective_code = _confirm_effective_code(
+                effective_code,
+                script_path,
+                project=root,
+                explicit_env=explicit_env,
+                python_context=python_context,
             )
             observed_outputs: dict[str, Fingerprint] = {}
             output_kinds: dict[str, str] = {}
@@ -1093,7 +1068,7 @@ def main(argv: list[str]) -> int:
             observed = ObservedExecution(
                 script_observation.fingerprint,
                 tuple(sorted(observed_inputs.items())),
-                code_support,
+                effective_code,
                 tuple(sorted(observed_outputs.items())),
             )
             completed_at = (

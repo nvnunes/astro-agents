@@ -41,6 +41,7 @@ from .reproduction_invocation import (
 )
 from .reproduction_job_control import (
     JobStoreError,
+    JobStoreUnsupportedError,
     RunOwner,
     RunResumeRequest,
     RunStopRequest,
@@ -662,6 +663,8 @@ def _require_no_recovery_exclusion(
                 run_id = job.accepted.run_id
             if plan.summary != _summary_identity(log):
                 continue
+        except JobStoreUnsupportedError:
+            continue
         except JobStoreError as error:
             raise ActionError("reproduction.recovery.invalid", str(run_root)) from error
         if run_id == ignore_recovery_run_id:

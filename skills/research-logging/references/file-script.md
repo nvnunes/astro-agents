@@ -28,10 +28,21 @@ change a recorded command's output, preserve the old interface or add a
 versioned one. If code must be frozen, snapshot only the entry adapter or
 configuration.
 
-Use ordinary imports or ordinary Python child invocations for
-evidence-affecting Python code beneath the maintained log. `pyrun`
-automatically records the log-local source files that execute; do not use an
-execution mechanism that bypasses that observation.
+Use ordinary imports or statically resolvable Python child invocations for
+evidence-affecting project-local Python code. `pyrun` records one normalized
+fingerprint for the statically reachable code tree without importing or
+executing it. For every research command, ordinary execution, verification,
+reproduction, and analysis use the same import order: the executing script's
+directory, the owning entry's `scripts/`, the owning log's `scripts/`, then the
+project root. Repeated roots are removed. This is runner-owned context, not
+recipe environment; do not recreate it with `sys.path` or `PYTHONPATH`.
+Dynamic imports, runtime import-path mutation, wildcard imports, unresolved
+project-local dispatch whose complete base hierarchy cannot be proved to
+terminate externally, and unresolved child entrypoints leave the fingerprint
+unavailable; do not use those mechanisms when code currentness is required.
+Calls inherited through fully resolved base paths from an external base are
+valid terminal calls: their local syntax participates, but external package
+implementation does not.
 
 When generation is expensive or stochastic, or its output supports multiple
 results, use separate `generate or record -> retained artifact -> analyze or
@@ -62,7 +73,9 @@ input. It must not follow paths stored in those files to select additional
 inputs; pass those inputs explicitly. Use existing directory-member tokens when
 one declared member is the intended input. Do not make ordinary analysis
 scripts read the input registry or add an embedded-path resolver or discovery
-framework. Direct Python execution supplies no runner behavior.
+framework. Direct Python execution supplies no runner path, recording, or
+isolation behavior. Run retained commands through `pyrun`, verification, or
+reproduction.
 
 ## Temporary Files
 
@@ -79,11 +92,13 @@ them accordingly. Every relaunch receives new scratch.
 
 ## Code And Helper Locations
 
-Locate local helpers relative to `__file__` when needed. Keep code discovery
+Use ordinary imports for local helpers. Use `__file__` only when a static child
+entrypoint or another non-import code path must be located. Keep code discovery
 independent of data arguments and Git-root discovery. `__file__` may anchor
-local code and helper discovery, but it must not reconstruct retained data
-locations. Git-root discovery likewise must not substitute for explicit input
-or output arguments.
+local code and helper discovery, including direct self-reexecution through the
+active Python interpreter, but it must not reconstruct retained data locations.
+Git-root discovery likewise must not substitute for explicit input or output
+arguments.
 
 Repair missing declarations and helper imports through existing mechanisms.
 

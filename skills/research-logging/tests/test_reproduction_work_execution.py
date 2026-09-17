@@ -49,7 +49,11 @@ from log_commands.reproduction_work_job import (
     create_work_job,
     open_work_job,
 )
-from reproduction_planning_test_support import _fingerprint, _Fixture
+from reproduction_planning_test_support import (
+    _effective_fingerprint,
+    _fingerprint,
+    _Fixture,
+)
 from test_reproduction_canonical_records import WHEN
 from validation.engine import (
     EvaluationRequest,
@@ -109,6 +113,7 @@ class NativeExecutionTests(unittest.TestCase):
         directory_output=False,
         uncited_second=False,
         attach=True,
+        log_helper: str | None = None,
     ):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -141,6 +146,13 @@ class NativeExecutionTests(unittest.TestCase):
             *(name for name in outputs if not (uncited_second and name == "second")),
         )
         identity, authored = fixture.execution(entry, "producer", {"raw": raw}, outputs)
+        if log_helper is not None:
+            log_scripts = fixture.log_root / "scripts"
+            log_scripts.mkdir(exist_ok=True)
+            (log_scripts / "shared_helper.py").write_text(
+                log_helper,
+                encoding="utf-8",
+            )
         if directory_output:
             output.unlink()
             output.mkdir()
@@ -196,7 +208,11 @@ class NativeExecutionTests(unittest.TestCase):
                     replace(
                         authored,
                         observed=replace(
-                            authored.observed, script=_fingerprint(script_path)
+                            authored.observed,
+                            script=_fingerprint(script_path),
+                            effective_code=_effective_fingerprint(
+                                script_path, project
+                            ),
                         ),
                     ),
                 )
@@ -232,6 +248,32 @@ class NativeExecutionTests(unittest.TestCase):
                     )
                 )
         return fixture, work, workspace, output
+
+    def test_native_execution_uses_the_log_shared_import_context(self):
+        fixture, work, workspace, retained = self.prepare(
+            "import argparse\nfrom pathlib import Path\n"
+            "from shared_helper import render\n"
+            "p=argparse.ArgumentParser()\np.add_argument('--input-data')\n"
+            "p.add_argument('--output-data')\na=p.parse_args()\n"
+            "Path(a.output_data).write_text(render(Path(a.input_data).read_text()))\n",
+            log_helper="def render(value):\n    return value.upper()\n",
+        )
+
+        result = execute_work_recipe(
+            fixture.log,
+            work.identity,
+            workspace,
+            WorkExecutionControl(
+                "native-grant",
+                lambda: None,
+                confinement=TestConfinement(),
+            ),
+        )
+
+        self.assertIs(result.outcome, CommandOutcome.SUCCEEDED)
+        regenerated = workspace.map_source(retained)
+        self.assertEqual(regenerated.read_text(), "INPUT")
+        self.assertEqual(retained.read_text(), "baseline")
 
     def test_native_scheduler_admits_real_process_and_reconciles_terminal_grant(self):
         fixture, work, workspace, retained = self.prepare(

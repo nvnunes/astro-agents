@@ -17,10 +17,10 @@ and publication behavior remain distinct from presentation.
 
 ### Canonical Records And Versions
 
-The current formats are plan/12, result/12, job-store 4 and shared-store 20.
-Execution-state, worker, scheduler and comparison families retain their existing
-versions. No obsolete reproduction record is decoded, migrated or resumed.
-Unsupported saved results require a new
+The current formats are plan/13, result/13, job-store 5 and shared-store 21.
+Execution state is `research-log-pyrun/v7`; worker, scheduler and comparison
+families retain their existing versions. No obsolete reproduction result or job
+is decoded, migrated or resumed. Unsupported saved results require a new
 `log reproduce run --path LOG --recheck`.
 
 An execution identity is the closed compound object `entry`, `cid`,
@@ -125,9 +125,9 @@ The closed mechanical problem codes are `baseline_unavailable`,
 `evidence_comparison_failed`, `evidence_context_changed`, `generation_failed`,
 `graph_limit`, `missing_input`,
 `missing_producer`, `multiple_producers`, `output_materialization_failed`,
-`output_missing`, `participating_code_changed`, `participating_code_unavailable`,
+`output_missing`, `effective_code_changed`, `effective_code_unavailable`,
 `reproduction.input.unavailable`, `resource_limit`, `safety_failure`,
-`script_changed`, `script_unavailable`, `unsupported_format`, `validation_blocked`.
+`unsupported_format`, `validation_blocked`.
 Policy, dependency effects, stop/cleanup and operational `reproduction.run.invalid`
 are not additional research-problem codes.
 
@@ -164,7 +164,7 @@ runtime diagnosis cannot mutate the accepted plan. Terminal results retain their
 own canonical digests and exact command/artifact relationships. Transaction and
 operational checkpoint ownership remain with the job store.
 
-The native Job4 executor, `execute_work_recipe`, runs only same-identity
+The native Job5 executor, `execute_work_recipe`, runs only same-identity
 frozen accepted work under the existing process, confinement, source/input and
 materialization guards. Native command result/problem and exited worker state
 commit atomically before scratch cleanup and caller-owned scheduler release.
@@ -245,8 +245,9 @@ canonical summary, confirmation time and domain generation; it invents no run or
 execution. Saved summary/report show confirmed zero totals, lists are empty and
 explicit run IDs remain missing. Absent or supported history remains unchanged.
 A receipt retry can recover an interrupted report write, and normal publication
-removes the receipt. Version 20 is the single replacement format, including this
-receipt table; incomplete staged schemas are not supported or migrated.
+removes the receipt. Version 21 is the single current replacement format,
+including this receipt table. Version 20 and incomplete staged schemas are
+obsolete, unsupported, and replaced without decoding or migration.
 
 Detail pages known recipe/result/diagnosis/output collections using `--section`
 and `--cursor`. Each page returns at most 50 items, exact matched/returned/remaining
@@ -536,14 +537,14 @@ Missing retained diagnostics are availability fields, not a different outcome.
 
 | Surface | Current version |
 | --- | --- |
-| Execution state | `research-log-pyrun/v6` |
+| Execution state | `research-log-pyrun/v7` |
 | Execution identity | `pyrun-exec/v2` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Accepted plan | `research-log-reproduction-plan/12` |
-| Saved run | `research-log-reproduction-result/12` |
-| Durable job | run-local `state.sqlite`, user_version 4 |
-| Shared results | `<log>/.cache/results.sqlite`, user_version 19 without reproduction, 20 with native reproduction |
+| Accepted plan | `research-log-reproduction-plan/13` |
+| Saved run | `research-log-reproduction-result/13` |
+| Durable job | run-local `state.sqlite`, user_version 5 |
+| Shared results | `<log>/.cache/results.sqlite`, user_version 19 without reproduction, 21 with current reproduction; version 20 reproduction is unsupported and replaced only by explicit recheck |
 | Operational status | `research-log-reproduction-status/7` |
 | Project scheduler | `reproduction-scheduler.sqlite`, user_version 2 |
 | Comparison | `research-log-reproduction-comparison/1` |
@@ -574,7 +575,9 @@ Limits are fixed contracts, not dynamically chosen from the current corpus.
 | Direct inputs per execution | 128 |
 | Outputs per execution | 256 |
 | Explicit environment variables per execution | 64 |
-| Participating code paths per execution | 256 |
+| Effective-code source files per analysis | 256 |
+| Bytes per effective-code source file | 1 MiB |
+| Reported unsupported effective-code locations | 64 |
 | Bytes per ordinary string | 8 KiB |
 | Bytes per normalized path | 2 KiB |
 
@@ -694,7 +697,7 @@ after a stable successful publication, records those observations in its own
 execution. It must not refuse merely because another execution observed older
 bytes, and it must not certify an altered upstream producer or rewrite any
 other execution. Reproduction instead confirms one recorded execution against
-its retained inputs, script/code, and outputs; altered retained material
+its retained inputs, effective code, and outputs; altered retained material
 rejects confirmation. Promotion publishes a selected regenerated output set,
 but neither promotes a new declaration identity nor accepts a new evidence
 artifact baseline. Evidence comparison and provenance are independent: a
@@ -730,7 +733,7 @@ exactly:
 
 ```json
 {
-  "schema": "research-log-pyrun/v6",
+  "schema": "research-log-pyrun/v7",
   "commands": {
     "build-results": {
       "executions": {
@@ -766,8 +769,9 @@ exactly:
             "inputs": {
               "catalog": {"algorithm": "sha256", "digest": "..."}
             },
-            "code": {
-              "scripts/helpers.py": {"algorithm": "sha256", "digest": "..."}
+            "effective_code": {
+              "algorithm": "python-effective-code-sha256-v1",
+              "digest": "..."
             },
             "outputs": {
               "data/results.csv": {"algorithm": "sha256", "digest": "..."},
@@ -846,18 +850,45 @@ requiring the authored command to use the canonical spelling before
 reproduction. The binding projection is derived wholly from `parameters` and
 `outputs`, both already covered by the execution identity.
 
-`observed` has exactly `script`, `inputs`, `code`, and `outputs`:
+`observed` has exactly `script`, `inputs`, `effective_code`, and `outputs`:
 
-- `script` is the fingerprint of the directly executed script.
+- `script` is the raw-byte fingerprint of the directly executed script. It is
+  retained as exact-source provenance and diagnostic context, but never by
+  itself selects reproduction or clears a reproduction requirement.
 - `inputs` maps every recipe input name to its execution-time fingerprint.
-- `code` maps every eligible participating local Python source other than the
-  directly executed script to its pre-launch fingerprint, using the static
-  local-code-dependency path, stability, and warning rules owned by the
-  mechanical validator specification. Historical runtime-observed maps retain
-  the same structural and currentness meaning until successful execution
-  replaces them.
+- `effective_code` is either one
+  `python-effective-code-sha256-v1` fingerprint or `null`. The fingerprint
+  covers normalized syntax for statically reachable Python behavior from the
+  direct script through project-local imports, functions, methods, values, and
+  child Python entrypoints. Traversal may cross the whole current Git project
+  and stops at its boundary. External package implementation does not
+  participate. A method absent from a project-local class hierarchy terminates
+  at that boundary when every base path is statically resolved and at least one
+  reaches an external base; the call syntax and arguments remain part of the
+  local fingerprint.
+  Comments, formatting, source positions, and unreachable local definitions do
+  not participate.
 - `outputs` maps every recipe output identity to its execution-time
   fingerprint.
+
+The runner derives one import context for the command and gives it unchanged to
+ordinary execution, verification, reproduction, and analysis. Resolution is
+ordered from the executing script's directory through the owning entry's
+`scripts/`, the owning log's `scripts/`, and the project root, with duplicate
+roots removed. These roots are private runner state: they are neither authored
+environment nor persisted metadata. Explicit authored `PYTHONPATH` remains
+unsupported because it changes this resolution contract.
+
+The analyzer parses source; it never imports or executes project code. Dynamic
+imports or generated code, source-level runtime import-path mutation, wildcard
+imports, unresolved dispatch whose complete base hierarchy cannot be proved to
+terminate externally, and unresolved child Python entrypoints are unsupported. Unsupported analysis
+never emits a partial fingerprint or a whole-module fallback: `effective_code`
+is `null`. Ordinary `pyrun` remains silent and executes. Command sync succeeds
+but reports bounded structured warnings with the affected location and the
+consequence that code currentness and reproduction are unavailable until the
+source is made analyzable and `pyrun` is run again. Operational analysis
+failures remain errors.
 
 A commit-pinned `git-repository` input remains a `data.json` origin. Its recipe
 input is still the data name, and its observed value uses the inherited exact
@@ -867,15 +898,18 @@ recorded commit; it must not substitute the current checkout or a branch tip.
 For a confirmed execution whose `requires_reproduction` is false, the recipe
 and observed input/output key sets agree exactly and `script` is present. A
 record requiring reproduction may contain a subset of still-applicable input
-and output observations and may set `script` to null; code observations require
-a retained script observation. Missing historical observations are unavailable
-history, never current evidence or a match. Every fingerprint uses the closed
+and output observations and may set `script` or `effective_code` to null.
+Missing effective code has the same reproduction-selection effect as a
+nonmatching fingerprint, while remaining the distinct
+`effective_code_unavailable` diagnosis. Missing historical observations are
+unavailable history, never current evidence or a match. Every fingerprint uses the closed
 forms owned by the mechanical validator specification. `data.json` remains the
 sole owner of input paths, classifications, and identity selection;
 `pyrun.json` owns the historical observations that reproduction compares.
 
 The fixed file, execution, parameter, string, input, output, environment, and
-code limits are defined in [Fixed Resource Bounds](#fixed-resource-bounds).
+effective-code analysis limits are defined in
+[Fixed Resource Bounds](#fixed-resource-bounds).
 Exceeding a bound is invalid state; readers must not truncate it.
 
 ### Execution Identity
@@ -969,12 +1003,15 @@ current execution owner.
 Ordinary `pyrun` publishes only after:
 
 1. the child exits successfully;
-2. the script, direct inputs, and observed local Python code remain stable;
+2. the direct script bytes and inputs remain stable, and a supported
+   effective-code fingerprint remains equal before and after execution;
 3. every declared output exists with the declared kind and can be observed
    completely; and
 4. the new execution passes the production decoder, identity, and output-set
    checks, and its outputs do not overlap any other owner in the validated
    freshly read publication state.
+
+Unsupported effective code remains null and does not block ordinary `pyrun`.
 
 A successful identical recipe atomically replaces its observed state. A
 successful new recipe whose output set overlaps another execution owner is
@@ -1120,7 +1157,7 @@ complete unified diffs without writing registries, diagnostics, or caches.
 
 ### Execution-Metadata Schema
 
-Entry-local execution state accepts only strict `research-log-pyrun/v6`.
+Entry-local execution state accepts only strict `research-log-pyrun/v7`.
 Current command records require the complete `parameter_roles` map. Their
 execution IDs and source digests support fresh incremental selection only; they
 are not execution authority for current state. Resume reloads the immutable
@@ -1144,9 +1181,26 @@ reader, or conversion tooling remains in the final runtime. Reusable docs and
 tests cover only the current data/evidence contracts; historical conversion
 fixtures, if needed, belong only to that disposable conversion work.
 
-This cutover does not remove the separate execution-state compatibility
-contract. Current `pyrun.json` requires `research-log-pyrun/v6`; mechanical
-validation retains the read-only
+Execution state was replaced from v6 to v7 by a one-time, plan-owned migration.
+That migration preserved every recipe, policy, timestamp, raw script, input and
+output observation; replaced each per-file code map with a current nullable
+effective-code fingerprint; and set every execution to
+`requires_reproduction: true`. After the runner-owned import context and
+maintained-script cleanup were complete, the same plan-owned utility refreshed
+all 51 Girmos registries and 1,029 executions: 1,029 supported observations and
+zero unsupported observations, with all 1,029 still requiring reproduction. No
+maintained reproduction was launched. Ordinary runtime readers accept only v7;
+there is no v6 compatibility reader or runtime migration path.
+
+The same replacement boundary advanced accepted plans and saved runs to v13,
+durable jobs to user version 5, and the shared reproduction domain to user
+version 21. Version-20 saved reproduction rows and version-4 jobs are not
+decoded, translated, or resumed. Validation and command-diagnostic domains in
+a version-20 shared store remain readable; explicit
+`log reproduce run --path LOG --recheck` replaces only the obsolete
+reproduction domain.
+
+Mechanical validation separately retains the read-only
 [Legacy Output Records](research-log-mechanical-validator-spec.md#legacy-output-records)
 path for `pyrun-outputs.json` when no current file exists. That reader grants no
 execution or conversion authority. A current observation may not be copied
@@ -1185,8 +1239,10 @@ unchanged prior failed/block source closure is not retried. `--include-all`
 allows nonautomatic work but does not independently retry an unchanged failure.
 `--recheck` retries current work without bypassing policy; use both flags when
 explicitly reproducing all recorded recipes. Required upstream changes propagate
-to downstream selected work in deterministic dependency order. Participating
-script/code/input changes invalidate the complete command source closure;
+to downstream selected work in deterministic dependency order. Effective-code
+and input changes invalidate the complete command source closure. A changed
+raw script fingerprint alone does not. An unavailable effective-code fingerprint
+selects and blocks work like a mismatch while retaining its distinct diagnosis;
 comparison definitions and baseline observations qualify comparison reuse, not
 execution success. Saved inspection never recomputes this live currentness.
 
@@ -1194,7 +1250,7 @@ execution success. Saved inspection never recomputes this live currentness.
 
 ### Run-Local Output Workspace
 
-Every job executes retained scripts and participating code directly from their
+Every job executes retained scripts and project-local effective code directly from their
 current verified locations under read-only confinement. It does not copy the
 project. Each run owns an initially empty output workspace that mirrors only
 the project-relative, log-relative, and entry-relative directories required by
@@ -1237,8 +1293,9 @@ output argument spelling require repair. Direct Python execution gains no
 runner resolution or recording behavior.
 
 Recipes execute from the workspace's mirrored entry directory using the
-project-local Python and recorded environment. Each attempt receives distinct
-runtime cache and diagnostic roots. `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and
+project-local Python, recorded environment, and the same runner-owned import
+context used for analysis. Each attempt receives distinct runtime cache and
+diagnostic roots. `PYTHONPYCACHEPREFIX`, `MPLCONFIGDIR`, `XDG_CACHE_HOME`, and
 `MATLAB_PREFDIR` remain under its runtime root.
 
 Direct execution and reproduction use the same bounded byte-copy, independent
@@ -1286,7 +1343,7 @@ producer checkpoint is durable. The supervisor performs atomic materialization
 into shared dependency locations. Independent executions in the same entry may
 run concurrently when their logical output, input, and writable claims do not
 conflict; a resumed stopped attempt reuses its original run path and receives
-new scratch. Retained scripts, participating code, inputs, boundaries,
+new scratch. Retained scripts, project-local effective code, inputs, boundaries,
 comparison baselines, and the project-local environment remain read-only.
 A script that ignores a substituted output and attempts an unrelated write
 fails at runtime; static inspection never substitutes for confinement.

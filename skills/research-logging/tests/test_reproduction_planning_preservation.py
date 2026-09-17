@@ -20,7 +20,12 @@ from log_commands.reproduction_completed_run import RunCompletion, complete_save
 from log_commands.reproduction_domain import CommandOutcome, WorkSelection
 from log_commands.reproduction_invocation import ReproductionRuntime
 from log_commands.reproduction_saved_storage import publish_saved_run
-from reproduction_planning_test_support import _fingerprint, _Fixture, prepare_plan
+from reproduction_planning_test_support import (
+    _effective_fingerprint,
+    _fingerprint,
+    _Fixture,
+    prepare_plan,
+)
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import Fingerprint, InputResource, observe_fingerprint
 from test_reproduction_canonical_records import WHEN, attempted
@@ -297,7 +302,9 @@ class NativePlanningPreservationTests(unittest.TestCase):
                     ObservedExecution(
                         _fingerprint(producer_script),
                         (("raw", _fingerprint(raw)),),
-                        (),
+                        _effective_fingerprint(
+                            producer_script, fixture.root.resolve()
+                        ),
                         (
                             (
                                 "data/bundle",
@@ -468,7 +475,7 @@ class NativePlanningPreservationTests(unittest.TestCase):
                 ObservedExecution(
                     upstream[1].observed.script,
                     upstream[1].observed.inputs,
-                    (),
+                    upstream[1].observed.effective_code,
                     (("<project>/shared/upstream.txt", _fingerprint(shared)),),
                 ),
             )
@@ -567,7 +574,7 @@ class NativePlanningPreservationTests(unittest.TestCase):
                 (raw_second, "raw second"),
                 (first_output, "first"),
                 (second_output, "second"),
-                (participating_code, "# shared"),
+                (participating_code, "VALUE = 1\n"),
             ):
                 path.write_text(value, encoding="utf-8")
 
@@ -590,13 +597,18 @@ class NativePlanningPreservationTests(unittest.TestCase):
                 {"raw_first": raw_first},
                 {"first": first_output},
             )
+            first_script = entry.root / first[1].recipe.script
+            first_script.write_text("import shared\n", encoding="utf-8")
             first = (
                 first[0],
                 replace(
                     first[1],
                     observed=replace(
                         first[1].observed,
-                        code=(("scripts/shared.py", _fingerprint(participating_code)),),
+                        script=_fingerprint(first_script),
+                        effective_code=_effective_fingerprint(
+                            first_script, fixture.root.resolve()
+                        ),
                     ),
                 ),
             )
@@ -613,14 +625,17 @@ class NativePlanningPreservationTests(unittest.TestCase):
             unchanged = prepare_plan(fixture, entry)
             self.assertEqual(run_ids(unchanged), [])
 
-            first_script = entry.root / first[1].recipe.script
-            first_script.write_text("# first changed\n", encoding="utf-8")
+            first_script.write_text("import shared\nVALUE = 1\n", encoding="utf-8")
             first = (
                 first[0],
                 replace(
                     first[1],
                     observed=replace(
-                        first[1].observed, script=_fingerprint(first_script)
+                        first[1].observed,
+                        script=_fingerprint(first_script),
+                        effective_code=_effective_fingerprint(
+                            first_script, fixture.root.resolve()
+                        ),
                     ),
                 ),
             )
@@ -632,14 +647,16 @@ class NativePlanningPreservationTests(unittest.TestCase):
             )
             seed_success(fixture, script_changed)
 
-            participating_code.write_text("# shared changed", encoding="utf-8")
+            participating_code.write_text("VALUE = 2\n", encoding="utf-8")
             first = (
                 first[0],
                 replace(
                     first[1],
                     observed=replace(
                         first[1].observed,
-                        code=(("scripts/shared.py", _fingerprint(participating_code)),),
+                        effective_code=_effective_fingerprint(
+                            first_script, fixture.root.resolve()
+                        ),
                     ),
                 ),
             )

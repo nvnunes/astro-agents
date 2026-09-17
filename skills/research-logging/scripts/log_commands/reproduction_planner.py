@@ -8,6 +8,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
+from effective_code import (
+    EffectiveCodeAnalysis,
+    EffectiveCodeError,
+    UnsupportedLocation,
+    analyze_effective_code,
+)
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DATA_SCHEMA,
     DataFile,
@@ -25,7 +32,7 @@ from validation.evidence_comparison import (
     evidence_comparison_definition,
 )
 from validation.provenance import ProducerCurrentness
-from validation.pyrun_outputs import code_target_path, output_target_path
+from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PyrunExecution,
     PyrunFile,
@@ -58,6 +65,7 @@ from .reproduction_domain import (
     ExecutionRef,
     ProblemStage,
     ReproductionProblem,
+    SourceLocation,
     SourceRef,
     WorkSelection,
 )
@@ -215,6 +223,10 @@ class _PlanningState:
         default_factory=lambda: defaultdict(list)
     )
     recorded_execution_materials: set[ExecutionKey] = field(default_factory=set)
+    effective_code_observations: dict[
+        tuple[Path, bool, tuple[Path, ...]],
+        EffectiveCodeAnalysis | EffectiveCodeError,
+    ] = field(default_factory=dict)
     visiting: list[ExecutionKey] = field(default_factory=list)
     visited: set[ExecutionKey] = field(default_factory=set)
     cycle_members: set[ExecutionKey] = field(default_factory=set)
@@ -886,31 +898,9 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         project_root=state.project_root,
     )
     failures: list[tuple[str, str]] = []
-    if execution.observed.script is None:
-        problem = ReproductionProblem(
-            SourceRef(script.resolve().as_posix()),
-            "script_unavailable",
-            ProblemStage.PREPARE,
-            f"No recorded fingerprint is available for script {script}.",
-            {
-                "path": script.resolve().as_posix(),
-                "expected": None,
-                "availability": "missing-recorded-observation",
-            },
-        )
-        _retain_preparation_problem(state, owner.key, problem)
-        failures.append(("script", "missing_observation"))
-    else:
-        failure = _record_source_material(
-            state, owner, script, "script", execution.observed.script
-        )
-        if failure is not None:
-            failures.append((failure.code, failure.explanation))
-    for name, fingerprint in execution.observed.code:
-        path = code_target_path(name, entry_root=owner.entry.context.root)
-        failure = _record_source_material(state, owner, path, "code", fingerprint)
-        if failure is not None:
-            failures.append((failure.code, failure.explanation))
+    source_failure = _record_effective_code(state, owner, script)
+    if source_failure is not None:
+        failures.append((source_failure.code, source_failure.explanation))
     for output, kind in execution.recipe.outputs:
         fingerprint = dict(execution.observed.outputs)[output]
         target = (
@@ -939,77 +929,146 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         state.blocked.add(owner.key)
 
 
-def _observation_resource(
-    name: str, kind: str, location: str, fingerprint: Fingerprint
-) -> InputResource:
-    """Adapt an observed fingerprint for read-only current-byte comparison."""
-
-    identity = ResourceIdentity(
-        fingerprint.algorithm,
-        commit=(
-            fingerprint.digest
-            if fingerprint.algorithm == "git-commit-sha1-v1"
-            else None
-        ),
-        files=fingerprint.files,
-        patterns=fingerprint.patterns,
-    )
-    return InputResource(name, kind, location, identity, True, location)
-
-
-def _record_source_material(
-    state: _PlanningState,
-    owner: _Owner,
-    path: Path,
-    role: str,
-    recorded: Fingerprint,
+def _record_effective_code(
+    state: _PlanningState, owner: _Owner, script: Path
 ) -> ReproductionProblem | None:
-    """Record the current source fingerprint required by this plan."""
+    """Compare one saved/current effective-code fingerprint with useful diagnosis."""
 
-    identity = path.resolve().as_posix()
-    reason_role = "participating_code" if role == "code" else "script"
-    resource = _observation_resource("planning-source", "file", identity, recorded)
-    try:
-        accepted = observe_fingerprint(resource).fingerprint
-    except (OSError, ValueError) as error:
-        problem = ReproductionProblem(
-            SourceRef(identity),
-            f"{reason_role}_unavailable",
-            ProblemStage.PREPARE,
-            f"{reason_role}:{identity}:{error}",
-            {
-                "path": identity,
-                "role": reason_role,
-                "expected": recorded.as_dict(),
-                "error_type": type(error).__name__,
-                "error": str(error),
-            },
+    identity = script.resolve().as_posix()
+    recorded = owner.execution.observed.effective_code
+    if recorded is None:
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_unavailable",
+            "No saved effective-code fingerprint is available.",
+            {"availability": "missing-saved-fingerprint", "expected": None},
         )
         _retain_preparation_problem(state, owner.key, problem)
         return problem
-    if accepted != recorded:
-        problem = ReproductionProblem(
-            SourceRef(identity),
-            f"{reason_role}_changed",
-            ProblemStage.PREPARE,
-            f"{reason_role}:{identity}:expected={recorded.content_identity}:"
-            f"observed={accepted.content_identity}",
-            {
-                "path": identity,
-                "role": reason_role,
-                "expected": recorded.as_dict(),
-                "actual": accepted.as_dict(),
-            },
-        )
-        _retain_preparation_problem(state, owner.key, problem)
-        return problem
-    _retain_material(
-        state,
-        (role, identity),
-        _material(identity, role, "file", accepted),
-        owner=owner.key,
+    environment_changes_imports = "PYTHONPATH" in dict(
+        owner.execution.recipe.environment
     )
+    python_context = PythonExecutionContext.for_research_script(
+        script,
+        entry_root=owner.entry.context.root,
+        log_root=owner.entry.context.log.root,
+        project_root=state.project_root,
+    )
+    cache_key = (
+        script.resolve(),
+        environment_changes_imports,
+        python_context.import_roots,
+    )
+    observed = state.effective_code_observations.get(cache_key)
+    if observed is None:
+        if environment_changes_imports:
+            observed = EffectiveCodeAnalysis(
+                None,
+                (_unsupported_environment_location(script, state.project_root),),
+            )
+        else:
+            try:
+                observed = analyze_effective_code(
+                    script,
+                    project_root=state.project_root,
+                    import_roots=python_context.import_roots,
+                )
+            except EffectiveCodeError as error:
+                observed = error
+        state.effective_code_observations[cache_key] = observed
+    if isinstance(observed, EffectiveCodeError):
+        location = (
+            SourceLocation(observed.path, observed.line or None)
+            if observed.path is not None
+            else SourceLocation(identity)
+        )
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_unavailable",
+            f"Effective-code analysis failed: {observed}",
+            {
+                "availability": "analysis-failed",
+                "error_code": observed.code,
+                "error": observed.detail,
+                "expected": recorded.as_dict(),
+            },
+            locations=(location,),
+        )
+        _retain_preparation_problem(state, owner.key, problem)
+        return problem
+    if observed.fingerprint is None:
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_unavailable",
+            "Current effective code cannot be fingerprinted statically.",
+            {
+                "availability": "unsupported",
+                "expected": recorded.as_dict(),
+                "unsupported": [
+                    {
+                        "construct": item.construct,
+                        "detail": item.detail,
+                        "line": item.line,
+                        "path": item.path,
+                    }
+                    for item in observed.unsupported
+                ],
+                "unsupported_truncated": observed.unsupported_truncated,
+            },
+            locations=tuple(
+                SourceLocation(item.path, item.line or None)
+                for item in observed.unsupported
+            ),
+        )
+        _retain_preparation_problem(state, owner.key, problem)
+        return problem
+    accepted = Fingerprint(
+        observed.fingerprint.algorithm,
+        digest=observed.fingerprint.digest,
+    )
+    if accepted != recorded:
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_changed",
+            "The project-local effective code no longer matches the saved execution.",
+            {"expected": recorded.as_dict(), "actual": accepted.as_dict()},
+        )
+        _retain_preparation_problem(state, owner.key, problem)
+        return problem
     return None
+
+
+def _unsupported_environment_location(
+    script: Path, project: Path
+) -> UnsupportedLocation:
+    try:
+        path = script.resolve().relative_to(project.resolve()).as_posix()
+    except ValueError:
+        path = script.resolve().as_posix()
+    return UnsupportedLocation(
+        path,
+        0,
+        "import_path_environment",
+        "explicit PYTHONPATH changes project-local import resolution",
+    )
+
+
+def _effective_code_problem(
+    identity: str,
+    code: str,
+    explanation: str,
+    observed: Mapping[str, object],
+    *,
+    locations: tuple[SourceLocation, ...] = (),
+) -> ReproductionProblem:
+    return ReproductionProblem(
+        SourceRef(identity),
+        code,
+        ProblemStage.PREPARE,
+        explanation,
+        {"path": identity, **observed},
+        locations,
+    )
 
 
 def _retain_preparation_problem(
@@ -1627,7 +1686,7 @@ def _canonical_plan(
     entry: EntryContext | None,
     history: PreparationHistory,
 ) -> AcceptedWorkPlan:
-    """Cross the immutable plan/12 boundary directly from prepared facts.
+    """Cross the immutable plan/13 boundary directly from prepared facts.
 
     This builder performs no research-file reads, prior-result translation or
     publication. The selector and graph already established work and scope.
@@ -2026,6 +2085,24 @@ def _retain_material(
 ) -> None:
     state.materials[key] = value
     state.material_owners[key].add(owner)
+
+
+def _observation_resource(
+    name: str, kind: str, location: str, fingerprint: Fingerprint
+) -> InputResource:
+    """Adapt an observed fingerprint for read-only material comparison."""
+
+    identity = ResourceIdentity(
+        fingerprint.algorithm,
+        commit=(
+            fingerprint.digest
+            if fingerprint.algorithm == "git-commit-sha1-v1"
+            else None
+        ),
+        files=fingerprint.files,
+        patterns=fingerprint.patterns,
+    )
+    return InputResource(name, kind, location, identity, True, location)
 
 
 def _baseline_problem(

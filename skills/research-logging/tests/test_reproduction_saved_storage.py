@@ -379,7 +379,7 @@ class SavedRunStorageTests(unittest.TestCase):
             diagnostics.load_command_diagnostic(self.root)["diagnostic_id"], identity
         )
         self.assertEqual(load_saved_run(self.db, self.run.run_id), self.run)
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 20)
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 21)
         self.assertEqual(
             SNAPSHOTS.load_validation_snapshot(self.root), published_validation
         )
@@ -401,6 +401,27 @@ class SavedRunStorageTests(unittest.TestCase):
             load_saved_run(self.db, self.run.run_id)
         self.assertEqual(tuple(self.db.iterdump()), before)
         self.assertEqual(self.db.total_changes, changes)
+
+    def test_v20_native_history_requires_recheck_and_is_replaced_without_decode(self):
+        self.replace()
+        self.save()
+        self.db.execute(
+            "UPDATE reproduction_run_commands SET record_json='not-json'"
+        )
+        self.db.execute("PRAGMA user_version=20")
+        self.db.commit()
+        before = tuple(self.db.iterdump())
+        changes = self.db.total_changes
+
+        with self.assertRaisesRegex(ReproductionDomainError, "rerun reproduction"):
+            load_saved_run(self.db, self.run.run_id)
+
+        self.assertEqual(tuple(self.db.iterdump()), before)
+        self.assertEqual(self.db.total_changes, changes)
+        self.replace()
+        self.save()
+        self.assertEqual(load_saved_run(self.db, self.run.run_id), self.run)
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 21)
 
     def test_same_saved_run_is_idempotent_and_changed_facts_conflict(self):
         self.replace()
@@ -560,7 +581,8 @@ class SavedRunStorageTests(unittest.TestCase):
         history = load_preparation_history(self.db, (producer.identity,), ())
         self.assertEqual(history.commands[producer.identity], (producer, None))
         self.assertEqual(
-            history.problems[producer.identity][0].code, "script_unavailable"
+            history.problems[producer.identity][0].code,
+            "effective_code_unavailable",
         )
 
     def test_preparation_aggregate_budget_covers_multiple_individually_valid_origins(

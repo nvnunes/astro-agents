@@ -1,4 +1,4 @@
-"""Execute Job4 accepted recipes using the existing physical execution rules.
+"""Execute Job5 accepted recipes using the existing physical execution rules.
 
 Native job facts, not mutable source registries or checkpoint diagnoses, own
 acceptance and completion. Process supervision, confinement, source/input
@@ -291,7 +291,7 @@ def execute_work_recipe(
     workspace: ReproductionWorkspace,
     control: WorkExecutionControl,
 ) -> CommandResult | None:
-    """Execute only the same-identity Job4 accepted recipe and persist actual facts.
+    """Execute only the same-identity Job5 accepted recipe and persist actual facts.
 
     Native terminal result/problems and exited workers commit before global grant
     release, then run-local permit/scratch CAS cleanup. Stopped work retains its

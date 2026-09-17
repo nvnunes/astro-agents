@@ -97,10 +97,7 @@ def _accepted_sources(
     sources.update(
         str(root / name) for name in ("pyrun.json", "data.json", f"{owner.entry}.md")
     )
-    for path in (
-        work.execution.recipe.script,
-        *(name for name, _ in work.execution.observed.code),
-    ):
+    for path in (work.execution.recipe.script,):
         sources.add(path)
         target = (
             Path(work.project_root) / path.removeprefix("<project>/")

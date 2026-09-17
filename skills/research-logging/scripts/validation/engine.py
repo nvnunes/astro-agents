@@ -126,7 +126,6 @@ from .output_support import (
     require_current_execution_output,
     require_current_output_support,
     resolve_code_support,
-    resolve_execution_code,
     resolve_output_support,
 )
 from .presentation import (
@@ -3386,18 +3385,6 @@ def _evaluate_output_support(
             if execution_output.association
             else None
         )
-        resolved_code = (
-            resolve_execution_code(
-                execution, entry_root=root, subject=execution_output.subject
-            )
-            if execution is not None
-            else ()
-        )
-        current_code = (
-            _observe_output_code(resolved_code, state)
-            if execution is not None and not execution.requires_reproduction
-            else None
-        )
         currentness = None
         try:
             execution = require_current_execution_output(
@@ -3405,7 +3392,6 @@ def _evaluate_output_support(
                 execution_output,
                 current_output=current_output,
                 current_inputs=_current_invocation_inputs(invocation, state),
-                current_code=current_code,
             )
         except MechanicalContractError as failure:
             if failure.code not in _REPRODUCE_CURRENTNESS_CODES:
@@ -4882,15 +4868,7 @@ def _execution_code_inputs(
     )
     if associated is None:
         return None
-    try:
-        code = resolve_execution_code(
-            association.execution,
-            entry_root=owners.entry_root,
-            subject=associated.subject,
-        )
-    except MechanicalContractError:
-        return None
-    return tuple(item.path.absolute().as_posix() for item in code)
+    return ()
 
 
 def _legacy_code_inputs(

@@ -577,7 +577,7 @@ class CommandComparisonTests(unittest.TestCase):
             PYRUN_ENVIRONMENT_PROFILE,
             PYRUN_EXECUTION_CONTRACT,
             recipe,
-            ObservedExecution(None, (), (), ()),
+            ObservedExecution(None, (), None, ()),
             invocation.exclusive,
         )
 
@@ -682,7 +682,7 @@ class CommandComparisonTests(unittest.TestCase):
             pending = pending_execution(comparison.missing[0])
             self.assertTrue(pending.requires_reproduction)
             self.assertIsNone(pending.last_run_at)
-            self.assertEqual(pending.observed, ObservedExecution(None, (), (), ()))
+            self.assertEqual(pending.observed, ObservedExecution(None, (), None, ()))
 
     def test_comparison_separates_recipe_and_policy_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

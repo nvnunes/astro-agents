@@ -11,6 +11,8 @@ from datetime import date
 from pathlib import Path
 from typing import Mapping
 
+from effective_code import EffectiveCodeError, analyze_effective_code
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
     Fingerprint,
@@ -393,7 +395,6 @@ def _snapshot(
     dict[str, Fingerprint], tuple[dict[str, object], ...], tuple[tuple[str, str], ...]
 ]:
     """Freeze current authority, retained baselines, and evidence-only sources."""
-    from validation.pyrun_outputs import code_target_path
     from validation.pyrun_state import script_target_path
 
     roots = [
@@ -403,16 +404,10 @@ def _snapshot(
         entry.root / "evidence.json",
     ]
     roots.extend(_summary_documents(entry))
-    roots.append(
-        script_target_path(
-            invocation.execution.recipe.script,
-            entry_root=entry.root,
-            project_root=project,
-        )
-    )
-    roots.extend(
-        code_target_path(name, entry_root=entry.root)
-        for name, _ in invocation.execution.observed.code
+    script_path = script_target_path(
+        invocation.execution.recipe.script,
+        entry_root=entry.root,
+        project_root=project,
     )
     resources = (
         []
@@ -449,6 +444,15 @@ def _snapshot(
             raise ActionError(
                 "command.verify.source.unavailable", str(error)
             ) from error
+    current_effective_code = _current_effective_code(
+        project, entry, invocation, script_path
+    )
+    result.append(
+        (
+            f"effective-code:{script_path.resolve()}",
+            str(current_effective_code),
+        )
+    )
     _snapshot_retained_baselines(entry, project, invocation, result)
     inputs: dict[str, Fingerprint] = {}
     for resource in resources:
@@ -459,9 +463,11 @@ def _snapshot(
                 inputs[resource.name] = fingerprint
         except (DataContractError, OSError, ValueError) as error:
             raise ActionError("command.verify.input.unavailable", str(error)) from error
-    sources = tuple(
-        _source_report(name, recorded, path)
-        for name, recorded, path in _source_records(entry, project, invocation)
+    sources = _source_records(
+        entry,
+        project,
+        invocation,
+        current_effective_code=current_effective_code,
     )
     return inputs, sources, tuple(sorted(result))
 
@@ -517,9 +523,12 @@ def _snapshot_retained_baselines(
 
 
 def _source_records(
-    entry: EntryContext, project: Path, invocation: AcceptedInvocation
-) -> tuple[tuple[str, Fingerprint, Path], ...]:
-    from validation.pyrun_outputs import code_target_path
+    entry: EntryContext,
+    project: Path,
+    invocation: AcceptedInvocation,
+    *,
+    current_effective_code: Fingerprint | None,
+) -> tuple[dict[str, object], ...]:
     from validation.pyrun_state import script_target_path
 
     script = invocation.execution.observed.script
@@ -528,31 +537,62 @@ def _source_records(
             "command.verify.baseline.missing",
             "selected execution has no retained script observation",
         )
+    script_path = script_target_path(
+        invocation.execution.recipe.script,
+        entry_root=entry.root,
+        project_root=project,
+    )
     return (
-        (
-            "script",
-            script,
-            script_target_path(
-                invocation.execution.recipe.script,
-                entry_root=entry.root,
-                project_root=project,
-            ),
-        ),
-        *(
-            (name, fingerprint, code_target_path(name, entry_root=entry.root))
-            for name, fingerprint in invocation.execution.observed.code
+        _source_report("script", script, _file_fingerprint(script_path)),
+        _source_report(
+            "effective_code",
+            invocation.execution.observed.effective_code,
+            current_effective_code,
         ),
     )
 
 
-def _source_report(name: str, recorded: Fingerprint, path: Path) -> dict[str, object]:
-    current = _file_fingerprint(path)
+def _source_report(
+    name: str, recorded: Fingerprint | None, current: Fingerprint | None
+) -> dict[str, object]:
     return {
         "name": name,
-        "recorded": recorded.as_dict(),
-        "current": current.as_dict(),
+        "recorded": recorded.as_dict() if recorded is not None else None,
+        "current": current.as_dict() if current is not None else None,
         "differs_from_recorded": current != recorded,
     }
+
+
+def _current_effective_code(
+    project: Path,
+    entry: EntryContext,
+    invocation: AcceptedInvocation,
+    script: Path,
+) -> Fingerprint | None:
+    if "PYTHONPATH" in dict(invocation.execution.recipe.environment):
+        return None
+    try:
+        python_context = PythonExecutionContext.for_research_script(
+            script,
+            entry_root=entry.root,
+            log_root=entry.log.root,
+            project_root=project,
+        )
+        result = analyze_effective_code(
+            script,
+            project_root=project,
+            import_roots=python_context.import_roots,
+        )
+    except EffectiveCodeError as error:
+        raise ActionError("command.verify.source.unavailable", str(error)) from error
+    return (
+        Fingerprint(
+            result.fingerprint.algorithm,
+            digest=result.fingerprint.digest,
+        )
+        if result.fingerprint is not None
+        else None
+    )
 
 
 def _file_fingerprint(path: Path) -> Fingerprint:

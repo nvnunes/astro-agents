@@ -11,6 +11,13 @@ rewriting or rerunning it for documentation.
 Prefer Python for new research scripts unless the researcher requests another
 language or the research toolchain requires another language.
 
+Give a purpose-specific Python script a stable, descriptive filename whose
+stem can serve as its derived command ID. Do not give a one-purpose script a
+generic filename and compensate with an explicit `--cid`. Keep a generic
+filename only when the script is genuinely reusable across distinct commands;
+use the explicit-CID exceptions in `references/file-entry-commands.md` when
+needed.
+
 Before implementing a script, inspect the project for APIs that provide the
 required data access or behavior. If one exists and the researcher has not
 already chosen a path, ask whether the script should use it, bypass it for

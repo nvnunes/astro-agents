@@ -98,9 +98,12 @@ is numeric shorthand: `--cid 2 -- scripts/run_study.py` resolves to
 number. A nonnumeric valid value is the full CID. Zero and leading-zero numeric
 forms are invalid.
 
-Omit `--cid` when a Python filename supplies a valid, entry-unique, stable CID.
-Add numeric shorthand when the same Python stem needs another distinct owner.
-Use a full CID when:
+For a new purpose-specific Python command, give its script a stable,
+descriptive filename and use the filename stem as the derived CID. Do not add
+an explicit `--cid` merely to compensate for a generic filename. Omit `--cid`
+when a Python filename supplies a valid, entry-unique, stable CID. Add numeric
+shorthand when the same Python stem needs another distinct owner. Use a full
+CID when:
 
 - one bounded loop contains more than one program;
 - the program is not a `.py` file or its filename stem is not a valid CID; or
@@ -373,7 +376,8 @@ to follow a cross-reference merely to find the reproduction command.
 Edit Markdown first, then synchronize every expansion owned by its full
 effective CID. Pass the derived program stem when Markdown omits `--cid`, and
 pass `run_study-2` rather than the authored shorthand `2` for the example
-above:
+above. The sync command's required `--cid` selects an effective CID; it does
+not imply that the recorded `pyrun` command should declare `--cid`:
 
 ```bash
 log command sync --path <log> --entry <entry> --cid <cid> --dry-run

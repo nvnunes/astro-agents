@@ -22,6 +22,7 @@ from log_commands.reproduction_artifact_results import (
 )
 from log_commands.reproduction_domain import (
     CommandOutcome,
+    ExecutionRef,
     ProblemStage,
     ReproductionDomainError,
     ReproductionProblem,
@@ -52,6 +53,7 @@ from log_commands.reproduction_work_job import (
     AttemptCompletion,
     AttemptInterruption,
     WorkJobAcceptance,
+    accepted_scheduling_projection,
     create_work_job,
     open_work_job,
 )
@@ -66,6 +68,137 @@ from validation.operation_state import research_snapshot
 
 
 class WorkJobTests(unittest.TestCase):
+    def test_large_live_control_paths_load_complete_plan_once(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        project = Path(directory.name).resolve()
+        fixture, entry, _ = fanout_fixture(project, 50)
+        evaluation = evaluate_mechanical(
+            EvaluationRequest(fixture.summary, FullEvaluationTarget())
+        )
+        plan = planner.plan_reproduction_work(
+            fixture.log,
+            planner.prepare_reproduction_context(evaluation),
+            entry=entry,
+            include_all=False,
+        )
+        run_id = "reproduce-large-control"
+        run_path = canonical_run_path(
+            WHEN, run_leaf(fixture.summary.stem, "e001", run_id)
+        ).as_posix()
+        root = project / run_path
+        root.mkdir(parents=True)
+        create_work_job(
+            root, WorkJobAcceptance(run_id, plan, WHEN, run_path, project)
+        )
+        identity = ExecutionRef.from_dict(plan.scheduling[0]["identity"])
+        worker = WorkerRecord("worker-large", None, 12345, "running", WHEN, WHEN)
+
+        with mock.patch.object(
+            storage, "_load_accepted_work", wraps=storage._load_accepted_work
+        ) as load_plan:
+            with open_work_job(root) as job:
+                accepted_plan = job.accepted.plan
+                accepted = accepted_scheduling_projection(
+                    accepted_plan,
+                    run_id,
+                    ExecutionIdentity(
+                        identity.entry, identity.cid, identity.execution_id
+                    ),
+                )
+                request = scheduler.SchedulerPermitRequest(
+                    scheduler.SchedulerIdentity(
+                        project,
+                        run_id,
+                        identity.entry,
+                        identity.cid,
+                        identity.execution_id,
+                        accepted.plan_order,
+                    ),
+                    accepted.kind,
+                    os.getpid(),
+                    *scheduler._accepted_scheduler_claims(accepted, root, project),
+                    WHEN,
+                )
+                job.replace_run_owner(RunOwner(os.getpid(), "running", WHEN, WHEN))
+                job.attach_execution_permit(
+                    ExecutionPermitAttachment(
+                        identity.entry,
+                        identity.cid,
+                        identity.execution_id,
+                        "grant-large",
+                        WHEN,
+                    )
+                )
+                job.record_execution_start(
+                    ExecutionStart(
+                        identity.entry,
+                        identity.cid,
+                        identity.execution_id,
+                        "grant-large",
+                        WHEN,
+                        WHEN,
+                        "/private/tmp/large-control-attempt",
+                    )
+                )
+            for _ in range(20):
+                with open_work_job(root) as job:
+                    job.replace_execution_workers(
+                        identity, "grant-large", (worker,)
+                    )
+                    scheduler._validate_accepted_request(
+                        job, root, request, accepted=accepted
+                    )
+                    job.load_scheduler_owner()
+            with open_work_job(root) as job:
+                self.assertEqual(
+                    job.load_execution_readiness(
+                        identity, plan=accepted_plan
+                    ).disposition,
+                    "ready",
+                )
+                status = job.load_operational_status()
+            self.assertEqual(status["total_executions"], len(plan.scheduling))
+            self.assertEqual(len(status["active_workers"]), 1)
+            self.assertEqual(load_plan.call_count, 1)
+
+    def test_changed_schedule_claims_fail_immutable_plan_authentication(self):
+        self.accept()
+        with sqlite3.connect(self.state) as db:
+            db.execute(
+                "UPDATE accepted_work_scheduling SET claims_json="
+                "'{\"read_paths\":[],\"write_paths\":[],\"writable_paths\":[]}' "
+                "WHERE command_pk=1"
+            )
+        with self.assertRaisesRegex(ReproductionDomainError, "digest"):
+            with open_work_job(self.root) as job:
+                job.load_accepted_scheduling(
+                    ExecutionIdentity(
+                        self.work.identity.entry,
+                        self.work.identity.cid,
+                        self.work.identity.execution_id,
+                    )
+                )
+
+    def test_changed_exclusive_policy_fails_immutable_plan_authentication(self):
+        self.accept()
+        with sqlite3.connect(self.state) as db:
+            db.execute(
+                "UPDATE accepted_work_commands SET work_json="
+                "replace(work_json,'\"exclusive\":false','\"exclusive\":true') "
+                "WHERE command_pk=?",
+                (1,),
+            )
+        with self.assertRaisesRegex(ReproductionDomainError, "digest"):
+            with open_work_job(self.root) as job:
+                job.load_accepted_scheduling(
+                    ExecutionIdentity(
+                        self.work.identity.entry,
+                        self.work.identity.cid,
+                        self.work.identity.execution_id,
+                    )
+                )
+
     def test_status_totals_follow_acceptance_not_observed_terminal_rows(self):
         self.accept()
         with open_work_job(self.root) as job:
@@ -463,8 +596,8 @@ class WorkJobTests(unittest.TestCase):
                 "'\"include_all\":false','\"include_all\":true')"
             )
         with self.assertRaisesRegex(ReproductionDomainError, "digest"):
-            with open_work_job(self.root):
-                self.fail("altered acceptance opened")
+            with open_work_job(self.root) as job:
+                _ = job.accepted.plan
 
     def test_terminal_result_and_problem_are_atomic_before_grant_release(self):
         self.accept()

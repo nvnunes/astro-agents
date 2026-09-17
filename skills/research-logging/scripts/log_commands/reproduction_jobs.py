@@ -765,9 +765,8 @@ def _matching_run_roots(
                     accepted = job.accepted
             except JobStoreError as error:
                 raise ActionError(error.code, str(error)) from error
-            if accepted.run_id == run_id and accepted.plan.summary == _summary_identity(
-                log
-            ):
+            matches_log = accepted.summary_identity == _summary_identity(log)
+            if accepted.run_id == run_id and matches_log:
                 matches.append(candidate.resolve())
         elif recognized == "historical_unsupported" and _historical_run_matches_log(
             candidate, log, run_id

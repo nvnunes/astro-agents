@@ -186,6 +186,7 @@ def poll_work_permit(
     *,
     checkpointed_at: str,
     expected_state: Literal["absent", "stopped"],
+    accepted: AcceptedSchedulingProjection | None = None,
 ) -> SchedulerDecision:
     """Admit native Job6 work using the shared fairness and conflict rules.
 
@@ -193,28 +194,17 @@ def poll_work_permit(
     Unsupported jobs require explicit resolution; no version fallback occurs.
     """
 
-    return _poll_with_job(
-        run_root, request, checkpointed_at, expected_state, open_work_job
-    )
-
-
-def _poll_with_job(
-    run_root: Path,
-    request: SchedulerPermitRequest,
-    checkpointed_at: str,
-    expected_state: Literal["absent", "stopped"],
-    open_job: JobOpener,
-) -> SchedulerDecision:
-
     _validate_scheduler_request(request)
     if not _timestamp(checkpointed_at) or expected_state not in {"absent", "stopped"}:
         raise ActionError("reproduction.scheduler.invalid", "invalid permit attachment")
     with _coordinator_lock(request.identity.project_root):
-        with open_job(run_root) as store:
-            _validate_accepted_request(store, run_root, request)
+        with open_work_job(run_root) as store:
+            _validate_accepted_request(
+                store, run_root, request, accepted=accepted
+            )
             with _open_scheduler_database(request.identity.project_root) as db:
                 decision = _poll_permit_locked(
-                    db, request, run_root.resolve(), store, open_job=open_job
+                    db, request, run_root.resolve(), store
                 )
             if decision.disposition == "granted":
                 assert decision.permit is not None
@@ -266,15 +256,20 @@ def _poll_permit_locked(
 
 
 def _validate_accepted_request(
-    store: LockedWorkJob, run_root: Path, request: SchedulerPermitRequest
+    store: LockedWorkJob,
+    run_root: Path,
+    request: SchedulerPermitRequest,
+    *,
+    accepted: AcceptedSchedulingProjection | None = None,
 ) -> None:
-    accepted = store.load_accepted_scheduling(
-        ExecutionIdentity(
-            request.identity.entry,
-            request.identity.cid,
-            request.identity.execution_id,
+    if accepted is None:
+        accepted = store.load_accepted_scheduling(
+            ExecutionIdentity(
+                request.identity.entry,
+                request.identity.cid,
+                request.identity.execution_id,
+            )
         )
-    )
     owner = store.load_scheduler_owner()
     expected = _accepted_scheduler_claims(
         accepted, run_root.resolve(), request.identity.project_root

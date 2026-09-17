@@ -12,6 +12,7 @@ from unittest import mock
 
 import test_reproduction_work_execution as execution_fixture
 from log_commands import reproduction_planner as planner
+from log_commands import reproduction_work_job as storage
 from log_commands import reproduction_work_supervision as supervision
 from log_commands.model import ActionError
 from log_commands.reproduction_domain import ArtifactOutcome, CommandOutcome
@@ -301,9 +302,13 @@ class NativeSupervisionTests(unittest.TestCase):
         fixture, workspace = self.fresh_graph()
         with open_work_job(workspace.run_root) as job:
             installed = job.load_run_owner()
-        supervision.supervise_work_job(
-            fixture.log, workspace.run_root, mode="fresh", control=self.control()
-        )
+        with mock.patch.object(
+            storage, "_load_accepted_work", wraps=storage._load_accepted_work
+        ) as load_plan:
+            supervision.supervise_work_job(
+                fixture.log, workspace.run_root, mode="fresh", control=self.control()
+            )
+        self.assertEqual(load_plan.call_count, 1)
         with open_work_job(workspace.run_root) as job:
             self.assertEqual(job.load_run_control().status, "complete")
             self.assertEqual(job.load_run_owner().state, "exited")
@@ -363,7 +368,7 @@ class NativeSupervisionTests(unittest.TestCase):
         fixture, workspace = self.fresh_graph()
         worker = WorkerRecord("worker-98765", None, 98765, "running", WHEN, WHEN)
 
-        def surviving_execution(_log, _workspace, _control):
+        def surviving_execution(_log, _workspace, _control, **_options):
             with open_work_job(workspace.run_root) as job:
                 job.replace_recovery_workers(
                     (RecoveryWorkerObservation(None, worker),), observed_at=WHEN

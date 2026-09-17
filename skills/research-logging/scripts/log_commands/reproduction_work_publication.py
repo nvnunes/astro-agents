@@ -19,9 +19,15 @@ from .reproduction_job_control import JobStoreInvariantError
 from .reproduction_saved_report import materialize_saved_report_locked
 from .reproduction_saved_storage import publish_saved_run
 from .reproduction_work_job import open_work_job
+from .reproduction_work_plan import ReproductionPlan
 
 
-def publish_work_job(log: LogContext, run_root: Path) -> int:
+def publish_work_job(
+    log: LogContext,
+    run_root: Path,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
+) -> int:
     """Publish one completed native job, or recover only its unfinished writes.
 
     The caller owns run scope locks and any promotion coordination. Lock order
@@ -32,7 +38,7 @@ def publish_work_job(log: LogContext, run_root: Path) -> int:
     """
 
     with open_work_job(run_root) as job:
-        if job.accepted.plan.summary != str(log.summary):
+        if job.accepted.summary_identity != str(log.summary):
             raise JobStoreInvariantError("publication log differs from accepted job")
         state = job.load_run_control()
         publication = job.load_publication()
@@ -42,7 +48,9 @@ def publish_work_job(log: LogContext, run_root: Path) -> int:
                     "complete job has no report acknowledgment"
                 )
             return publication.report_generation
-        run = job.prepare_publication(finished_at=_utc_now())
+        run = job.prepare_publication(
+            finished_at=_utc_now(), plan=accepted_plan
+        )
         with operation_lock(log.root, "reproduction-publication.lock"):
             with results_lock(log.root):
                 generation = publish_saved_run(log.root, run)

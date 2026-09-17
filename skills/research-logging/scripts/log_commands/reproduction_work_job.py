@@ -12,7 +12,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterator, cast
+from typing import Iterator, Mapping, Protocol, cast
 
 from research_log_data import parse_fingerprint
 
@@ -88,7 +88,7 @@ from .reproduction_observation_storage import (
     write_command_observation,
 )
 from .reproduction_run import RUN_ID_RE, ArtifactResult, CommandResult
-from .reproduction_saved_run import MAX_WORK_RECORDS, SavedRun
+from .reproduction_saved_run import MAX_WORK_RECORDS, RunSettings, RunTarget, SavedRun
 from .reproduction_work_plan import MAX_PLAN_BYTES, PLAN_SCHEMA, ReproductionPlan
 
 WORK_JOB_VERSION = 6
@@ -194,6 +194,132 @@ class WorkJobAcceptance:
     workspace_path: str = "workspace"
     diagnostics_path: str = "diagnostics"
 
+    @property
+    def summary_identity(self) -> str:
+        return self.plan.summary
+
+
+class WorkJobLocation(Protocol):
+    """Common accepted-run surface for eager creation and lazy job access."""
+
+    run_id: str
+    accepted_at: str
+    run_path: str
+    project_root: Path
+    workspace_path: str
+    diagnostics_path: str
+
+    @property
+    def plan(self) -> ReproductionPlan: ...
+
+    @property
+    def summary_identity(self) -> str: ...
+
+
+class _LoadedWorkJobAcceptance:
+    """Authenticated run metadata with Plan14 loaded only by plan consumers."""
+
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        run_root: Path,
+        run: sqlite3.Row,
+        header: Mapping[str, object],
+    ) -> None:
+        self._db = db
+        self._run_root = run_root
+        self._header = dict(header)
+        self._plan: ReproductionPlan | None = None
+        self.run_id = run["run_id"]
+        self.accepted_at = run["accepted_at"]
+        self.run_path = run["run_path"]
+        self.project_root = Path(run["project_root"])
+        self.workspace_path = run["workspace_path"]
+        self.diagnostics_path = run["diagnostics_path"]
+
+    @property
+    def plan(self) -> ReproductionPlan:
+        """Load and fully validate the immutable plan at its ownership boundary."""
+
+        if self._plan is None:
+            try:
+                self._plan = _load_accepted_work(
+                    self._db, self.run_id, self._header
+                )
+            except sqlite3.ProgrammingError as error:
+                if "closed" not in str(error).lower():
+                    raise
+                with _THREAD_LOCK, _job_mutex(self._run_root):
+                    path = _checked_state_path(self._run_root, writable=False)
+                    db = _open_database(
+                        path, mode="rw", expected_version=WORK_JOB_VERSION
+                    )
+                    try:
+                        self._plan = _load_accepted_work(
+                            db, self.run_id, self._header
+                        )
+                    finally:
+                        db.close()
+        return self._plan
+
+    @property
+    def summary_identity(self) -> str:
+        summary = self._header.get("summary")
+        if not isinstance(summary, str) or not summary:
+            raise JobStoreMalformedError("accepted summary is invalid")
+        return summary
+
+    def status_header(self) -> tuple[str, RunTarget, RunSettings]:
+        """Validate only the bounded header fields needed by public status."""
+
+        if set(self._header) != {"summary", "target", "settings", "admission"}:
+            raise JobStoreMalformedError("accepted run header has invalid fields")
+        summary = self.summary_identity
+        return (
+            summary,
+            RunTarget.from_dict(self._header["target"]),
+            RunSettings.from_dict(self._header["settings"]),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, (WorkJobAcceptance, _LoadedWorkJobAcceptance)):
+            return NotImplemented
+        if isinstance(other, _LoadedWorkJobAcceptance):
+            return (
+                self.run_id,
+                self._header,
+                self.accepted_at,
+                self.run_path,
+                self.project_root,
+                self.workspace_path,
+                self.diagnostics_path,
+            ) == (
+                other.run_id,
+                other._header,
+                other.accepted_at,
+                other.run_path,
+                other.project_root,
+                other.workspace_path,
+                other.diagnostics_path,
+            )
+        return (
+            self.run_id,
+            self.plan,
+            self.accepted_at,
+            self.run_path,
+            self.project_root,
+            self.workspace_path,
+            self.diagnostics_path,
+        ) == (
+            other.run_id,
+            other.plan,
+            other.accepted_at,
+            other.run_path,
+            other.project_root,
+            other.workspace_path,
+            other.diagnostics_path,
+        )
+
 
 @dataclass(frozen=True)
 class AttemptCompletion:
@@ -285,6 +411,26 @@ def _header(plan: ReproductionPlan) -> dict[str, object]:
     }
 
 
+def accepted_scheduling_projection(
+    plan: ReproductionPlan, run_id: str, identity: ExecutionIdentity
+) -> AcceptedSchedulingProjection:
+    """Project one scheduler row from an already validated immutable plan."""
+
+    key = ExecutionRef(identity.entry, identity.cid, identity.execution_id)
+    work = plan.command(key)
+    row = plan.schedule(key)
+    return AcceptedSchedulingProjection(
+        run_id,
+        identity,
+        cast(int, row["order"]),
+        "exclusive" if work.execution.exclusive else "ordinary",
+        tuple(cast(list[str], row["read_paths"])),
+        tuple(cast(list[str], row["write_paths"])),
+        cast(str, row["run_path"]),
+        tuple(cast(list[str], row["writable_paths"])),
+    )
+
+
 def _initialize(db: sqlite3.Connection) -> None:
     statement = ""
     schema = "\n".join((_CONTROL_DDL, ACCEPTED_WORK_DDL, OBSERVATION_DDL))
@@ -320,6 +466,45 @@ def _validate_acceptance(run_root: Path, accepted: WorkJobAcceptance) -> None:
         accepted.run_path,
         accepted.accepted_at,
         accepted.run_id,
+    )
+
+
+def _loaded_acceptance(
+    run_root: Path, db: sqlite3.Connection, run: sqlite3.Row
+) -> _LoadedWorkJobAcceptance:
+    """Authenticate bounded job metadata without reconstructing accepted work."""
+
+    fields = _payload(run["plan_header"], set())
+    if fields.pop("schema", None) != PLAN_SCHEMA or set(fields) != {
+        "summary",
+        "target",
+        "settings",
+        "admission",
+    }:
+        raise JobStoreMalformedError("native job has unsupported accepted plan")
+    if not RUN_ID_RE.fullmatch(run["run_id"]):
+        raise JobStoreMalformedError("accepted run ID is invalid")
+    _require_timestamp(run["accepted_at"], "accepted time")
+    for value, label in (
+        (run["workspace_path"], "workspace path"),
+        (run["diagnostics_path"], "diagnostics path"),
+    ):
+        _require_relative_path(value, label)
+    project_root = Path(run["project_root"])
+    if not project_root.is_absolute():
+        raise JobStoreMalformedError("accepted project root is not absolute")
+    _validate_run_location(
+        run_root,
+        project_root,
+        run["run_path"],
+        run["accepted_at"],
+        run["run_id"],
+    )
+    return _LoadedWorkJobAcceptance(
+        db,
+        run_root,
+        run,
+        fields,
     )
 
 
@@ -396,20 +581,7 @@ def open_work_job(run_root: Path) -> Iterator["LockedWorkJob"]:
             if len(rows) != 1:
                 raise JobStoreMalformedError("native job requires exactly one run")
             run = rows[0]
-            fields = _payload(run["plan_header"], set())
-            if fields.pop("schema", None) != PLAN_SCHEMA:
-                raise JobStoreMalformedError("native job has unsupported accepted plan")
-            plan = _load_accepted_work(db, run["run_id"], fields)
-            accepted = WorkJobAcceptance(
-                run["run_id"],
-                plan,
-                run["accepted_at"],
-                run["run_path"],
-                Path(run["project_root"]),
-                run["workspace_path"],
-                run["diagnostics_path"],
-            )
-            _validate_acceptance(run_root, accepted)
+            accepted = _loaded_acceptance(run_root, db, run)
             yield LockedWorkJob(db, accepted)
         finally:
             db.close()
@@ -422,7 +594,11 @@ class LockedWorkJob:
     store only active/stopped/completed state and scheduler recovery information.
     """
 
-    def __init__(self, db: sqlite3.Connection, accepted: WorkJobAcceptance):
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        accepted: WorkJobLocation,
+    ):
         self._db = db
         self.accepted = accepted
 
@@ -656,10 +832,10 @@ class LockedWorkJob:
             )
 
     def _command_pk(self, identity: ExecutionRef) -> int:
-        self.accepted.plan.schedule(identity)
         row = self._db.execute(
-            "SELECT command_pk FROM accepted_work_commands WHERE run_id=? "
-            "AND entry=? AND cid=? AND execution_id=?",
+            "SELECT c.command_pk FROM accepted_work_commands c "
+            "JOIN accepted_work_scheduling s USING(run_id, command_pk) "
+            "WHERE c.run_id=? AND c.entry=? AND c.cid=? AND c.execution_id=?",
             (self.accepted.run_id, identity.entry, identity.cid, identity.execution_id),
         ).fetchone()
         if row is None:
@@ -760,20 +936,10 @@ class LockedWorkJob:
     def load_accepted_scheduling(
         self, identity: ExecutionIdentity
     ) -> AcceptedSchedulingProjection:
-        """Derive genuine claims from authenticated Plan14, never copied flags."""
+        """Project claims only after the complete accepted plan is authenticated."""
 
-        key = ExecutionRef(identity.entry, identity.cid, identity.execution_id)
-        work = self.accepted.plan.command(key)
-        row = self.accepted.plan.schedule(key)
-        return AcceptedSchedulingProjection(
-            self.accepted.run_id,
-            identity,
-            cast(int, row["order"]),
-            "exclusive" if work.execution.exclusive else "ordinary",
-            tuple(cast(list[str], row["read_paths"])),
-            tuple(cast(list[str], row["write_paths"])),
-            cast(str, row["run_path"]),
-            tuple(cast(list[str], row["writable_paths"])),
+        return accepted_scheduling_projection(
+            self.accepted.plan, self.accepted.run_id, identity
         )
 
     def load_scheduler_owner(self) -> WorkSchedulerOwner:
@@ -803,9 +969,6 @@ class LockedWorkJob:
                 raise JobStoreInvariantError(
                     "checkpoint/result completion does not agree"
                 )
-            self.accepted.plan.schedule(
-                ExecutionRef(row["entry"], row["cid"], row["execution_id"])
-            )
             checkpoints.append(
                 WorkPermitCheckpoint(
                     row["entry"],
@@ -851,9 +1014,6 @@ class LockedWorkJob:
             if row["command_pk"] is not None:
                 identity = ExecutionIdentity(
                     row["entry"], row["cid"], row["execution_id"]
-                )
-                self.accepted.plan.schedule(
-                    ExecutionRef(identity.entry, identity.cid, identity.execution_id)
                 )
             worker = WorkerRecord(
                 row["worker_id"],
@@ -1133,7 +1293,12 @@ class LockedWorkJob:
             resolved.append((command_pk, observation.worker))
         return tuple(resolved)
 
-    def record_attempt_completion(self, completion: AttemptCompletion) -> None:
+    def record_attempt_completion(
+        self,
+        completion: AttemptCompletion,
+        *,
+        plan: ReproductionPlan | None = None,
+    ) -> None:
         """Atomically retain actual result/problems and exited forest before release.
 
         No checkpoint failure/outcome/output projection competes with the result.
@@ -1162,7 +1327,8 @@ class LockedWorkJob:
                 raise JobStoreTransitionError(
                     "terminal facts do not match pending invocation"
                 )
-            work = self.accepted.plan.command(result.identity)
+            accepted_plan = self.accepted.plan if plan is None else plan
+            work = accepted_plan.command(result.identity)
             outputs = dict(work.execution.recipe.outputs)
             if not result.outputs.keys() <= outputs.keys() or (
                 result.outcome is CommandOutcome.SUCCEEDED
@@ -1197,7 +1363,12 @@ class LockedWorkJob:
             raise ReproductionDomainError("command has an artifact observation")
         return result
 
-    def load_execution_readiness(self, identity: ExecutionRef) -> ExecutionReadiness:
+    def load_execution_readiness(
+        self,
+        identity: ExecutionRef,
+        *,
+        plan: ReproductionPlan | None = None,
+    ) -> ExecutionReadiness:
         """Apply existing direct-dependency readiness to native research results.
 
         Only selected prerequisites require this run's completed observation.
@@ -1207,13 +1378,14 @@ class LockedWorkJob:
         physical execution material checks.
         """
 
-        self.accepted.plan.schedule(identity)
-        work = self.accepted.plan.command(identity)
+        accepted_plan = self.accepted.plan if plan is None else plan
+        accepted_plan.schedule(identity)
+        work = accepted_plan.command(identity)
         pending = set()
         failed = set()
         blocking_problem_ids: set[str] = set()
         for key in work.dependencies:
-            if self.accepted.plan.command(key).selection is not WorkSelection.RUN:
+            if accepted_plan.command(key).selection is not WorkSelection.RUN:
                 continue
             result = self.load_command_result(key)
             dependency = ExecutionIdentity(key.entry, key.cid, key.execution_id)
@@ -1222,7 +1394,7 @@ class LockedWorkJob:
             elif result.outcome in {CommandOutcome.FAILED, CommandOutcome.BLOCKED}:
                 failed.add(dependency)
             else:
-                for artifact in self.accepted.plan.dependency_artifacts(identity, key):
+                for artifact in accepted_plan.dependency_artifacts(identity, key):
                     compared = self.load_artifact_result(artifact.identity)
                     if compared is None:
                         pending.add(dependency)
@@ -1265,7 +1437,12 @@ class LockedWorkJob:
             )
         return ExecutionReadiness(owner, "ready", (), ())
 
-    def record_dependency_block(self, identity: ExecutionRef) -> CommandResult:
+    def record_dependency_block(
+        self,
+        identity: ExecutionRef,
+        *,
+        plan: ReproductionPlan | None = None,
+    ) -> CommandResult:
         """Commit only actual unsatisfied-prerequisite links, with no grant/attempt.
 
         The native owner derives the block from durable prerequisite results;
@@ -1283,7 +1460,7 @@ class LockedWorkJob:
                 if existing.outcome is CommandOutcome.BLOCKED:
                     return existing
                 raise JobStoreTransitionError("completed command cannot become blocked")
-            readiness = self.load_execution_readiness(identity)
+            readiness = self.load_execution_readiness(identity, plan=plan)
             if readiness.disposition != "dependency_failed":
                 raise JobStoreTransitionError("command has no unsatisfied prerequisite")
             result = blocked_command_observation(
@@ -1333,6 +1510,8 @@ class LockedWorkJob:
         self,
         result: ArtifactResult,
         problems: tuple[ReproductionProblem, ...] = (),
+        *,
+        plan: ReproductionPlan | None = None,
     ) -> None:
         """Commit trusted comparator facts, never a public result-submission API.
 
@@ -1340,7 +1519,8 @@ class LockedWorkJob:
         artifact/producer and generated workspace paths to the original comparator.
         """
 
-        work = self.accepted.plan.artifact(result.identity)
+        accepted_plan = self.accepted.plan if plan is None else plan
+        work = accepted_plan.artifact(result.identity)
         if result.origin_run_id != self.accepted.run_id or (
             result.definition_identity != work.definition_identity
         ):
@@ -1359,31 +1539,36 @@ class LockedWorkJob:
             write_artifact_observation(self._db, self.accepted.run_id, result, problems)
             self._updated(result.recorded_at)
 
-    def load_operational_status(self) -> dict[str, object]:
-        """Derive lifecycle progress/diagnostics without requiring publication.
+    def _status_header(self) -> tuple[str, RunTarget, RunSettings]:
+        if isinstance(self.accepted, _LoadedWorkJobAcceptance):
+            return self.accepted.status_header()
+        return (
+            self.accepted.plan.summary,
+            self.accepted.plan.target,
+            self.accepted.plan.settings,
+        )
 
-        Accepted scope/settings, workers and interrupted checkpoints remain
-        visible for stopped or failed unpublished runs. Saved research outcomes
-        are not reinterpreted and no current registry is read.
-        """
-
-        self._require_observation_bounds()
-        control = self.load_run_control()
-        row = _sole_row(self._db, "SELECT * FROM run_state")
-        owner = self.load_scheduler_owner()
-        checkpoints = []
-        timings = []
+    def _status_command_progress(
+        self, scheduled: list[sqlite3.Row]
+    ) -> tuple[
+        list[dict[str, object]],
+        list[dict[str, object]],
+        int,
+        dict[str, object] | None,
+    ]:
+        checkpoints: list[dict[str, object]] = []
+        timings: list[dict[str, object]] = []
         completed = 0
-        diagnostic = None
+        diagnostic: dict[str, object] | None = None
         diagnostic_at = ""
-        artifact_outcomes: dict[str, int] = {}
-        for work in self.accepted.plan.commands:
-            if work.selection is not WorkSelection.RUN:
-                continue
-            checkpoint = self.load_execution_checkpoint(work.identity)
+        for accepted in scheduled:
+            identity = ExecutionRef(
+                accepted["entry"], accepted["cid"], accepted["execution_id"]
+            )
+            checkpoint = self.load_execution_checkpoint(identity)
             if checkpoint is not None:
-                checkpoints.append({**asdict(checkpoint), **work.identity.as_dict()})
-            result = load_observation(self._db, self.accepted.run_id, work.identity)
+                checkpoints.append({**asdict(checkpoint), **identity.as_dict()})
+            result = load_observation(self._db, self.accepted.run_id, identity)
             if result is not None and not isinstance(result, CommandResult):
                 raise JobStoreInvariantError("command observation has wrong type")
             finished_at = None if result is None else result.finished_at
@@ -1397,7 +1582,7 @@ class LockedWorkJob:
                 failure = problems[0] if problems else None
                 timings.append(
                     {
-                        **work.identity.as_dict(),
+                        **identity.as_dict(),
                         "state": checkpoint.state,
                         "started_at": checkpoint.started_at,
                         "finished_at": finished_at,
@@ -1419,13 +1604,54 @@ class LockedWorkJob:
                         "code": problem.code,
                         "message": problem.explanation,
                         "recorded_at": finished_at,
-                        **work.identity.as_dict(),
+                        **identity.as_dict(),
                     }
-        for artifact in self.accepted.plan.artifacts:
-            result = self.load_artifact_result(artifact.identity)
-            if result is not None:
-                key = result.outcome.value
-                artifact_outcomes[key] = artifact_outcomes.get(key, 0) + 1
+        return checkpoints, timings, completed, diagnostic
+
+    def _status_artifact_outcomes(self) -> dict[str, int]:
+        outcomes: dict[str, int] = {}
+        artifacts = self._db.execute(
+            "SELECT a.entry,a.artifact FROM run_artifact_results r "
+            "JOIN accepted_work_artifacts a USING(run_id,artifact_pk) "
+            "WHERE r.run_id=? ORDER BY r.artifact_pk LIMIT ?",
+            (self.accepted.run_id, MAX_WORK_RECORDS + 1),
+        ).fetchall()
+        if len(artifacts) > MAX_WORK_RECORDS:
+            raise JobStoreInvariantError("artifact results crossed their row bound")
+        for accepted in artifacts:
+            result = self.load_artifact_result(
+                ArtifactRef(accepted["entry"], accepted["artifact"])
+            )
+            assert result is not None
+            key = result.outcome.value
+            outcomes[key] = outcomes.get(key, 0) + 1
+        return outcomes
+
+    def load_operational_status(self) -> dict[str, object]:
+        """Derive lifecycle progress/diagnostics without requiring publication.
+
+        Accepted scope/settings, workers and interrupted checkpoints remain
+        visible for stopped or failed unpublished runs. Saved research outcomes
+        are not reinterpreted and no current registry or complete plan is read.
+        """
+
+        self._require_observation_bounds()
+        control = self.load_run_control()
+        row = _sole_row(self._db, "SELECT * FROM run_state")
+        owner = self.load_scheduler_owner()
+        summary, target, settings = self._status_header()
+        scheduled = self._db.execute(
+            "SELECT c.entry,c.cid,c.execution_id FROM accepted_work_scheduling s "
+            "JOIN accepted_work_commands c USING(run_id,command_pk) "
+            "WHERE s.run_id=? ORDER BY s.plan_order LIMIT ?",
+            (self.accepted.run_id, MAX_WORK_RECORDS + 1),
+        ).fetchall()
+        if len(scheduled) > MAX_WORK_RECORDS:
+            raise JobStoreInvariantError("accepted schedule crossed its row bound")
+        checkpoints, timings, completed, diagnostic = self._status_command_progress(
+            scheduled
+        )
+        artifact_outcomes = self._status_artifact_outcomes()
         active = [
             item
             for item in checkpoints
@@ -1452,16 +1678,13 @@ class LockedWorkJob:
         return {
             "schema": "research-log-reproduction-status/7",
             "run_id": self.accepted.run_id,
-            "summary": self.accepted.plan.summary,
-            "target": self.accepted.plan.target.as_dict(),
-            **self.accepted.plan.settings.as_dict(),
+            "summary": summary,
+            "target": target.as_dict(),
+            **settings.as_dict(),
             "status": control.status,
             "phase": control.phase,
             "resumable": resumable,
-            "total_executions": sum(
-                work.selection is WorkSelection.RUN
-                for work in self.accepted.plan.commands
-            ),
+            "total_executions": len(scheduled),
             "completed_executions": completed,
             "active_executions": [
                 {key: item[key] for key in ("entry", "cid", "execution_id")}
@@ -1498,14 +1721,20 @@ class LockedWorkJob:
             },
         }
 
-    def source_reconciliation_ready(self, identity: ExecutionRef) -> bool:
+    def source_reconciliation_ready(
+        self,
+        identity: ExecutionRef,
+        *,
+        plan: ReproductionPlan | None = None,
+    ) -> bool:
         """Require runnable work and durable complete production/comparisons.
 
         Equality is not a prerequisite. An acknowledgment is an external-write
         receipt, not a second command/comparison outcome.
         """
 
-        work = self.accepted.plan.command(identity)
+        accepted_plan = self.accepted.plan if plan is None else plan
+        work = accepted_plan.command(identity)
         result = self.load_command_result(identity)
         if work.selection is not WorkSelection.RUN or result is None:
             return False
@@ -1516,7 +1745,7 @@ class LockedWorkJob:
             raise JobStoreInvariantError("successful production has incomplete outputs")
         compared = {
             artifact.identity.artifact
-            for artifact in self.accepted.plan.artifacts
+            for artifact in accepted_plan.artifacts
             if artifact.producer == identity
             and self.load_artifact_result(artifact.identity) is not None
         }
@@ -1532,13 +1761,17 @@ class LockedWorkJob:
         return row is None
 
     def acknowledge_source_reconciliation(
-        self, identity: ExecutionRef, *, reconciled_at: str
+        self,
+        identity: ExecutionRef,
+        *,
+        reconciled_at: str,
+        plan: ReproductionPlan | None = None,
     ) -> None:
         """Acknowledge the exact source-state write after durable comparison."""
 
         _require_timestamp(reconciled_at, "source reconciliation acknowledgment")
         with self._transaction("work_source_reconciliation"):
-            if not self.source_reconciliation_ready(identity):
+            if not self.source_reconciliation_ready(identity, plan=plan):
                 raise JobStoreTransitionError("source reconciliation is not ready")
             self._db.execute(
                 "INSERT INTO source_reconciliation_acknowledgments VALUES (?,?,?)",
@@ -1564,7 +1797,12 @@ class LockedWorkJob:
                     "run observations exceed the native read bound"
                 )
 
-    def load_completed_run(self, *, finished_at: str) -> SavedRun:
+    def load_completed_run(
+        self,
+        *,
+        finished_at: str,
+        plan: ReproductionPlan | None = None,
+    ) -> SavedRun:
         """Assemble publication only from immutable accepted work and durable facts.
 
         An active grant, uncleared scratch or running worker prevents publication.
@@ -1588,13 +1826,14 @@ class LockedWorkJob:
                 "publication requires quiescent cleaned attempts"
             )
         self._require_observation_bounds()
+        accepted_plan = self.accepted.plan if plan is None else plan
         commands = []
         artifacts = []
-        for work in self.accepted.plan.commands:
+        for work in accepted_plan.commands:
             result = self.load_command_result(work.identity)
             if result is not None:
                 commands.append(result)
-        for artifact in self.accepted.plan.artifacts:
+        for artifact in accepted_plan.artifacts:
             observed = load_observation(
                 self._db, self.accepted.run_id, artifact.identity
             )
@@ -1611,7 +1850,7 @@ class LockedWorkJob:
             )
         )
         return complete_saved_run(
-            self.accepted.plan,
+            accepted_plan,
             RunCompletion(
                 self.accepted.run_id,
                 self.accepted.accepted_at,
@@ -1640,7 +1879,12 @@ class LockedWorkJob:
             row["finished_at"], row["result_generation"], row["report_generation"]
         )
 
-    def prepare_publication(self, *, finished_at: str) -> SavedRun:
+    def prepare_publication(
+        self,
+        *,
+        finished_at: str,
+        plan: ReproductionPlan | None = None,
+    ) -> SavedRun:
         """Freeze completion time before any shared result write; exact retry reuses it.
 
         All required native observations and cleaned attempt ownership must be
@@ -1659,10 +1903,12 @@ class LockedWorkJob:
                     raise JobStoreInvariantError(
                         "publication recovery has invalid phase"
                     )
-                return self.load_completed_run(finished_at=publication.finished_at)
+                return self.load_completed_run(
+                    finished_at=publication.finished_at, plan=plan
+                )
             if state.phase not in PERMIT_ADMISSION_PHASES:
                 raise JobStoreTransitionError("run is not ready for publication")
-            run = self.load_completed_run(finished_at=finished_at)
+            run = self.load_completed_run(finished_at=finished_at, plan=plan)
             self._db.execute(
                 "INSERT INTO run_publication VALUES (?, ?, NULL, NULL)",
                 (self.accepted.run_id, finished_at),

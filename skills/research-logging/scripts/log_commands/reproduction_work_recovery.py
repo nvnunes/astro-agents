@@ -34,15 +34,21 @@ from .reproduction_scheduler import (
     reconcile_permit,
     reconcile_work_admission,
 )
-from .reproduction_work_job import AttemptInterruption, open_work_job
+from .reproduction_work_job import (
+    AttemptInterruption,
+    accepted_scheduling_projection,
+    open_work_job,
+)
 
 
 def _recover_attempts(project_root: Path, run_root: Path, observed_at: str) -> None:
     reconcile_work_admission(project_root, run_root)
     with open_work_job(run_root) as job:
+        plan = job.accepted.plan
+        run_id = job.accepted.run_id
         identities = tuple(
             work.identity
-            for work in job.accepted.plan.commands
+            for work in plan.commands
             if work.selection is WorkSelection.RUN
         )
     for identity in identities:
@@ -74,11 +80,12 @@ def _recover_attempts(project_root: Path, run_root: Path, observed_at: str) -> N
                 )
             permit_id = checkpoint.permit_id
             scratch = checkpoint.scratch_path
-            accepted = job.load_accepted_scheduling(
+            accepted = accepted_scheduling_projection(
+                plan,
+                run_id,
                 ExecutionIdentity(identity.entry, identity.cid, identity.execution_id)
             )
             proof = job.load_scheduler_owner()
-            run_id = job.accepted.run_id
         if permit_id is not None:
             reconciled = reconcile_permit(
                 SchedulerIdentity(
@@ -119,7 +126,7 @@ def recover_work_job(
     """
 
     with open_work_job(run_root) as job:
-        if job.accepted.plan.summary != str(log.summary):
+        if job.accepted.summary_identity != str(log.summary):
             raise JobStoreInvariantError("recovery log differs from accepted job")
         state = job.load_run_control()
         owner = job.load_run_owner()

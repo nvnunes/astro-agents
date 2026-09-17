@@ -18,6 +18,7 @@ from .reproduction_domain import ArtifactOutcome, ExecutionRef
 from .reproduction_execution import _utc_now
 from .reproduction_work import CommandWork
 from .reproduction_work_job import open_work_job
+from .reproduction_work_plan import ReproductionPlan
 from .storage import atomic_write_text, entry_lock
 
 
@@ -84,7 +85,11 @@ def _reconcile_state(
 
 
 def reconcile_completed_source(
-    log: LogContext, run_root: Path, identity: ExecutionRef
+    log: LogContext,
+    run_root: Path,
+    identity: ExecutionRef,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
 ) -> bool:
     """Reconcile only complete accepted work, then acknowledge the atomic write.
 
@@ -94,12 +99,13 @@ def reconcile_completed_source(
     """
 
     with open_work_job(run_root) as job:
-        if not job.source_reconciliation_ready(identity):
+        plan = job.accepted.plan if accepted_plan is None else accepted_plan
+        if not job.source_reconciliation_ready(identity, plan=plan):
             return False
-        work = job.accepted.plan.command(identity)
+        work = plan.command(identity)
         artifacts = tuple(
             artifact
-            for artifact in job.accepted.plan.artifacts
+            for artifact in plan.artifacts
             if artifact.producer == identity
         )
         results = tuple(
@@ -114,14 +120,25 @@ def reconcile_completed_source(
             work,
             adopt_accepted_source=adopt_accepted_source,
         )
-        job.acknowledge_source_reconciliation(identity, reconciled_at=_utc_now())
+        job.acknowledge_source_reconciliation(
+            identity, reconciled_at=_utc_now(), plan=plan
+        )
     return True
 
 
-def reconcile_completed_sources(log: LogContext, run_root: Path) -> None:
+def reconcile_completed_sources(
+    log: LogContext,
+    run_root: Path,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
+) -> None:
     """Reconcile all eligible accepted executions after comparison durability."""
 
-    with open_work_job(run_root) as job:
-        identities = tuple(work.identity for work in job.accepted.plan.commands)
+    if accepted_plan is None:
+        with open_work_job(run_root) as job:
+            accepted_plan = job.accepted.plan
+    identities = tuple(work.identity for work in accepted_plan.commands)
     for identity in identities:
-        reconcile_completed_source(log, run_root, identity)
+        reconcile_completed_source(
+            log, run_root, identity, accepted_plan=accepted_plan
+        )

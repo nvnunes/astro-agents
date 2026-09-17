@@ -65,7 +65,7 @@ from .reproduction_work_job import (
     AttemptInterruption,
     ExecutionStart,
     WorkCheckpoint,
-    WorkJobAcceptance,
+    WorkJobLocation,
     open_work_job,
 )
 from .reproduction_work_plan import ReproductionPlan
@@ -146,11 +146,12 @@ def _prepare_attempt(
     identity: ExecutionRef,
     workspace: ReproductionWorkspace,
     control: WorkExecutionControl,
+    accepted_plan: ReproductionPlan | None = None,
 ) -> _WorkAttempt:
     with open_work_job(workspace.run_root) as job:
         _require_accepted_workspace(job.accepted, workspace)
         prior = job.load_execution_checkpoint(identity)
-        plan = job.accepted.plan
+        plan = job.accepted.plan if accepted_plan is None else accepted_plan
         work = plan.command(identity)
     if prior is None or prior.state != "active" or prior.permit_id != control.permit_id:
         raise ReproductionControlPlaneError(
@@ -319,6 +320,8 @@ def execute_work_recipe(
     identity: ExecutionRef,
     workspace: ReproductionWorkspace,
     control: WorkExecutionControl,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
 ) -> CommandResult | None:
     """Execute only the same-identity Job6 accepted recipe and persist actual facts.
 
@@ -329,7 +332,7 @@ def execute_work_recipe(
     No current recipe/data registry is loaded and no old plan is manufactured.
     """
 
-    attempt = _prepare_attempt(log, identity, workspace, control)
+    attempt = _prepare_attempt(log, identity, workspace, control, accepted_plan)
     result = _run_attempt(attempt, workspace, control)
     outputs = _observe_available_outputs(
         result.prepared.output_paths, result.prepared.execution
@@ -366,7 +369,8 @@ def execute_work_recipe(
                     when,
                     elapsed,
                     workers,
-                )
+                ),
+                plan=attempt.plan,
             )
     try:
         shutil.rmtree(result.scratch)
@@ -387,7 +391,10 @@ def execute_work_recipe(
 
 
 def compare_work_outputs(
-    workspace: ReproductionWorkspace, only_producer: ExecutionRef | None = None
+    workspace: ReproductionWorkspace,
+    only_producer: ExecutionRef | None = None,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
 ) -> None:
     """Persist only actual original-comparator facts from accepted generated paths.
 
@@ -398,7 +405,7 @@ def compare_work_outputs(
 
     with open_work_job(workspace.run_root) as job:
         _require_accepted_workspace(job.accepted, workspace)
-        plan = job.accepted.plan
+        plan = job.accepted.plan if accepted_plan is None else accepted_plan
         succeeded = {
             work.identity
             for work in plan.commands
@@ -437,11 +444,11 @@ def compare_work_outputs(
             ),
         )
         with open_work_job(workspace.run_root) as job:
-            job._record_artifact_comparison(compared, problems)
+            job._record_artifact_comparison(compared, problems, plan=plan)
 
 
 def _require_accepted_workspace(
-    accepted: WorkJobAcceptance,
+    accepted: WorkJobLocation,
     workspace: ReproductionWorkspace,
 ) -> None:
     root = (accepted.project_root / accepted.run_path).resolve()

@@ -57,7 +57,7 @@ from .reproduction_work_execution import (
     compare_work_outputs,
     execute_work_recipe,
 )
-from .reproduction_work_job import open_work_job
+from .reproduction_work_job import accepted_scheduling_projection, open_work_job
 from .reproduction_work_plan import ReproductionPlan
 from .reproduction_work_publication import publish_work_job
 
@@ -146,7 +146,9 @@ def _compare_completed_output(stage: _WorkStage, identity: ExecutionRef) -> None
     """Compare before dependants run, unless a concurrent stop won the race."""
 
     try:
-        compare_work_outputs(stage.workspace, identity)
+        compare_work_outputs(
+            stage.workspace, identity, accepted_plan=stage.plan
+        )
     except JobStoreTransitionError:
         if _stop_requested(stage):
             return
@@ -204,10 +206,12 @@ def _execute_scheduled_work(
     stage: _WorkStage, identity: ExecutionRef
 ) -> CommandResult | None:
     workspace = stage.workspace
+    accepted = accepted_scheduling_projection(
+        stage.plan,
+        workspace.run_id,
+        ExecutionIdentity(identity.entry, identity.cid, identity.execution_id),
+    )
     with open_work_job(workspace.run_root) as job:
-        accepted = job.load_accepted_scheduling(
-            ExecutionIdentity(identity.entry, identity.cid, identity.execution_id)
-        )
         prior = job.load_execution_checkpoint(identity)
     expected: Literal["absent", "stopped"] = (
         "stopped" if prior is not None and prior.state == "stopped" else "absent"
@@ -240,6 +244,7 @@ def _execute_scheduled_work(
             replace(request, polled_at=_utc_now()),
             checkpointed_at=_utc_now(),
             expected_state=expected,
+            accepted=accepted,
         )
         if decision.disposition == "granted":
             assert decision.permit is not None
@@ -255,6 +260,7 @@ def _execute_scheduled_work(
                     lambda: _stop_requested(stage),
                     stage.backend,
                 ),
+                accepted_plan=stage.plan,
             )
             if (
                 result is not None
@@ -274,9 +280,11 @@ def _resolve_pending(
         if job.load_run_control().phase == "stopping":
             return ready
         for identity in tuple(pending):
-            disposition = job.load_execution_readiness(identity).disposition
+            disposition = job.load_execution_readiness(
+                identity, plan=stage.plan
+            ).disposition
             if disposition == "dependency_failed":
-                job.record_dependency_block(identity)
+                job.record_dependency_block(identity, plan=stage.plan)
                 pending.remove(identity)
             elif disposition == "ready":
                 ready.append(identity)
@@ -306,6 +314,8 @@ def execute_work_plan(
     log: LogContext,
     workspace: ReproductionWorkspace,
     control: WorkPlanControl,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
 ) -> Literal["completed", "stopped"]:
     """Drain fixed native work, preserving dependency/exclusive/reuse decisions.
 
@@ -329,7 +339,7 @@ def execute_work_plan(
                     "native stage has no matching running supervisor",
                 )
             )
-        plan = job.accepted.plan
+        plan = job.accepted.plan if accepted_plan is None else accepted_plan
         if (workspace.source_project / plan.summary).resolve() != log.summary.resolve():
             raise ActionError(
                 "reproduction.run.invalid",
@@ -417,7 +427,7 @@ def _supervisor_context(
         owner = job.load_run_owner()
         _require_supervisor_owner(owner, control.supervisor_pid)
         assert owner is not None
-        if job.accepted.plan.summary != str(log.summary):
+        if job.accepted.summary_identity != str(log.summary):
             raise ActionError(
                 "reproduction.run.invalid", "accepted run belongs to a different log"
             )
@@ -484,22 +494,26 @@ def supervise_work_job(
             if mode == "fresh"
             else open_current_workspace(project_root, run_root, run_id)
         )
-        outcome = execute_work_plan(log, workspace, control)
+        with open_work_job(run_root) as job:
+            plan = job.accepted.plan
+        outcome = execute_work_plan(
+            log, workspace, control, accepted_plan=plan
+        )
         with open_work_job(run_root) as job:
             stopping = job.load_run_control().phase == "stopping"
         if outcome == "stopped" or stopping:
             _finish_stopped(run_root, owner)
             return
-        compare_work_outputs(workspace)
+        compare_work_outputs(workspace, accepted_plan=plan)
         from .reproduction_reconciliation import reconcile_completed_sources
 
-        reconcile_completed_sources(log, run_root)
+        reconcile_completed_sources(log, run_root, accepted_plan=plan)
         with open_work_job(run_root) as job:
             stopping = job.load_run_control().phase == "stopping"
         if stopping:
             _finish_stopped(run_root, owner)
             return
-        publish_work_job(log, run_root)
+        publish_work_job(log, run_root, accepted_plan=plan)
     except SystemExit:
         raise
     except BaseException as error:

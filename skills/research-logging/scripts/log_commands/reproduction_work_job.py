@@ -1,7 +1,7 @@
 """Native accepted work and atomic attempt facts for replacement durable jobs.
 
-This authority stores Plan13 directly, separately from genuine scheduler state.
-Job5 owns ordinary launch and lifecycle control; older jobs are never decoded.
+This authority stores Plan14 directly, separately from genuine scheduler state.
+Job6 owns ordinary launch and lifecycle control; older jobs are never decoded.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from .reproduction_accepted_storage import (
 from .reproduction_command_results import blocked_command_observation
 from .reproduction_completed_run import RunCompletion, complete_saved_run
 from .reproduction_domain import (
+    ArtifactOutcome,
     ArtifactRef,
     CommandOutcome,
     ExecutionRef,
@@ -90,7 +91,7 @@ from .reproduction_run import RUN_ID_RE, ArtifactResult, CommandResult
 from .reproduction_saved_run import MAX_WORK_RECORDS, SavedRun
 from .reproduction_work_plan import MAX_PLAN_BYTES, PLAN_SCHEMA, ReproductionPlan
 
-WORK_JOB_VERSION = 5
+WORK_JOB_VERSION = 6
 _THREAD_LOCK = threading.RLock()
 PERMIT_ADMISSION_PHASES = frozenset(
     {"accepted", "planning", "preflight", "executing", "comparing"}
@@ -165,10 +166,10 @@ CREATE TABLE workers (
     FOREIGN KEY(run_id, command_pk)
         REFERENCES accepted_work_scheduling(run_id, command_pk)
 ) WITHOUT ROWID;
-CREATE TABLE requirement_acknowledgments (
+CREATE TABLE source_reconciliation_acknowledgments (
     run_id TEXT NOT NULL,
     command_pk INTEGER NOT NULL,
-    cleared_at TEXT NOT NULL,
+    reconciled_at TEXT NOT NULL,
     PRIMARY KEY(run_id, command_pk),
     FOREIGN KEY(run_id, command_pk)
         REFERENCES accepted_work_commands(run_id, command_pk)
@@ -178,7 +179,7 @@ CREATE TABLE requirement_acknowledgments (
 
 @dataclass(frozen=True)
 class WorkJobAcceptance:
-    """Immutable run location and Plan13 facts, accepted in one transaction.
+    """Immutable run location and Plan14 facts, accepted in one transaction.
 
     ``project_root`` binds canonical temporary paths, including empty targets.
     Workspace/diagnostics are safe run-relative directories. There is no prior
@@ -323,7 +324,7 @@ def _validate_acceptance(run_root: Path, accepted: WorkJobAcceptance) -> None:
 
 
 def create_work_job(run_root: Path, accepted: WorkJobAcceptance) -> RunIdentity:
-    """Atomically create Job5 and its immutable native plan at a canonical root.
+    """Atomically create Job6 and its immutable native plan at a canonical root.
 
     Existing jobs, unsafe paths and malformed acceptance fail without replacement.
     Failure before commit rolls back and removes only newly created state files.
@@ -380,7 +381,7 @@ def create_work_job(run_root: Path, accepted: WorkJobAcceptance) -> RunIdentity:
 
 @contextmanager
 def open_work_job(run_root: Path) -> Iterator["LockedWorkJob"]:
-    """Hold the job mutex and expose only typed, native Job5 operations.
+    """Hold the job mutex and expose only typed, native Job6 operations.
 
     Opening authenticates accepted work and its canonical location. No earlier
     schema is decoded and no current registry/source is needed for reconstruction.
@@ -759,7 +760,7 @@ class LockedWorkJob:
     def load_accepted_scheduling(
         self, identity: ExecutionIdentity
     ) -> AcceptedSchedulingProjection:
-        """Derive genuine claims from authenticated Plan13, never copied flags."""
+        """Derive genuine claims from authenticated Plan14, never copied flags."""
 
         key = ExecutionRef(identity.entry, identity.cid, identity.execution_id)
         work = self.accepted.plan.command(key)
@@ -1200,33 +1201,72 @@ class LockedWorkJob:
         """Apply existing direct-dependency readiness to native research results.
 
         Only selected prerequisites require this run's completed observation.
-        A failed/blocked prerequisite blocks without fabricating an invocation;
-        otherwise unfinished selected prerequisites wait. Nonselected accepted
-        inputs remain guarded by the physical execution material checks.
+        A failed/blocked prerequisite or unsatisfied consumed artifact blocks
+        without fabricating an invocation; otherwise unfinished selected
+        prerequisites wait. Nonselected accepted inputs remain guarded by the
+        physical execution material checks.
         """
 
         self.accepted.plan.schedule(identity)
         work = self.accepted.plan.command(identity)
-        pending = []
-        failed = []
+        pending = set()
+        failed = set()
+        blocking_problem_ids: set[str] = set()
         for key in work.dependencies:
             if self.accepted.plan.command(key).selection is not WorkSelection.RUN:
                 continue
             result = self.load_command_result(key)
             dependency = ExecutionIdentity(key.entry, key.cid, key.execution_id)
             if result is None:
-                pending.append(dependency)
+                pending.add(dependency)
             elif result.outcome in {CommandOutcome.FAILED, CommandOutcome.BLOCKED}:
-                failed.append(dependency)
+                failed.add(dependency)
+            else:
+                for artifact in self.accepted.plan.dependency_artifacts(identity, key):
+                    compared = self.load_artifact_result(artifact.identity)
+                    if compared is None:
+                        pending.add(dependency)
+                    elif compared.outcome is not ArtifactOutcome.MATCHED:
+                        failed.add(dependency)
+                        blocking_problem_ids.update(compared.problem_ids)
         owner = ExecutionIdentity(identity.entry, identity.cid, identity.execution_id)
         if failed:
-            return ExecutionReadiness(owner, "dependency_failed", (), tuple(failed))
+            return ExecutionReadiness(
+                owner,
+                "dependency_failed",
+                (),
+                tuple(
+                    sorted(
+                        failed,
+                        key=lambda item: (
+                            item.entry,
+                            item.cid,
+                            item.execution_id,
+                        ),
+                    )
+                ),
+                tuple(sorted(blocking_problem_ids)),
+            )
         if pending:
-            return ExecutionReadiness(owner, "waiting", tuple(pending), ())
+            return ExecutionReadiness(
+                owner,
+                "waiting",
+                tuple(
+                    sorted(
+                        pending,
+                        key=lambda item: (
+                            item.entry,
+                            item.cid,
+                            item.execution_id,
+                        ),
+                    )
+                ),
+                (),
+            )
         return ExecutionReadiness(owner, "ready", (), ())
 
     def record_dependency_block(self, identity: ExecutionRef) -> CommandResult:
-        """Commit only the actual failed-prerequisite links, with no grant/attempt.
+        """Commit only actual unsatisfied-prerequisite links, with no grant/attempt.
 
         The native owner derives the block from durable prerequisite results;
         callers cannot submit a fabricated failure or overwrite an invocation.
@@ -1245,13 +1285,14 @@ class LockedWorkJob:
                 raise JobStoreTransitionError("completed command cannot become blocked")
             readiness = self.load_execution_readiness(identity)
             if readiness.disposition != "dependency_failed":
-                raise JobStoreTransitionError("command has no failed prerequisite")
+                raise JobStoreTransitionError("command has no unsatisfied prerequisite")
             result = blocked_command_observation(
                 identity,
                 tuple(
                     ExecutionRef(key.entry, key.cid, key.execution_id)
                     for key in readiness.failed_dependencies
                 ),
+                readiness.blocking_problem_ids,
             )
             write_command_observation(self._db, self.accepted.run_id, result)
             return result
@@ -1457,8 +1498,8 @@ class LockedWorkJob:
             },
         }
 
-    def requirement_clear_ready(self, identity: ExecutionRef) -> bool:
-        """Require accepted need and durable complete production/comparisons.
+    def source_reconciliation_ready(self, identity: ExecutionRef) -> bool:
+        """Require runnable work and durable complete production/comparisons.
 
         Equality is not a prerequisite. An acknowledgment is an external-write
         receipt, not a second command/comparison outcome.
@@ -1466,7 +1507,7 @@ class LockedWorkJob:
 
         work = self.accepted.plan.command(identity)
         result = self.load_command_result(identity)
-        if not work.execution.requires_reproduction or result is None:
+        if work.selection is not WorkSelection.RUN or result is None:
             return False
         if result.outcome is not CommandOutcome.SUCCEEDED:
             return False
@@ -1482,28 +1523,28 @@ class LockedWorkJob:
         if compared != set(outputs):
             return False
         row = self._db.execute(
-            "SELECT cleared_at FROM requirement_acknowledgments "
+            "SELECT reconciled_at FROM source_reconciliation_acknowledgments "
             "WHERE run_id=? AND command_pk=?",
             (self.accepted.run_id, self._command_pk(identity)),
         ).fetchone()
         if row is not None:
-            _require_timestamp(row[0], "requirement acknowledgment")
+            _require_timestamp(row[0], "source reconciliation acknowledgment")
         return row is None
 
-    def acknowledge_requirement_clear(
-        self, identity: ExecutionRef, *, cleared_at: str
+    def acknowledge_source_reconciliation(
+        self, identity: ExecutionRef, *, reconciled_at: str
     ) -> None:
-        """Acknowledge the exact external flag write after durable comparison."""
+        """Acknowledge the exact source-state write after durable comparison."""
 
-        _require_timestamp(cleared_at, "requirement acknowledgment")
-        with self._transaction("work_requirement_clear"):
-            if not self.requirement_clear_ready(identity):
-                raise JobStoreTransitionError("requirement clearing is not ready")
+        _require_timestamp(reconciled_at, "source reconciliation acknowledgment")
+        with self._transaction("work_source_reconciliation"):
+            if not self.source_reconciliation_ready(identity):
+                raise JobStoreTransitionError("source reconciliation is not ready")
             self._db.execute(
-                "INSERT INTO requirement_acknowledgments VALUES (?,?,?)",
-                (self.accepted.run_id, self._command_pk(identity), cleared_at),
+                "INSERT INTO source_reconciliation_acknowledgments VALUES (?,?,?)",
+                (self.accepted.run_id, self._command_pk(identity), reconciled_at),
             )
-            self._updated(cleared_at)
+            self._updated(reconciled_at)
 
     def _require_observation_bounds(self) -> None:
         total = 0

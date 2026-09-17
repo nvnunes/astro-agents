@@ -379,7 +379,7 @@ class SavedRunStorageTests(unittest.TestCase):
             diagnostics.load_command_diagnostic(self.root)["diagnostic_id"], identity
         )
         self.assertEqual(load_saved_run(self.db, self.run.run_id), self.run)
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 21)
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 22)
         self.assertEqual(
             SNAPSHOTS.load_validation_snapshot(self.root), published_validation
         )
@@ -421,7 +421,7 @@ class SavedRunStorageTests(unittest.TestCase):
         self.replace()
         self.save()
         self.assertEqual(load_saved_run(self.db, self.run.run_id), self.run)
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 21)
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone()[0], 22)
 
     def test_same_saved_run_is_idempotent_and_changed_facts_conflict(self):
         self.replace()

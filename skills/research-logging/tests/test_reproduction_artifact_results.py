@@ -411,6 +411,14 @@ class ArtifactResultObservationTests(unittest.TestCase):
             self.assertEqual(
                 type(current).from_json(current.serialized().encode()), current
             )
+            comparison_failed = replace(
+                result,
+                outcome=ArtifactOutcome.NOT_COMPARED,
+                not_compared_reason=NotComparedReason.COMPARISON_FAILED,
+            )
+            self.assertTrue(
+                planner._comparison_reusable(work, work, comparison_failed)
+            )
             for changed in (
                 replace(work, baseline=Fingerprint("sha256", "b" * 64)),
                 replace(work, output="other-output.txt"),

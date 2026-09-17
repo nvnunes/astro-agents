@@ -21,7 +21,7 @@ from validation.operation_state import operation_lock
 
 STORE_VERSION = 19
 REPLACEABLE_STORE_VERSIONS = frozenset({17, 18})
-UNCHANGED_DOMAIN_STORE_VERSIONS = frozenset({19, 20, 21})
+UNCHANGED_DOMAIN_STORE_VERSIONS = frozenset({19, 20, 21, 22})
 _COMPANIONS = ("-journal", "-wal", "-shm")
 
 _SHARED_DDL = """

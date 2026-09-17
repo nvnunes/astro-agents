@@ -726,6 +726,23 @@ def command_detail(
             "run_id": run.run_id,
             **_command_row(inspection, work),
             "recipe": work.execution.recipe.as_dict(),
+            "retained_source": {
+                "script": (
+                    work.execution.observed.script.as_dict()
+                    if work.execution.observed.script is not None
+                    else None
+                ),
+                "effective_code": (
+                    work.execution.observed.effective_code.as_dict()
+                    if work.execution.observed.effective_code is not None
+                    else None
+                ),
+            },
+            "accepted_source": (
+                work.accepted_source.as_dict()
+                if work.accepted_source is not None
+                else None
+            ),
             "entry_root": work.entry_root,
             "project_root": work.project_root,
             "dependencies": [item.as_dict() for item in work.dependencies],

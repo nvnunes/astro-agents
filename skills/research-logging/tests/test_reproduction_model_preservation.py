@@ -20,6 +20,7 @@ from log_commands.reproduction_domain import (
     WorkSelection,
 )
 from log_commands.reproduction_invocation import (
+    AcceptedSource,
     ReproductionRuntime,
 )
 from log_commands.reproduction_saved_storage import PreparationHistory
@@ -34,7 +35,13 @@ from research_log_data import Fingerprint
 from validation.pyrun_state import load_pyrun_state
 
 
-def fanout_fixture(root: Path, output_count: int = 10):
+def fanout_fixture(
+    root: Path,
+    output_count: int = 10,
+    *,
+    second_input: str = "output-0",
+    include_downstream: bool = False,
+):
     """Build one producer, two consumers and an independent execution with evidence."""
 
     fixture = _Fixture(root)
@@ -45,6 +52,7 @@ def fanout_fixture(root: Path, output_count: int = 10):
         "first",
         "second",
         "independent",
+        *(("downstream",) if include_downstream else ()),
     )
     paths = {name: entry.root / "data" / f"{name}.txt" for name in names}
     for name, path in paths.items():
@@ -67,7 +75,10 @@ def fanout_fixture(root: Path, output_count: int = 10):
         entry, "first", {"output-0": paths["output-0"]}, {"first": paths["first"]}
     )
     second = fixture.execution(
-        entry, "second", {"output-0": paths["output-0"]}, {"second": paths["second"]}
+        entry,
+        "second",
+        {second_input: paths[second_input]},
+        {"second": paths["second"]},
     )
     independent = fixture.execution(
         entry,
@@ -75,7 +86,17 @@ def fanout_fixture(root: Path, output_count: int = 10):
         {"raw": paths["raw"]},
         {"independent": paths["independent"]},
     )
-    fixture.write_pyrun(entry, [producer, first, second, independent])
+    executions = [producer, first, second, independent]
+    if include_downstream:
+        executions.append(
+            fixture.execution(
+                entry,
+                "downstream",
+                {"first": paths["first"]},
+                {"downstream": paths["downstream"]},
+            )
+        )
+    fixture.write_pyrun(entry, executions)
     return (
         fixture,
         entry,
@@ -84,6 +105,11 @@ def fanout_fixture(root: Path, output_count: int = 10):
             "first": first[0],
             "second": second[0],
             "independent": independent[0],
+            **(
+                {"downstream": executions[-1][0]}
+                if include_downstream
+                else {}
+            ),
         },
     )
 
@@ -219,7 +245,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
         self,
     ):
         for method in (
-            "test_changed_script_blocks_only_its_dependants",
+            "test_changed_script_runs_with_its_dependants",
             "test_cycle_fails_its_outputs_but_independent_execution_remains",
             "test_log_target_reports_external_generated_input_without_aborting",
             "test_direct_nonautomatic_evidence_is_reported_as_skipped",
@@ -333,7 +359,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 state = project.call_args.args[0]
                 self.assertEqual(
                     {item["identity"]["cid"] for item in plan.scheduling},
-                    {"independent"},
+                    {"producer", "first", "second", "independent"},
                 )
                 self.assertEqual(
                     {
@@ -420,7 +446,8 @@ class ReproductionModelPreservationTests(unittest.TestCase):
             ):
                 self.assertEqual(state.admission_decisions[key].disposition, "admitted")
             self.assertEqual(
-                {item["identity"]["cid"] for item in plan.scheduling}, {"independent"}
+                {item["identity"]["cid"] for item in plan.scheduling},
+                {"producer", "first", "second", "independent", "consumer"},
             )
 
     def test_original_cycle_fixture_retains_one_cause_and_exact_consumers(self):
@@ -496,6 +523,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 if cid == "producer"
             )
             identity = ExecutionRef("e001", "producer", identities["producer"])
+            assert execution.observed.effective_code is not None
             command = CommandWork(
                 identity,
                 execution,
@@ -504,6 +532,10 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 None,
                 WorkSelection.RUN,
                 "a" * 64,
+                accepted_source=AcceptedSource(
+                    execution.observed.script,
+                    execution.observed.effective_code,
+                ),
             )
             fields = json.loads(
                 (entry.root / "evidence.json").read_text(encoding="utf-8")
@@ -626,7 +658,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     {item["identity"]["cid"] for item in plan.scheduling},
-                    {"independent"},
+                    {"producer", "first", "second", "independent"},
                 )
 
     def test_actual_baseline_problem_keeps_artifact_owner_and_producer_effect(self):
@@ -670,7 +702,7 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                 {item["identity"]["cid"] for item in plan.scheduling}, {"independent"}
             )
 
-    def test_ten_output_blocker_preserves_exact_work_selection_and_nonmutation(
+    def test_ten_output_source_change_preserves_selection_and_nonmutation(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -704,14 +736,14 @@ class ReproductionModelPreservationTests(unittest.TestCase):
                     )
                     for item in plan.scheduling
                 },
-                {("e001", "independent", identities["independent"])},
+                {("e001", cid, identity) for cid, identity in identities.items()},
             )
             self.assertEqual(
                 {item.identity.cid: item.selection.value for item in plan.commands},
                 {
-                    "producer": "blocked",
-                    "first": "blocked",
-                    "second": "blocked",
+                    "producer": "run",
+                    "first": "run",
+                    "second": "run",
                     "independent": "run",
                 },
             )

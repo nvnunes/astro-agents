@@ -317,7 +317,7 @@ class LogCommandSyncTests(unittest.TestCase):
             )
             self.assertEqual(warnings[0]["construct"], "dynamic_import")
             self.assertIn(
-                "currentness and reproduction are unavailable",
+                "reproduction will select this command on every incremental plan",
                 warnings[0]["consequence"],
             )
             self.assertIn("run pyrun after repairing", warnings[0]["consequence"])
@@ -347,7 +347,7 @@ class LogCommandSyncTests(unittest.TestCase):
             self.assertFalse(any(item.get("status") == "warning" for item in records))
             self.assertTrue((entry / "pyrun.json").is_file())
 
-    def test_effective_code_operational_failure_is_nonmutating(self) -> None:
+    def test_effective_code_operational_failure_warns_and_syncs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(
                 Path(directory),
@@ -355,13 +355,29 @@ class LogCommandSyncTests(unittest.TestCase):
             )
             (entry / "scripts/build.py").write_text("if:\n", encoding="utf-8")
 
-            result = sync(logical, "--dry-run")
+            result = sync(logical)
 
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("command.sync.effective_code.failed", result.stderr)
-            records = json.loads(result.stdout)["records"]
-            self.assertEqual(records[0]["code"], "effective_code.syntax_invalid")
-            self.assertFalse((entry / "pyrun.json").exists())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            warnings = [
+                item
+                for item in json.loads(result.stdout)["records"]
+                if item.get("status") == "warning"
+            ]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(
+                warnings[0]["code"],
+                "command.sync.effective_code.unavailable",
+            )
+            self.assertEqual(
+                warnings[0]["construct"], "effective_code.syntax_invalid"
+            )
+            self.assertEqual(warnings[0]["line"], 1)
+            self.assertIn(
+                "reproduction will select this command on every incremental plan",
+                warnings[0]["consequence"],
+            )
+            self.assertIn("repair the analysis failure", warnings[0]["consequence"])
+            self.assertTrue((entry / "pyrun.json").is_file())
 
     def test_implicit_cid_selects_the_python_program_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

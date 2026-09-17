@@ -32,6 +32,7 @@ from .reproduction_domain import (
     _matches,
     _text,
 )
+from .reproduction_invocation import AcceptedSource
 
 DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -65,7 +66,12 @@ def validate_problem_links(
             elif problem.subject != owner and not (
                 isinstance(problem.subject, ArtifactRef)
                 and isinstance(owner, ExecutionRef)
-                and artifacts[problem.subject].producer == owner
+                and (
+                    artifacts[problem.subject].producer == owner
+                    or _command_consumes_artifact(
+                        commands[owner], artifacts[problem.subject], commands
+                    )
+                )
             ):
                 raise ReproductionDomainError(
                     "problem is attached to an unrelated owner"
@@ -128,6 +134,39 @@ def _strings(value: object) -> set[str]:
     return set()
 
 
+def _command_consumes_artifact(
+    command: CommandWork,
+    artifact: ArtifactWork,
+    commands: Mapping[ExecutionRef, CommandWork],
+) -> bool:
+    """Return whether accepted command input binding consumes this artifact.
+
+    The relation is derived only from frozen plan work. Directory outputs own
+    accepted inputs beneath their retained root; file-like outputs require an
+    exact canonical target.
+    """
+
+    if artifact.producer is None or artifact.output is None or command.data is None:
+        return False
+    producer = commands[artifact.producer]
+    kind = dict(producer.execution.recipe.outputs).get(artifact.output)
+    if kind is None:
+        raise ReproductionDomainError(
+            "artifact output is not declared by its producer"
+        )
+    retained = PurePosixPath(artifact.retained_path)
+    for name in command.execution.recipe.inputs:
+        resource = command.data.by_name.get(name)
+        if resource is None:
+            raise ReproductionDomainError("command input has no accepted declaration")
+        target = PurePosixPath(resource.canonical_target)
+        if target == retained or (
+            kind == "directory" and retained in target.parents
+        ):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class CommandWork:
     """One accepted expanded execution and its preparation decision.
@@ -147,6 +186,7 @@ class CommandWork:
     source_digest: str | None
     dependencies: tuple[ExecutionRef, ...] = ()
     problem_ids: tuple[str, ...] = ()
+    accepted_source: AcceptedSource | None = None
     _data: DataFile | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -184,6 +224,12 @@ class CommandWork:
                 raise ReproductionDomainError(
                     "selected/previous work needs a source digest"
                 )
+        if self.selection is WorkSelection.RUN and self.accepted_source is None:
+            raise ReproductionDomainError("runnable work has no accepted source")
+        if self.accepted_source is not None and not isinstance(
+            self.accepted_source, AcceptedSource
+        ):
+            raise ReproductionDomainError("command work has invalid accepted source")
 
     def _validate_recipe(self) -> None:
         validated = parse_pyrun_execution(
@@ -239,6 +285,11 @@ class CommandWork:
             "source_digest": self.source_digest,
             "dependencies": [item.as_dict() for item in self.dependencies],
             "problem_ids": list(self.problem_ids),
+            "accepted_source": (
+                self.accepted_source.as_dict()
+                if self.accepted_source is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -257,6 +308,7 @@ class CommandWork:
                 "source_digest",
                 "dependencies",
                 "problem_ids",
+                "accepted_source",
             },
             "command work",
         )
@@ -284,6 +336,11 @@ class CommandWork:
             None if item["source_digest"] is None else _text(item["source_digest"]),
             tuple(ExecutionRef.from_dict(raw) for raw in _list(item["dependencies"])),
             tuple(_text(raw) for raw in _list(item["problem_ids"])),
+            (
+                None
+                if item["accepted_source"] is None
+                else AcceptedSource.from_dict(item["accepted_source"])
+            ),
         )
 
 

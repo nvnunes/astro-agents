@@ -18,6 +18,7 @@ from log_commands.reproduction_domain import (
     SourceRef,
     WorkSelection,
 )
+from log_commands.reproduction_invocation import AcceptedSource
 from log_commands.reproduction_run import ArtifactResult, CommandResult
 from log_commands.reproduction_saved_run import RunSettings, RunTarget, SavedRun
 from log_commands.reproduction_summary import plan_selection_counts, saved_counts
@@ -36,6 +37,10 @@ from validation.pyrun_state import (
 
 WHEN = "2026-09-15T12:00:00Z"
 FINGERPRINT = Fingerprint("sha256", "a" * 64)
+ACCEPTED_SOURCE = AcceptedSource(
+    FINGERPRINT,
+    Fingerprint("python-effective-code-sha256-v1", "b" * 64),
+)
 
 
 def command(
@@ -83,6 +88,7 @@ def command(
         "a" * 64,
         dependencies,
         problems,
+        ACCEPTED_SOURCE if selection is WorkSelection.RUN else None,
     )
 
 
@@ -647,6 +653,11 @@ class ReproductionCanonicalRecordTests(unittest.TestCase):
                 )
                 with self.assertRaises(ValueError):
                     kind.from_dict({**record.as_dict(), "bucket": "invented"})
+        unverifiable = replace(
+            command("unverifiable"),
+            accepted_source=AcceptedSource(FINGERPRINT, None),
+        )
+        self.assertEqual(CommandWork.from_dict(unverifiable.as_dict()), unverifiable)
         self.assertEqual(SavedRun.from_json(run.serialized().encode()), run)
 
     def test_exact_mixed_counts_and_parent_equations(self):

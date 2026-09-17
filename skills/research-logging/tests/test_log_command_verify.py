@@ -992,7 +992,7 @@ class CommandVerificationTests(unittest.TestCase):
             "log_commands.reproduction_observation_storage.write_artifact_observation",
             "log_commands.reproduction_work_publication.publish_work_job",
             "log_commands.reproduction_promotion.promote_execution",
-            "log_commands.reproduction_requirements.clear_completed_requirement",
+            "log_commands.reproduction_reconciliation.reconcile_completed_source",
         )
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))

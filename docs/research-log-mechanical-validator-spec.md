@@ -75,7 +75,7 @@ identity, cache compatibility, or evolution requires it.
 | Command diagnostics | `research-log-command-diagnostic/1` |
 | Isolated command verification | `research-log-command-verification-result/1`; lifecycle semantics are owned by the [reproduction specification](research-log-reproduction-spec.md#current-command-verification-boundary) |
 | Validation response schemas | `research-log-validation-run/1`, `research-log-validation-root-run/1`, `research-log-validation-show/1`, `research-log-validation-finding-list/1`, `research-log-validation-batch-list/1`, `research-log-validation-blocked-list/1`, `research-log-validation-failed-list/1`, `research-log-validation-finding-detail/1`, and `research-log-validation-batch-detail/1` |
-| Shared result store | `<log>/.cache/results.sqlite`; SQLite versions 19/20/21 preserve canonical validation snapshots and independent command diagnostics. Shared initialization creates version 19 without a reproduction domain; current reproduction publication installs version 21, while version-20 reproduction is unsupported and replacement-only. Versions 17/18 require replacement and are never validation input. This specification owns validation tables; the [reproduction specification](research-log-reproduction-spec.md#replacement-reproduction-model) owns its separate saved-run domain. |
+| Shared result store | `<log>/.cache/results.sqlite`; SQLite versions 19/20/21/22 preserve canonical validation snapshots and independent command diagnostics. Shared initialization creates version 19 without a reproduction domain; current reproduction publication installs version 22, while version-20/version-21 reproduction is unsupported and replacement-only. Versions 17/18 require replacement and are never validation input. This specification owns validation tables; the [reproduction specification](research-log-reproduction-spec.md#replacement-reproduction-model) owns its separate saved-run domain. |
 | Former finding and result queries | Removed without aliases or compatibility status |
 | Discovery results | `research-log-discovery-result/1` |
 | Per-log validation cache | SQLite schema 2; `evidence_selections` component version 1 |
@@ -2930,12 +2930,18 @@ actionable locations. The analyzer reads at most 256 source files and 1 MiB per
 source. Syntax, source identity/stability, project boundary, and resource-limit
 failures are operational errors rather than unsupported language results.
 
-Command sync succeeds when analysis is unsupported and publishes bounded
-structured warnings naming the script, project-relative location, line,
-construct, and consequence. Ordinary `pyrun` emits no such warning, executes
-normally, and records `effective_code: null`. Reproduction treats a missing
-fingerprint like a mismatch for work selection while preserving the distinct
-`effective_code_unavailable` diagnosis.
+Command sync succeeds when analysis is unsupported or fails operationally and
+publishes bounded structured warnings naming the script, project-relative
+location, line, construct or error code, and consequence. Ordinary `pyrun`
+emits no warning for unsupported analysis, executes normally, and records
+`effective_code: null`; an operational analysis failure prevents ordinary
+publication. Reproduction analyzes current
+source independently: a missing saved fingerprint or an unavailable current
+fingerprint selects runnable work with the distinct
+`effective_code_unavailable` diagnosis. Unfingerprintable code is selected on
+each incremental plan because currentness cannot be established. The
+[reproduction specification](research-log-reproduction-spec.md#selection-and-precedence)
+owns that selection lifecycle.
 
 For supported code, `pyrun` records one pre-launch fingerprint and recomputes
 it after successful child execution. A mismatch or operational failure prevents

@@ -1,4 +1,4 @@
-"""Execute Job5 accepted recipes using the existing physical execution rules.
+"""Execute Job6 accepted recipes using the existing physical execution rules.
 
 Native job facts, not mutable source registries or checkpoint diagnoses, own
 acceptance and completion. Process supervision, confinement, source/input
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, cast
@@ -56,6 +57,7 @@ from .reproduction_execution import (
 from .reproduction_invocation import (
     AcceptedInvocation,
 )
+from .reproduction_job_control import JobStoreBusyError, WorkerRecord
 from .reproduction_run import CommandResult
 from .reproduction_work import CommandWork
 from .reproduction_work_job import (
@@ -67,6 +69,9 @@ from .reproduction_work_job import (
     open_work_job,
 )
 from .reproduction_work_plan import ReproductionPlan
+
+WORKER_RECORD_RETRY_SECONDS = 5.0
+WORKER_RECORD_RETRY_INTERVAL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -102,7 +107,11 @@ def _source(
         EntryContext(log, work.identity.entry, Path(work.entry_root)),
         {
             (item.identity.cid, item.identity.execution_id): AcceptedInvocation(
-                item.identity, Path(item.entry_root), item.execution, item.data
+                item.identity,
+                Path(item.entry_root),
+                item.execution,
+                item.data,
+                item.accepted_source,
             )
             for item in plan.commands
             if item.identity.entry == work.identity.entry
@@ -208,12 +217,12 @@ def _run_attempt(
         raise ReproductionControlPlaneError(error) from error
 
     def record_workers(workers):
-        with open_work_job(workspace.run_root) as job:
-            job.replace_execution_workers(
-                attempt.work.identity,
-                control.permit_id,
-                tuple(_stored_worker(item) for item in workers),
-            )
+        _record_workers_with_retry(
+            workspace.run_root,
+            attempt.work.identity,
+            control.permit_id,
+            tuple(_stored_worker(item) for item in workers),
+        )
 
     outcome, _launched_at, elapsed = _run_prepared(
         prepared,
@@ -245,6 +254,26 @@ def _run_attempt(
         tuple(command),
         prepared.work_entry.as_posix(),
     )
+
+
+def _record_workers_with_retry(
+    run_root: Path,
+    identity: ExecutionRef,
+    permit_id: str,
+    workers: tuple[WorkerRecord, ...],
+) -> None:
+    """Persist worker observations across brief external state-lock contention."""
+
+    deadline = time.monotonic() + WORKER_RECORD_RETRY_SECONDS
+    while True:
+        try:
+            with open_work_job(run_root) as job:
+                job.replace_execution_workers(identity, permit_id, workers)
+            return
+        except JobStoreBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(WORKER_RECORD_RETRY_INTERVAL_SECONDS)
 
 
 def _materialized_result(
@@ -291,7 +320,7 @@ def execute_work_recipe(
     workspace: ReproductionWorkspace,
     control: WorkExecutionControl,
 ) -> CommandResult | None:
-    """Execute only the same-identity Job5 accepted recipe and persist actual facts.
+    """Execute only the same-identity Job6 accepted recipe and persist actual facts.
 
     Native terminal result/problems and exited workers commit before global grant
     release, then run-local permit/scratch CAS cleanup. Stopped work retains its
@@ -357,7 +386,9 @@ def execute_work_recipe(
     return observation
 
 
-def compare_work_outputs(workspace: ReproductionWorkspace) -> None:
+def compare_work_outputs(
+    workspace: ReproductionWorkspace, only_producer: ExecutionRef | None = None
+) -> None:
     """Persist only actual original-comparator facts from accepted generated paths.
 
     Each comparison verifies its frozen retained baseline and auxiliary evidence.
@@ -380,7 +411,14 @@ def compare_work_outputs(workspace: ReproductionWorkspace) -> None:
             if job.load_artifact_result(artifact.identity) is not None
         }
     for artifact in plan.artifacts:
-        if artifact.identity in recorded or artifact.producer not in succeeded:
+        if (
+            artifact.identity in recorded
+            or artifact.producer not in succeeded
+            or (
+                only_producer is not None
+                and artifact.producer != only_producer
+            )
+        ):
             continue
         assert artifact.producer is not None
         assert artifact.output is not None

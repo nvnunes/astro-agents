@@ -149,6 +149,7 @@ class ExecutionReadiness:
     disposition: Literal["waiting", "ready", "dependency_failed"]
     pending_dependencies: tuple[ExecutionIdentity, ...]
     failed_dependencies: tuple[ExecutionIdentity, ...]
+    blocking_problem_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

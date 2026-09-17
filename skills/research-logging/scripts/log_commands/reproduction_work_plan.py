@@ -1,4 +1,4 @@
-"""Typed plan/13 acceptance boundary, shared by fresh preview and real launch."""
+"""Typed plan/14 acceptance boundary, shared by fresh preview and real launch."""
 
 from __future__ import annotations
 
@@ -33,12 +33,13 @@ from .reproduction_work import (
     DIGEST_RE,
     ArtifactWork,
     CommandWork,
+    _command_consumes_artifact,
     _list,
     validate_problem_links,
     validate_producer,
 )
 
-PLAN_SCHEMA = "research-log-reproduction-plan/13"
+PLAN_SCHEMA = "research-log-reproduction-plan/14"
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 
 
@@ -113,6 +114,28 @@ class ReproductionPlan:
             raise ReproductionDomainError(
                 "artifact is outside accepted work"
             ) from error
+
+    def dependency_artifacts(
+        self, consumer: ExecutionRef, producer: ExecutionRef
+    ) -> tuple[ArtifactWork, ...]:
+        """Return exact accepted artifacts carried by one dependency edge."""
+
+        command = self.command(consumer)
+        if producer not in command.dependencies:
+            raise ReproductionDomainError(
+                "artifact lookup is not an accepted command dependency"
+            )
+        related = tuple(
+            artifact
+            for artifact in self.artifacts
+            if artifact.producer == producer
+            and _command_consumes_artifact(command, artifact, self._commands)
+        )
+        if not related:
+            raise ReproductionDomainError(
+                "accepted dependency has no consumed artifact"
+            )
+        return related
 
     def schedule(self, identity: ExecutionRef) -> Mapping[str, object]:
         """Return the native claim row; nonrunnable work has no schedule."""
@@ -300,7 +323,7 @@ class ReproductionPlan:
             )
 
     def as_dict(self) -> dict[str, object]:
-        """Return the complete closed plan/13 field set, not preview pagination."""
+        """Return the complete closed plan/14 field set, not preview pagination."""
 
         return {
             "schema": PLAN_SCHEMA,
@@ -329,7 +352,7 @@ class ReproductionPlan:
 
     @classmethod
     def from_json(cls, raw: bytes) -> ReproductionPlan:
-        """Read only plan/13; unsupported durable jobs are never translated."""
+        """Read only plan/14; unsupported durable jobs are never translated."""
 
         if len(raw) > MAX_PLAN_BYTES:
             raise ReproductionDomainError("accepted plan exceeds its fixed byte bound")

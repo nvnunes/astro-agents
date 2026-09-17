@@ -17,7 +17,7 @@ and publication behavior remain distinct from presentation.
 
 ### Canonical Records And Versions
 
-The current formats are plan/13, result/13, job-store 5 and shared-store 21.
+The current formats are plan/14, result/14, job-store 6 and shared-store 22.
 Execution state is `research-log-pyrun/v7`; worker, scheduler and comparison
 families retain their existing versions. No obsolete reproduction result or job
 is decoded, migrated or resumed. Unsupported saved results require a new
@@ -32,7 +32,7 @@ complete declared outputs remain available for execution safety and promotion.
 
 | Record | Closed Fields |
 | --- | --- |
-| Command work | `identity`, `execution`, `entry_root`, `project_root`, `data_declaration`, `selection`, `source_digest`, `dependencies`, `problem_ids` |
+| Command work | `identity`, `execution`, `entry_root`, `project_root`, `data_declaration`, `selection`, `source_digest`, `dependencies`, `problem_ids`, `accepted_source` |
 | Artifact work | `identity`, `producer`, `output`, `retained_path`, `baseline`, `definition_identity`, `evidence_records`, `boundary`, `problem_ids` |
 | Problem | `subject`, `code`, `stage`, `observed`, `explanation`, `locations` |
 | Command result | `identity`, `outcome`, `started_at`, `finished_at`, `argv`, `cwd`, `stdout_path`, `stderr_path`, `outputs`, `problem_ids`, `blocked_by` |
@@ -40,7 +40,12 @@ complete declared outputs remain available for execution safety and promotion.
 | Accepted plan | `schema`, `summary`, `target`, `settings`, `admission`, `commands`, `artifacts`, `problems`, `materials`, `evidence_only`, `scheduling`, `reusable_artifact_results` |
 | Saved run | `schema`, `summary`, `run_id`, `target`, `settings`, `accepted_at`, `finished_at`, `status`, `commands`, `artifacts`, `command_results`, `artifact_results`, `problems` |
 
-`execution` retains the existing typed `PyrunExecution` recipe and observations;
+`execution` retains the existing typed `PyrunExecution` recipe and historical
+observations. `accepted_source` is either null or the current raw top-level
+script fingerprint plus a nullable effective-code fingerprint accepted for
+this plan; every runnable command has it. It is execution stability and
+reconciliation authority, not a
+second recipe or output baseline. The
 automatic/exclusive policy and the reproduction-need flag are not duplicated
 as separately authoritative flags. Resolved `data_declaration` uses the existing
 accepted data grammar. Evidence definitions and comparison observations retain
@@ -77,11 +82,14 @@ partial identities and noncanonical paths fail closed. Problem references
 retain deterministic mechanical precedence. Distinct observed causes remain
 distinct even on one subject; there is no fuzzy or cross-run causal deduplication.
 
-Preparation uses `research-log-reproduction-command-source/2` for the replacement
-source digest. It hashes the recorded execution, currentness observations,
-accepted materials, output comparison identities, dependencies and all currently
+Preparation uses `research-log-reproduction-command-source/3` for the replacement
+source digest. It hashes the recorded recipe and retained input/output
+observations, currentness observations, accepted current effective code,
+materials, output comparison identities,
+dependencies and all currently
 observed owned preparation problem identities. It does not hash synthesized
-cases or a primary
+cases, the mutable reproduction requirement, retained raw/effective source
+observations or a primary
 display reason. A change in a secondary observed cause therefore invalidates
 the same guard even when the compact primary reason stays unchanged. Wording
 and location-only changes do not alter problem identity.
@@ -90,6 +98,10 @@ Retained previous-attempt/block diagnoses belong to immutable accepted history,
 not current source identity. They remain complete in the accepted work and its
 serialized plan without mutating preparation state or causing an unchanged
 previous failure/block to retry merely because its diagnosis is retained.
+The same closure guard suppresses an unchanged prior successful production whose
+complete comparison set contained `not-matched` or `not-compared`; its exact
+saved comparisons are reused. Recheck, a source-closure change, a baseline or
+comparison-definition change, or cleared saved results selects fresh work.
 
 Preparation reads the requested native latest origins once per origin, retaining
 only requested command/artifact facts and their owned prior root/prerequisite
@@ -164,7 +176,7 @@ runtime diagnosis cannot mutate the accepted plan. Terminal results retain their
 own canonical digests and exact command/artifact relationships. Transaction and
 operational checkpoint ownership remain with the job store.
 
-The native Job5 executor, `execute_work_recipe`, runs only same-identity
+The native Job6 executor, `execute_work_recipe`, runs only same-identity
 frozen accepted work under the existing process, confinement, source/input and
 materialization guards. Native command result/problem and exited worker state
 commit atomically before scratch cleanup and caller-owned scheduler release.
@@ -186,7 +198,17 @@ only actual block links, without an invented dependent attempt. Completed work
 must pass the existing private-output currentness/materialization guards before
 reuse; a local stop becomes durable before waits are canceled. Native state
 operations serialize same-process threads before the existing nonblocking
-process mutex; external busy errors remain explicit.
+process mutex. Worker-monitor writes retry brief bounded contention so a normal
+observation race cannot abort an execution; sustained contention and external
+busy errors remain explicit.
+
+A successful producer's accepted artifacts are compared before its consumers
+become ready. Each consumer is bound to the exact producer artifacts named by
+its accepted inputs. `matched` satisfies that edge; `not-matched` or
+`not-compared` blocks only consumers of that artifact, with the existing
+artifact-owned problem referenced by the blocked command. Other outputs from
+the same producer and independent branches continue. These are normal saved
+research outcomes, not run-level operational failures.
 Native dead-owner recovery returns without mutations or process inspection for
 a live owner. It uses the existing run-ID-marked worker scan and termination,
 retains every survivor durably, and leaves permits, scratch and ownership open
@@ -208,11 +230,17 @@ Ordinary `log reproduce run` freezes fresh native preparation and registers the
 actual detached supervisor before releasing its inherited start gate. The
 supervisor executes, compares the complete declared output set, acknowledges
 eligible reproduction-requirement clearing, and publishes immutable saved facts.
-Requirement clearing retains the exact accepted/current recipe and observation
-guard and job-then-entry lock order. Its acknowledgment follows the atomic pyrun
-flag write, so retry can acknowledge an already-cleared flag without executing.
-Complete production does not require equal outputs; partial/failed/blocked/stopped
-work cannot clear early. Native status exposes lifecycle/checkpoint progress and
+Source reconciliation retains the exact accepted/current recipe and observation
+guard and job-then-entry lock order. Its acknowledgment follows the atomic
+`pyrun.json` write, so retry can acknowledge an already-applied change without
+executing. Complete production clears `requires_reproduction` even when an
+artifact is unequal or cannot be compared. When every declared artifact is
+canonically `matched`—including the empty set for a zero-output command—the same
+atomic write also adopts the accepted raw-script fingerprint and nullable
+effective-code observation. A null observation remains noncurrent for later
+selection.
+Otherwise the retained source observations and outputs stay unchanged.
+Partial/failed/blocked/stopped work cannot reconcile early. Native status exposes lifecycle/checkpoint progress and
 available retained diagnostics even before saved publication.
 
 Native publication commits an immutable saved run and advances the reproduction
@@ -245,8 +273,8 @@ canonical summary, confirmation time and domain generation; it invents no run or
 execution. Saved summary/report show confirmed zero totals, lists are empty and
 explicit run IDs remain missing. Absent or supported history remains unchanged.
 A receipt retry can recover an interrupted report write, and normal publication
-removes the receipt. Version 21 is the single current replacement format,
-including this receipt table. Version 20 and incomplete staged schemas are
+removes the receipt. Version 22 is the single current replacement format,
+including this receipt table. Earlier reproduction formats and incomplete staged schemas are
 obsolete, unsupported, and replaced without decoding or migration.
 
 Detail pages known recipe/result/diagnosis/output collections using `--section`
@@ -301,9 +329,10 @@ Selection leaves are `run`, `blocked`, `not_needed`, `previous_failure`,
 `previous_block`, `skipped_by_policy`. Attempt outcomes are `succeeded`,
 `failed`, `blocked`; blocked means no attempt. Launch/capture/materialization
 failures inside an attempt are failed command results, not prerequisite blocks.
-A failed producer blocks dependent attempts through the existing dependency
-links. Independent work may proceed. Operational persistence and cleanup
-failures stay at run lifecycle ownership.
+A failed producer or an unsatisfied producer-artifact comparison blocks
+dependent attempts through the existing dependency links. Independent work may
+proceed. Operational persistence and cleanup failures stay at run lifecycle
+ownership.
 
 The single command classifier derives `not-run`, `skipped-by-policy`,
 `succeeded`, `failed`, `blocked`. Not-run reasons are `not-needed`,
@@ -352,7 +381,7 @@ neither successful execution nor artifact matches.
 | Validation exclusion | Retain each applicable blocking validation finding and its bounded diagnosis separately; affected command work references that finding-derived cause. Orphans stay nonblocking. Do not aggregate findings into a combined Reproduce problem or repair packet, or copy a finding into one failure per output. |
 | `non_automatic`, policy/outside-queue case | Selection/boundary handling, not an attempted failure. Preserve not-needed-before-policy precedence and include-all independence. |
 | `outside_entry` verified case | Existing accepted scope/boundary, not a failed command. Do not count a command outside the target just to own this artifact. |
-| Currentness / `requires_reproduction` / `source_digest` | Preparation only; exact need, unchanged failure/block suppression and complete source-closure invalidation. A match never decides command eligibility. |
+| Currentness / `requires_reproduction` / `source_digest` | Preparation only; exact need, unchanged failure/block/completed-difference suppression and complete source-closure invalidation. A match does not decide initial command eligibility; the complete comparison set decides only post-run source reconciliation. |
 | Old command snapshot and synthesized `details` | Canonical command work; original recipe/data/roots and all problem references, without duplicated eligibility flags or case-derived reason lists. |
 | Checkpoint child exit, timeout, execution exception or generation failure | Command result and one command-owned attempted-execution problem with original stage/code/message/type, timing, invocation and available output/stream paths. |
 | Capture or output materialization failure/missing output | Command result and command-owned problem at capture/materialize stage; preserve partial output availability and attempt classification. |
@@ -541,10 +570,10 @@ Missing retained diagnostics are availability fields, not a different outcome.
 | Execution identity | `pyrun-exec/v2` |
 | Standard environment | `pyrun-standard/v1` |
 | Execution contract | `research-log-pyrun-execution/2` |
-| Accepted plan | `research-log-reproduction-plan/13` |
-| Saved run | `research-log-reproduction-result/13` |
-| Durable job | run-local `state.sqlite`, user_version 5 |
-| Shared results | `<log>/.cache/results.sqlite`, user_version 19 without reproduction, 21 with current reproduction; version 20 reproduction is unsupported and replaced only by explicit recheck |
+| Accepted plan | `research-log-reproduction-plan/14` |
+| Saved run | `research-log-reproduction-result/14` |
+| Durable job | run-local `state.sqlite`, user_version 6 |
+| Shared results | `<log>/.cache/results.sqlite`, user_version 19 without reproduction, 22 with current reproduction; earlier reproduction formats are unsupported and replaced only by explicit recheck |
 | Operational status | `research-log-reproduction-status/7` |
 | Project scheduler | `reproduction-scheduler.sqlite`, user_version 2 |
 | Comparison | `research-log-reproduction-comparison/1` |
@@ -885,10 +914,14 @@ imports, unresolved dispatch whose complete base hierarchy cannot be proved to
 terminate externally, and unresolved child Python entrypoints are unsupported. Unsupported analysis
 never emits a partial fingerprint or a whole-module fallback: `effective_code`
 is `null`. Ordinary `pyrun` remains silent and executes. Command sync succeeds
-but reports bounded structured warnings with the affected location and the
-consequence that code currentness and reproduction are unavailable until the
-source is made analyzable and `pyrun` is run again. Operational analysis
-failures remain errors.
+for unsupported and operationally failed analysis but reports bounded
+structured warnings with the affected location and the consequence that code
+currentness is unavailable until the source is made analyzable and `pyrun` is
+run again. Reproduction remains runnable and repeatedly selected while the
+fingerprint is unavailable. Operational analysis failures remain errors to
+ordinary `pyrun` publication. During Reproduce preparation,
+any analysis result without a fingerprint selects runnable work with its exact
+diagnosis as long as the top-level script itself can be frozen.
 
 A commit-pinned `git-repository` input remains a `data.json` origin. Its recipe
 input is still the data name, and its observed value uses the inherited exact
@@ -899,10 +932,12 @@ For a confirmed execution whose `requires_reproduction` is false, the recipe
 and observed input/output key sets agree exactly and `script` is present. A
 record requiring reproduction may contain a subset of still-applicable input
 and output observations and may set `script` or `effective_code` to null.
-Missing effective code has the same reproduction-selection effect as a
-nonmatching fingerprint, while remaining the distinct
-`effective_code_unavailable` diagnosis. Missing historical observations are
-unavailable history, never current evidence or a match. Every fingerprint uses the closed
+Missing saved effective code and current code that cannot be fingerprinted both
+select runnable work with the distinct `effective_code_unavailable` diagnosis.
+Unfingerprintable current code is selected on every incremental plan because
+unchanged currentness cannot be established; saved history does not suppress
+it. Missing historical observations are unavailable history, never current
+evidence or a match. Every fingerprint uses the closed
 forms owned by the mechanical validator specification. `data.json` remains the
 sole owner of input paths, classifications, and identity selection;
 `pyrun.json` owns the historical observations that reproduction compares.
@@ -1087,8 +1122,14 @@ Historically reconstructed state that has not completed a successful execution r
 field to false immediately after the command reaches its complete mechanical
 endpoint and its complete comparison is durably recorded. Artifact matching is
 separate: a completed command clears the requirement even when an artifact is
-changed or its comparison fails. The mutation preserves the recipe,
-observations, policy, versions, and `last_run_at`; later work, result
+changed or its comparison fails. If every artifact is canonically matched,
+reconciliation also records the plan's accepted raw-script and effective-code
+observations, including a null effective-code observation. A null observation
+does not establish currentness and therefore remains selected by later plans.
+If any artifact is unequal or uncomputed, reconciliation preserves the prior
+observations. The mutation
+preserves the recipe, inputs, output baselines, policy, versions, and
+`last_run_at`; later work, result
 publication, and validation do not restore the requirement. A failed, blocked,
 or stopped command leaves it true.
 
@@ -1192,9 +1233,9 @@ zero unsupported observations, with all 1,029 still requiring reproduction. No
 maintained reproduction was launched. Ordinary runtime readers accept only v7;
 there is no v6 compatibility reader or runtime migration path.
 
-The same replacement boundary advanced accepted plans and saved runs to v13,
-durable jobs to user version 5, and the shared reproduction domain to user
-version 21. Version-20 saved reproduction rows and version-4 jobs are not
+The current reconciliation boundary advances accepted plans and saved runs to
+v14, durable jobs to user version 6, and the shared reproduction domain to user
+version 22. Earlier saved reproduction rows and jobs are not
 decoded, translated, or resumed. Validation and command-diagnostic domains in
 a version-20 shared store remain readable; explicit
 `log reproduce run --path LOG --recheck` replaces only the obsolete
@@ -1235,14 +1276,18 @@ components remain eligible.
 
 Selection precedence is not-needed before automatic policy. Incremental work
 runs when reproduction is required or currentness has changed, except an
-unchanged prior failed/block source closure is not retried. `--include-all`
+unchanged prior failed, blocked, or completed-but-unreconciled source closure is
+not retried. `--include-all`
 allows nonautomatic work but does not independently retry an unchanged failure.
 `--recheck` retries current work without bypassing policy; use both flags when
 explicitly reproducing all recorded recipes. Required upstream changes propagate
-to downstream selected work in deterministic dependency order. Effective-code
-and input changes invalidate the complete command source closure. A changed
-raw script fingerprint alone does not. An unavailable effective-code fingerprint
-selects and blocks work like a mismatch while retaining its distinct diagnosis;
+to downstream selected work in deterministic dependency order. A supported
+effective-code mismatch, a missing saved fingerprint, or current effective code
+that cannot be fingerprinted selects runnable work. Preparation freezes the raw
+script and nullable effective-code observation for pre/post execution stability
+checks. A changed raw script fingerprint alone does not select work.
+Unfingerprintable code bypasses unchanged-history suppression and is selected
+on every incremental plan because its currentness cannot be proved;
 comparison definitions and baseline observations qualify comparison reuse, not
 execution success. Saved inspection never recomputes this live currentness.
 
@@ -1338,8 +1383,9 @@ For parallel execution, each attempt receives a distinct mirrored entry run
 directory. Its run directory, declared output targets outside that directory,
 capture targets, and private runtime and diagnostic roots form the accepted
 `run_path`, `write_paths`, and `writable_paths` claims. Fresh scratch is private
-to each launch and adds no shared scheduling claim. Regenerated dependencies become read-only to consumers after their
-producer checkpoint is durable. The supervisor performs atomic materialization
+to each launch and adds no shared scheduling claim. Regenerated dependencies
+become read-only to consumers after their producer checkpoint is durable and
+their exact accepted artifacts have matched. The supervisor performs atomic materialization
 into shared dependency locations. Independent executions in the same entry may
 run concurrently when their logical output, input, and writable claims do not
 conflict; a resumed stopped attempt reuses its original run path and receives
@@ -1395,7 +1441,11 @@ evidence-scoped exception defined below; no exception is inferred from format,
 name, execution, or an observed difference.
 
 Comparison applies to each artifact independently after its complete
-execution output set is available. Type-aware profiles compare decoded logical
+execution output set is available. For selected producer-consumer edges, this
+comparison completes before consumer readiness: only the exact matched inputs
+permit that consumer to run. A mismatch or comparison inability remains an
+artifact result and locally blocks consumers; it does not fail the producer or
+abort unrelated work. Type-aware profiles compare decoded logical
 content so incidental serialization differences do not create a change where
 the approved profile defines them as irrelevant. A format without a recognized
 decoder uses exact bytes when it is a regular file.
@@ -1562,7 +1612,10 @@ requires every output in the staged execution, verifies the accepted invocation
 and frozen comparison evidence, recipe equality, output membership, staged
 fingerprints, and destination-baseline
 preconditions, then copies the complete set into maintained locations. A
-partial or stale set cannot be promoted.
+partial or stale set cannot be promoted. The same atomic metadata update installs
+the plan's accepted raw-script and effective-code observations with the complete
+output fingerprints. The effective-code observation may be null and remains
+noncurrent for later selection; source and outputs cannot be promoted independently.
 
 Promotion copies; it never moves or modifies staged source files. Other
 executions in the same run directory remain independently available. Missing

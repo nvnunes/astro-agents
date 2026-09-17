@@ -33,7 +33,7 @@ from .reproduction_saved_run import (
 )
 from .reproduction_work import ArtifactWork, CommandWork
 
-SAVED_STORE_VERSION = 21
+SAVED_STORE_VERSION = 22
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,9 @@ class PreparationHistory:
         default_factory=lambda: MappingProxyType({})
     )
     artifact_problems: Mapping[str, ReproductionProblem] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    command_origins: Mapping[ExecutionRef, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
 
@@ -646,6 +649,7 @@ def load_preparation_history(
     _require_history_read_budget(db, tuple(origins))
     command_facts = {}
     artifact_facts = {}
+    command_origins = {}
     problem_facts: dict[ExecutionRef, dict[str, ReproductionProblem]] = {}
     unique_problems: dict[str, ReproductionProblem] = {}
     artifact_problems: dict[str, ReproductionProblem] = {}
@@ -666,6 +670,7 @@ def load_preparation_history(
             tuple(record for pair in new_artifacts.values() for record in pair),
         )
         command_facts.update(new_commands)
+        command_origins.update({identity: origin for identity in new_commands})
         artifact_facts.update(new_artifacts)
         for identity, records in _preparation_problems(run, command_ids).items():
             for problem in records:
@@ -686,6 +691,7 @@ def load_preparation_history(
             }
         ),
         MappingProxyType(artifact_problems),
+        MappingProxyType(command_origins),
     )
 
 

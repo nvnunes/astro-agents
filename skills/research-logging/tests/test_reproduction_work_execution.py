@@ -34,6 +34,7 @@ from log_commands.reproduction_inspection import (
 from log_commands.reproduction_job_control import (
     ExecutionIdentity,
     ExecutionPermitAttachment,
+    JobStoreBusyError,
     RunOwner,
 )
 from log_commands.reproduction_paths import canonical_run_path, run_leaf
@@ -114,6 +115,7 @@ class NativeExecutionTests(unittest.TestCase):
         uncited_second=False,
         attach=True,
         log_helper: str | None = None,
+        unfingerprintable: bool = False,
     ):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -210,8 +212,10 @@ class NativeExecutionTests(unittest.TestCase):
                         observed=replace(
                             authored.observed,
                             script=_fingerprint(script_path),
-                            effective_code=_effective_fingerprint(
-                                script_path, project
+                            effective_code=(
+                                authored.observed.effective_code
+                                if unfingerprintable
+                                else _effective_fingerprint(script_path, project)
                             ),
                         ),
                     ),
@@ -249,6 +253,31 @@ class NativeExecutionTests(unittest.TestCase):
                 )
         return fixture, work, workspace, output
 
+    def test_worker_observation_retries_brief_job_lock_contention(self):
+        _fixture, work, workspace, _output = self.prepare("VALUE = 1\n")
+        real_open = execution.open_work_job
+        calls = 0
+
+        def busy_once(run_root):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise JobStoreBusyError("brief external contention")
+            return real_open(run_root)
+
+        with (
+            mock.patch.object(execution, "open_work_job", side_effect=busy_once),
+            mock.patch.object(execution, "WORKER_RECORD_RETRY_INTERVAL_SECONDS", 0),
+        ):
+            execution._record_workers_with_retry(
+                workspace.run_root,
+                work.identity,
+                "native-grant",
+                (),
+            )
+
+        self.assertEqual(calls, 2)
+
     def test_native_execution_uses_the_log_shared_import_context(self):
         fixture, work, workspace, retained = self.prepare(
             "import argparse\nfrom pathlib import Path\n"
@@ -274,6 +303,45 @@ class NativeExecutionTests(unittest.TestCase):
         regenerated = workspace.map_source(retained)
         self.assertEqual(regenerated.read_text(), "INPUT")
         self.assertEqual(retained.read_text(), "baseline")
+
+    def test_native_execution_rejects_source_change_after_acceptance(self):
+        fixture, work, workspace, _ = self.prepare("VALUE = 1\n")
+        script = Path(work.entry_root) / work.execution.recipe.script
+        script.write_text("VALUE = 1\n# changed after acceptance\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ActionError, "script observation changed"):
+            execute_work_recipe(
+                fixture.log,
+                work.identity,
+                workspace,
+                WorkExecutionControl(
+                    "native-grant", lambda: None, confinement=TestConfinement()
+                ),
+            )
+
+    def test_native_execution_runs_unfingerprintable_source(self):
+        fixture, work, workspace, retained = self.prepare(
+            "from math import *\n"
+            "import argparse\nfrom pathlib import Path\n"
+            "p=argparse.ArgumentParser()\np.add_argument('--input-data')\n"
+            "p.add_argument('--output-data')\na=p.parse_args()\n"
+            "Path(a.output_data).write_text(Path(a.input_data).read_text())\n",
+            unfingerprintable=True,
+        )
+        assert work.accepted_source is not None
+        self.assertIsNone(work.accepted_source.effective_code)
+
+        result = execute_work_recipe(
+            fixture.log,
+            work.identity,
+            workspace,
+            WorkExecutionControl(
+                "native-grant", lambda: None, confinement=TestConfinement()
+            ),
+        )
+
+        self.assertIs(result.outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(workspace.map_source(retained).read_text(), "input")
 
     def test_native_scheduler_admits_real_process_and_reconciles_terminal_grant(self):
         fixture, work, workspace, retained = self.prepare(

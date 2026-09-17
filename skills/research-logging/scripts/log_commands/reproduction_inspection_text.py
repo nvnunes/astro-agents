@@ -85,6 +85,8 @@ def _detail_lines(value: Mapping[str, Any]) -> list[str]:
             lines.extend(_section("Locations", problem["locations"]))
     for field in (
         "recipe",
+        "retained_source",
+        "accepted_source",
         "entry_root",
         "project_root",
         "dependencies",

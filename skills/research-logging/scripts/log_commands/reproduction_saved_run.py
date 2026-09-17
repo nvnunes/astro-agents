@@ -35,7 +35,7 @@ from .reproduction_work import (
     validate_producer,
 )
 
-RESULT_SCHEMA = "research-log-reproduction-result/13"
+RESULT_SCHEMA = "research-log-reproduction-result/14"
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 MAX_WORK_RECORDS = 100_000
 
@@ -409,7 +409,7 @@ class SavedRun:
 
     @classmethod
     def from_json(cls, raw: bytes) -> SavedRun:
-        """Read only result/13; older results require rerunning reproduction."""
+        """Read only result/14; older results require rerunning reproduction."""
 
         if len(raw) > MAX_RESULT_BYTES:
             raise ReproductionDomainError("saved run exceeds its fixed byte bound")

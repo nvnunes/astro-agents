@@ -19,21 +19,25 @@ today's registries. Use `status` for an accepted job's operational lifecycle.
 Do not parse generated SQLite or Markdown as an agent workflow.
 
 Shared initialization creates version 19 without a reproduction domain.
-Native publication installs version 21 lazily and atomically, replacing only
-obsolete version-20 reproduction tables without decoding or migrating their rows.
+Native publication installs version 22 lazily and atomically, replacing
+unsupported reproduction tables without decoding or migrating their rows.
 Unsupported reproduction reads are nonmutating and require explicit
 `log reproduce run --path LOG --recheck`. No legacy reader or alias exists.
 
 ## Accepted Jobs And Saved Facts
 
-New jobs use Job5 `state.sqlite` and immutable Plan13 work. Commands retain
+New jobs use Job6 `state.sqlite` and immutable Plan14 work. Commands retain
 typed recipes, inputs/outputs, roots, selection and dependencies; artifacts
 retain producer/baseline/comparison bindings. Owned problems store each actual
 diagnosis once; dependency and producer links describe effects without copied
 per-output failures. Actual command and artifact results preserve observed
 invocation, timings, partial outputs, comparison values and useful diagnosis.
+Successful producer artifacts are compared before their exact consumers become
+ready. A mismatch or unavailable comparison remains artifact-owned, is
+referenced by only the blocked consumers, and does not abort independent work or
+normal publication.
 
-SavedRun13 is immutable per-run history with minimal latest identity indexes
+SavedRun14 is immutable per-run history with minimal latest identity indexes
 for incremental retry/reuse. Command and artifact totals remain separate.
 `reproduction.md` contains only the same compact hierarchy as single-log
 `show`, prefixed by its heading; inventories and diagnostics belong to CLI
@@ -48,10 +52,13 @@ layouts. Rerun reproduction explicitly when replacement results are required.
 ## Research And Publication Boundaries
 
 Do not edit generated records by hand. Preserve authored summaries, entries,
-scripts, registries and retained baselines. Only the existing acknowledged
-requirement effect may clear an eligible execution's pyrun-owned reproduction
-flag after complete production/comparison; unequal outputs are still complete
-production. Failed, partial, blocked or stopped work cannot clear early.
+scripts, registries and retained baselines. Only acknowledged source
+reconciliation may mutate an eligible execution after complete
+production/comparison. It always clears the reproduction flag; an all-matched
+comparison set also adopts the plan's accepted raw-script and effective-code
+observations, including a null effective-code observation when current code is
+unfingerprintable. Unequal or uncomputed results preserve prior source/output state.
+Failed, partial, blocked or stopped work cannot reconcile.
 
 Normal publication commits accepted/durable facts and the domain generation
 atomically, then materializes the compact report. Frozen publication retry and
@@ -87,5 +94,6 @@ temporary paths or executes research work. Obsolete jobs are never decoded,
 translated, or resumed; start a new explicit `--recheck` run instead.
 
 Promotion is a separate researcher-directed mutation. It copies one complete
-native staged output set under existing baseline, confinement, reservation and
-rollback guards; it never moves staged sources or rewrites saved outcomes.
+native staged output set and installs its accepted source observations under
+existing baseline, confinement, reservation and rollback guards; it never moves
+staged files or rewrites saved outcomes.

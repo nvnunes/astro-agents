@@ -397,7 +397,7 @@ class WorkJobTests(unittest.TestCase):
             self.assertEqual(job.accepted.plan.serialized(), self.plan.serialized())
         self.assertEqual(research_snapshot(self.fixture.summary), before)
         with sqlite3.connect(self.state) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             tables = {
                 row[0]

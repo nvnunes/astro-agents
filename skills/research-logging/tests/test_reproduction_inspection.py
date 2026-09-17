@@ -210,8 +210,32 @@ class SavedInspectionTests(unittest.TestCase):
         detail = json.loads(output)
         self.assertEqual(detail["diagnoses"][0]["observed"], {"returncode": 2})
         self.assertEqual(detail["result"]["argv"], ["python", "scripts/producer.py"])
+        self.assertEqual(
+            detail["retained_source"],
+            {
+                "script": FINGERPRINT.as_dict(),
+                "effective_code": {
+                    "algorithm": "python-effective-code-sha256-v1",
+                    "digest": "b" * 64,
+                },
+            },
+        )
+        self.assertEqual(detail["accepted_source"], detail["retained_source"])
         self.assertFalse(detail["stdout"]["available"])
         self.assertNotIn("cases", detail)
+        status, text, error = self.dispatch(
+            "detail",
+            "command",
+            "--entry",
+            identity["entry"],
+            "--cid",
+            identity["cid"],
+            "--execution-id",
+            identity["execution_id"],
+        )
+        self.assertEqual((status, error), (0, ""))
+        self.assertIn("Retained source:", text)
+        self.assertIn("Accepted source:", text)
 
     def test_blocked_consumer_retains_producer_cause_without_fabricating_attempt(self):
         consumer = next(

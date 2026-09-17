@@ -284,6 +284,16 @@ Future validation changes must preserve these invariants:
   are not authored or persisted. One shell loop produces one execution identity per
   child `pyrun` invocation. Validation reads this state but does not write it;
   Reproduction executes it directly without using Markdown as authority. The
+  accepted reproduction plan freezes the current raw-script fingerprint and
+  nullable effective-code observation separately from retained provenance.
+  Unfingerprintable code remains runnable and is repeatedly selected because it
+  has no provable unchanged state. Complete comparison may
+  reconcile those observations into `pyrun.json`; differing or uncomputed
+  artifacts preserve the retained source until explicit promotion or later work.
+  Producer artifacts are compared before exact consumers become ready; a
+  differing or uncomputed artifact blocks only its consumers and downstream
+  dependants while independent work continues to normal publication.
+  The
   separate bounded read-only legacy output-record reader is defined by
   `docs/research-log-mechanical-validator-spec.md`; it supplies no data/evidence
   conversion or reproduction authority. Reproduction uses one native accepted-work

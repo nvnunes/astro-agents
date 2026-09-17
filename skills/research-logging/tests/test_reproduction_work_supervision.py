@@ -56,11 +56,25 @@ class NativeSupervisionTests(unittest.TestCase):
         with open_work_job(workspace.run_root) as job:
             job.replace_run_owner(RunOwner(os.getpid(), "running", WHEN, WHEN))
 
-    def prepare_graph(self, *, fail_producer=False, linked_data=False):
+    def prepare_graph(
+        self,
+        *,
+        fail_producer=False,
+        linked_data=False,
+        changed_output: str | None = None,
+        split_consumers: bool = False,
+        include_downstream: bool = False,
+        producer_delay: float = 0.0,
+    ):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         project = Path(directory.name).resolve()
-        fixture, entry, _ = fanout_fixture(project, 2)
+        fixture, entry, _ = fanout_fixture(
+            project,
+            2,
+            second_input="output-1" if split_consumers else "output-0",
+            include_downstream=include_downstream,
+        )
         if linked_data:
             data = entry.root / "data"
             retained = project / "output" / "logs" / "study" / entry.id / "data"
@@ -77,15 +91,25 @@ class NativeSupervisionTests(unittest.TestCase):
             for identity, execution in command.executions.items():
                 script = entry.root / execution.recipe.script
                 script.write_text(
-                    "import argparse\nfrom pathlib import Path\n"
-                    "p=argparse.ArgumentParser()\np.add_argument('--input-data')\n"
+                        "import argparse\nfrom pathlib import Path\n"
+                        "import time\n"
+                        "p=argparse.ArgumentParser()\np.add_argument('--input-data')\n"
                     "p.add_argument('--output-data', action='append')\n"
                     "a=p.parse_args()\n"
                     + (
                         "raise SystemExit(7)\n"
                         if fail_producer and cid == "producer"
-                        else "for output in a.output_data:\n"
-                        "    Path(output).write_text(Path(output).stem)\n"
+                        else f"time.sleep({producer_delay!r})\n"
+                        "for output in a.output_data:\n"
+                        "    path = Path(output)\n"
+                        "    value = path.stem\n"
+                        + (
+                            f"    if path.stem == {changed_output!r}:\n"
+                            "        value += '-changed'\n"
+                            if changed_output is not None
+                            else ""
+                        )
+                        + "    path.write_text(value)\n"
                         if cid == "producer"
                         else "for output in a.output_data:\n"
                         "    value = Path(a.input_data).read_text()\n"
@@ -150,6 +174,100 @@ class NativeSupervisionTests(unittest.TestCase):
         generated = workspace.map_source(Path(entry.entry_root) / "data/first.txt")
         self.assertEqual(generated.read_text(), "output-0|first")
 
+    def test_changed_generated_input_blocks_consumers_not_independent_work(self):
+        fixture, workspace = self.prepare_graph(
+            changed_output="output-0", include_downstream=True
+        )
+
+        self.assertEqual(
+            execute_work_plan(fixture.log, workspace, self.control()), "completed"
+        )
+        compare_work_outputs(workspace)
+
+        with open_work_job(workspace.run_root) as job:
+            saved = job.load_completed_run(finished_at="2030-01-01T00:00:00Z")
+        commands = {
+            command.identity.cid: saved.command_result(command.identity)
+            for command in saved.commands
+        }
+        self.assertEqual(commands["producer"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(commands["independent"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(commands["first"].outcome, CommandOutcome.BLOCKED)
+        self.assertEqual(commands["second"].outcome, CommandOutcome.BLOCKED)
+        self.assertEqual(commands["downstream"].outcome, CommandOutcome.BLOCKED)
+        changed = next(
+            artifact
+            for artifact in saved.artifacts
+            if artifact.output is not None and artifact.output.endswith("output-0.txt")
+        )
+        self.assertIs(
+            saved.artifact_result(changed.identity).outcome,
+            ArtifactOutcome.NOT_MATCHED,
+        )
+        self.assertEqual(
+            saved.primary_problem(commands["first"].identity).subject,
+            changed.identity,
+        )
+        problem = saved.primary_problem(commands["first"].identity)
+        self.assertEqual(problem.code, "content_changed")
+        self.assertEqual(problem.observed["profile"], "text")
+        self.assertEqual(problem.observed["retained_path"], changed.retained_path)
+        self.assertIn("regenerated_path", problem.observed)
+
+    def test_changed_output_blocks_only_consumers_of_that_exact_artifact(self):
+        fixture, workspace = self.prepare_graph(
+            changed_output="output-0", split_consumers=True
+        )
+
+        self.assertEqual(
+            execute_work_plan(fixture.log, workspace, self.control()), "completed"
+        )
+
+        with open_work_job(workspace.run_root) as job:
+            saved = job.load_completed_run(finished_at="2030-01-01T00:00:00Z")
+        commands = {
+            command.identity.cid: saved.command_result(command.identity)
+            for command in saved.commands
+        }
+        self.assertEqual(commands["first"].outcome, CommandOutcome.BLOCKED)
+        self.assertEqual(commands["second"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(commands["independent"].outcome, CommandOutcome.SUCCEEDED)
+        artifacts = {
+            Path(artifact.output).name: saved.artifact_result(artifact.identity)
+            for artifact in saved.artifacts
+            if artifact.output is not None
+        }
+        self.assertIs(artifacts["output-0.txt"].outcome, ArtifactOutcome.NOT_MATCHED)
+        self.assertIs(artifacts["output-1.txt"].outcome, ArtifactOutcome.MATCHED)
+
+    def test_unavailable_comparison_blocks_only_exact_consumers(self):
+        fixture, workspace = self.prepare_graph(split_consumers=True)
+        with open_work_job(workspace.run_root) as job:
+            retained = workspace.source_project / next(
+                artifact.retained_path
+                for artifact in job.accepted.plan.artifacts
+                if artifact.output is not None
+                and artifact.output.endswith("output-0.txt")
+            )
+        retained.write_text("baseline-changed-after-acceptance", encoding="utf-8")
+
+        self.assertEqual(
+            execute_work_plan(fixture.log, workspace, self.control()), "completed"
+        )
+
+        with open_work_job(workspace.run_root) as job:
+            saved = job.load_completed_run(finished_at="2030-01-01T00:00:00Z")
+        commands = {
+            command.identity.cid: saved.command_result(command.identity)
+            for command in saved.commands
+        }
+        self.assertEqual(commands["first"].outcome, CommandOutcome.BLOCKED)
+        self.assertEqual(commands["second"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(commands["independent"].outcome, CommandOutcome.SUCCEEDED)
+        blocked = saved.primary_problem(commands["first"].identity)
+        self.assertEqual(blocked.code, "baseline_changed")
+        self.assertEqual(blocked.subject.artifact, "data/output-0.txt")
+
     def test_comparison_finds_outputs_from_linked_entry_data_directory(self):
         fixture, workspace = self.prepare_graph(linked_data=True)
         self.assertEqual(
@@ -168,8 +286,8 @@ class NativeSupervisionTests(unittest.TestCase):
             self.assertIsNot(result.outcome, ArtifactOutcome.NOT_COMPARED)
             self.assertIsNotNone(result.regenerated)
 
-    def fresh_graph(self):
-        fixture, workspace = self.prepare_graph()
+    def fresh_graph(self, **options):
+        fixture, workspace = self.prepare_graph(**options)
         for path in (
             workspace.work_project,
             workspace.runtime_root,
@@ -197,6 +315,40 @@ class NativeSupervisionTests(unittest.TestCase):
             )
             self.assertIsNotNone(job.load_publication().report_generation)
         self.assertTrue((fixture.log.root / "reproduction.md").is_file())
+
+    def test_supervisor_publishes_localized_artifact_mismatch_normally(self):
+        fixture, workspace = self.fresh_graph(
+            changed_output="output-0", split_consumers=True
+        )
+
+        supervision.supervise_work_job(
+            fixture.log, workspace.run_root, mode="fresh", control=self.control()
+        )
+
+        with open_work_job(workspace.run_root) as job:
+            self.assertEqual(job.load_run_control().status, "complete")
+            self.assertIsNone(job.load_run_control().operational_code)
+            self.assertIsNotNone(job.load_publication())
+            saved = job.load_completed_run(finished_at="2030-01-01T00:00:00Z")
+        commands = {
+            command.identity.cid: saved.command_result(command.identity)
+            for command in saved.commands
+        }
+        self.assertEqual(commands["first"].outcome, CommandOutcome.BLOCKED)
+        self.assertEqual(commands["second"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertEqual(commands["independent"].outcome, CommandOutcome.SUCCEEDED)
+        self.assertTrue((fixture.log.root / "reproduction.md").is_file())
+
+    def test_worker_observation_during_longer_execution_does_not_contend(self):
+        fixture, workspace = self.fresh_graph(producer_delay=0.5)
+
+        supervision.supervise_work_job(
+            fixture.log, workspace.run_root, mode="fresh", control=self.control()
+        )
+
+        with open_work_job(workspace.run_root) as job:
+            self.assertEqual(job.load_run_control().status, "complete")
+            self.assertIsNone(job.load_run_control().operational_code)
 
     def test_full_supervisor_survivor_failure_keeps_lease_and_public_control_exclusion(
         self,

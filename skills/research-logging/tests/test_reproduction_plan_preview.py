@@ -21,12 +21,57 @@ from log_commands import (
 )
 from log_commands.model import ActionError
 from log_commands.reproduction_plan_preview import plan_page, render_plan_page
+from reproduction_planning_test_support import prepare_plan
 from test_reproduction_canonical_records import blocked_plan, command
 from test_reproduction_model_preservation import fanout_fixture
 from validation.operation_state import research_snapshot
 
 
 class ReproductionPreviewTests(unittest.TestCase):
+    def test_unfingerprintable_source_is_runnable_with_exact_diagnosis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, entry, _ = fanout_fixture(Path(directory), 1)
+            script = entry.root / "scripts/producer.py"
+            script.write_text("from math import *\n", encoding="utf-8")
+            value = plan_page(prepare_plan(fixture, entry), "source")
+            row = next(
+                item for item in value["items"] if item["identity"]["cid"] == "producer"
+            )
+            self.assertEqual(row["selection"], "run")
+            self.assertEqual(row["reason"], "effective_code_unavailable")
+            self.assertEqual(
+                row["diagnosis"]["observed"]["availability"], "unsupported"
+            )
+            self.assertIn(
+                "selected on every incremental plan",
+                row["explanation"],
+            )
+            text = render_plan_page(value)
+            self.assertIn("selected on every incremental plan", text)
+            self.assertIn("wildcard_import", text)
+
+    def test_changed_supported_source_is_runnable_with_expected_and_current_facts(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, entry, _ = fanout_fixture(Path(directory), 1)
+            script = entry.root / "scripts/producer.py"
+            script.write_text("VALUE = 2\n", encoding="utf-8")
+            value = plan_page(prepare_plan(fixture, entry), "source")
+            row = next(
+                item for item in value["items"] if item["identity"]["cid"] == "producer"
+            )
+            self.assertEqual(row["selection"], "run")
+            self.assertEqual(row["diagnosis"]["code"], "effective_code_changed")
+            self.assertNotEqual(
+                row["diagnosis"]["observed"]["expected"],
+                row["diagnosis"]["observed"]["actual"],
+            )
+            text = render_plan_page(value)
+            self.assertIn(f"Source: {script}", text)
+            self.assertIn("Retained effective code:", text)
+            self.assertIn("Current effective code:", text)
+
     def large_plan(self):
         plan = blocked_plan()
         commands = tuple(command(f"build-{number:03d}") for number in range(103))

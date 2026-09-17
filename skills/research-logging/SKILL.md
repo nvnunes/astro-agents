@@ -47,7 +47,11 @@ Choose the core operation:
   disposable query results. Code currentness comes from the nullable
   project-local effective-code fingerprint, not raw script bytes. Execution
   and analysis share the runner-owned import context defined by
-  `references/file-script.md`. Reproduce
+  `references/file-script.md`. A supported changed source is runnable;
+  an unavailable effective-code fingerprint is also runnable and is selected
+  again because currentness cannot be established;
+  `references/operation-reproduce.md` owns matched-source reconciliation,
+  differing-result reuse, and explicit promotion. Reproduce
   never becomes Record, Review, or Validate.
 - Explicit correction of a research-log finding, repair batch, finding type,
   malformed or legacy state, transaction residue, or other identified log

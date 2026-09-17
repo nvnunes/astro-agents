@@ -111,7 +111,7 @@ class _PromotionResolution:
 def promote_execution(
     log: LogContext, *, run_id: str, cid: str, execution_id: str
 ) -> PromotionResult:
-    """Promote one complete current staging bundle without changing its source."""
+    """Promote one complete staged output set with its accepted current source."""
 
     run_root = _find_run(log, run_id)
     plan = load_accepted_plan(run_root)
@@ -202,10 +202,7 @@ def _resolve_outputs(context: _PromotionResolution) -> tuple[_PromotedOutput, ..
         project_root=context.project,
     )
     execution = state.execution(context.cid, context.execution_id)
-    if execution is None or (
-        execution.recipe.as_dict() != work.execution.recipe.as_dict()
-        or execution.observed.as_dict() != work.execution.observed.as_dict()
-    ):
+    if execution is None or not _matches_accepted_baseline(execution, work):
         raise ActionError(
             "reproduction.promotion.execution_changed",
             "current execution no longer matches accepted promotion baseline",
@@ -425,10 +422,13 @@ def _metadata_candidates(
             "execution is no longer current",
         )
     accepted = resolution.bundle.work
-    if (
-        execution.recipe.as_dict() != accepted.execution.recipe.as_dict()
-        or execution.observed.as_dict() != accepted.execution.observed.as_dict()
-    ):
+    accepted_source = accepted.accepted_source
+    if accepted_source is None:
+        raise ActionError(
+            "reproduction.promotion.source_missing",
+            "accepted execution has no current source observation",
+        )
+    if not _matches_accepted_baseline(execution, accepted):
         raise ActionError(
             "reproduction.promotion.execution_changed",
             "current execution no longer matches accepted promotion baseline",
@@ -458,9 +458,9 @@ def _metadata_candidates(
         execution.execution_contract,
         execution.recipe,
         ObservedExecution(
-            execution.observed.script,
+            accepted_source.script,
             execution.observed.inputs,
-            execution.observed.effective_code,
+            accepted_source.effective_code,
             tuple(
                 (name, fingerprints[name]) for name, _kind in execution.recipe.outputs
             ),
@@ -483,6 +483,26 @@ def _metadata_candidates(
     }
     prior = {path: path.read_text(encoding="utf-8") for path in updates}
     return updates, prior
+
+
+def _matches_accepted_baseline(
+    execution: PyrunExecution, work: CommandWork
+) -> bool:
+    """Accept the original baseline or an already-adopted matching source."""
+
+    if execution.recipe.as_dict() != work.execution.recipe.as_dict():
+        return False
+    observations = [work.execution.observed]
+    if work.accepted_source is not None:
+        observations.append(
+            ObservedExecution(
+                work.accepted_source.script,
+                work.execution.observed.inputs,
+                work.accepted_source.effective_code,
+                work.execution.observed.outputs,
+            )
+        )
+    return any(execution.observed == observed for observed in observations)
 
 
 def _report_candidates(

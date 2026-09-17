@@ -32,7 +32,7 @@ from log_commands.reproduction_job_control import (
     RunOwner,
 )
 from log_commands.reproduction_promotion import promote_execution
-from log_commands.reproduction_requirements import clear_completed_requirement
+from log_commands.reproduction_reconciliation import reconcile_completed_source
 from log_commands.reproduction_saved_run import RunSettings, RunTarget
 from log_commands.reproduction_work_execution import compare_work_outputs
 from log_commands.reproduction_work_job import LockedWorkJob, open_work_job
@@ -468,7 +468,7 @@ class PublicNativeJobsTests(unittest.TestCase):
         root = jobs._find_run(fixture.log, accepted.run_id)
         with open_work_job(root) as job:
             for work in accepted.plan.commands:
-                self.assertFalse(job.requirement_clear_ready(work.identity))
+                self.assertFalse(job.source_reconciliation_ready(work.identity))
         failed = next(
             result
             for result in inspection.run.command_results
@@ -487,23 +487,19 @@ class PublicNativeJobsTests(unittest.TestCase):
                 for work in job.accepted.plan.commands
                 if work.identity.cid == "producer"
             )
-        self.assertFalse(
-            clear_completed_requirement(fixture.log, workspace.run_root, identity)
-        )
-        compare_work_outputs(workspace)
         with mock.patch.object(
             LockedWorkJob,
-            "acknowledge_requirement_clear",
+            "acknowledge_source_reconciliation",
             side_effect=ActionError("test.ack.failed", "cut"),
         ):
             with self.assertRaises(ActionError):
-                clear_completed_requirement(fixture.log, workspace.run_root, identity)
+                reconcile_completed_source(fixture.log, workspace.run_root, identity)
         with mock.patch("subprocess.Popen", side_effect=AssertionError("reexecution")):
             self.assertTrue(
-                clear_completed_requirement(fixture.log, workspace.run_root, identity)
+                reconcile_completed_source(fixture.log, workspace.run_root, identity)
             )
             self.assertFalse(
-                clear_completed_requirement(fixture.log, workspace.run_root, identity)
+                reconcile_completed_source(fixture.log, workspace.run_root, identity)
             )
 
     def test_requirement_interruption_before_write_has_no_effect_or_ack(self):
@@ -520,29 +516,29 @@ class PublicNativeJobsTests(unittest.TestCase):
             )
         pyrun = Path(work.entry_root) / "pyrun.json"
         original = pyrun.read_bytes()
-        from log_commands import reproduction_requirements as requirements
+        from log_commands import reproduction_reconciliation as reconciliation
 
         with mock.patch.object(
-            requirements, "atomic_write_text", side_effect=OSError("before write")
+            reconciliation, "atomic_write_text", side_effect=OSError("before write")
         ):
             with self.assertRaisesRegex(OSError, "before write"):
-                clear_completed_requirement(
+                reconcile_completed_source(
                     fixture.log, workspace.run_root, work.identity
                 )
         self.assertEqual(pyrun.read_bytes(), original)
         with open_work_job(workspace.run_root) as job:
-            self.assertTrue(job.requirement_clear_ready(work.identity))
-        real_write = requirements.atomic_write_text
+            self.assertTrue(job.source_reconciliation_ready(work.identity))
+        real_write = reconciliation.atomic_write_text
         with mock.patch.object(
-            requirements, "atomic_write_text", wraps=real_write
+            reconciliation, "atomic_write_text", wraps=real_write
         ) as write:
             self.assertTrue(
-                clear_completed_requirement(
+                reconcile_completed_source(
                     fixture.log, workspace.run_root, work.identity
                 )
             )
             self.assertFalse(
-                clear_completed_requirement(
+                reconcile_completed_source(
                     fixture.log, workspace.run_root, work.identity
                 )
             )
@@ -597,9 +593,11 @@ class PublicNativeJobsTests(unittest.TestCase):
         )
         self.assertEqual(promoted.recipe, work.execution.recipe)
         self.assertEqual(promoted.observed.inputs, work.execution.observed.inputs)
+        assert work.accepted_source is not None
+        self.assertEqual(promoted.observed.script, work.accepted_source.script)
         self.assertEqual(
             promoted.observed.effective_code,
-            work.execution.observed.effective_code,
+            work.accepted_source.effective_code,
         )
         self.assertEqual(load_inspection(fixture.log).run, before.run)
 

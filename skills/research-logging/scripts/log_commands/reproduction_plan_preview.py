@@ -65,10 +65,31 @@ def _next_command(plan: ReproductionPlan, cursor: str, format: str) -> str:
 
 
 def _row(
-    work: CommandWork, problems: Mapping[str, ReproductionProblem]
+    work: CommandWork,
+    problems: Mapping[str, ReproductionProblem],
+    summary: str,
 ) -> dict[str, object]:
     primary = next((problems[key] for key in work.problem_ids), None)
     outputs = [name for name, _kind in work.execution.recipe.outputs]
+    next_command = None
+    if primary is not None and primary.code == "validation_blocked":
+        finding = primary.observed.get("finding")
+        finding_id = finding.get("finding_id") if isinstance(finding, Mapping) else None
+        if isinstance(finding_id, str):
+            next_command = shlex.join(
+                [
+                    "log",
+                    "validate",
+                    "detail",
+                    "finding",
+                    "--path",
+                    str(Path(summary).with_suffix("")),
+                    "--entry",
+                    work.identity.entry,
+                    "--id",
+                    finding_id,
+                ]
+            )
     return {
         "identity": work.identity.as_dict(),
         "selection": work.selection.value,
@@ -78,6 +99,8 @@ def _row(
         "outputs": outputs[:10],
         "output_count": len(outputs),
         "remaining_outputs": max(0, len(outputs) - 10),
+        "diagnosis": primary.as_dict() if primary is not None else None,
+        "next_command": next_command,
     }
 
 
@@ -124,11 +147,38 @@ def plan_page(
             "matched": len(actionable),
             "returned": len(page),
             "remaining": len(actionable) - end,
-            "items": [_row(work, problems) for work in page],
+            "items": [_row(work, problems, plan.summary) for work in page],
             "cursor": next_cursor,
             "next": _next_command(plan, next_cursor, format) if next_cursor else None,
         }
     )
+
+
+def _diagnosis_lines(diagnosis: Mapping[str, Any]) -> list[str]:
+    """Render the bounded mechanical facts that let an agent locate a cause."""
+
+    lines: list[str] = []
+    for location in diagnosis["locations"]:
+        suffix = f":{location['line']}" if location.get("line") else ""
+        lines.append(f"  Source: {location['path']}{suffix}")
+    observed = diagnosis["observed"]
+    for label, key in (
+        ("Retained effective code", "expected"),
+        ("Current effective code", "actual"),
+    ):
+        fingerprint = observed.get(key)
+        if isinstance(fingerprint, Mapping):
+            lines.append(
+                f"  {label}: {fingerprint.get('algorithm')}:"
+                f"{fingerprint.get('digest')}"
+            )
+    for unsupported in observed.get("unsupported", []):
+        suffix = f":{unsupported['line']}" if unsupported.get("line") else ""
+        lines.append(
+            f"  Unsupported: {unsupported['path']}{suffix} — "
+            f"{unsupported['construct']} — {unsupported['detail']}"
+        )
+    return lines
 
 
 def render_plan_page(value: Mapping[str, Any]) -> str:
@@ -166,6 +216,9 @@ def render_plan_page(value: Mapping[str, Any]) -> str:
         )
         if row["explanation"]:
             lines.append(f"  {row['explanation']}")
+        diagnosis = row["diagnosis"]
+        if diagnosis:
+            lines += _diagnosis_lines(diagnosis)
         if row["dependencies"]:
             prerequisites = "; ".join(
                 f"{item['entry']} / {item['cid']} / {item['execution_id']}"
@@ -176,6 +229,8 @@ def render_plan_page(value: Mapping[str, Any]) -> str:
             f" ({row['remaining_outputs']} more)" if row["remaining_outputs"] else ""
         )
         lines.append(f"  Outputs: {', '.join(row['outputs']) or 'None'}{remaining}")
+        if row["next_command"]:
+            lines.append(f"  Next: {row['next_command']}")
     if value["next"]:
         lines += ["", f"Next: {value['next']}"]
     return "\n".join(lines) + "\n"

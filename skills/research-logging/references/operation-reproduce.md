@@ -16,10 +16,11 @@ repair requires interpreting authored command form or effective CID.
   prose read-only. Preview evaluates without publishing. Real launch publishes
   fresh completed validation under its normal locks before accepting work.
 - After preparation, write only generated job/result/report paths and the
-  existing eligible `requires_reproduction: true` to `false` effect in
-  `pyrun.json`. Complete production and comparison are required; unequal
-  artifacts remain complete production. Failed, partial, blocked or stopped
-  work cannot clear early.
+  eligible source-reconciliation effect in `pyrun.json`. Complete production
+  and comparison clear `requires_reproduction`; when every artifact is matched,
+  the same atomic write adopts the plan's current raw-script and effective-code
+  observations. Unequal or uncomputed comparisons preserve prior source and
+  retained outputs. Failed, partial, blocked or stopped work cannot reconcile.
 - Never repair recipes, change evidence rules or tolerances, select changed
   outputs for adoption, or promote automatically. Promotion needs separate
   researcher direction.
@@ -51,7 +52,8 @@ infrastructure is its only filesystem side effect. Launch prepares afresh rather
 than consuming a previous preview.
 
 Selection defaults to incremental. Not-needed precedes automatic policy;
-unchanged previous failure/block is not retried. `--recheck` retries currently
+unchanged previous failure/block or completed unequal/uncomputed comparison is
+not retried. `--recheck` retries currently
 eligible work without bypassing blockers or policy. Artifact matches do not
 decide whether execution is needed. State which selection is used.
 
@@ -61,15 +63,25 @@ independent commands may run. Entry targets never schedule outside-entry
 producers; other logs never become execution scope. Do not conflate
 Reproduce-owned currentness with validation findings.
 
+During execution, each successful producer is compared before its consumers
+become ready. A matched artifact permits only consumers of that exact artifact.
+A `not-matched` or `not-compared` artifact blocks its consumers and downstream
+dependants while independent work continues; the run still completes and
+publishes the artifact diagnosis and blocked commands normally. This is not an
+operational reproduction failure.
+
 `--jobs` defaults to 1; accepted path conflicts, dependencies and project-wide
 exclusivity can reduce concurrency. Review the plan before parallel launch.
 The per-command wall-clock limit defaults to 300 seconds. Exceeding it records
 `execution_timeout`, terminates the supervised tree and leaves independent work
 eligible. Resume preserves both accepted settings. Current execution authority
-is `research-log-pyrun/v7`; earlier schemas are unsupported. Effective-code
-mismatch and unavailable effective code select and block the same work, but
-retain distinct diagnoses. Raw script-byte changes alone do not select
-reproduction. Reproduction executes with the same runner-owned
+is `research-log-pyrun/v7`; earlier schemas are unsupported. A supported
+effective-code mismatch selects runnable work. A missing saved fingerprint also
+runs. Current code that cannot be fingerprinted also runs with its precise
+diagnosis and is selected again on every incremental plan because currentness
+cannot be established. Raw script-byte changes alone do not select reproduction.
+The accepted raw fingerprint and nullable effective-code observation must remain
+stable during execution. Reproduction executes with the same runner-owned
 script/entry/log/project import context used to compute current effective code.
 
 When an explicitly approved maintenance plan requires replacement of v6
@@ -119,7 +131,7 @@ Use text status for people and JSON for agents/monitors. Status is operational
 lifecycle, not artifact outcome; queued work is not execution time. Stop is the
 sole stopping action and preserves diagnostics and completed results.
 
-Resume uses the same accepted Plan13/Job5, run ID, scope, authorization and
+Resume uses the same accepted Plan14/Job6, run ID, scope, authorization and
 settings. It never replans or reruns durable terminal success/failure. Only
 never-started or stopped nonterminal work may launch after safe cleanup.
 Source changes require a new run. Publication-only recovery uses frozen facts
@@ -167,7 +179,8 @@ complete diagnostic report:
 
 These routes also accept `--format text|json`. Use the list's exact detail
 invocation, then section/cursor continuations for retained invocation, all
-causes, output/comparison facts and available bounded stdout/stderr tails.
+causes, retained and accepted source observations, output/comparison facts and
+available bounded stdout/stderr tails.
 Missing/truncated diagnostics qualify availability, not saved outcome.
 Never soften failed/blocked/not-matched/not-compared results. Evidence-scoped
 matching does not mean whole-file equality.
@@ -192,6 +205,7 @@ Only with researcher direction:
   --cid <cid> --execution-id <execution-id>
 ```
 
-Promotion copies the complete related native staged output set under existing
-baseline, confinement, reservation and rollback guards. It leaves staged sources
-and saved historical outcomes intact.
+Promotion copies the complete related native staged output set and installs its
+accepted raw-script/nullable-effective-code observations under existing baseline,
+confinement, reservation and rollback guards. It leaves staged files and saved
+historical outcomes intact.

@@ -393,12 +393,14 @@ new recipes require reproduction; policy-only changes retain their current
 reproduction state.
 
 Sync analyzes statically reachable Python throughout the current Git project.
-When dynamic behavior prevents a complete fingerprint, sync still succeeds and
-returns bounded structured warnings naming the script, location, line, and
-construct. The warning means code currentness and reproduction are unavailable,
-not that sync or execution failed. Repair the unsupported construct when code
-change tracking is required, then rerun the command through `pyrun`; sync alone
-cannot create a successful execution observation.
+When dynamic behavior prevents a complete fingerprint or analysis fails, sync
+still succeeds and returns bounded structured warnings naming the script,
+location, line, and construct or error code. The warning means code currentness
+is unavailable, not that sync failed. Reproduction therefore selects the
+command on every incremental plan instead of treating it as unchanged. Repair
+the source or unsupported construct when code change tracking is required,
+then rerun the command through `pyrun`; sync alone cannot create a successful
+execution observation.
 
 ## Ordinary Concurrent Work
 

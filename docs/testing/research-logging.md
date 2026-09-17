@@ -63,8 +63,10 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
 
 These tests map the shared import order and shadowing behavior, project
 boundary, semantic/raw distinction, unsupported diagnostics, silent `pyrun`
-fallback, pre/post source stability, ordinary/verification/reproduction
-execution, matching and unavailable planning effects, requirement clearing,
+fallback, accepted pre/post source stability, ordinary/verification/reproduction
+execution, runnable mismatch and unavailable-current planning effects,
+repeated selection for unfingerprintable current code, matched-source adoption,
+differing-result suppression, promotion coherence,
 and migration preservation, failure, idempotence, and bounds.
 
 When changing research-log section classification, evidence presentation, or

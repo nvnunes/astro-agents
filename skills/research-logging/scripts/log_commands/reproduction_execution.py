@@ -57,6 +57,8 @@ from .reproduction_domain import ExecutionRef, ProblemStage
 from .reproduction_invocation import (
     DEFAULT_EXECUTION_TIMEOUT_SECONDS,
     AcceptedInvocation,
+    AcceptedSource,
+    observe_script_source,
 )
 from .reproduction_job_control import (
     WorkerRecord as StoredWorkerRecord,
@@ -203,6 +205,7 @@ class _PreparedExecution:
     cid: str
     execution_id: str
     execution: PyrunExecution
+    accepted_source: AcceptedSource | None
     run_root: Path
     runtime_root: Path
     diagnostics_root: Path
@@ -676,7 +679,7 @@ def _isolated_current_invocation(
 def _verify_accepted_source_observations(
     prepared: _PreparedExecution, entry_root: Path, workspace: ReproductionWorkspace
 ) -> None:
-    """Require the accepted effective-code tree to remain current."""
+    """Require accepted top-level and effective-code observations to persist."""
 
     script = script_target_path(
         prepared.execution.recipe.script,
@@ -690,26 +693,42 @@ def _verify_accepted_source_observations(
         project_root=workspace.source_project,
     )
     try:
+        current_script = observe_script_source(script)
+    except OSError as error:
+        raise ActionError("reproduction.source.unavailable", str(error)) from error
+    try:
         result = analyze_effective_code(
             script,
             project_root=workspace.source_project,
             import_roots=python_context.import_roots,
         )
-    except EffectiveCodeError as error:
-        raise ActionError("reproduction.source.unavailable", str(error)) from error
-    current = (
-        Fingerprint(
-            result.fingerprint.algorithm,
-            digest=result.fingerprint.digest,
+    except (EffectiveCodeError, OSError):
+        current = None
+    else:
+        current = (
+            Fingerprint(
+                result.fingerprint.algorithm,
+                digest=result.fingerprint.digest,
+            )
+            if result.fingerprint is not None
+            and "PYTHONPATH" not in dict(prepared.execution.recipe.environment)
+            else None
         )
-        if result.fingerprint is not None
-        and "PYTHONPATH" not in dict(prepared.execution.recipe.environment)
-        else None
-    )
-    if current != prepared.execution.observed.effective_code or current is None:
+    accepted = prepared.accepted_source
+    if accepted is None:
+        raise ActionError(
+            "reproduction.source.unavailable",
+            "runnable invocation has no accepted source observation",
+        )
+    if current_script != accepted.script:
         raise ActionError(
             "reproduction.source.changed",
-            "effective-code observation changed or is unavailable",
+            "accepted top-level script observation changed",
+        )
+    if current != accepted.effective_code:
+        raise ActionError(
+            "reproduction.source.changed",
+            "accepted effective-code observation changed",
         )
 
 
@@ -792,6 +811,7 @@ def _prepare_execution(
         cid,
         execution_id,
         execution,
+        accepted.accepted_source,
         attempt_root,
         runtime_root,
         diagnostics_root,
@@ -1180,7 +1200,7 @@ def _resolve_parameter(value: str, context: _CommandContext) -> str:
     source = Path(resolved.value)
     mapped = _regenerated_input_path(source.resolve(), context.generated)
     if mapped is not None:
-        return _resolve_staged_input(resolved, mapped, context)
+        return _resolve_staged_input(resolved, mapped)
     return _resolve_retained_input(resolved, context)
 
 
@@ -1219,43 +1239,13 @@ def _resolve_retained_input(
     return resolved.value
 
 
-def _resolve_staged_input(
-    resolved: ResolvedInputToken, mapped: Path, context: _CommandContext
-) -> str:
-    """Verify a durable staged producer output against the consumer baseline."""
+def _resolve_staged_input(resolved: ResolvedInputToken, mapped: Path) -> str:
+    """Return a scheduler-approved durable staged producer output."""
 
     if not mapped.exists():
         raise ActionError(
             "reproduction.input.unavailable",
             f"regenerated input is unavailable: {resolved.resource.name}",
-        )
-    expected = _expected_input(resolved, context)
-    staged_root = _regenerated_input_path(
-        Path(resolved.resource.canonical_target).resolve(), context.generated
-    )
-    if staged_root is None:
-        raise ActionError(
-            "reproduction.input.observation_missing",
-            f"recorded input observation is unavailable: {resolved.resource.name}",
-        )
-    try:
-        observed = observe_fingerprint(
-            replace(
-                resolved.resource,
-                location=staged_root.as_posix(),
-                canonical_target=staged_root.as_posix(),
-            )
-        ).fingerprint
-    except (DataContractError, OSError, ValueError) as error:
-        raise ActionError(
-            "reproduction.input.unavailable",
-            f"regenerated input is unavailable: {resolved.resource.name}: {error}",
-        ) from error
-    if observed != expected:
-        raise ActionError(
-            "reproduction.input.observation_mismatch",
-            "regenerated input does not match the consumer's recorded "
-            f"observation: {resolved.resource.name}",
         )
     return str(mapped)
 

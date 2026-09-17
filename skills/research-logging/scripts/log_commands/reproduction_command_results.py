@@ -148,9 +148,11 @@ def _execution_problem(
 
 
 def blocked_command_observation(
-    identity: ExecutionRef, prerequisites: tuple[ExecutionRef, ...]
+    identity: ExecutionRef,
+    prerequisites: tuple[ExecutionRef, ...],
+    problem_ids: tuple[str, ...] = (),
 ) -> CommandResult:
-    """Retain failed prerequisites without fabricating a dependent attempt."""
+    """Retain unsatisfied prerequisites without fabricating a dependent attempt."""
 
     return CommandResult(
         identity,
@@ -162,5 +164,6 @@ def blocked_command_observation(
         None,
         None,
         {},
+        problem_ids=problem_ids,
         blocked_by=prerequisites,
     )

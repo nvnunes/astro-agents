@@ -17,8 +17,13 @@ from log_commands.reproduction_artifact_results import (
     compare_accepted_artifact,
 )
 from log_commands.reproduction_completed_run import RunCompletion, complete_saved_run
-from log_commands.reproduction_domain import CommandOutcome, WorkSelection
+from log_commands.reproduction_domain import (
+    ArtifactOutcome,
+    CommandOutcome,
+    WorkSelection,
+)
 from log_commands.reproduction_invocation import ReproductionRuntime
+from log_commands.reproduction_reconciliation import _reconcile_state
 from log_commands.reproduction_saved_storage import publish_saved_run
 from reproduction_planning_test_support import (
     _effective_fingerprint,
@@ -127,6 +132,214 @@ def seed_success(fixture, plan):
 
 
 class NativePlanningPreservationTests(unittest.TestCase):
+    def test_unfingerprintable_source_is_never_suppressed_as_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data/raw.txt"
+            output = entry.root / "data/output.txt"
+            raw.write_text("raw", encoding="utf-8")
+            output.write_text("retained", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            identity, execution = fixture.execution(
+                entry,
+                "build",
+                {"raw": raw},
+                {"output": output},
+                requires_reproduction=False,
+            )
+            fixture.write_pyrun(entry, [(identity, execution)])
+            script = entry.root / execution.recipe.script
+            script.write_text("from math import *\n", encoding="utf-8")
+
+            first = prepare_plan(fixture, entry)
+            self.assertEqual(run_ids(first), [identity])
+            assert first.commands[0].accepted_source is not None
+            self.assertIsNone(first.commands[0].accepted_source.effective_code)
+            _reconcile_state(
+                fixture.log,
+                first.commands[0],
+                adopt_accepted_source=True,
+            )
+            reconciled = load_pyrun_state(
+                entry.root / "pyrun.json",
+                entry_root=entry.root,
+                project_root=fixture.root,
+            ).execution("build", identity)
+            assert reconciled is not None
+            self.assertIsNone(reconciled.observed.effective_code)
+            seed_success(fixture, first)
+
+            second = prepare_plan(fixture, entry)
+            self.assertEqual(run_ids(second), [identity])
+            self.assertEqual(second.commands[0].selection, WorkSelection.RUN)
+
+    def test_source_reconciliation_adopts_only_a_complete_match(self):
+        for adopt in (False, True):
+            with self.subTest(adopt=adopt), tempfile.TemporaryDirectory() as directory:
+                fixture = _Fixture(Path(directory))
+                entry = fixture.entry(1)
+                raw = entry.root / "data/raw.txt"
+                output = entry.root / "data/output.txt"
+                raw.write_text("raw", encoding="utf-8")
+                output.write_text("retained", encoding="utf-8")
+                fixture.write_data(
+                    entry,
+                    [
+                        fixture.item(entry, "raw", raw, origin=True),
+                        fixture.item(entry, "output", output, origin=False),
+                    ],
+                )
+                fixture.evidence(entry, "output")
+                identity, execution = fixture.execution(
+                    entry, "build", {"raw": raw}, {"output": output}
+                )
+                fixture.write_pyrun(entry, [(identity, execution)])
+                script = entry.root / execution.recipe.script
+                script.write_text("VALUE = 2\n", encoding="utf-8")
+                work = prepare_plan(fixture, entry).commands[0]
+                assert work.accepted_source is not None
+
+                _reconcile_state(
+                    fixture.log,
+                    work,
+                    adopt_accepted_source=adopt,
+                )
+                # A lost acknowledgment can repeat the same reconciliation safely.
+                _reconcile_state(
+                    fixture.log,
+                    work,
+                    adopt_accepted_source=adopt,
+                )
+                current = load_pyrun_state(
+                    entry.root / "pyrun.json",
+                    entry_root=entry.root,
+                    project_root=fixture.root,
+                ).execution(work.identity.cid, work.identity.execution_id)
+                assert current is not None
+                self.assertFalse(current.requires_reproduction)
+                self.assertEqual(
+                    current.observed.script,
+                    (
+                        work.accepted_source.script
+                        if adopt
+                        else work.execution.observed.script
+                    ),
+                )
+                self.assertEqual(
+                    current.observed.effective_code,
+                    (
+                        work.accepted_source.effective_code
+                        if adopt
+                        else work.execution.observed.effective_code
+                    ),
+                )
+                if adopt:
+                    next_plan = prepare_plan(fixture, entry)
+                    self.assertEqual(run_ids(next_plan), [])
+                    self.assertEqual(
+                        next_plan.commands[0].selection,
+                        WorkSelection.NOT_NEEDED,
+                    )
+
+    def test_successful_unequal_changed_source_is_reused_until_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _Fixture(Path(directory))
+            entry = fixture.entry(1)
+            raw = entry.root / "data/raw.txt"
+            output = entry.root / "data/output.txt"
+            raw.write_text("raw", encoding="utf-8")
+            output.write_text("retained", encoding="utf-8")
+            fixture.write_data(
+                entry,
+                [
+                    fixture.item(entry, "raw", raw, origin=True),
+                    fixture.item(entry, "output", output, origin=False),
+                ],
+            )
+            fixture.evidence(entry, "output")
+            identity, execution = fixture.execution(
+                entry,
+                "build",
+                {"raw": raw},
+                {"output": output},
+                requires_reproduction=False,
+            )
+            fixture.write_pyrun(entry, [(identity, execution)])
+            script = entry.root / execution.recipe.script
+            script.write_text("VALUE = 2\n", encoding="utf-8")
+
+            changed = prepare_plan(fixture, entry)
+            self.assertEqual(run_ids(changed), [identity])
+            work = changed.commands[0]
+            regenerated = fixture.root / "regenerated.txt"
+            regenerated.write_text("different", encoding="utf-8")
+            artifact = next(item for item in changed.artifacts if item.producer)
+            comparison, problems = compare_accepted_artifact(
+                artifact,
+                work,
+                regenerated,
+                context=ArtifactObservationContext("reproduce-source-difference", WHEN),
+            )
+            self.assertIs(comparison.outcome, ArtifactOutcome.NOT_MATCHED)
+            assert artifact.output is not None
+            assert comparison.regenerated is not None
+            command = replace(
+                attempted(work, CommandOutcome.SUCCEEDED),
+                outputs={artifact.output: comparison.regenerated.as_dict()},
+            )
+            saved = complete_saved_run(
+                changed,
+                RunCompletion(
+                    "reproduce-source-difference",
+                    WHEN,
+                    WHEN,
+                    (command,),
+                    (comparison,),
+                    problems,
+                ),
+            )
+            publish_saved_run(fixture.log.root, saved)
+
+            incremental = prepare_plan(fixture, entry)
+            self.assertEqual(run_ids(incremental), [])
+            self.assertIs(
+                incremental.command(work.identity).selection,
+                WorkSelection.NOT_NEEDED,
+            )
+            self.assertEqual(
+                incremental.reusable_artifact_results,
+                (comparison,),
+            )
+            self.assertEqual(
+                run_ids(prepare_plan(fixture, entry, recheck=True)), [identity]
+            )
+
+            script.write_text("VALUE = 2\n# raw-only change\n", encoding="utf-8")
+            self.assertEqual(run_ids(prepare_plan(fixture, entry)), [])
+
+            mutated_baseline = replace(
+                execution,
+                observed=replace(
+                    execution.observed,
+                    effective_code=Fingerprint(
+                        "python-effective-code-sha256-v1", digest="c" * 64
+                    ),
+                ),
+            )
+            fixture.write_pyrun(entry, [(identity, mutated_baseline)])
+            self.assertEqual(run_ids(prepare_plan(fixture, entry)), [identity])
+
+            script.write_text("VALUE = 3\n", encoding="utf-8")
+            self.assertEqual(run_ids(prepare_plan(fixture, entry)), [identity])
+
     def test_shared_graph_is_the_planning_topology_authority(self) -> None:
         from log_commands.reproduction_planner import (
             _graph_owner_index,

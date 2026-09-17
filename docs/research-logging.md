@@ -617,10 +617,13 @@ bootstrapping or an authored `PYTHONPATH` to recreate these roots.
 
 Some dynamic behavior cannot be fingerprinted safely. In that case `pyrun`
 still executes and quietly records no effective-code fingerprint. Command sync
-reports a bounded warning with the unsupported location and explains that code
-currentness and reproduction remain unavailable until the source is made
-analyzable and the command is run again. Reproduction treats a missing
-fingerprint like a mismatch for selection while reporting the distinct cause.
+also succeeds when fingerprinting is unsupported or analysis fails, reporting
+a bounded warning with the location and explaining that code currentness
+remains unavailable until the source is made analyzable and the command is run
+again. Reproduction selects a missing,
+mismatching, or unavailable current effective-code fingerprint. When current
+code cannot be fingerprinted, every incremental plan selects it again because
+unchanged currentness cannot be established; this is not a block.
 Use the `--auto-reproduce=false` runner option for simulation, model training,
 and comparable commands that should not run during automatic reproduction.
 Use the `--exclusive` runner option when managed reproduction must run the
@@ -1011,7 +1014,8 @@ CLI-owned job continues. With no runnable work it returns current
 reconciliation and normally creates no job, saved result or report.
 
 Selection defaults to incremental. Commands not requiring reproduction need
-no saved result; unchanged previous failure/block is not retried. Add
+no saved result; unchanged previous failure/block or completed unequal/uncomputed
+comparison is not retried. Add
 `--recheck` to retry eligible work, without bypassing blockers or automatic
 policy. Artifact matching does not decide whether execution is needed.
 `auto_reproduce: false` commands are excluded by default; add
@@ -1024,6 +1028,13 @@ baseline or validation-admission problems block related work while independent
 commands remain eligible. Unsafe or unlocalizable authority can refuse the
 whole operation. Currentness remains Reproduce-owned, not a new validation
 finding.
+
+A successful producer's outputs are compared before consumers run. A matched
+artifact permits only consumers that use that artifact. A differing artifact or
+one that cannot be compared blocks those consumers and their dependants, while
+other outputs and independent commands continue. The run completes and saves
+these artifact and command outcomes normally; it does not convert a local
+comparison result into an operational failure.
 
 The jobs cap defaults to 1; dependencies, overlapping path claims and
 project-wide exclusivity may reduce actual concurrency. Each command defaults
@@ -1053,10 +1064,15 @@ Runs live at
 The immutable UTC acceptance date organizes paths; every lookup uses run ID
 alone. Obsolete jobs are unsupported and remain unchanged, not migrated.
 
-Complete production and comparison can clear the existing reproduction
-requirement, even for unequal artifacts. Failed, partial, blocked or stopped
-work cannot clear early. A later operational/publication failure does not undo
-an already-completed eligible command's requirement effect.
+Complete production and comparison clear the existing reproduction requirement,
+even for unequal artifacts. If every artifact is canonically matched, the same
+atomic update adopts the accepted raw-script and effective-code observations.
+The effective-code observation may be null; that adoption does not make
+unfingerprintable code current, so later incremental plans still select it.
+Unequal or uncomputed comparisons preserve the prior source and retained output
+observations. Failed, partial, blocked or stopped work cannot reconcile early.
+A later operational/publication failure does not undo an already-completed
+eligible command's reconciliation.
 
 Inspect immutable saved results:
 
@@ -1078,7 +1094,7 @@ with an older saved summary.
 
 Use each list row's exact `log reproduce detail command|artifact` invocation
 for retained invocation, contributing causes, expected/regenerated values,
-output locations and available diagnostic tails. Lists and detail are bounded,
+retained/accepted source observations, output locations and available diagnostic tails. Lists and detail are bounded,
 with section/cursor continuations; text and JSON share the saved facts.
 Missing diagnostic files qualify availability, not saved classification.
 
@@ -1106,8 +1122,9 @@ historical reproduction outcomes or restore cleared requirements.
 Regenerated outputs never replace research baselines automatically. Under your
 explicit direction, `log reproduce promote --path LOG --run-id RUN --cid CID --execution-id ID`
 copies one complete related staged output set with baseline, confinement,
-reservation and rollback guards. It leaves staged sources and saved outcomes
-intact.
+reservation and rollback guards, and installs that run's accepted source
+observations with the new output fingerprints. It leaves staged files and saved
+outcomes intact.
 
 The [reproduction specification](research-log-reproduction-spec.md) owns the
 exact CLI, records, resource bounds and lifecycle contract.

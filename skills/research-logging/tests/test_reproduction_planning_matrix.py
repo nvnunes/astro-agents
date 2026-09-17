@@ -353,7 +353,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 {"dependency_cycle", "validation_blocked"},
             )
 
-    def test_changed_script_blocks_only_its_dependants(self) -> None:
+    def test_changed_script_runs_with_its_dependants(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -402,12 +402,15 @@ class NativePlanningMatrixTests(unittest.TestCase):
             )
 
             plan = prepare(fixture, entry)
-            self.assertEqual(run_ids(plan), [independent[0]])
+            self.assertCountEqual(
+                run_ids(plan),
+                [upstream[0], downstream[0], independent[0]],
+            )
             self.assertEqual(
                 {item.identity.cid: item.selection for item in plan.commands},
                 {
-                    "upstream": WorkSelection.BLOCKED,
-                    "downstream": WorkSelection.BLOCKED,
+                    "upstream": WorkSelection.RUN,
+                    "downstream": WorkSelection.RUN,
                     "independent": WorkSelection.RUN,
                 },
             )
@@ -424,6 +427,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
             )
             self.assertEqual(downstream_work.dependencies, (upstream_work.identity,))
             self.assertFalse(downstream_work.problem_ids)
+            self.assertIsNotNone(upstream_work.accepted_source)
 
     def test_effective_code_owns_currentness_not_raw_script_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -470,8 +474,9 @@ class NativePlanningMatrixTests(unittest.TestCase):
 
             unavailable = prepare(fixture, entry)
 
-            self.assertEqual(run_ids(unavailable), [])
-            self.assertEqual(unavailable.commands[0].selection, WorkSelection.BLOCKED)
+            self.assertEqual(run_ids(unavailable), [identity])
+            self.assertEqual(unavailable.commands[0].selection, WorkSelection.RUN)
+            self.assertIsNotNone(unavailable.commands[0].accepted_source)
             self.assertEqual(
                 {item.code for item in unavailable.problems},
                 {"effective_code_unavailable"},
@@ -494,6 +499,34 @@ class NativePlanningMatrixTests(unittest.TestCase):
 
             self.assertEqual(run_ids(selected), [identity])
             self.assertEqual(selected.problems, ())
+
+            fixture.write_pyrun(entry, [(identity, execution)])
+            script.write_text("from math import *\n", encoding="utf-8")
+
+            unfingerprintable = prepare(fixture, entry)
+
+            self.assertEqual(run_ids(unfingerprintable), [identity])
+            work = unfingerprintable.commands[0]
+            self.assertEqual(work.selection, WorkSelection.RUN)
+            self.assertIsNotNone(work.accepted_source)
+            assert work.accepted_source is not None
+            self.assertIsNone(work.accepted_source.effective_code)
+            problem = unfingerprintable.problems[0]
+            self.assertEqual(problem.code, "effective_code_unavailable")
+            self.assertEqual(problem.observed["availability"], "unsupported")
+            self.assertEqual(problem.locations[0].line, 1)
+
+            script.write_text("def broken(:\n", encoding="utf-8")
+            analysis_failed = prepare(fixture, entry)
+            self.assertEqual(run_ids(analysis_failed), [identity])
+            self.assertEqual(
+                analysis_failed.problems[0].observed["availability"],
+                "analysis-failed",
+            )
+            assert analysis_failed.commands[0].accepted_source is not None
+            self.assertIsNone(
+                analysis_failed.commands[0].accepted_source.effective_code
+            )
 
     def test_missing_direct_input_is_local_to_its_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -525,7 +558,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 {"validation_blocked", "direct_input_unavailable"},
             )
 
-    def test_shared_changed_code_blocks_each_consumer(self) -> None:
+    def test_shared_changed_code_runs_each_consumer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture(Path(directory))
             entry = fixture.entry(1)
@@ -577,9 +610,9 @@ class NativePlanningMatrixTests(unittest.TestCase):
             shared.write_text("VALUE = 2\n", encoding="utf-8")
 
             plan = prepare(fixture, entry)
-            self.assertEqual(run_ids(plan), [])
+            self.assertCountEqual(run_ids(plan), [item[0] for item in executions])
             self.assertTrue(
-                all(item.selection is WorkSelection.BLOCKED for item in plan.commands)
+                all(item.selection is WorkSelection.RUN for item in plan.commands)
             )
             self.assertEqual(
                 {item.code for item in plan.problems}, {"effective_code_changed"}

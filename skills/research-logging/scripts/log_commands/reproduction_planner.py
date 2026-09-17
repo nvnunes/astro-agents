@@ -63,6 +63,7 @@ from .reproduction_domain import (
     ArtifactOutcome,
     ArtifactRef,
     ExecutionRef,
+    NotComparedReason,
     ProblemStage,
     ReproductionProblem,
     SourceLocation,
@@ -71,9 +72,11 @@ from .reproduction_domain import (
 )
 from .reproduction_invocation import (
     MAX_EXECUTION_TIMEOUT_SECONDS,
+    AcceptedSource,
     ReproductionRuntime,
     canonical_execution_source_digest,
     canonical_record_digest,
+    observe_script_source,
 )
 from .reproduction_run import ArtifactResult
 from .reproduction_saved_run import RunSettings, RunTarget
@@ -227,6 +230,9 @@ class _PlanningState:
         tuple[Path, bool, tuple[Path, ...]],
         EffectiveCodeAnalysis | EffectiveCodeError,
     ] = field(default_factory=dict)
+    accepted_sources: dict[ExecutionKey, AcceptedSource] = field(default_factory=dict)
+    source_selected: set[ExecutionKey] = field(default_factory=set)
+    unverifiable_sources: set[ExecutionKey] = field(default_factory=set)
     visiting: list[ExecutionKey] = field(default_factory=list)
     visited: set[ExecutionKey] = field(default_factory=set)
     cycle_members: set[ExecutionKey] = field(default_factory=set)
@@ -390,12 +396,41 @@ def _history_selection_facts(
                 WorkSelection.BLOCKED: "blocked",
             }.get(work.selection)
         )
-        if work.source_digest is not None and disposition in {"failed", "blocked"}:
+        if (
+            result is not None
+            and result.outcome.value == "succeeded"
+            and _has_complete_same_run_artifacts(history, identity, work)
+        ):
+            disposition = "succeeded"
+        if work.source_digest is not None and disposition in {
+            "failed",
+            "blocked",
+            "succeeded",
+        }:
             prior[(identity.entry, identity.cid, identity.execution_id)] = {
                 "source_digest": work.source_digest,
                 "disposition": disposition,
             }
     return prior
+
+
+def _has_complete_same_run_artifacts(
+    history: PreparationHistory, identity: ExecutionRef, work: CommandWork
+) -> bool:
+    """Require one command and its whole comparison set from the same saved run."""
+
+    origin = history.command_origins.get(identity)
+    if origin is None:
+        return False
+    for output, _kind in work.execution.recipe.outputs:
+        prior = history.artifacts.get(ArtifactRef(identity.entry, output))
+        if (
+            prior is None
+            or prior[0].producer != identity
+            or prior[1].origin_run_id != origin
+        ):
+            return False
+    return True
 
 
 def _currentness_by_execution(
@@ -936,15 +971,6 @@ def _record_effective_code(
 
     identity = script.resolve().as_posix()
     recorded = owner.execution.observed.effective_code
-    if recorded is None:
-        problem = _effective_code_problem(
-            identity,
-            "effective_code_unavailable",
-            "No saved effective-code fingerprint is available.",
-            {"availability": "missing-saved-fingerprint", "expected": None},
-        )
-        _retain_preparation_problem(state, owner.key, problem)
-        return problem
     environment_changes_imports = "PYTHONPATH" in dict(
         owner.execution.recipe.environment
     )
@@ -976,6 +1002,22 @@ def _record_effective_code(
             except EffectiveCodeError as error:
                 observed = error
         state.effective_code_observations[cache_key] = observed
+    try:
+        script_fingerprint = observe_script_source(script)
+    except (OSError, ValueError) as error:
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_unavailable",
+            f"Current top-level script cannot be fingerprinted: {error}",
+            {
+                "availability": "script-unavailable",
+                "error": str(error),
+                "expected": recorded.as_dict() if recorded is not None else None,
+            },
+            locations=(SourceLocation(identity),),
+        )
+        _retain_preparation_problem(state, owner.key, problem)
+        return problem
     if isinstance(observed, EffectiveCodeError):
         location = (
             SourceLocation(observed.path, observed.line or None)
@@ -985,25 +1027,32 @@ def _record_effective_code(
         problem = _effective_code_problem(
             identity,
             "effective_code_unavailable",
-            f"Effective-code analysis failed: {observed}",
+            "Effective-code analysis failed; reproduction is selected on every "
+            "incremental plan because currentness cannot be established: "
+            f"{observed}",
             {
                 "availability": "analysis-failed",
                 "error_code": observed.code,
                 "error": observed.detail,
-                "expected": recorded.as_dict(),
+                "expected": recorded.as_dict() if recorded is not None else None,
             },
             locations=(location,),
         )
         _retain_preparation_problem(state, owner.key, problem)
-        return problem
+        state.accepted_sources[owner.key] = AcceptedSource(script_fingerprint, None)
+        state.source_selected.add(owner.key)
+        state.unverifiable_sources.add(owner.key)
+        return None
     if observed.fingerprint is None:
         problem = _effective_code_problem(
             identity,
             "effective_code_unavailable",
-            "Current effective code cannot be fingerprinted statically.",
+            "Current effective code cannot be fingerprinted; reproduction is "
+            "selected on every incremental plan because currentness cannot be "
+            "established.",
             {
                 "availability": "unsupported",
-                "expected": recorded.as_dict(),
+                "expected": recorded.as_dict() if recorded is not None else None,
                 "unsupported": [
                     {
                         "construct": item.construct,
@@ -1021,20 +1070,41 @@ def _record_effective_code(
             ),
         )
         _retain_preparation_problem(state, owner.key, problem)
-        return problem
+        state.accepted_sources[owner.key] = AcceptedSource(script_fingerprint, None)
+        state.source_selected.add(owner.key)
+        state.unverifiable_sources.add(owner.key)
+        return None
     accepted = Fingerprint(
         observed.fingerprint.algorithm,
         digest=observed.fingerprint.digest,
     )
+    state.accepted_sources[owner.key] = AcceptedSource(script_fingerprint, accepted)
+    if recorded is None:
+        problem = _effective_code_problem(
+            identity,
+            "effective_code_unavailable",
+            "No saved effective-code fingerprint is available.",
+            {
+                "availability": "missing-saved-fingerprint",
+                "expected": None,
+                "actual": accepted.as_dict(),
+            },
+            locations=(SourceLocation(identity),),
+        )
+        _retain_preparation_problem(state, owner.key, problem)
+        state.source_selected.add(owner.key)
+        return None
     if accepted != recorded:
         problem = _effective_code_problem(
             identity,
             "effective_code_changed",
             "The project-local effective code no longer matches the saved execution.",
             {"expected": recorded.as_dict(), "actual": accepted.as_dict()},
+            locations=(SourceLocation(identity),),
         )
         _retain_preparation_problem(state, owner.key, problem)
-        return problem
+        state.source_selected.add(owner.key)
+        return None
     return None
 
 
@@ -1424,6 +1494,7 @@ def _select_and_order(
         and key not in state.blocked
         and not state.selected[key].execution.requires_reproduction
         and key not in state.currentness
+        and key not in state.source_selected
     }
     unchanged = {
         key
@@ -1466,11 +1537,15 @@ def _initial_work(
     return {
         key
         for key in runnable
-        if (
-            state.selected[key].execution.requires_reproduction
-            or key in state.currentness
+        if key in state.unverifiable_sources
+        or (
+            (
+                state.selected[key].execution.requires_reproduction
+                or key in state.currentness
+                or key in state.source_selected
+            )
+            and not _command_result_current(prior.get(key), state.command_digests[key])
         )
-        and not _command_result_current(prior.get(key), state.command_digests[key])
     }
 
 
@@ -1521,7 +1596,7 @@ def _topological_order(
 def _command_result_current(
     result: Mapping[str, object] | None,
     source_digest: str,
-    dispositions: Collection[str] = ("failed", "blocked"),
+    dispositions: Collection[str] = ("failed", "blocked", "succeeded"),
 ) -> bool:
     """Return whether one prior terminal command result has the same closure."""
 
@@ -1554,9 +1629,15 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
         ),
         key=lambda value: (str(value["role"]), str(value["identity"])),
     )
+    accepted_source = state.accepted_sources.get(key)
+    accepted_effective_code = (
+        accepted_source.effective_code.as_dict()
+        if accepted_source is not None and accepted_source.effective_code is not None
+        else None
+    )
     return canonical_record_digest(
         {
-            "contract": "research-log-reproduction-command-source/2",
+            "contract": "research-log-reproduction-command-source/3",
             "dependencies": [
                 _reference(value)
                 for value in sorted(state.dependencies.get(key, set()))
@@ -1568,6 +1649,7 @@ def _command_source_digest(state: _PlanningState, key: ExecutionKey) -> str:
             "currentness": [
                 conclusion.as_dict() for conclusion in state.currentness.get(key, ())
             ],
+            "accepted_effective_code": accepted_effective_code,
             "materials": materials,
             "outputs": outputs,
             "preparation_problems": sorted(state.command_problem_ids.get(key, ())),
@@ -1631,6 +1713,7 @@ def _command_work(
                     for dependency in sorted(state.dependencies.get(key, ()))
                 ),
                 references,
+                state.accepted_sources.get(key),
             )
         )
     return tuple(work)
@@ -1671,6 +1754,8 @@ def _work_selection(state: _PlanningState, owner: _Owner) -> WorkSelection:
             WorkSelection.PREVIOUS_FAILURE
             if state.prior_command_dispositions[owner.key] == "failed"
             else WorkSelection.PREVIOUS_BLOCK
+            if state.prior_command_dispositions[owner.key] == "blocked"
+            else WorkSelection.NOT_NEEDED
         )
     return (
         WorkSelection.SKIPPED_BY_POLICY
@@ -1686,7 +1771,7 @@ def _canonical_plan(
     entry: EntryContext | None,
     history: PreparationHistory,
 ) -> AcceptedWorkPlan:
-    """Cross the immutable plan/13 boundary directly from prepared facts.
+    """Cross the immutable plan/14 boundary directly from prepared facts.
 
     This builder performs no research-file reads, prior-result translation or
     publication. The selector and graph already established work and scope.
@@ -1751,7 +1836,11 @@ def _comparison_reusable(
     work: ArtifactWork, prior: ArtifactWork, result: ArtifactResult
 ) -> bool:
     return (
-        result.outcome in {ArtifactOutcome.MATCHED, ArtifactOutcome.NOT_MATCHED}
+        (
+            result.outcome in {ArtifactOutcome.MATCHED, ArtifactOutcome.NOT_MATCHED}
+            or result.outcome is ArtifactOutcome.NOT_COMPARED
+            and result.not_compared_reason is NotComparedReason.COMPARISON_FAILED
+        )
         and prior.producer == work.producer
         and prior.output == work.output
         and prior.retained_path == work.retained_path

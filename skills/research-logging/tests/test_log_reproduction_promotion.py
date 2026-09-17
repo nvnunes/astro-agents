@@ -245,6 +245,23 @@ class ReproductionPromotionTests(unittest.TestCase):
                 if item.identity.cid == "producer"
             )
             self.assertIsNotNone(job.load_command_result(work.identity))
+            artifact = next(
+                item
+                for item in accepted.plan.artifacts
+                if item.producer == work.identity
+            )
+            with job._transaction("test_remove_comparison"):
+                job._db.execute(
+                    "DELETE FROM run_artifact_results WHERE run_id=? AND "
+                    "artifact_pk=(SELECT artifact_pk FROM accepted_work_artifacts "
+                    "WHERE run_id=? AND entry=? AND artifact=?)",
+                    (
+                        accepted.run_id,
+                        accepted.run_id,
+                        artifact.identity.entry,
+                        artifact.identity.artifact,
+                    ),
+                )
         with self.assertRaisesRegex(ActionError, "comparisons are missing"):
             _load_staging_bundle(
                 workspace.run_root,

@@ -187,7 +187,7 @@ def poll_work_permit(
     checkpointed_at: str,
     expected_state: Literal["absent", "stopped"],
 ) -> SchedulerDecision:
-    """Admit native Job5 work using the shared fairness and conflict rules.
+    """Admit native Job6 work using the shared fairness and conflict rules.
 
     Only the native job authority is opened, including other dead permit owners.
     Unsupported jobs require explicit resolution; no version fallback occurs.

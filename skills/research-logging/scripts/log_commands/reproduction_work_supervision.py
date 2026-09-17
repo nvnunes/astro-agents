@@ -1,7 +1,7 @@
 """Supervise fixed native work through the shared coordinator and publication.
 
 Scheduling state is transient; accepted work, actual results and interrupted
-attempt recovery remain owned by Job5. No route replans. Successful execution
+attempt recovery remain owned by Job6. No route replans. Successful execution
 publishes durable native facts; publication-only retry consumes frozen completion
 without execution. The caller owns scope locks and installs the supervisor lease.
 """
@@ -34,6 +34,7 @@ from .reproduction_execution import (
 )
 from .reproduction_job_control import (
     ExecutionIdentity,
+    JobStoreTransitionError,
     RunFailure,
     RunOwner,
     RunStopCompletion,
@@ -137,7 +138,19 @@ def _completed_work(stage: _WorkStage, identity: ExecutionRef) -> bool:
         return False
     if result.outcome is CommandOutcome.SUCCEEDED:
         _reuse_completed_outputs(stage, result)
+        _compare_completed_output(stage, result.identity)
     return True
+
+
+def _compare_completed_output(stage: _WorkStage, identity: ExecutionRef) -> None:
+    """Compare before dependants run, unless a concurrent stop won the race."""
+
+    try:
+        compare_work_outputs(stage.workspace, identity)
+    except JobStoreTransitionError:
+        if _stop_requested(stage):
+            return
+        raise
 
 
 def _reuse_completed_outputs(stage: _WorkStage, result: CommandResult) -> None:
@@ -231,7 +244,7 @@ def _execute_scheduled_work(
         if decision.disposition == "granted":
             assert decision.permit is not None
             grant = decision.permit.permit_id
-            return execute_work_recipe(
+            result = execute_work_recipe(
                 stage.log,
                 identity,
                 workspace,
@@ -243,6 +256,13 @@ def _execute_scheduled_work(
                     stage.backend,
                 ),
             )
+            if (
+                result is not None
+                and result.outcome is CommandOutcome.SUCCEEDED
+                and not _stop_requested(stage)
+            ):
+                _compare_completed_output(stage, result.identity)
+            return result
         time.sleep(POLL_SECONDS)
 
 
@@ -471,9 +491,9 @@ def supervise_work_job(
             _finish_stopped(run_root, owner)
             return
         compare_work_outputs(workspace)
-        from .reproduction_requirements import clear_completed_requirements
+        from .reproduction_reconciliation import reconcile_completed_sources
 
-        clear_completed_requirements(log, run_root)
+        reconcile_completed_sources(log, run_root)
         with open_work_job(run_root) as job:
             stopping = job.load_run_control().phase == "stopping"
         if stopping:

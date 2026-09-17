@@ -8,7 +8,11 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Iterable
 
-from effective_code import EffectiveCodeError, analyze_effective_code
+from effective_code import (
+    EffectiveCodeError,
+    UnsupportedLocation,
+    analyze_effective_code,
+)
 from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
@@ -342,10 +346,12 @@ def _effective_code_warnings(
             result.append(
                 _effective_code_warning(
                     relative,
-                    relative,
-                    0,
-                    "import_path_environment",
-                    "explicit PYTHONPATH changes project-local import resolution",
+                    UnsupportedLocation(
+                        relative,
+                        0,
+                        "import_path_environment",
+                        "explicit PYTHONPATH changes project-local import resolution",
+                    ),
                 )
             )
             continue
@@ -362,56 +368,63 @@ def _effective_code_warnings(
                 import_roots=python_context.import_roots,
             )
         except EffectiveCodeError as error:
-            raise ActionError(
-                "command.sync.effective_code.failed",
-                "effective-code analysis failed",
-                records=(
-                    {
-                        "code": error.code,
-                        "detail": error.detail,
-                        "line": error.line,
-                        "location": error.path,
-                        "script": relative,
-                    },
-                ),
-            ) from error
+            result.append(
+                _effective_code_warning(
+                    relative,
+                    UnsupportedLocation(
+                        error.path or relative,
+                        error.line,
+                        error.code,
+                        error.detail,
+                    ),
+                    code="command.sync.effective_code.unavailable",
+                    remediation=(
+                        "repair the analysis failure, then run pyrun to record "
+                        "the fingerprint"
+                    ),
+                )
+            )
+            continue
         for item in analysis.unsupported:
             result.append(
                 _effective_code_warning(
                     relative,
-                    item.path,
-                    item.line,
-                    item.construct,
-                    item.detail,
+                    item,
                 )
             )
         if analysis.unsupported_truncated:
             result.append(
                 _effective_code_warning(
                     relative,
-                    relative,
-                    0,
-                    "unsupported_locations_truncated",
-                    "additional unsupported locations were omitted",
+                    UnsupportedLocation(
+                        relative,
+                        0,
+                        "unsupported_locations_truncated",
+                        "additional unsupported locations were omitted",
+                    ),
                 )
             )
     return tuple(result)
 
 
 def _effective_code_warning(
-    script: str, location: str, line: int, construct: str, detail: str
+    script: str,
+    issue: UnsupportedLocation,
+    *,
+    code: str = "command.sync.effective_code.unsupported",
+    remediation: str = "run pyrun after repairing the unsupported construct",
 ) -> dict[str, object]:
     return {
-        "code": "command.sync.effective_code.unsupported",
+        "code": code,
         "consequence": (
-            "effective-code currentness and reproduction are unavailable until "
-            "the script and environment can be analyzed; run pyrun after repairing "
-            "the unsupported construct"
+            "effective-code currentness is unavailable; reproduction will select "
+            "this command on every incremental plan until the script and environment "
+            f"can be analyzed; {remediation}"
         ),
-        "construct": construct,
-        "detail": detail,
-        "line": line,
-        "location": location,
+        "construct": issue.construct,
+        "detail": issue.detail,
+        "line": issue.line,
+        "location": issue.path,
         "script": script,
         "status": "warning",
     }

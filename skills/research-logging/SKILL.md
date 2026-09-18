@@ -136,9 +136,10 @@ state does not start Repair without an explicit correction request.
   reproduction report. Clearing result state never authorizes changes to a
   durable run's `state.sqlite`, staged output, diagnostics, evidence baselines,
   or `pyrun.json` observations.
-- If a maintained log command reports `operation.lock.conflict`, report the
-  supplied owner metadata once and stop. Do not retry, poll, inspect process
-  tables, or bypass the lock during the current operation.
+- If concurrently started actions in the current task report
+  `operation.lock.conflict`, let one finish and retry the other serially.
+  Otherwise report the supplied owner metadata once and stop. Do not poll,
+  inspect process tables, or bypass the lock during the current operation.
 - For `authoring.state.changed` or `artifact.reservation.conflict`, report the
   selected item, paths, and owners supplied by the CLI and stop the affected
   operation. Do not bypass the guard or infer permission to rerun research.

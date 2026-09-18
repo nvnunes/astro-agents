@@ -17,10 +17,10 @@ inside an entry.
   and why disconnected material should remain. Delegate deterministic
   evidence, input, and retention bookkeeping to the owning `scripts/log`
   action. Do not open or edit a registry to perform or confirm ordinary Record.
-- Stop on a failed authoring action and report its exact diagnostic. Do not
-  start Repair or Reorganize, edit around the precondition, or broaden the
-  Record task without a separate matching request. Invoke dependent actions
-  separately and inspect each bounded result before starting the next one.
+- On a failed authoring action, inspect the diagnostic. Correct and retry clear
+  mistakes in the invocation or current Record material through the owning
+  surface; this is not Repair. Stop for `SKILL.md` hard stops, malformed state,
+  or an unclear correction.
 - Never turn an entry into an agent diary or work log. Omit agent workflow,
   housekeeping, progress, and routine successful checks.
 - When a request moves earlier exploratory work into the log, Record begins at

@@ -492,6 +492,55 @@ class DataFileTests(unittest.TestCase):
 
             self.assertEqual(observation.fingerprint.algorithm, "sha256")
 
+    def test_reference_resolves_stable_entry_with_only_split_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entries = Path(directory) / "study" / "entries"
+            producer = entries / "2026-09-01-e002-producer"
+            consumer = entries / "2026-09-02-e003-consumer"
+            write(producer / "e002a.md", "# Part A\n")
+            write(producer / "e002i.md", "# Part I\n")
+            write(
+                producer / "data.json",
+                json.dumps(
+                    {
+                        "schema": DATA.DATA_SCHEMA,
+                        "inputs": [
+                            {
+                                "name": "result",
+                                "kind": "file",
+                                "location": "data/result.csv",
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                ),
+            )
+            write(
+                consumer / "data.json",
+                json.dumps(
+                    {
+                        "schema": DATA.DATA_SCHEMA,
+                        "inputs": [{"from_entry": "e002", "name": "result"}],
+                    }
+                ),
+            )
+
+            loaded = DATA.load_data_file(
+                consumer / "data.json", entry_root=consumer
+            )
+
+            self.assertEqual(loaded.inputs[0].reference_entry, "e002")
+            self.assertEqual(
+                loaded.inputs[0].canonical_target,
+                str((producer / "data/result.csv").resolve()),
+            )
+
+            duplicate = entries / "2026-09-03-e002-duplicate"
+            write(duplicate / "data.json", (producer / "data.json").read_text())
+            with self.assertRaisesRegex(DATA.DataContractError, "matches.*2"):
+                DATA.load_data_file(consumer / "data.json", entry_root=consumer)
+
     def test_identity_files_define_a_bounded_managed_directory_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "entry"

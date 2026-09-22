@@ -10,6 +10,7 @@ import stat
 import subprocess
 import unicodedata
 from dataclasses import dataclass, field, replace
+from datetime import date
 from fnmatch import fnmatchcase
 from glob import has_magic
 from pathlib import Path, PurePosixPath
@@ -50,6 +51,10 @@ HASH_CHUNK_BYTES = 1024 * 1024
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 ENTRY_REFERENCE_NAME_RE = re.compile(r"e[0-9]+\Z", re.IGNORECASE)
+ENTRY_REFERENCE_DIRECTORY_RE = re.compile(
+    r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})-"
+    r"(?P<id>e[0-9]{3,})-[a-z0-9]+(?:-[a-z0-9]+)*\Z"
+)
 INPUT_TOKEN_RE = re.compile(
     r"<(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)"
     r"(?::(?P<projection>commit))?>(?:/(?P<member>.+))?\Z"
@@ -1282,8 +1287,7 @@ def _decode_reference(
             if (
                 candidate.is_dir()
                 and not candidate.is_symlink()
-                and (candidate / f"{from_entry}.md").is_file()
-                and not (candidate / f"{from_entry}.md").is_symlink()
+                and _entry_directory_matches(candidate.name, from_entry)
             ):
                 candidates.append(candidate)
     except OSError as error:
@@ -1309,6 +1313,19 @@ def _decode_reference(
             },
         )
     return replace(source, reference_entry=from_entry)
+
+
+def _entry_directory_matches(name: str, entry_id: str) -> bool:
+    """Match one canonical entry directory by its stable ID, not document names."""
+
+    identity = ENTRY_REFERENCE_DIRECTORY_RE.fullmatch(name)
+    if identity is None or identity.group("id") != entry_id:
+        return False
+    entry_date = identity.group("date")
+    try:
+        return date.fromisoformat(entry_date).isoformat() == entry_date
+    except ValueError:
+        return False
 
 
 def _decode_reproduction_comparison(

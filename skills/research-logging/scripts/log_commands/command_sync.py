@@ -114,7 +114,6 @@ class _PreparedCommand:
     candidate: DataFile | None
     declarations: tuple[CommandDeclaration, ...]
     invocations: tuple[Invocation, ...]
-    failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
     selection: _Selection
 
 
@@ -134,7 +133,6 @@ class _PublicationCandidate:
 
     data_text: str | None
     pyrun_text: str | None
-    failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
     warnings: tuple[dict[str, object], ...]
     changes: tuple[dict[str, object], ...]
 
@@ -315,6 +313,7 @@ def _prepare_command(
         invocations,
     )
     _require_origin_boundaries(
+        current_data,
         candidate_data,
         invocations,
         tuple(
@@ -340,7 +339,6 @@ def _prepare_command(
         candidate_data,
         selected,
         selected_invocations,
-        failures,
         selection,
     )
 
@@ -552,7 +550,7 @@ def _finish_command(
             resource_authority(source.by_name.get(name) if source else None),
             f"{source_id}/{name} source declaration",
         )
-    invocations, failures = _materialize(indexed, data)
+    invocations, _ = _materialize(indexed, data)
     selected_invocations = tuple(
         item for item in invocations if item.cid in selection.selected
     )
@@ -623,7 +621,7 @@ def _finish_command(
         if Path(path).exists()
     )
     candidate = _PublicationCandidate(
-        data_text, pyrun_text, failures, warnings, tuple(change_rows) + stale_records
+        data_text, pyrun_text, warnings, tuple(change_rows) + stale_records
     )
     return _publish_candidates(entry, candidate, dry_run=arguments.dry_run)
 
@@ -867,9 +865,6 @@ def _publish_candidates(
     ]
     records.extend(candidate.changes)
     records.extend(candidate.warnings)
-    records.extend(
-        _failure_record(document, failure) for document, failure in candidate.failures
-    )
     updates = {
         path: text
         for path, before, text in (
@@ -1329,14 +1324,22 @@ def _require_output_safety(
     invocations: tuple[Invocation, ...],
     selected: tuple[Invocation, ...],
 ) -> None:
-    index = build_producer_index(invocations)
-    for invocation in selected:
-        targets = {item.path for item in invocation.outputs}
-        targets.update(
-            item.root
-            for item in invocation.collections
-            if item.direction == "output" and item.root is not None
+    selected_targets = tuple(
+        (
+            invocation,
+            {item.path for item in invocation.outputs}
+            | {
+                item.root
+                for item in invocation.collections
+                if item.direction == "output" and item.root is not None
+            },
         )
+        for invocation in selected
+    )
+    if not any(targets for _, targets in selected_targets):
+        return
+    index = build_producer_index(invocations)
+    for invocation, targets in selected_targets:
         for target in targets:
             canonical = Path(target).absolute().as_posix()
             rejected = {
@@ -1401,18 +1404,25 @@ def _require_requested_declarations_consumed(
 
 
 def _require_origin_boundaries(
+    current: DataFile | None,
     data: DataFile | None,
     invocations: tuple[Invocation, ...],
     added_names: tuple[str, ...],
 ) -> None:
-    if data is None or not added_names:
+    if data is None:
+        return
+    changed = tuple(
+        name
+        for name in added_names
+        if data.by_name[name].origin
+        and data.by_name[name].kind != "git-repository"
+        and (current is None or current.by_name.get(name) != data.by_name[name])
+    )
+    if not changed:
         return
     index = build_producer_index(invocations)
-    for name in added_names:
+    for name in changed:
         resource = data.by_name[name]
-        # Pinned Git inputs identify commits, not the locator's live directory.
-        if resource.kind == "git-repository":
-            continue
         canonical = Path(resource.canonical_target).absolute().as_posix()
         owners = {item.identity for item in index.outputs.get(canonical, ())}
         owners.update(item.producer.identity for item in index.lookup(canonical))
@@ -1441,6 +1451,15 @@ def _require_generated_boundaries(
         )
         for value in values
     }
+    names = {
+        name
+        for name in names
+        if candidate.by_name[name].origin is False
+        and candidate.by_name[name].reference_entry is None
+        and (current is None or current.by_name.get(name) != candidate.by_name[name])
+    }
+    if not names:
+        return
     index = build_producer_index(invocations)
     selected_ids = {
         item.identity
@@ -1575,7 +1594,6 @@ def _failure_record(
         "fence": failure.fence,
         "observed": failure.error.observed,
         "ordinal": failure.ordinal,
-        "status": "unrelated-failure",
     }
 
 

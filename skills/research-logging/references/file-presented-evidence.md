@@ -117,9 +117,11 @@ For rename, edit the entry EID and every summary reference first, then include
 defines its current source, render, and presentation; sync does not copy a stale
 record. For delete, remove the marker and summary references first, then include
 `--delete EID`. Select related updates, renames, and deletions together in one
-dry-run/apply pair. Sync never deletes retained files and reports newly unused
-data declarations for separate `log data` decisions. Use `log evidence list`
-for semantic inspection.
+dry-run/apply pair. Evidence sync never deletes retained files or data
+declarations.
+When a former source name should be removed, call `log data delete` separately;
+it refuses deletion and names remaining consumers if the name is still used.
+Use `log evidence list` for semantic inspection.
 
 A summary reuses an already supported entry value or exact table cell:
 

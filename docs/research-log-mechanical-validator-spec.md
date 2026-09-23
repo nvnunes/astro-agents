@@ -3737,8 +3737,9 @@ Renames and deletions are explicit; absence from Markdown never infers them.
 The old EID and its maintained-summary references must already be absent.
 Rename evaluates the destination's current Markdown definition rather than
 copying old presentation or source expectations. Deletion removes the
-normalized record but not retained source bytes or data declarations; newly
-unused declarations are reported. A missing deleted record is unchanged.
+normalized record but not retained source bytes or data declarations. Deleting
+an unused declaration is a separate, guarded `log data delete` action. A
+missing deleted record is unchanged.
 When a rename source is already absent, the destination must already be fully
 synchronized for an unchanged success. Conflicting mappings, chains, cycles,
 destination collisions, or incompatible actions fail before publication.
@@ -3914,8 +3915,9 @@ focused change set. Registry files must still satisfy their data contracts
 before publication; focused edits do not repair unrelated records.
 
 For evidence deletion, the agent removes the presentation and marker first.
-Sync removes only the selected evidence record and reports newly unused data
-for a separate `data delete` decision.
+Sync removes only the selected evidence record. If its former source name
+should also be removed, `log data delete` checks for remaining consumers and
+refuses the removal while any use remains.
 
 For command deletion, the agent removes the command block first. Sync
 fails while downstream consumers use its outputs, removes its execution

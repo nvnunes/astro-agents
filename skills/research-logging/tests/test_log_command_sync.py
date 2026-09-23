@@ -58,6 +58,53 @@ def sync(logical: Path, *extra: str):
 
 
 class LogCommandSyncTests(unittest.TestCase):
+    def test_redundant_input_on_outputless_command_skips_producer_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                './pyrun --cid build -- scripts/build.py --input "<source>"',
+            )
+            (entry / "data/source.csv").write_text("value\n1\n", encoding="utf-8")
+            added = sync(logical, "--add-origin", "source=data/source.csv")
+            self.assertEqual(added.returncode, 0, added.stderr)
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            context = resolve_entry(resolve_log(logical), "e001")
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    with mock.patch.object(
+                        command_sync_module,
+                        "build_producer_index",
+                        side_effect=AssertionError("unneeded producer index"),
+                    ):
+                        result = command_sync_module.sync_command(
+                            context,
+                            CommandSyncArguments(
+                                cids=("build",),
+                                renames=(),
+                                deletions=(),
+                                add_origins=("source=data/source.csv",),
+                                add_origin_directories=(),
+                                add_origin_git=(),
+                                add_generated=(),
+                                add_generated_directories=(),
+                                add_from_entries=(),
+                                target_changes=(),
+                                stale_execution_deletions=(),
+                                dry_run=dry_run,
+                            ),
+                        )
+                    self.assertFalse(result.changed)
+                    self.assertEqual(
+                        {
+                            name: (entry / name).read_bytes()
+                            for name in ("data.json", "pyrun.json")
+                        },
+                        before,
+                    )
+
     def test_multiple_selected_commands_share_one_declaration_and_target_change(
         self,
     ) -> None:
@@ -1803,7 +1850,7 @@ class LogCommandSyncTests(unittest.TestCase):
             }
             self.assertEqual(after, before)
 
-    def test_unrelated_parse_failure_is_reported_without_blocking(self) -> None:
+    def test_unrelated_parse_failure_is_not_reported_or_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(
                 Path(directory),
@@ -1824,8 +1871,46 @@ class LogCommandSyncTests(unittest.TestCase):
             result = sync(logical)
             self.assertEqual(result.returncode, 0, result.stderr)
             records = json.loads(result.stdout)["records"]
-            self.assertTrue(
+            self.assertFalse(
                 any(item.get("status") == "unrelated-failure" for item in records)
+            )
+            selected = sync(logical, "--cid", "unrelated")
+            self.assertEqual(selected.returncode, 2)
+
+    def test_validation_still_reports_unsupported_command_fence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _ = fixture(
+                Path(directory),
+                "./pyrun --cid build -- scripts/build.py | tee output.txt",
+            )
+            validated = run_log(
+                logical.parent,
+                "validate",
+                "run",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            findings = run_log(
+                logical.parent,
+                "validate",
+                "list",
+                "findings",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--format",
+                "json",
+            )
+            self.assertEqual(findings.returncode, 0, findings.stderr)
+            self.assertIn(
+                "invocation.command.unsupported",
+                {item["code"] for item in json.loads(findings.stdout)["items"]},
             )
 
     def test_competing_producer_blocks_without_writes(self) -> None:

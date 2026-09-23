@@ -28,12 +28,16 @@ supply their expected results. Engine-only fixtures are not authoring proof.
 | Per-CID stale-execution acknowledgement; current execution preserved | `test_one_cid_acknowledges_all_stale_parameter_executions`; `test_rename_with_changed_parameters_needs_one_aggregate_acknowledgement`; `test_redundant_stale_acknowledgement_is_accepted` |
 | Missing name, missing producer, wrong kind, malformed registry diagnostics | `test_missing_name_shows_file_and_directory_declaration_forms`; `test_missing_generated_producer_names_the_bootstrap_action`; `test_wrong_add_kind_fails_without_writes`; `test_malformed_registry_requires_direct_repair_without_writes` |
 | Dry run and coupled publication failure | `test_dry_run_has_two_diffs_and_zero_writes`; `test_second_file_failure_rolls_back_both_registries` |
-| Scoped parse failures and competing producers | `test_unrelated_parse_failure_is_reported_without_blocking`; `test_rejected_competing_output_blocks_selected_sync` |
+| Scoped parse failures, validation follow-up, and competing producers | `test_unrelated_parse_failure_is_not_reported_or_blocking`; `test_validation_still_reports_unsupported_command_fence`; `test_rejected_competing_output_blocks_selected_sync` |
+| New origins still reject recorded producers | `test_live_file_and_directory_origins_still_reject_recorded_producers` |
 
 `test_log_command_sync.py::test_late_unselected_consumer_blocks_producer_delete`
 is a bounded internal publication-recheck test. It inserts an unselected
 Markdown consumer after preparation and asserts that deletion fails without
 publishing either registry; it complements the public dispatcher proofs above.
+`test_redundant_input_on_outputless_command_skips_producer_index` instruments
+the internal producer-index boundary for a no-op assertion in both dry-run and
+apply; the public additive/no-op outcomes are covered above.
 
 ## Evidence Compare And Sync
 
@@ -45,6 +49,7 @@ normalized-state checks:
 | ID-scoped compare, placeholder fill and surrounding-byte preservation | `test_scalar_placeholder_compare_then_sync_preserves_neighbors` |
 | Batch selectors, rename/delete, one dry-run/apply pair, invalid-member refusal | `test_replaces_six_records_with_one_in_one_public_change_set`; `test_rename_reevaluates_new_definition_and_updates_summary`; `test_invalid_member_prevents_batch_publication`; `test_conflicting_batch_selection_rejects_without_writes` |
 | Unselected Markdown-only consumer blocks a target change | `test_target_change_rejects_unselected_markdown_only_consumer` |
+| Evidence deletion preserves the data declaration without an advisory unused-data row | `test_delete_only_is_idempotent_without_unused_declaration_scan` |
 | Additive changes to one definition aspect | `test_changed_aspect_needs_only_the_changed_comment_and_call` |
 | Origins and directory members, unused/conflicting assertions | `test_directory_origin_reads_only_explicit_member`; `test_conflicting_and_unused_additions_are_no_write` |
 | Source-scoped compare/sync across entries and summary references; same-name add-from-entry | `test_source_scope_updates_related_entries_and_forwarded_summary` |
@@ -59,6 +64,10 @@ normalized-state checks:
 
 `test_research_log_validation_evidence.py::test_publication_recheck_rejects_replaced_file_with_same_bytes`
 also reaches public sync and its real filesystem publication boundary.
+`test_redundant_origin_and_target_assertions_skip_log_material_scan`,
+`test_redundant_cross_entry_reference_skips_origin_scan`, and
+`test_delete_without_data_edit_skips_unused_data_scan` instrument internal
+scan boundaries for no-op and cross-entry-only operations in dry-run and apply.
 
 ## Data, Retention And Record Lifecycles
 

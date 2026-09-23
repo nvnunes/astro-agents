@@ -779,8 +779,9 @@ fills the presentation, and accepts current linked-artifact fingerprints.
 Several IDs can be synchronized together. After editing entry markers and
 maintained-summary references, `--rename OLD=NEW` and `--delete ID` can join
 the same entry-scoped change set. One dry run previews all selected changes;
-the identical call without `--dry-run` applies them atomically. Sync reports
-newly unused data declarations but never deletes retained files.
+the identical call without `--dry-run` applies them atomically. Sync never
+deletes data declarations or retained files. Removing a former source name is
+a separate `log data delete` action, which checks for remaining consumers.
 
 After an artifact is updated by `pyrun`, the agent runs
 `log evidence compare --source NAME` once to inspect exact before/after

@@ -475,7 +475,7 @@ class GraphLifecycleTests(unittest.TestCase):
             deleted = checked(
                 action(logical, "evidence", "sync", "--delete", "success")
             )
-            self.assertIn({"unused_data": "measurements"}, deleted["records"])
+            self.assertNotIn({"unused_data": "measurements"}, deleted["records"])
             deleted = checked(action(logical, "data", "delete", "measurements"))
             self.assertEqual(
                 deleted["records"],

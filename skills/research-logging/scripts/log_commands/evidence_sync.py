@@ -238,7 +238,7 @@ def _prepare_entry_set(
         else ()
     )
     _check_renames(renames, before_records, edits)
-    report = _entry_report(entry, renames, deleted, before_records, edits)
+    report = _entry_report(renames, deleted, edits)
     _recheck_sources(edits, observations)
     data_updates = {data.path: data.canonical_json()} if data is not None else {}
     changed = (
@@ -288,10 +288,8 @@ def _check_renames(
 
 
 def _entry_report(
-    entry: EntryContext,
     renames: tuple[tuple[str, str], ...],
     deleted: tuple[str, ...],
-    before_records: Mapping[str, EvidenceRecord],
     edits: tuple[EvidenceEdit, ...],
 ) -> tuple[dict[str, object], ...]:
     renamed_from = {new: old for old, new in renames}
@@ -306,34 +304,7 @@ def _entry_report(
             row["renamed_from"] = renamed_from[edit.record.id]
         report_rows.append(row)
     report_rows.extend({"id": record_id, "deleted": True} for record_id in deleted)
-    superseded = (
-        {edit.record.id for edit in edits} | set(deleted) | {old for old, _ in renames}
-    )
-    potentially_unused = {
-        _source_name(source.source)
-        for record_id in superseded
-        if record_id in before_records
-        for source in before_records[record_id].sources
-    }
-    final_names = {
-        _source_name(source.source) for edit in edits for source in edit.record.sources
-    }
-    unused: tuple[dict[str, object], ...] = tuple(
-        {"unused_data": name}
-        for name in sorted(potentially_unused - final_names)
-        if _is_unused_data(entry, name, superseded)
-    )
-    report_rows.extend(unused)
     return tuple(report_rows)
-
-
-def _is_unused_data(entry: EntryContext, name: str, superseded: set[str]) -> bool:
-    """Report an unused name only when unrelated graph state is inspectable."""
-
-    try:
-        return not _target_blockers(entry, name, superseded)
-    except (ActionError, DataContractError, MechanicalContractError):
-        return False
 
 
 def _publish_entry_set(batch: EvidenceBatch) -> dict[Path, str | None]:
@@ -774,18 +745,22 @@ def _candidate_data(
     built = data_file_from_inputs(
         entry.root / "data.json", entry_root=entry.root, inputs=tuple(items.values())
     )
-    if asserted or arguments.target_changes:
+    changed_origins = {
+        name
+        for name in asserted
+        | {assignment(raw, "--change-target")[0] for raw in arguments.target_changes}
+        if items[name].origin
+        and (current is None or current.by_name.get(name) != items[name])
+    }
+    if changed_origins:
         materials = inspect_log_materials(entry.log, data_overrides={entry.root: built})
-        for name in asserted | {
-            assignment(raw, "--change-target")[0] for raw in arguments.target_changes
-        }:
-            if items[name].origin:
-                require_origin_boundary(
-                    items[name].canonical_target,
-                    items[name],
-                    materials.invocations,
-                    confirmed_record=materials.confirmed,
-                )
+        for name in sorted(changed_origins):
+            require_origin_boundary(
+                items[name].canonical_target,
+                items[name],
+                materials.invocations,
+                confirmed_record=materials.confirmed,
+            )
     return built
 
 

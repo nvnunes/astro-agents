@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from log_commands import dispatcher, evidence_sync, storage
+from log_commands.context import resolve_entry, resolve_log
 from research_log_cli_test_support import run_log, run_log_process
 from test_log_command_sync import fixture, sync
 
@@ -44,6 +45,90 @@ def retained_files(logical: Path) -> dict[Path, bytes]:
 
 
 class EvidenceSyncTests(unittest.TestCase):
+    def test_redundant_origin_and_target_assertions_skip_log_material_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(document, "``<!-- eid:value source=values select=/value -->")
+            created = evidence(
+                logical,
+                "sync",
+                "--id",
+                "value",
+                "--add-origin",
+                "values=data/value.json",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            before = retained_files(logical)
+            context = resolve_entry(resolve_log(logical), "e001")
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    for asserted in (False, True):
+                        with self.subTest(asserted=asserted):
+                            with mock.patch.object(
+                                evidence_sync,
+                                "inspect_log_materials",
+                                side_effect=AssertionError("unneeded log scan"),
+                            ):
+                                result = evidence_sync.compare_or_sync(
+                                    context,
+                                    "sync",
+                                    evidence_sync.EvidenceSyncArguments(
+                                        record_id=None,
+                                        source=None,
+                                        record_ids=("value",),
+                                        add_origins=("values=data/value.json",)
+                                        if asserted
+                                        else (),
+                                        target_changes=("values=data/value.json",)
+                                        if asserted
+                                        else (),
+                                        dry_run=dry_run,
+                                    ),
+                                )
+                            self.assertFalse(result.changed)
+                            self.assertEqual(retained_files(logical), before)
+
+    def test_delete_without_data_edit_skips_unused_data_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(document, "``<!-- eid:old source=values select=/value -->")
+            created = evidence(
+                logical, "sync", "--id", "old", "--add-origin", "values=data/value.json"
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            document.write_text(
+                document.read_text().replace(
+                    "`7`<!-- eid:old source=values select=/value -->", "Retired."
+                )
+            )
+            before_data = (entry / "data.json").read_bytes()
+            context = resolve_entry(resolve_log(logical), "e001")
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    with mock.patch.object(
+                        evidence_sync,
+                        "_target_blockers",
+                        side_effect=AssertionError("unneeded unused-data scan"),
+                    ):
+                        result = evidence_sync.compare_or_sync(
+                            context,
+                            "sync",
+                            evidence_sync.EvidenceSyncArguments(
+                                record_id=None,
+                                source=None,
+                                deletions=("old",),
+                                dry_run=dry_run,
+                            ),
+                        )
+                    self.assertNotIn({"unused_data": "values"}, result.records)
+                    self.assertEqual((entry / "data.json").read_bytes(), before_data)
+
     def test_target_change_rejects_unselected_markdown_only_consumer(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = fixture(
@@ -233,7 +318,7 @@ class EvidenceSyncTests(unittest.TestCase):
             self.assertEqual(retained_files(logical), before)
             self.assertFalse((entry / "evidence.json").exists())
 
-    def test_delete_only_is_idempotent_and_reports_unused_declaration(self):
+    def test_delete_only_is_idempotent_without_unused_declaration_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = fixture(
                 Path(directory), "./pyrun scripts/build.py"
@@ -253,7 +338,7 @@ class EvidenceSyncTests(unittest.TestCase):
             preview = evidence(logical, "sync", "--delete", "old", "--dry-run")
             self.assertEqual(preview.returncode, 0, preview.stderr)
             self.assertEqual(retained_files(logical), before)
-            self.assertIn(
+            self.assertNotIn(
                 {"unused_data": "values"}, json.loads(preview.stdout)["records"]
             )
             deleted = evidence(logical, "sync", "--delete", "old")
@@ -1135,6 +1220,33 @@ def related_fixture(root: Path):
 
 
 class SourceEvidenceSyncTests(unittest.TestCase):
+    def test_redundant_cross_entry_reference_skips_origin_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _, _, _ = related_fixture(Path(directory))
+            context = resolve_entry(resolve_log(logical), "e002")
+            reference = context.root / "data.json"
+            before = reference.read_bytes()
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    with mock.patch.object(
+                        evidence_sync,
+                        "inspect_log_materials",
+                        side_effect=AssertionError("unneeded origin scan"),
+                    ):
+                        result = evidence_sync.compare_or_sync(
+                            context,
+                            "sync",
+                            evidence_sync.EvidenceSyncArguments(
+                                record_id=None,
+                                source=None,
+                                record_ids=("forward",),
+                                add_from_entries=("values=e001",),
+                                dry_run=dry_run,
+                            ),
+                        )
+                    self.assertFalse(result.changed)
+                    self.assertEqual(reference.read_bytes(), before)
+
     def test_source_scope_refreshes_all_member_artifact_fingerprints(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

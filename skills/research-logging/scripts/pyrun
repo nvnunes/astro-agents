@@ -41,20 +41,23 @@ from __future__ import annotations
 
 __doc__ = "Run entry-local Python commands and publish current output support."
 
+import hashlib
 import os
 import re
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 from typing import Mapping
 
 from effective_code import (
+    FINGERPRINT_ALGORITHM,
     EffectiveCodeError,
     EffectiveCodeFingerprint,
     analyze_effective_code,
@@ -75,12 +78,26 @@ from research_log_data import (
     input_token_parts,
     load_data_file,
     observe_fingerprint,
+    parse_fingerprint,
     require_git_repository_token_pairs,
     resolve_input_token,
 )
+from research_log_recovery import (
+    RecoveryCandidateError,
+    load_candidate,
+    publish_candidate,
+)
 from research_log_reservations import (
+    ArtifactReservation,
     ArtifactReservationError,
+    MissingArtifactReservationError,
+    WorkerStillActiveError,
     artifact_transaction,
+    finish_recovery,
+    finish_orphan_candidate,
+    recovery_candidate_path,
+    recovery_reservation,
+    require_recovery_worker_finished,
     require_worker_finished,
     reserve_execution,
 )
@@ -104,6 +121,7 @@ from validation.pyrun_outputs import (
     portable_output_path,
 )
 from validation.pyrun_state import (
+    PYRUN_RECOVERY_RUNNER,
     ExecutionRecipe,
     ObservedExecution,
     PyrunFile,
@@ -124,6 +142,23 @@ RESERVED_TOKEN_RE = re.compile(r"<(project|log|theme)>")
 CAPTURE_POLL_SECONDS = 0.05
 CAPTURE_TERMINATION_SECONDS = 1.0
 CAPTURE_DRAIN_SECONDS = 10.0
+RECOVERY_CANDIDATE_FIELDS = {
+    "schema",
+    "reservation",
+    "reservation_digest",
+    "entry",
+    "cid",
+    "exit_code",
+    "recipe",
+    "auto_reproduce",
+    "exclusive",
+    "authority_digest",
+    "state_digest",
+    "values",
+    "script",
+    "inputs",
+    "effective_code",
+}
 
 
 def usage() -> int:
@@ -138,6 +173,7 @@ def usage() -> int:
         "             [--capture-stdout <path>] "
         "[--capture-stderr <path>] -- <script> [args...]\n"
         "       pyrun --capture-stdout-stderr <path> -- <script> [args...]\n"
+        "       pyrun recover --reservation UUID [--dry-run]\n"
         "A numeric --cid N resolves to the full ID <script-stem>-N.",
         file=sys.stderr,
     )
@@ -818,6 +854,504 @@ def _confirm_execution_materials(
         ) from error
 
 
+def _authority_digest(
+    entry: EntryContext,
+    project: Path,
+    cid: str,
+    values: tuple[str, ...],
+    data: DataFile | None,
+) -> str:
+    """Fingerprint only selected command and participating declaration authority."""
+
+    names = sorted(
+        {parts[0] for value in values if (parts := input_token_parts(value))}
+    )
+    projection = (
+        _command_markdown(entry, project, cid),
+        tuple(
+            (name, resource_authority(data.by_name.get(name) if data else None))
+            for name in names
+        ),
+    )
+    return hashlib.sha256(repr(projection).encode("utf-8")).hexdigest()
+
+
+def _state_digest(state: PyrunFile, cid: str) -> str:
+    """Identify this CID's original execution state without scanning neighbors."""
+
+    return hashlib.sha256(repr(state.commands.get(cid)).encode()).hexdigest()
+
+
+def _reservation_digest(record: ArtifactReservation) -> str:
+    return hashlib.sha256(repr(record).encode()).hexdigest()
+
+
+def _already_recovered(
+    state: PyrunFile,
+    cid: str,
+    execution_key: str,
+    recipe: ExecutionRecipe,
+    observed: ObservedExecution,
+    *,
+    auto_reproduce: bool,
+    exclusive: bool,
+) -> bool:
+    command = state.commands.get(cid)
+    prior = command.executions.get(execution_key) if command else None
+    return bool(
+        prior is not None
+        and prior.runner == PYRUN_RECOVERY_RUNNER
+        and not prior.requires_reproduction
+        and prior.recipe == recipe
+        and prior.observed == observed
+        and prior.auto_reproduce == auto_reproduce
+        and prior.exclusive == exclusive
+    )
+
+
+def _recovery_fingerprint(value: object, subject: str) -> Fingerprint:
+    if not isinstance(value, dict):
+        raise RecoveryCandidateError(f"{subject}: invalid fingerprint")
+    if value.get("algorithm") == FINGERPRINT_ALGORITHM:
+        digest = value.get("digest")
+        if (
+            set(value) != {"algorithm", "digest"}
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise RecoveryCandidateError(
+                f"{subject}: invalid effective-code fingerprint"
+            )
+        return Fingerprint(value["algorithm"], digest=digest)
+    try:
+        return parse_fingerprint(value, subject)
+    except DataContractError as error:
+        raise RecoveryCandidateError(f"{subject}: {error}") from error
+
+
+def _recover_orphan_candidate(
+    root: Path,
+    entry: Path,
+    context: EntryContext,
+    identity: str,
+    *,
+    dry_run: bool,
+) -> int:
+    """Remove a receipt left after publication removed its reservation."""
+
+    candidate = load_candidate(root, identity)
+    recipe = candidate.get("recipe")
+    if (
+        set(candidate) != RECOVERY_CANDIDATE_FIELDS
+        or candidate.get("reservation") != identity
+        or candidate.get("entry") != entry.resolve().as_posix()
+        or not isinstance(candidate.get("cid"), str)
+        or type(candidate.get("exit_code")) is not int
+        or candidate["exit_code"] != 0
+        or not isinstance(recipe, dict)
+        or not isinstance(recipe.get("outputs"), dict)
+        or not isinstance(candidate.get("inputs"), dict)
+    ):
+        raise RecoveryCandidateError(
+            "orphan candidate is malformed or belongs elsewhere"
+        )
+    with entry_lock(context):
+        path = entry / "pyrun.json"
+        state = (
+            load_pyrun_state(path, entry_root=entry, project_root=root)
+            if path.exists()
+            else empty_pyrun_state(entry)
+        )
+        command = state.commands.get(candidate["cid"])
+        matches = []
+        for execution_key, execution in command.executions.items() if command else ():
+            actual_recipe = execution.recipe.as_dict()
+            actual_outputs = actual_recipe.pop("outputs")
+            wanted_recipe = {
+                key: value for key, value in recipe.items() if key != "outputs"
+            }
+            wanted_outputs = recipe["outputs"]
+            if (
+                execution.runner == PYRUN_RECOVERY_RUNNER
+                and not execution.requires_reproduction
+                and actual_recipe == wanted_recipe
+                and isinstance(actual_outputs, dict)
+                and actual_outputs.keys() == wanted_outputs.keys()
+                and all(
+                    kind is None or actual_outputs[key] == kind
+                    for key, kind in wanted_outputs.items()
+                )
+                and execution.auto_reproduce == candidate["auto_reproduce"]
+                and execution.exclusive == candidate["exclusive"]
+                and execution.observed.script is not None
+                and execution.observed.script.as_dict() == candidate["script"]
+                and {name: value.as_dict() for name, value in execution.observed.inputs}
+                == candidate["inputs"]
+                and (
+                    execution.observed.effective_code.as_dict()
+                    if execution.observed.effective_code
+                    else None
+                )
+                == candidate["effective_code"]
+            ):
+                matches.append(execution_key)
+        if len(matches) != 1:
+            raise RecoveryCandidateError(
+                "reservation is missing and no unique published recovered execution "
+                "matches this candidate"
+            )
+    print(f"pyrun recovery: {candidate['cid']} {matches[0]} already published")
+    if dry_run:
+        return 0
+    try:
+        finish_orphan_candidate(root, identity)
+    except (ArtifactReservationError, OSError) as error:
+        raise RecoveryCandidateError(
+            f"published execution still needs cleanup; retry "
+            f"./pyrun recover --reservation {identity}: {error}"
+        ) from error
+    print(f"pyrun recovery: cleared remaining candidate {identity}")
+    return 0
+
+
+def _recover(argv: list[str], root: Path, entry: Path, context: EntryContext) -> int:
+    arguments = argv[2:]
+    if (
+        len(arguments) not in {2, 3}
+        or arguments[:1] != ["--reservation"]
+        or (len(arguments) == 3 and arguments[2] != "--dry-run")
+    ):
+        return usage()
+    identity = arguments[1]
+    try:
+        record = recovery_reservation(root, entry, identity)
+    except MissingArtifactReservationError:
+        candidate_path = recovery_candidate_path(root, identity)
+        if not candidate_path.exists() and not candidate_path.is_symlink():
+            raise
+        return _recover_orphan_candidate(
+            root, entry, context, identity, dry_run=len(arguments) == 3
+        )
+    candidate = load_candidate(root, identity)
+    if (
+        set(candidate) != RECOVERY_CANDIDATE_FIELDS
+        or candidate["reservation"] != identity
+        or candidate["entry"] != record.entry
+        or candidate["cid"] != record.cid
+        or type(candidate["exit_code"]) is not int
+        or candidate["exit_code"] != 0
+        or candidate["reservation_digest"] != _reservation_digest(record)
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate does not match the reservation or zero exit"
+        )
+    if not isinstance(candidate["values"], list) or not all(
+        isinstance(value, str) for value in candidate["values"]
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate has invalid authority values"
+        )
+    if (
+        not isinstance(candidate["authority_digest"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", candidate["authority_digest"]) is None
+        or not isinstance(candidate["state_digest"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", candidate["state_digest"]) is None
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate has invalid authority digest"
+        )
+    if (
+        type(candidate["auto_reproduce"]) is not bool
+        or type(candidate["exclusive"]) is not bool
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate has invalid execution policy"
+        )
+    raw_recipe = candidate["recipe"]
+    if not isinstance(raw_recipe, dict) or set(raw_recipe) != {
+        "script",
+        "parameters",
+        "environment",
+        "inputs",
+        "outputs",
+        "parameter_roles",
+    }:
+        raise RecoveryCandidateError("completion candidate has invalid recipe")
+    if (
+        not isinstance(raw_recipe["script"], str)
+        or not isinstance(raw_recipe["parameters"], list)
+        or not all(isinstance(value, str) for value in raw_recipe["parameters"])
+        or not isinstance(raw_recipe["environment"], dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_recipe["environment"].items()
+        )
+        or not isinstance(raw_recipe["inputs"], list)
+        or not all(isinstance(value, str) for value in raw_recipe["inputs"])
+        or not isinstance(raw_recipe["parameter_roles"], dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_recipe["parameter_roles"].items()
+        )
+    ):
+        raise RecoveryCandidateError("completion candidate has invalid recipe types")
+    if (
+        not isinstance(raw_recipe["outputs"], dict)
+        or not raw_recipe["outputs"]
+        or not all(
+            isinstance(key, str) and kind in {"file", "directory", None}
+            for key, kind in raw_recipe["outputs"].items()
+        )
+    ):
+        raise RecoveryCandidateError("completion candidate has invalid output kinds")
+    resolved_kinds = {}
+    for key, kind in raw_recipe["outputs"].items():
+        if kind is None:
+            path = output_target_path(
+                key, entry_root=entry, project_root=root, authored=True
+            )
+            if not path.exists():
+                raise RecoveryCandidateError(f"declared output is missing: {key}")
+            kind = "directory" if path.is_dir() else "file"
+        resolved_kinds[key] = kind
+    try:
+        recipe = build_execution_recipe(
+            ExecutionRecipe(
+                raw_recipe["script"],
+                tuple(raw_recipe["parameters"]),
+                tuple(sorted(raw_recipe["environment"].items())),
+                tuple(raw_recipe["inputs"]),
+                tuple(sorted(resolved_kinds.items())),
+                tuple(sorted(raw_recipe["parameter_roles"].items())),
+            ),
+            subject=entry / "pyrun.json",
+            entry_root=entry,
+            project_root=root,
+        )
+    except (TypeError, AttributeError, PyrunStateError) as error:
+        raise RecoveryCandidateError(
+            f"completion candidate has invalid recipe: {error}"
+        ) from error
+    output_paths = {
+        key: output_target_path(key, entry_root=entry, project_root=root, authored=True)
+        for key, _ in recipe.outputs
+    }
+    if (
+        tuple(sorted(path.resolve().as_posix() for path in output_paths.values()))
+        != record.writes
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate output boundaries differ from reservation"
+        )
+    script = script_target_path(recipe.script, entry_root=entry, project_root=root)
+    if script.resolve().as_posix() not in record.reads:
+        raise RecoveryCandidateError(
+            "completion candidate script differs from reservation"
+        )
+    require_recovery_worker_finished(record)
+    with entry_lock(context):
+        state_path = entry / "pyrun.json"
+        data = _load_data(entry)
+        if (
+            _authority_digest(
+                context, root, record.cid, tuple(candidate["values"]), data
+            )
+            != candidate["authority_digest"]
+        ):
+            raise RecoveryCandidateError(
+                "command or declaration authority changed; sync and rerun"
+            )
+    expected_script = _recovery_fingerprint(candidate["script"], "script")
+    if not isinstance(candidate["inputs"], dict) or set(candidate["inputs"]) != set(
+        recipe.inputs
+    ):
+        raise RecoveryCandidateError(
+            "completion candidate has invalid input observations"
+        )
+    inputs = {
+        name: _recovery_fingerprint(value, f"input {name}")
+        for name, value in candidate["inputs"].items()
+    }
+    effective = (
+        None
+        if candidate["effective_code"] is None
+        else _recovery_fingerprint(candidate["effective_code"], "effective code")
+    )
+    with FingerprintCache(root, writable=False, reuse=False) as cache:
+        _confirm_execution_materials(
+            script, expected_script, data, inputs, cache, stage="recovery"
+        )
+        python_context = PythonExecutionContext.for_research_script(
+            script, entry_root=entry, log_root=context.log.root, project_root=root
+        )
+        if (
+            _confirm_effective_code(
+                effective,
+                script,
+                project=root,
+                explicit_env=dict(recipe.environment),
+                python_context=python_context,
+            )
+            != effective
+        ):
+            raise RecoveryCandidateError("effective code changed; sync and rerun")
+        observed_outputs: dict[str, Fingerprint] = {}
+        complete_outputs: dict[str, Fingerprint] = {}
+        for pass_number in (1, 2):
+            current_outputs: dict[str, Fingerprint] = {}
+            current_complete: dict[str, Fingerprint] = {}
+            for key, kind in recipe.outputs:
+                path = output_paths[key]
+                if not path.exists():
+                    raise RecoveryCandidateError(f"declared output is missing: {key}")
+                _, complete = _observe_output(path, kind, cache)
+                current_complete[key] = complete
+                resource = (
+                    next(
+                        (
+                            item
+                            for item in data.inputs
+                            if not item.origin
+                            and item.canonical_target == path.resolve().as_posix()
+                        ),
+                        None,
+                    )
+                    if data is not None
+                    else None
+                )
+                if resource is None:
+                    current_outputs[key] = complete
+                else:
+                    try:
+                        current_outputs[key] = observe_fingerprint(resource).fingerprint
+                    except DataContractError as error:
+                        raise RecoveryCandidateError(
+                            f"could not observe declared output {key}: {error}"
+                        ) from error
+            if pass_number == 2 and (
+                current_outputs != observed_outputs
+                or current_complete != complete_outputs
+            ):
+                raise RecoveryCandidateError(
+                    "declared outputs changed while checking stability"
+                )
+            observed_outputs = current_outputs
+            complete_outputs = current_complete
+            if pass_number == 1:
+                time.sleep(0.2)
+    observed = ObservedExecution(
+        expected_script,
+        tuple(sorted(inputs.items())),
+        effective,
+        tuple(sorted(observed_outputs.items())),
+    )
+    execution_key = execution_id(recipe)
+    with entry_lock(context):
+        current = (
+            load_pyrun_state(state_path, entry_root=entry, project_root=root)
+            if state_path.exists()
+            else empty_pyrun_state(entry)
+        )
+        current_data = _load_data(entry)
+        if (
+            _authority_digest(
+                context, root, record.cid, tuple(candidate["values"]), current_data
+            )
+            != candidate["authority_digest"]
+        ):
+            raise RecoveryCandidateError(
+                "command or declaration authority changed; sync and rerun"
+            )
+        current_reservation = recovery_reservation(root, entry, identity)
+        if current_reservation != record:
+            raise RecoveryCandidateError("reservation changed during recovery")
+        require_recovery_worker_finished(current_reservation)
+        if (
+            not _already_recovered(
+                current,
+                record.cid,
+                execution_key,
+                recipe,
+                observed,
+                auto_reproduce=candidate["auto_reproduce"],
+                exclusive=candidate["exclusive"],
+            )
+            and _state_digest(current, record.cid) != candidate["state_digest"]
+        ):
+            raise RecoveryCandidateError("execution state changed; sync and rerun")
+    print(f"pyrun recovery: {record.cid} {execution_key}")
+    for key, fingerprint in sorted(observed_outputs.items()):
+        print(f"  {key}: {fingerprint.algorithm}:{fingerprint.digest}")
+    if len(arguments) == 3:
+        return 0
+    completed_at = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    with entry_lock(context), artifact_transaction(root, exclude=identity):
+        current = (
+            load_pyrun_state(state_path, entry_root=entry, project_root=root)
+            if state_path.exists()
+            else empty_pyrun_state(entry)
+        )
+        current_data = _load_data(entry)
+        if (
+            _authority_digest(
+                context,
+                root,
+                record.cid,
+                tuple(candidate["values"]),
+                current_data,
+            )
+            != candidate["authority_digest"]
+        ):
+            raise RecoveryCandidateError(
+                "command or declaration authority changed; sync and rerun"
+            )
+        current_reservation = recovery_reservation(root, entry, identity)
+        if current_reservation != record:
+            raise RecoveryCandidateError("reservation changed during recovery")
+        require_recovery_worker_finished(current_reservation)
+        already_published = _already_recovered(
+            current,
+            record.cid,
+            execution_key,
+            recipe,
+            observed,
+            auto_reproduce=candidate["auto_reproduce"],
+            exclusive=candidate["exclusive"],
+        )
+        if not already_published:
+            if _state_digest(current, record.cid) != candidate["state_digest"]:
+                raise RecoveryCandidateError("execution state changed; sync and rerun")
+            publish_execution_locked(
+                current,
+                record.cid,
+                replace(
+                    ordinary_execution(
+                        recipe,
+                        observed,
+                        auto_reproduce=candidate["auto_reproduce"],
+                        exclusive=candidate["exclusive"],
+                        last_run_at=completed_at,
+                    ),
+                    runner=PYRUN_RECOVERY_RUNNER,
+                ),
+                project_root=root,
+            )
+    try:
+        finish_recovery(root, entry, identity)
+    except (ArtifactReservationError, OSError) as error:
+        raise RecoveryCandidateError(
+            f"execution {execution_key} was published, but reservation cleanup "
+            f"failed; retry ./pyrun recover --reservation {identity}: {error}"
+        ) from error
+    print(f"pyrun recovery: released reservation {identity}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return usage()
@@ -834,6 +1368,8 @@ def main(argv: list[str]) -> int:
         LogContext(log.parent / f"{log.name}.md", log), entry_identity.id, entry
     )
     try:
+        if argv[1] == "recover":
+            return _recover(argv, root, entry, operation_entry)
         with (
             FingerprintCache(root, writable=True) as fingerprint_cache,
             ExitStack() as reservations,
@@ -949,6 +1485,13 @@ def main(argv: list[str]) -> int:
             )
             with entry_lock(operation_entry):
                 authority.require_current(cid, (*script_args, *captures.values()))
+                original_authority_digest = _authority_digest(
+                    operation_entry,
+                    root,
+                    cid,
+                    (*script_args, *captures.values()),
+                    data,
+                )
                 reservation = reservations.enter_context(
                     reserve_execution(
                         root,
@@ -1003,7 +1546,65 @@ def main(argv: list[str]) -> int:
                 )
                 if returncode != 0:
                     return returncode
-            require_worker_finished(root, reservation.identity)
+            try:
+                require_worker_finished(root, reservation.identity)
+            except WorkerStillActiveError as error:
+                candidate_output_kinds = {
+                    key: kind for key, (_path, kind) in output_paths.items()
+                }
+                validation_recipe = build_execution_recipe(
+                    ExecutionRecipe(
+                        script_identity,
+                        parameters,
+                        tuple(sorted(explicit_env.items())),
+                        tuple(sorted(observed_inputs)),
+                        tuple(
+                            sorted(
+                                (key, kind or "file")
+                                for key, kind in candidate_output_kinds.items()
+                            )
+                        ),
+                        parameter_roles,
+                    ),
+                    subject=entry / "pyrun.json",
+                    entry_root=entry,
+                    project_root=root,
+                )
+                candidate_recipe = validation_recipe.as_dict()
+                candidate_recipe["outputs"] = candidate_output_kinds
+                values = (*script_args, *captures.values())
+                publish_candidate(
+                    root,
+                    reservation.identity,
+                    {
+                        "reservation": reservation.identity,
+                        "reservation_digest": _reservation_digest(
+                            recovery_reservation(root, entry, reservation.identity)
+                        ),
+                        "entry": entry.resolve().as_posix(),
+                        "cid": cid,
+                        "exit_code": 0,
+                        "recipe": candidate_recipe,
+                        "auto_reproduce": auto_reproduce,
+                        "exclusive": exclusive,
+                        "authority_digest": original_authority_digest,
+                        "state_digest": _state_digest(initial_state, cid),
+                        "values": list(values),
+                        "script": script_observation.fingerprint.as_dict(),
+                        "inputs": {
+                            name: fingerprint.as_dict()
+                            for name, fingerprint in observed_inputs.items()
+                        },
+                        "effective_code": (
+                            effective_code.as_dict() if effective_code else None
+                        ),
+                    },
+                )
+                raise ArtifactReservationError(
+                    f"{error}; zero-exit completion candidate {reservation.identity} "
+                    "retained; inspect outputs, then run ./pyrun recover "
+                    f"--reservation {reservation.identity}"
+                ) from error
             _confirm_execution_materials(
                 script_path,
                 script_observation.fingerprint,
@@ -1118,6 +1719,8 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"pyrun: operation conflict: {error}") from error
     except ArtifactReservationError as error:
         raise SystemExit(f"pyrun: {error.code}: {error}") from error
+    except RecoveryCandidateError as error:
+        raise SystemExit(f"pyrun: recovery unavailable: {error}") from error
     except OSError as error:
         raise SystemExit(f"pyrun: operation state unavailable: {error}") from error
 

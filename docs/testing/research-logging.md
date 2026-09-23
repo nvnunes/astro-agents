@@ -7,6 +7,8 @@ the [repository environment](agent-surface.md#environment-and-deterministic-chec
 Focused checks belong to the affected change; the complete gate blocks
 completion of any research-tool change. Unrelated research data problems do
 not add work to these implementation gates.
+For subprocess-backed checks, put the project `.conda/bin` first on `PATH` as
+well as invoking its Python explicitly; fixture launchers inherit `PATH`.
 
 The completed CLI simplification program has a durable
 [finding and scenario coverage index](research-logging-cli-simplification-coverage.md).
@@ -43,6 +45,15 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_log_command_sync.py \
   skills/research-logging/tests/test_pyrun.py
 ```
+
+Completion-recovery changes additionally require subprocess coverage of a
+zero-exit launcher with a temporarily surviving child, exact UUID/entry and
+candidate selection, live/missing/nonzero refusal, late-created directories,
+file/directory/capture completeness and stability, changed command/material
+refusal, dry-run/apply byte preservation, no rerun, marker round-trip and
+currentness, unrelated-state preservation, disjoint work and exact-path
+conflicts, publication/partial-cleanup retry, and abandoned-candidate release.
+Use the ordinary concurrency suite below for reservation behavior.
 
 When changing effective-code analysis, currentness consumers, or the one-time
 v6-to-v7 migration utility, also run:
@@ -150,6 +161,7 @@ observation sandbox and retry after the expected permission failure.
   skills/research-logging/scripts/python_execution.py \
   skills/research-logging/scripts/pyrun_worker.py \
   skills/research-logging/scripts/research_log_reservations.py \
+  skills/research-logging/scripts/research_log_recovery.py \
   skills/research-logging/scripts/stream_capture.py \
   skills/research-logging/scripts/research_log_data.py \
   skills/research-logging/scripts/research_log_paths.py \

@@ -1097,10 +1097,56 @@ Generated reservation records live in the owning project's
 hex `identity`, absolute `entry`, full `cid`, absolute path arrays `reads` and
 `writes`, positive integer `parent_pid`, and nullable positive integer
 `worker_pid`. Readers reject malformed records, records over 64 KiB, or more than
-1,000 records. A successful/failed launcher removes its reservation only after
-its worker group is gone. Killing the launcher does not unprotect a surviving
-worker. Detached work escaping that group is not a supported script lifecycle;
-scripts finish every consumer before returning.
+1,000 records. An invocation without a completion candidate removes its
+reservation only after its worker group is gone. Killing the launcher does not
+unprotect a surviving worker. Detached work escaping that group is not a
+supported script lifecycle; scripts finish every consumer before returning.
+
+When the launched program exits zero and capture streams have closed but the
+worker group remains, `pyrun` does not publish execution state. It atomically
+retains a bounded zero-exit completion candidate beside that invocation's
+reservation and reports its exact UUID. The candidate records the CID, recipe,
+policies, selected authored authority, and pre-run script/input/effective-code
+observations; it does not certify output completion. No other failure creates
+this candidate. A candidate keeps its reservation after the launcher exits,
+including if the worker group exits in the meantime. Old reservations without
+a candidate are not recoverable.
+
+The candidate is generated at
+`.cache/research-log-operations/ordinary-completion-UUID.json` with schema
+`research-log-pyrun-completion-candidate/1` and a 256 KiB limit. Its closed
+field set is `schema`, `reservation`, `reservation_digest`, `entry`, `cid`,
+`exit_code`, `recipe`, `auto_reproduce`, `exclusive`, `authority_digest`,
+`state_digest`, `values`, `script`, `inputs`, and `effective_code`. The recipe
+retains a null kind for outputs without a declared kind, even if a provisional
+path exists when the launcher returns; recovery resolves the final kind after
+the worker has finished. The reservation remains the sole path inventory. Missing, malformed,
+over-bound, or mismatched candidates cannot be reconstructed from output bytes.
+
+After inspecting the retained outputs, an agent may explicitly confirm from
+the entry root with `./pyrun recover --reservation UUID [--dry-run]`. Recovery
+requires the exact matching candidate and reservation, a departed launcher and
+worker group, unchanged selected command/declarations and execution materials,
+and all declared file, directory, and capture outputs present and independently
+fingerprinted to the same values twice across a short interval. It holds no
+entry lock while observing outputs. Dry-run reports the CID, execution identity,
+paths, and fingerprints without writing state. Apply briefly rechecks current
+authority, publishes the execution, then removes the reservation and candidate
+in the same call. It never reruns the script or edits evidence or data. If
+publication fails, the candidate and reservation remain; if cleanup fails
+after publication, the exact retry finishes cleanup without republishing. The
+reservation is removed first, so a failed or interrupted candidate deletion
+leaves a candidate-only receipt; an exact retry requires a unique matching
+published recovered execution before deleting that receipt. It does not
+reobserve scientific outputs merely to finish this metadata cleanup.
+Incomplete output or changed authority requires correction or a fresh run,
+not promotion by assertion.
+
+A recovered execution retains the v7 shape with
+`runner: research-log-pyrun-agent-confirmed-recovery/1`, fresh output
+observations, and the recovery publication time in `last_run_at`. Ordinary
+future runs use `research-log-pyrun-runner/1` as before. The marker records
+agent confirmation, not a distinct reproduction policy or scientific proof.
 
 Abandoned reservations never expire automatically. Explicit cleanup is:
 
@@ -1109,9 +1155,10 @@ log command release [--path LOG] --entry ENTRY --cid CID [--dry-run]
 ```
 
 It selects only that entry/full CID, refuses any live parent or worker group,
-and removes only abandoned generated reservation records. Dry-run writes no
-content. It does not edit execution state or retained artifacts, certify
-partial outputs, or grant permission to rerun the research. PID reuse is treated
+and removes only abandoned generated reservation and matching candidate
+records. Dry-run writes no content. It does not edit execution state or retained
+artifacts, certify partial outputs, or grant permission to rerun the research.
+PID reuse is treated
 conservatively as a live owner. Validation/reproduction locking and scheduling
 contracts remain unchanged.
 

@@ -24,6 +24,7 @@ from validation.engine import (
     evaluate_mechanical,
 )
 from validation.pyrun_state import (
+    PYRUN_RECOVERY_RUNNER,
     ExecutionRecipe,
     ObservedExecution,
     PyrunExecution,
@@ -465,6 +466,15 @@ class NativePlanningMatrixTests(unittest.TestCase):
             )
             self.assertEqual(raw_only.problems, ())
 
+            recovered = replace(execution, runner=PYRUN_RECOVERY_RUNNER)
+            fixture.write_pyrun(entry, [(identity, recovered)])
+            recovered_plan = prepare(fixture, entry)
+            self.assertEqual(run_ids(recovered_plan), [])
+            self.assertEqual(
+                recovered_plan.commands[0].selection, WorkSelection.NOT_NEEDED
+            )
+            self.assertEqual(recovered_plan.problems, ())
+
             missing = replace(
                 execution,
                 requires_reproduction=True,
@@ -618,12 +628,7 @@ class NativePlanningMatrixTests(unittest.TestCase):
                 {item.code for item in plan.problems}, {"effective_code_changed"}
             )
             self.assertEqual(len(plan.problems), 2)
-            self.assertTrue(
-                all(
-                    len(item.problem_ids) == 1
-                    for item in plan.commands
-                )
-            )
+            self.assertTrue(all(len(item.problem_ids) == 1 for item in plan.commands))
 
     def test_entry_evidence_from_another_entry_is_skipped_not_executed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -22,12 +22,21 @@ from validation.operation_state import operation_directory, operation_lock
 SCHEMA = "research-log-artifact-reservation/1"
 MAX_RESERVATIONS = 1000
 MAX_RESERVATION_BYTES = 64 * 1024
+MAX_CANDIDATE_BYTES = 256 * 1024
 
 
 class ArtifactReservationError(OSError):
     """Artifact access or explicit cleanup conflicts with a reservation."""
 
     code = "artifact.reservation.conflict"
+
+
+class WorkerStillActiveError(ArtifactReservationError):
+    """A zero-exit worker still has live process-group descendants."""
+
+
+class MissingArtifactReservationError(ArtifactReservationError):
+    """An exact reservation UUID is absent rather than malformed."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,42 @@ def _path(root: Path, identity: str) -> Path:
     if len(identity) != 32 or any(char not in "0123456789abcdef" for char in identity):
         raise ArtifactReservationError("invalid artifact reservation identity")
     return operation_directory(root) / f"ordinary-execution-{identity}.json"
+
+
+def recovery_candidate_path(root: Path, identity: str) -> Path:
+    """Return the generated completion candidate for one exact reservation."""
+
+    return _path(root, identity).with_name(f"ordinary-completion-{identity}.json")
+
+
+def recovery_reservation(root: Path, entry: Path, identity: str) -> ArtifactReservation:
+    """Read one exact entry-owned reservation without changing generated state."""
+
+    path = _path(root, identity)
+    if not path.exists() and not path.is_symlink():
+        raise MissingArtifactReservationError(
+            f"reservation {identity} was not found; use the exact UUID printed "
+            "by the failed pyrun invocation in its entry root"
+        )
+    record = _decode(path)
+    if record.entry != entry.resolve().as_posix():
+        raise ArtifactReservationError(
+            f"reservation {identity} does not belong to entry {entry}"
+        )
+    return record
+
+
+def require_recovery_worker_finished(record: ArtifactReservation) -> None:
+    """Require the launcher and registered worker group to have exited."""
+
+    if _alive(record.parent_pid) or (
+        record.worker_pid is not None and _alive(record.worker_pid, group=True)
+    ):
+        raise ArtifactReservationError(
+            f"recovery requires the launcher and worker to finish: "
+            f"{record.entry}/{record.cid}; owner PID {record.parent_pid}, "
+            f"worker {record.worker_pid}"
+        )
 
 
 def _decode(path: Path) -> ArtifactReservation:
@@ -211,7 +256,7 @@ def require_worker_finished(root: Path, identity: str) -> None:
     if reservation.worker_pid is not None and _alive(
         reservation.worker_pid, group=True
     ):
-        raise ArtifactReservationError(
+        raise WorkerStillActiveError(
             "worker descendants remain active; reservation retained"
         )
 
@@ -239,8 +284,11 @@ def reserve_execution(
             path = _path(root, reservation.identity)
             if path.exists():
                 current = _decode(path)
-                if current.worker_pid is None or not _alive(
-                    current.worker_pid, group=True
+                if not recovery_candidate_path(
+                    root, reservation.identity
+                ).exists() and (
+                    current.worker_pid is None
+                    or not _alive(current.worker_pid, group=True)
                 ):
                     path.unlink()
 
@@ -268,8 +316,31 @@ def release_abandoned(root: Path, entry: Path, cid: str, *, dry_run: bool) -> in
     with operation_lock(root, "artifact-reservations.lock", timeout_seconds=10):
         selected = _abandoned(root, entry, cid)
         for record in selected:
+            recovery_candidate_path(root, record.identity).unlink(missing_ok=True)
             _path(root, record.identity).unlink()
         return len(selected)
+
+
+def finish_recovery(root: Path, entry: Path, identity: str) -> None:
+    """Remove only a finished entry-owned candidate and reservation."""
+
+    with operation_lock(root, "artifact-reservations.lock", timeout_seconds=10):
+        record = recovery_reservation(root, entry, identity)
+        require_recovery_worker_finished(record)
+        _path(root, identity).unlink()
+        recovery_candidate_path(root, identity).unlink()
+
+
+def finish_orphan_candidate(root: Path, identity: str) -> None:
+    """Finish cleanup after publication removed the reservation first."""
+
+    with operation_lock(root, "artifact-reservations.lock", timeout_seconds=10):
+        reservation_path = _path(root, identity)
+        if reservation_path.exists() or reservation_path.is_symlink():
+            raise ArtifactReservationError(
+                "reservation reappeared during recovery cleanup"
+            )
+        recovery_candidate_path(root, identity).unlink()
 
 
 def _abandoned(root: Path, entry: Path, cid: str) -> tuple[ArtifactReservation, ...]:

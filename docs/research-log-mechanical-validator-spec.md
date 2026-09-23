@@ -2778,6 +2778,11 @@ keys as part of the closed execution-state schema; its effective-code
 observation remains nullable because unsupported analysis is an explicit
 Reproduce-owned state.
 
+The supported `runner` values distinguish ordinary completion from
+agent-confirmed zero-exit completion recovery. Both use the same v7 recipe,
+observations, output ownership, validation, and reproduction-currentness
+rules; the recovery marker does not make missing output support valid.
+
 Validation accepts only strict `research-log-pyrun/v7` state. An earlier schema
 fails with `pyrun.state.schema.unsupported`; validation does not infer missing
 policy, write execution state, or provide a migration path.

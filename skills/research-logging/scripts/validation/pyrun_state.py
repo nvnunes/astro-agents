@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 PYRUN_SCHEMA = "research-log-pyrun/v7"
 PYRUN_FILENAME = "pyrun.json"
 PYRUN_RUNNER = "research-log-pyrun-runner/1"
+PYRUN_RECOVERY_RUNNER = "research-log-pyrun-agent-confirmed-recovery/1"
 PYRUN_ENVIRONMENT_PROFILE = "pyrun-standard/v1"
 PYRUN_EXECUTION_CONTRACT = "research-log-pyrun-execution/2"
 PYRUN_EXECUTION_PREFIX = "pyrun-exec/v2:"
@@ -366,11 +367,7 @@ def changed_execution(change: ExecutionChange) -> PyrunExecution:
         ObservedExecution(
             old.observed.script if same_script else None,
             inputs,
-            (
-                old.observed.effective_code
-                if same_effective_code_context
-                else None
-            ),
+            (old.observed.effective_code if same_effective_code_context else None),
             outputs,
         ),
         change.current.invocation.exclusive,
@@ -1158,7 +1155,7 @@ def _decode_execution(
     if timestamp is not None and not _valid_timestamp(timestamp):
         _invalid(subject, {"last_run_at": timestamp})
     if (
-        value.get("runner") != PYRUN_RUNNER
+        value.get("runner") not in {PYRUN_RUNNER, PYRUN_RECOVERY_RUNNER}
         or value.get("environment_profile") != PYRUN_ENVIRONMENT_PROFILE
         or value.get("execution_contract") != PYRUN_EXECUTION_CONTRACT
     ):
@@ -1181,7 +1178,7 @@ def _decode_execution(
         requires_reproduction,
         auto_reproduce,
         cast(str, timestamp) if timestamp is not None else None,
-        PYRUN_RUNNER,
+        cast(str, value["runner"]),
         PYRUN_ENVIRONMENT_PROFILE,
         PYRUN_EXECUTION_CONTRACT,
         recipe,

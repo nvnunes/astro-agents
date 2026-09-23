@@ -440,15 +440,45 @@ artifact access. Scripts must finish their children and all output consumers
 before returning. Failed execution does not roll back output bytes or record
 successful execution state.
 
-Report a conflict once and stop the affected operation; do not retry, poll,
-inspect process tables, delete cache files, or bypass the guard. After a known
-interrupted invocation, separately authorized cleanup uses:
+If `pyrun` reports a zero-exit completion candidate after its worker-finish
+check failed, do not rerun or release it automatically. If a descendant is
+still running, first check whether it is making expected progress. Do not stop
+ongoing work merely to make recovery eligible. If it is hung, verify the exact
+live process belongs to this invocation and decide to interrupt it; terminate
+it gracefully, using force only if necessary. Wait until the worker group is
+gone, then inspect every declared retained output and capture. Stopping a
+process does not establish that its outputs finished. Recover only if the
+retained results are scientifically complete; otherwise preserve the failed
+work and seek direction before release or rerun. Killing a still-running
+launcher cannot create a zero-exit completion candidate.
+
+For complete results, explicitly confirm from the entry root:
+
+```text
+./pyrun recover --reservation UUID --dry-run
+./pyrun recover --reservation UUID
+```
+
+Use the exact UUID printed by the failed invocation. The CLI independently
+checks that no launcher or worker remains, the selected command and input
+authority is unchanged, and all declared outputs are present and stable. It
+then records a distinct agent-confirmed completion in `pyrun.json` and clears
+the reservation in the same call. It never runs the script or edits evidence.
+If inspection or the checks fail, resolve that condition deliberately; an old
+reservation without a zero-exit candidate cannot be recovered this way.
+If recovery reports that the execution was published but cleanup failed, retry
+the exact `./pyrun recover --reservation UUID` call it prints. The retry only
+finishes cleanup; it does not rerun the script or republish the execution.
+
+For an abandoned reservation after a known interrupted invocation, separately
+authorized cleanup uses:
 
 ```text
 <skill>/scripts/log command release --path LOG --entry ENTRY --cid FULL_CID
 ```
 
 The CLI refuses live launcher/worker owners and removes only abandoned
-reservation state. `--dry-run` previews cleanup. It does not accept partial
-outputs or authorize rerunning the command; inspect affected saved outputs
-within the authorized investigation before deciding what to do next.
+reservation and matching candidate state. `--dry-run` previews cleanup.
+Release does not record completion or authorize rerunning the command; inspect
+affected saved outputs within the authorized investigation before deciding
+what to do next.

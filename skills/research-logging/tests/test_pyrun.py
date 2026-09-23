@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from research_log_cli_test_support import (
     PROCESS_TIMEOUT_SECONDS,
@@ -22,6 +23,7 @@ from research_log_cli_test_support import (
 PYRUN = Path(__file__).resolve().parents[1] / "scripts" / "pyrun"
 sys.path.insert(0, str(PYRUN.parent))
 DATA = importlib.import_module("research_log_data")
+RESERVATIONS = importlib.import_module("research_log_reservations")
 LOADER = importlib.machinery.SourceFileLoader("research_logging_pyrun", str(PYRUN))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None
@@ -275,9 +277,7 @@ class PyrunResolutionTests(unittest.TestCase):
             PYRUN_MODULE.PyrunContractError,
             "runner options require -- before the script",
         ):
-            PYRUN_MODULE.parse_pyrun_arguments(
-                ["--exclusive", "scripts/model.py"]
-            )
+            PYRUN_MODULE.parse_pyrun_arguments(["--exclusive", "scripts/model.py"])
 
     def test_implicit_cid_publishes_to_the_derived_bucket(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2339,6 +2339,588 @@ class PyrunRuntimeTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("<theme> is no longer supported", result.stderr)
+
+
+class PyrunRecoveryTests(unittest.TestCase):
+    def test_zero_exit_with_lingering_child_recovers_without_rerunning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_project_python(root)
+            install_entry_runner(entry)
+            release = root / "release-child"
+            (entry / "scripts/launch.py").write_text(
+                "import pathlib, subprocess, sys, time\n"
+                "bundle = pathlib.Path(sys.argv[1])\n"
+                "bundle.mkdir(parents=True)\n"
+                "(bundle / 'count.txt').write_text('1')\n"
+                "(bundle / 'result.txt').write_text('partial')\n"
+                "print('launcher finished', flush=True)\n"
+                "subprocess.Popen(\n"
+                "    [sys.executable,\n"
+                "     str(pathlib.Path(__file__).with_name('finish.py')),\n"
+                "     str(bundle / 'result.txt'), sys.argv[2],\n"
+                "     str(bundle / 'ready.txt')],\n"
+                "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+                ")\n"
+                "while not (bundle / 'ready.txt').exists(): time.sleep(0.02)\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/finish.py").write_text(
+                "import pathlib, sys, time\n"
+                "pathlib.Path(sys.argv[3]).write_text('ready')\n"
+                "deadline = time.monotonic() + 15\n"
+                "while not pathlib.Path(sys.argv[2]).exists():\n"
+                "    if time.monotonic() > deadline: sys.exit(1)\n"
+                "    time.sleep(0.02)\n"
+                "pathlib.Path(sys.argv[1]).write_text('complete')\n",
+                encoding="utf-8",
+            )
+
+            failed = run_pyrun_process(
+                entry,
+                "--cid",
+                "recoverable",
+                "--other-outputs",
+                "@1",
+                "--capture-stdout",
+                "data/stdout.log",
+                "--other-inputs",
+                "config",
+                "--",
+                "scripts/launch.py",
+                "data/bundle",
+                str(release),
+                "--config",
+                "<input_csv>",
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("worker descendants remain active", failed.stderr)
+            reservations = list(
+                (root / ".cache/research-log-operations").glob(
+                    "ordinary-execution-*.json"
+                )
+            )
+            self.assertEqual(len(reservations), 1)
+            record = json.loads(reservations[0].read_text(encoding="utf-8"))
+            self.assertIn(
+                (entry / "data/input.csv").resolve().as_posix(), record["reads"]
+            )
+            worker_pid = record["worker_pid"]
+            identity = record["identity"]
+            candidate = reservations[0].with_name(
+                f"ordinary-completion-{identity}.json"
+            )
+            try:
+                self.assertTrue(candidate.is_file())
+                self.assertFalse((entry / "pyrun.json").exists())
+                active = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(active.returncode, 0)
+                self.assertIn("worker to finish", active.stderr)
+                unknown = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        "0" * 32,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(unknown.returncode, 0)
+                self.assertIn("was not found; use the exact UUID", unknown.stderr)
+                self.assertFalse((entry / "pyrun.json").exists())
+                other_entry = root / "log/entries/2026-05-02-e002-other"
+                other_entry.mkdir()
+                install_entry_runner(other_entry)
+                wrong_entry = run(
+                    [
+                        "/bin/sh",
+                        str(other_entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=other_entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(wrong_entry.returncode, 0)
+                self.assertIn("does not belong to entry", wrong_entry.stderr)
+                release.write_text("go", encoding="utf-8")
+                deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        os.killpg(worker_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    if time.monotonic() > deadline:
+                        self.fail("controlled child did not finish")
+                    time.sleep(0.02)
+                self.assertEqual(
+                    (entry / "data/bundle/result.txt").read_text(encoding="utf-8"),
+                    "complete",
+                )
+                bundle = entry / "data/bundle"
+                held = entry / "data/bundle-held"
+                bundle.rename(held)
+                missing = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertFalse((entry / "pyrun.json").exists())
+                held.rename(bundle)
+                capture = entry / "data/stdout.log"
+                held_capture = entry / "data/stdout-held.log"
+                capture.rename(held_capture)
+                missing_capture = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(missing_capture.returncode, 0)
+                held_capture.rename(capture)
+                capture.rename(held_capture)
+                capture.mkdir()
+                wrong_kind = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(wrong_kind.returncode, 0)
+                capture.rmdir()
+                held_capture.rename(capture)
+                command_markdown = entry / "e001.md"
+                command_markdown.write_text(
+                    "## Trial\n\n`Steps:`\n\n```bash\n"
+                    "./pyrun --cid recoverable -- scripts/launch.py\n```\n"
+                    "\n`Results:`\n\nChanged.\n",
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    PYRUN_MODULE._command_markdown(
+                        PYRUN_MODULE.EntryContext(
+                            PYRUN_MODULE.LogContext(root / "log.md", root / "log"),
+                            "e001",
+                            entry,
+                        ),
+                        root,
+                        "recoverable",
+                    )
+                )
+                changed_command = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(changed_command.returncode, 0)
+                self.assertIn("authority changed", changed_command.stderr)
+                command_markdown.unlink()
+                script = entry / "scripts/launch.py"
+                original_script = script.read_bytes()
+                script.write_bytes(original_script + b"# changed\n")
+                changed_script = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertNotEqual(changed_script.returncode, 0)
+                self.assertIn("script bytes changed", changed_script.stderr)
+                script.write_bytes(original_script)
+                (entry / "scripts/disjoint.py").write_text(
+                    "import pathlib, sys\n"
+                    "pathlib.Path(sys.argv[1]).write_text('independent')\n",
+                    encoding="utf-8",
+                )
+                disjoint = run_pyrun_process(
+                    entry,
+                    "--cid",
+                    "independent",
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/disjoint.py",
+                    "data/independent.txt",
+                )
+                self.assertEqual(disjoint.returncode, 0, disjoint.stderr)
+                conflicting = run_pyrun_process(
+                    entry,
+                    "--cid",
+                    "conflicting",
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/disjoint.py",
+                    "data/bundle/overwrite.txt",
+                )
+                self.assertNotEqual(conflicting.returncode, 0)
+                self.assertIn("artifact.reservation.conflict", conflicting.stderr)
+                conflicting_input = run_pyrun_process(
+                    entry,
+                    "--cid",
+                    "conflicting-input",
+                    "--other-outputs",
+                    "@1",
+                    "--",
+                    "scripts/disjoint.py",
+                    "data/input.csv",
+                )
+                self.assertNotEqual(conflicting_input.returncode, 0)
+                self.assertIn("artifact.reservation.conflict", conflicting_input.stderr)
+                other_state = (entry / "pyrun.json").read_bytes()
+                context = PYRUN_MODULE.EntryContext(
+                    PYRUN_MODULE.LogContext(root / "log.md", root / "log"),
+                    "e001",
+                    entry,
+                )
+                with mock.patch.object(
+                    PYRUN_MODULE, "_state_digest", return_value="f" * 64
+                ):
+                    with self.assertRaisesRegex(
+                        PYRUN_MODULE.RecoveryCandidateError,
+                        "execution state changed",
+                    ):
+                        PYRUN_MODULE._recover(
+                            [
+                                str(entry / "pyrun"),
+                                "recover",
+                                "--reservation",
+                                identity,
+                                "--dry-run",
+                            ],
+                            root,
+                            entry,
+                            context,
+                        )
+                before = (candidate.read_bytes(), reservations[0].read_bytes())
+                preview = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                        "--dry-run",
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                self.assertEqual((entry / "pyrun.json").read_bytes(), other_state)
+                self.assertEqual(
+                    (candidate.read_bytes(), reservations[0].read_bytes()), before
+                )
+                recover_argv = [
+                    str(entry / "pyrun"),
+                    "recover",
+                    "--reservation",
+                    identity,
+                ]
+                original_capture = capture.read_bytes()
+
+                def change_capture(_interval):
+                    capture.write_text("changed after first observation")
+
+                with mock.patch.object(
+                    PYRUN_MODULE.time, "sleep", side_effect=change_capture
+                ):
+                    with self.assertRaisesRegex(
+                        PYRUN_MODULE.RecoveryCandidateError, "changed while checking"
+                    ):
+                        PYRUN_MODULE._recover(recover_argv, root, entry, context)
+                capture.write_bytes(original_capture)
+                self.assertEqual((entry / "pyrun.json").read_bytes(), other_state)
+                with mock.patch.object(
+                    PYRUN_MODULE,
+                    "publish_execution_locked",
+                    side_effect=OSError("simulated publication failure"),
+                ):
+                    with self.assertRaisesRegex(OSError, "publication failure"):
+                        PYRUN_MODULE._recover(recover_argv, root, entry, context)
+                self.assertEqual((entry / "pyrun.json").read_bytes(), other_state)
+                self.assertTrue(candidate.exists())
+                original_unlink = Path.unlink
+                failed_cleanup = False
+
+                def fail_candidate_unlink(path, *args, **kwargs):
+                    nonlocal failed_cleanup
+                    if path == candidate and not failed_cleanup:
+                        failed_cleanup = True
+                        raise OSError("simulated second-unlink failure")
+                    return original_unlink(path, *args, **kwargs)
+
+                with mock.patch.object(Path, "unlink", new=fail_candidate_unlink):
+                    with self.assertRaisesRegex(
+                        PYRUN_MODULE.RecoveryCandidateError,
+                        "published, but reservation cleanup failed; retry",
+                    ):
+                        PYRUN_MODULE._recover(recover_argv, root, entry, context)
+                self.assertTrue((entry / "pyrun.json").exists())
+                self.assertTrue(candidate.exists())
+                self.assertFalse(reservations[0].exists())
+                orphan_before = (
+                    candidate.read_bytes(),
+                    (entry / "pyrun.json").read_bytes(),
+                )
+                orphan_preview = run(
+                    [*recover_argv, "--dry-run"],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertEqual(orphan_preview.returncode, 0, orphan_preview.stderr)
+                self.assertEqual(
+                    (candidate.read_bytes(), (entry / "pyrun.json").read_bytes()),
+                    orphan_before,
+                )
+                recovered = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        identity,
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                self.assertIn("already published", recovered.stdout)
+                execution = next(
+                    iter(
+                        json.loads((entry / "pyrun.json").read_text())["commands"][
+                            "recoverable"
+                        ]["executions"].values()
+                    )
+                )
+                self.assertIn("agent-confirmed-recovery", execution["runner"])
+                decoded = PYRUN_MODULE.load_pyrun_state(
+                    entry / "pyrun.json", entry_root=entry, project_root=root
+                )
+                self.assertEqual(
+                    decoded.commands["recoverable"]
+                    .executions[next(iter(decoded.commands["recoverable"].executions))]
+                    .runner,
+                    PYRUN_MODULE.PYRUN_RECOVERY_RUNNER,
+                )
+                self.assertEqual(
+                    (entry / "data/bundle/count.txt").read_text(encoding="utf-8"),
+                    "1",
+                )
+                self.assertFalse(candidate.exists())
+                self.assertFalse(reservations[0].exists())
+            finally:
+                release.write_text("go", encoding="utf-8")
+
+    def test_late_created_directory_kind_is_resolved_during_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_project_python(root)
+            install_entry_runner(entry)
+            release = root / "release-late"
+            ready = root / "ready-late"
+            (entry / "scripts/launch_late.py").write_text(
+                "import pathlib, subprocess, sys, time\n"
+                "pathlib.Path(sys.argv[1]).write_text('provisional')\n"
+                "subprocess.Popen(\n"
+                "    [sys.executable,\n"
+                "     str(pathlib.Path(__file__).with_name('finish_late.py')),\n"
+                "     sys.argv[1], sys.argv[2], sys.argv[3]],\n"
+                "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+                ")\n"
+                "while not pathlib.Path(sys.argv[3]).exists(): time.sleep(0.02)\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/finish_late.py").write_text(
+                "import pathlib, sys, time\n"
+                "pathlib.Path(sys.argv[3]).write_text('ready')\n"
+                "while not pathlib.Path(sys.argv[2]).exists(): time.sleep(0.02)\n"
+                "output = pathlib.Path(sys.argv[1])\n"
+                "output.unlink()\n"
+                "output.mkdir()\n"
+                "(output / 'result.txt').write_text('complete')\n",
+                encoding="utf-8",
+            )
+            failed = run_pyrun_process(
+                entry,
+                "--cid",
+                "late-directory",
+                "--other-outputs",
+                "@1",
+                "--",
+                "scripts/launch_late.py",
+                "data/late",
+                str(release),
+                str(ready),
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            reservation = next(
+                (root / ".cache/research-log-operations").glob(
+                    "ordinary-execution-*.json"
+                )
+            )
+            record = json.loads(reservation.read_text(encoding="utf-8"))
+            candidate = reservation.with_name(
+                f"ordinary-completion-{record['identity']}.json"
+            )
+            self.assertIsNone(
+                json.loads(candidate.read_text(encoding="utf-8"))["recipe"]["outputs"][
+                    "data/late"
+                ]
+            )
+            try:
+                release.write_text("go", encoding="utf-8")
+                deadline = time.monotonic() + 10
+                while True:
+                    try:
+                        os.killpg(record["worker_pid"], 0)
+                    except ProcessLookupError:
+                        break
+                    if time.monotonic() > deadline:
+                        self.fail("late directory writer did not finish")
+                    time.sleep(0.02)
+                recovered = run(
+                    [
+                        "/bin/sh",
+                        str(entry / "pyrun"),
+                        "recover",
+                        "--reservation",
+                        record["identity"],
+                    ],
+                    cwd=entry,
+                    add_default_cid=False,
+                )
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                execution = next(
+                    iter(
+                        json.loads((entry / "pyrun.json").read_text())["commands"][
+                            "late-directory"
+                        ]["executions"].values()
+                    )
+                )
+                self.assertEqual(
+                    execution["recipe"]["outputs"]["data/late"], "directory"
+                )
+            finally:
+                release.write_text("go", encoding="utf-8")
+
+    def test_nonzero_exit_creates_no_completion_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            install_project_python(root)
+            install_entry_runner(entry)
+            (entry / "scripts/fail.py").write_text(
+                "raise SystemExit(3)\n", encoding="utf-8"
+            )
+            result = run_pyrun_process(
+                entry,
+                "--cid",
+                "failed",
+                "--capture-stdout",
+                "data/fail.log",
+                "--",
+                "scripts/fail.py",
+            )
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(
+                list(
+                    (root / ".cache/research-log-operations").glob(
+                        "ordinary-completion-*.json"
+                    )
+                ),
+                [],
+            )
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_release_removes_abandoned_candidate_without_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            entry = make_entry(root)
+            identity = "a" * 32
+            record = PYRUN_MODULE.ArtifactReservation(
+                identity,
+                entry.resolve().as_posix(),
+                "abandoned",
+                (),
+                ((entry / "data/output.txt").resolve().as_posix(),),
+                99999999,
+                None,
+            )
+            RESERVATIONS._publish(root, record)
+            path = PYRUN_MODULE.publish_candidate(
+                root,
+                identity,
+                {"reservation": identity},
+            )
+            self.assertEqual(
+                RESERVATIONS.release_abandoned(root, entry, "abandoned", dry_run=True),
+                1,
+            )
+            self.assertTrue(path.exists())
+            self.assertEqual(
+                RESERVATIONS.release_abandoned(root, entry, "abandoned", dry_run=False),
+                1,
+            )
+            self.assertFalse(path.exists())
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_malformed_or_oversized_candidate_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = make_repo(Path(directory))
+            identity = "b" * 32
+            (root / ".cache/research-log-operations").mkdir(parents=True)
+            path = PYRUN_MODULE.publish_candidate(
+                root, identity, {"reservation": identity}
+            )
+            path.write_text("not-json", encoding="utf-8")
+            with self.assertRaises(PYRUN_MODULE.RecoveryCandidateError):
+                PYRUN_MODULE.load_candidate(root, identity)
+            path.write_text("x" * (256 * 1024 + 1), encoding="utf-8")
+            with self.assertRaises(PYRUN_MODULE.RecoveryCandidateError):
+                PYRUN_MODULE.load_candidate(root, identity)
 
 
 if __name__ == "__main__":

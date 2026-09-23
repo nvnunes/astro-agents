@@ -15,15 +15,16 @@ enough evidence and reasoning to reconstruct why it was retained.
 - Organize repeated experiments around the question they answer. Keep the
   baseline, candidate, measured benefit, relevant cost, and tested boundary
   together; use tables or parallel bullets for shared comparison dimensions.
-- State supported results and researcher decisions plainly. Name the quantity,
-  baseline, and scope instead of relying on `better`, `faster`, `stable`,
-  `accurate`, or `did not work`.
+- State supported results plainly. State a researcher decision only when
+  explicitly directed to record it. Name the quantity, baseline, and scope
+  instead of relying on `better`, `faster`, `stable`, `accurate`, or `did not work`.
 - Keep qualifiers beside the claims they limit. Distinguish intermediate-model
   differences from downstream or science-visible effects, and state what a
   threshold measures, why it matters, and what it does not establish.
-- Follow a comparison table with its interpretation and decision rather than
-  narrating every cell. Link reproduction detail that does not belong in the
-  current synthesis.
+- Follow a comparison table with its interpretation rather than narrating every
+  cell. Include a decision only when the researcher explicitly directs you to
+  record it. Link reproduction detail that does not belong in the current
+  synthesis.
 - Present evidence directly. Never turn an entry into an agent diary or work
   log. Omit agent workflow and routine successful checks unless they affect the
   evidence.

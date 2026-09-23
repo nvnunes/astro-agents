@@ -97,10 +97,13 @@ work.
 
 ### `Decisions:`
 
-When drafting, record only researcher decisions. When reviewing, treat direct
-decisions as researcher decisions unless explicitly marked proposed,
-provisional, or agent-generated. Preserve the evidence or constraint supplied
-with the decision. Omit the label if no researcher decision exists.
+Create or revise this label only when the researcher explicitly directs you to
+record or revise a specific decision. A choice inferred from results, an agent
+recommendation, or a decision merely mentioned elsewhere is not authorization.
+Preserve the evidence or constraint the researcher supplied with the decision;
+omit the label otherwise. When reviewing, treat direct existing decisions as
+researcher decisions unless explicitly marked proposed, provisional, or
+agent-generated.
 
 ### `Follow-up:`
 

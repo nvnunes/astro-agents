@@ -408,7 +408,7 @@ Do not add an empty label or invent a synonym.
 | `Findings:` | In a synthesis section, record understanding from inspecting or combining existing material without introducing a new calculation. |
 | `Observations:` | In an experimental section, record patterns or interpretations grounded in that section's results. Treat agent-drafted observations as drafts until you review them. |
 | `Uncertainty:` | Record only uncertainty you intentionally retain with a result or decision; do not use it for routine caveats or unfinished work. |
-| `Decisions:` | Record your decisions and their supporting evidence or constraint. Mark proposals and provisional choices explicitly. |
+| `Decisions:` | Include a specific decision and its supporting evidence or constraint only when you explicitly direct the agent to record it. Mark proposals and provisional choices explicitly. |
 | `Follow-up:` | Record deferred work you want carried into the log-level follow-up list, not current planned work or speculative ideas. |
 
 Experimental sections require `Steps:` and `Results:` and may also use
@@ -444,9 +444,6 @@ The correction reduced median error from
 
 `Observations:`
 The effect is small but consistent across the retained cases.
-
-`Decisions:`
-- Retained the correction for the next evaluation stage.
 ````
 
 Synthesis section:

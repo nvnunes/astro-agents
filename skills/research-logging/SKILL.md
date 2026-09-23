@@ -115,6 +115,8 @@ state does not start Repair without an explicit correction request.
 - Do not decide what conclusion, interpretation, method choice, validation
   outcome, or next research direction the log should treat as accepted unless
   the user states that decision.
+- Do not write or revise `Decisions:` content unless the researcher explicitly
+  directs you to record or revise the specific decision.
 - Preserve existing researcher wording unless the user asks for rewriting.
 - Do not invent evidence, validation, references, results, uncertainty,
   decisions, or conclusions.

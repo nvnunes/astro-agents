@@ -29,13 +29,13 @@ from .reproduction_job_control import (
 )
 from .reproduction_work_job import (
     PERMIT_ADMISSION_PHASES,
-    LockedWorkJob,
+    WorkJob,
     WorkPermitCheckpoint,
     WorkSchedulerOwner,
     open_work_job,
 )
 
-JobOpener = Callable[[Path], AbstractContextManager[LockedWorkJob]]
+JobOpener = Callable[[Path], AbstractContextManager[WorkJob]]
 
 SCHEDULER_STORE_VERSION = 2
 SCHEDULER_DATABASE_NAME = "reproduction-scheduler.sqlite"
@@ -199,13 +199,9 @@ def poll_work_permit(
         raise ActionError("reproduction.scheduler.invalid", "invalid permit attachment")
     with _coordinator_lock(request.identity.project_root):
         with open_work_job(run_root) as store:
-            _validate_accepted_request(
-                store, run_root, request, accepted=accepted
-            )
+            _validate_accepted_request(store, run_root, request, accepted=accepted)
             with _open_scheduler_database(request.identity.project_root) as db:
-                decision = _poll_permit_locked(
-                    db, request, run_root.resolve(), store
-                )
+                decision = _poll_permit_locked(db, request, run_root.resolve(), store)
             if decision.disposition == "granted":
                 assert decision.permit is not None
                 _after_scheduler_grant_before_attach(decision, store)
@@ -227,7 +223,7 @@ def _poll_permit_locked(
     db: sqlite3.Connection,
     request: SchedulerPermitRequest,
     current_run_root: Path,
-    current_store: LockedWorkJob,
+    current_store: WorkJob,
     *,
     open_job: JobOpener = open_work_job,
 ) -> SchedulerDecision:
@@ -256,7 +252,7 @@ def _poll_permit_locked(
 
 
 def _validate_accepted_request(
-    store: LockedWorkJob,
+    store: WorkJob,
     run_root: Path,
     request: SchedulerPermitRequest,
     *,
@@ -1185,7 +1181,7 @@ def _recoverable_dead_permit_ids(
     db: sqlite3.Connection,
     project_root: Path,
     current_run_root: Path,
-    current_store: LockedWorkJob,
+    current_store: WorkJob,
     *,
     open_job: JobOpener = open_work_job,
 ) -> tuple[str, ...]:
@@ -1556,14 +1552,12 @@ def _before_scheduler_commit(_operation: str, _db: sqlite3.Connection) -> None:
 
 
 def _after_scheduler_grant_before_attach(
-    _decision: SchedulerDecision, _store: LockedWorkJob
+    _decision: SchedulerDecision, _store: WorkJob
 ) -> None:
     """Test injection point after scheduler commit and before run attachment."""
 
 
-def _after_run_permit_attachment(
-    _decision: SchedulerDecision, _store: LockedWorkJob
-) -> None:
+def _after_run_permit_attachment(_decision: SchedulerDecision, _store: WorkJob) -> None:
     """Test injection point after run attachment and before poll return."""
 
 

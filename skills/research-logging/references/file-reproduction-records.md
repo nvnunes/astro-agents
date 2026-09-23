@@ -87,10 +87,16 @@ diagnostic in its original run-local location. No reproduction command discards,
 relocates or supersedes these files.
 
 Jobs and safe SQLite companions are durable operational state, not disposable
-cache. Fixed-plan resume preserves accepted work and terminal results; source
-changes require a new run. Grant release and scratch cleanup require exited
-workers. Surviving workers keep exclusion active; recovery never sweeps unrelated
-temporary paths or executes research work. Obsolete jobs are never decoded,
+cache. Status reads one observational snapshot and never initiates recovery.
+Stop records durable intent and waits for the supervisor's result or an exact
+recovery/control failure. Fixed-plan resume preserves accepted work and terminal
+results; source changes require a new run. Only stopped runs and failed frozen
+publication can resume. Grant release and scratch cleanup require exited
+workers, but a new attempt need not repeat old exited worker identities.
+Surviving workers keep exclusion active; recovery never sweeps unrelated
+temporary paths or executes research work. An unrelated log's run does not
+block this log's planning merely because its own recovery is needed. Obsolete
+jobs are never decoded,
 translated, or resumed; start a new explicit `--recheck` run instead.
 
 Promotion is a separate researcher-directed mutation. It copies one complete

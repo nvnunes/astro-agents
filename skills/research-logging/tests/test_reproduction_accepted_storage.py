@@ -68,6 +68,15 @@ class AcceptedWorkStorageTests(unittest.TestCase):
         self.assertEqual(self.db.total_changes, changes)
         self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(), [])
 
+    def test_store_write_and_load_do_not_decode_whole_plan_json(self):
+        with mock.patch.object(
+            storage.ReproductionPlan,
+            "from_json",
+            side_effect=AssertionError("whole-plan JSON decode"),
+        ):
+            self.save()
+            self.assertEqual(self.load().serialized(), self.plan.serialized())
+
     def test_identities_and_references_are_not_duplicated_in_work_payloads(self):
         self.save()
         for table, removed in (

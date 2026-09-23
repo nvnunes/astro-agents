@@ -61,7 +61,12 @@ from .reproduction_process_recovery import (
     _pid_alive,
 )
 from .reproduction_saved_run import RunSettings, RunTarget
-from .reproduction_work_job import WorkJobAcceptance, create_work_job, open_work_job
+from .reproduction_work_job import (
+    WorkJobAcceptance,
+    create_work_job,
+    open_work_job,
+    snapshot_work_job,
+)
 from .reproduction_work_plan import ReproductionPlan
 
 RUN_ID_RE = re.compile(r"reproduce-[a-z0-9][a-z0-9-]{0,127}\Z")
@@ -272,14 +277,10 @@ def preview_reproduction(
         _close_fds(fds)
 
 
-def reproduction_status(
-    log: LogContext, run_id: str, *, reconcile: bool = True
-) -> Mapping[str, object]:
-    """Inspect native lifecycle and retained diagnostics, including unpublished work."""
+def reproduction_status(log: LogContext, run_id: str) -> Mapping[str, object]:
+    """Inspect one durable lifecycle snapshot without recovery or process scans."""
     root = _find_run(log, run_id)
-    if reconcile:
-        _reconcile_lost_supervisor(log, root)
-    with open_work_job(root) as job:
+    with snapshot_work_job(root) as job:
         return _bounded_status(job.load_operational_status())
 
 
@@ -343,6 +344,7 @@ def stop_reproduction(log: LogContext, run_id: str) -> Mapping[str, object]:
     cancel_run_waiters(resolve_project_root(log.root), run_id)
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     while time.monotonic() < deadline:
+        _reconcile_lost_supervisor(log, root)
         projected = reproduction_status(log, run_id)
         if projected["status"] == "stopped":
             return projected
@@ -354,6 +356,7 @@ def stop_reproduction(log: LogContext, run_id: str) -> Mapping[str, object]:
                 "run became terminal before stop completed",
             )
         time.sleep(STATUS_POLL_SECONDS)
+    _reconcile_lost_supervisor(log, root)
     projected = reproduction_status(log, run_id)
     raise ActionError(
         "reproduction.stop.incomplete",
@@ -619,7 +622,7 @@ def _overlapping_paths(paths: set[Path], other: Sequence[Path]) -> set[Path]:
 def _reconcile_lost_supervisor(log: LogContext, run_root: Path) -> None:
     from .reproduction_work_recovery import recover_work_job
 
-    with open_work_job(run_root) as job:
+    with snapshot_work_job(run_root) as job:
         state, owner = job.load_run_control(), job.load_run_owner()
         if (
             owner is not None
@@ -629,7 +632,7 @@ def _reconcile_lost_supervisor(log: LogContext, run_root: Path) -> None:
             return
         if state.status is not None and (owner is None or owner.state != "running"):
             return
-        entry, run_id = job.accepted.plan.target.entry, job.accepted.run_id
+        entry, run_id = job.accepted.status_header()[1].entry, job.accepted.run_id
     fds = _acquire_scope_locks(log, entry, ignore_recovery_run_id=run_id)
     try:
         recover_work_job(log, run_root)
@@ -656,13 +659,13 @@ def _require_no_recovery_exclusion(
         if recognize_run_directory(run_root, project_root) != "current":
             continue
         try:
-            with open_work_job(run_root) as job:
-                plan = job.accepted.plan
+            with snapshot_work_job(run_root) as job:
+                summary, target, _settings = job.accepted.status_header()
+                if summary != _summary_identity(log):
+                    continue
                 status = job.load_run_control()
                 owner = job.load_run_owner()
                 run_id = job.accepted.run_id
-            if plan.summary != _summary_identity(log):
-                continue
         except JobStoreUnsupportedError:
             continue
         except JobStoreError as error:
@@ -679,13 +682,13 @@ def _require_no_recovery_exclusion(
             or (owner is not None and owner.state == "running" and not owner_live)
             or (status.status is None and not owner_live)
         )
-        target_entry = plan.target.entry
+        target_entry = target.entry
         if needs_recovery and (
             entry is None or target_entry is None or entry == target_entry
         ):
             raise ActionError(
                 "reproduction.recovery.active",
-                f"orphaned worker cleanup still owns {run_id}",
+                f"orphaned worker cleanup still owns {run_id}; stop or resume that run",
             )
 
 
@@ -761,7 +764,7 @@ def _matching_run_roots(
         recognized = recognize_run_directory(candidate, project_root)
         if recognized == "current":
             try:
-                with open_work_job(candidate) as job:
+                with snapshot_work_job(candidate) as job:
                     accepted = job.accepted
             except JobStoreError as error:
                 raise ActionError(error.code, str(error)) from error

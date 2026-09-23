@@ -83,7 +83,7 @@ def _recover_attempts(project_root: Path, run_root: Path, observed_at: str) -> N
             accepted = accepted_scheduling_projection(
                 plan,
                 run_id,
-                ExecutionIdentity(identity.entry, identity.cid, identity.execution_id)
+                ExecutionIdentity(identity.entry, identity.cid, identity.execution_id),
             )
             proof = job.load_scheduler_owner()
         if permit_id is not None:
@@ -176,6 +176,7 @@ def recover_work_job(
             )
         elif state.phase != "stopping":
             job.request_run_stop(RunStopRequest(observed_at))
+            job.acknowledge_run_stop()
     _recover_attempts(project_root, run_root, observed_at)
     with open_work_job(run_root) as job:
         job.replace_run_owner(

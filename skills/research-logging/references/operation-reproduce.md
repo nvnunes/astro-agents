@@ -127,16 +127,22 @@ parameters/declarations or newly observed effective code.
 <skill>/scripts/log reproduce resume --path <log> --run-id <run-id>
 ```
 
-Use text status for people and JSON for agents/monitors. Status is operational
-lifecycle, not artifact outcome; queued work is not execution time. Stop is the
-sole stopping action and preserves diagnostics and completed results.
+Use text status for people and JSON for agents/monitors. Status is an
+observational lifecycle snapshot: it does not inspect processes, recover an
+absent supervisor, or report artifact outcome; queued work is not execution
+time. Stop is the sole stopping action. One invocation records durable intent,
+waits for a stopped or other terminal result, and preserves diagnostics and
+completed results. If the supervisor disappears, stop can perform explicit
+recovery; report a recovery/control failure rather than retrying opportunistically.
 
 Resume uses the same accepted Plan14/Job6, run ID, scope, authorization and
 settings. It never replans or reruns durable terminal success/failure. Only
 never-started or stopped nonterminal work may launch after safe cleanup.
 Source changes require a new run. Publication-only recovery uses frozen facts
 with no execution. Surviving workers preserve exclusion; never sweep unrelated
-temporary paths. Old jobs are unsupported and remain unchanged; start a new
+temporary paths. Ordinary operationally failed runs cannot resume. A different
+log's run does not block this log's planning merely because it needs recovery.
+Old jobs are unsupported and remain unchanged; start a new
 `--recheck` run rather than decoding, translating, or resuming them.
 
 Run folders are

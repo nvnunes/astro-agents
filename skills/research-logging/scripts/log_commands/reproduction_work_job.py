@@ -7,10 +7,11 @@ Job6 owns ordinary launch and lifecycle control; older jobs are never decoded.
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
-import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping, Protocol, cast
 
@@ -56,10 +57,9 @@ from .reproduction_job_control import (
     WorkerRecord,
     _before_commit,
     _bounded_string,
-    _check_database_size,
+    _check_mutation_size,
     _check_store_size,
     _checked_state_path,
-    _job_mutex,
     _open_database,
     _raise_storage_error,
     _regular_run_root,
@@ -92,7 +92,6 @@ from .reproduction_saved_run import MAX_WORK_RECORDS, RunSettings, RunTarget, Sa
 from .reproduction_work_plan import MAX_PLAN_BYTES, PLAN_SCHEMA, ReproductionPlan
 
 WORK_JOB_VERSION = 6
-_THREAD_LOCK = threading.RLock()
 PERMIT_ADMISSION_PHASES = frozenset(
     {"accepted", "planning", "preflight", "executing", "comparing"}
 )
@@ -198,6 +197,9 @@ class WorkJobAcceptance:
     def summary_identity(self) -> str:
         return self.plan.summary
 
+    def status_header(self) -> tuple[str, RunTarget, RunSettings]:
+        return self.plan.summary, self.plan.target, self.plan.settings
+
 
 class WorkJobLocation(Protocol):
     """Common accepted-run surface for eager creation and lazy job access."""
@@ -214,6 +216,8 @@ class WorkJobLocation(Protocol):
 
     @property
     def summary_identity(self) -> str: ...
+
+    def status_header(self) -> tuple[str, RunTarget, RunSettings]: ...
 
 
 class _LoadedWorkJobAcceptance:
@@ -243,23 +247,16 @@ class _LoadedWorkJobAcceptance:
 
         if self._plan is None:
             try:
-                self._plan = _load_accepted_work(
-                    self._db, self.run_id, self._header
-                )
+                self._plan = _load_accepted_work(self._db, self.run_id, self._header)
             except sqlite3.ProgrammingError as error:
                 if "closed" not in str(error).lower():
                     raise
-                with _THREAD_LOCK, _job_mutex(self._run_root):
-                    path = _checked_state_path(self._run_root, writable=False)
-                    db = _open_database(
-                        path, mode="rw", expected_version=WORK_JOB_VERSION
-                    )
-                    try:
-                        self._plan = _load_accepted_work(
-                            db, self.run_id, self._header
-                        )
-                    finally:
-                        db.close()
+                path = _checked_state_path(self._run_root, writable=False)
+                db = _open_database(path, mode="ro", expected_version=WORK_JOB_VERSION)
+                try:
+                    self._plan = _load_accepted_work(db, self.run_id, self._header)
+                finally:
+                    db.close()
         return self._plan
 
     @property
@@ -517,78 +514,102 @@ def create_work_job(run_root: Path, accepted: WorkJobAcceptance) -> RunIdentity:
 
     run_root = _regular_run_root(run_root)
     _validate_acceptance(run_root, accepted)
-    with _THREAD_LOCK, _job_mutex(run_root):
-        path = _checked_state_path(run_root, writable=True)
-        if path.exists():
-            raise JobStoreExistsError(f"job state already exists: {path}")
+    path = _checked_state_path(run_root, writable=True)
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+    except FileExistsError as error:
+        raise JobStoreExistsError(f"job state already exists: {path}") from error
+    except OSError as error:
+        _raise_storage_error(error)
+    os.close(descriptor)
+    try:
+        db = _open_database(
+            path,
+            mode="rw",
+            allow_uninitialized=True,
+            expected_version=WORK_JOB_VERSION,
+        )
         try:
-            db = _open_database(
-                path,
-                mode="rwc",
-                allow_uninitialized=True,
-                expected_version=WORK_JOB_VERSION,
+            db.execute("BEGIN IMMEDIATE")
+            _initialize(db)
+            db.execute(
+                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    accepted.run_id,
+                    accepted.accepted_at,
+                    accepted.run_path,
+                    accepted.project_root.as_posix(),
+                    accepted.workspace_path,
+                    accepted.diagnostics_path,
+                    _json(_header(accepted.plan)),
+                ),
             )
-            try:
-                db.execute("BEGIN IMMEDIATE")
-                _initialize(db)
-                db.execute(
-                    "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        accepted.run_id,
-                        accepted.accepted_at,
-                        accepted.run_path,
-                        accepted.project_root.as_posix(),
-                        accepted.workspace_path,
-                        accepted.diagnostics_path,
-                        _json(_header(accepted.plan)),
-                    ),
-                )
-                _write_accepted_work(db, accepted.run_id, accepted.plan)
-                db.execute(
-                    "INSERT INTO run_state(run_id, phase, updated_at) "
-                    "VALUES (?, 'accepted', ?)",
-                    (accepted.run_id, accepted.accepted_at),
-                )
-                _check_database_size(db)
-                _before_commit("work_acceptance", db)
-                db.commit()
-                _check_store_size(path)
-            except BaseException:
-                db.rollback()
-                raise
-            finally:
-                db.close()
-        except BaseException as error:
-            _remove_failed_creation(path)
-            _raise_storage_error(error)
+            _write_accepted_work(db, accepted.run_id, accepted.plan)
+            db.execute(
+                "INSERT INTO run_state(run_id, phase, updated_at) "
+                "VALUES (?, 'accepted', ?)",
+                (accepted.run_id, accepted.accepted_at),
+            )
+            _check_mutation_size(db, path)
+            _before_commit("work_acceptance", db)
+            db.commit()
+            _check_store_size(path)
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    except BaseException as error:
+        _remove_failed_creation(path)
+        _raise_storage_error(error)
     return RunIdentity(accepted.run_id, accepted.run_path)
 
 
 @contextmanager
-def open_work_job(run_root: Path) -> Iterator["LockedWorkJob"]:
-    """Hold the job mutex and expose only typed, native Job6 operations.
+def open_work_job(run_root: Path) -> Iterator["WorkJob"]:
+    """Open typed Job6 operations with short SQLite write transactions.
 
     Opening authenticates accepted work and its canonical location. No earlier
     schema is decoded and no current registry/source is needed for reconstruction.
     """
 
+    with _open_work_job(run_root, read_only=False) as job:
+        yield job
+
+
+@contextmanager
+def snapshot_work_job(run_root: Path) -> Iterator["WorkJob"]:
+    """Read one coherent, immutable Job6 snapshot without lifecycle effects."""
+
+    with _open_work_job(run_root, read_only=True) as job:
+        yield job
+
+
+@contextmanager
+def _open_work_job(run_root: Path, *, read_only: bool) -> Iterator["WorkJob"]:
     run_root = _regular_run_root(run_root)
-    with _THREAD_LOCK, _job_mutex(run_root):
-        path = _checked_state_path(run_root, writable=False)
-        db = _open_database(path, mode="rw", expected_version=WORK_JOB_VERSION)
-        try:
-            rows = db.execute("SELECT * FROM runs LIMIT 2").fetchall()
-            if len(rows) != 1:
-                raise JobStoreMalformedError("native job requires exactly one run")
-            run = rows[0]
-            accepted = _loaded_acceptance(run_root, db, run)
-            yield LockedWorkJob(db, accepted)
-        finally:
-            db.close()
+    path = _checked_state_path(run_root, writable=False)
+    db = _open_database(
+        path, mode="ro" if read_only else "rw", expected_version=WORK_JOB_VERSION
+    )
+    try:
+        if read_only:
+            db.execute("BEGIN")
+        rows = db.execute("SELECT * FROM runs LIMIT 2").fetchall()
+        if len(rows) != 1:
+            raise JobStoreMalformedError("native job requires exactly one run")
+        accepted = _loaded_acceptance(run_root, db, rows[0])
+        yield WorkJob(db, accepted, path)
+    finally:
+        db.close()
 
 
-class LockedWorkJob:
-    """Native accepted-work authority under one run-state mutex.
+class WorkJob:
+    """Native accepted-work authority with atomic SQLite state changes.
 
     Terminal command facts have one owner in observation tables. Checkpoints
     store only active/stopped/completed state and scheduler recovery information.
@@ -598,24 +619,26 @@ class LockedWorkJob:
         self,
         db: sqlite3.Connection,
         accepted: WorkJobLocation,
+        state_path: Path,
     ):
         self._db = db
         self.accepted = accepted
+        self._state_path = state_path
 
     @contextmanager
     def _transaction(self, operation: str) -> Iterator[None]:
         try:
             self._db.execute("BEGIN IMMEDIATE")
             yield
-            _check_database_size(self._db)
+            _check_mutation_size(self._db, self._state_path)
             _before_commit(operation, self._db)
             self._db.commit()
-        except BaseException:
+        except BaseException as error:
             self._db.rollback()
-            raise
+            _raise_storage_error(error)
 
     def request_run_stop(self, request: RunStopRequest) -> None:
-        """Record stop intent without overwriting the first request time."""
+        """Record stop intent without taking lifecycle ownership."""
 
         _require_timestamp(request.requested_at, "stop request time")
         with self._transaction("stop_request"):
@@ -626,18 +649,16 @@ class LockedWorkJob:
             )
             if row["status"] is not None:
                 raise JobStoreTransitionError("terminal run cannot request stop")
-            if row["phase"] == "stopping":
-                return
             if row["stop_requested_at"] is not None:
-                raise JobStoreInvariantError("run stop intent has an invalid phase")
+                return
             if row["operational_code"] is not None:
                 raise JobStoreTransitionError(
                     "failed run intent cannot become user stop"
                 )
             changed = self._db.execute(
-                "UPDATE run_state SET phase='stopping', stop_requested_at=?, "
+                "UPDATE run_state SET stop_requested_at=?, "
                 "updated_at=? WHERE run_id=? AND status IS NULL "
-                "AND phase<>'stopping' AND stop_requested_at IS NULL "
+                "AND stop_requested_at IS NULL "
                 "AND operational_code IS NULL",
                 (
                     request.requested_at,
@@ -647,6 +668,26 @@ class LockedWorkJob:
             ).rowcount
             if changed != 1:
                 raise JobStoreTransitionError("stop request lost its state")
+
+    def acknowledge_run_stop(self) -> None:
+        """Let the active supervisor begin the requested stopping transition."""
+
+        with self._transaction("stop_acknowledgment"):
+            row = _sole_row(
+                self._db,
+                "SELECT run_id,status,phase,stop_requested_at FROM run_state",
+            )
+            if row["status"] is not None or row["stop_requested_at"] is None:
+                raise JobStoreTransitionError("run has no active stop request")
+            if row["phase"] == "stopping":
+                return
+            changed = self._db.execute(
+                "UPDATE run_state SET phase='stopping' WHERE run_id=? "
+                "AND status IS NULL AND stop_requested_at IS NOT NULL",
+                (row["run_id"],),
+            ).rowcount
+            if changed != 1:
+                raise JobStoreTransitionError("stop acknowledgment lost its state")
 
     def request_run_failure(self, failure: RunFailure) -> None:
         """Record one exact failed-terminal intent without losing user stop time."""
@@ -774,20 +815,23 @@ class LockedWorkJob:
         """
 
         _require_timestamp(request.resumed_at, "resume time")
+        publication = self.load_publication()
+        if publication is None:
+            raise JobStoreTransitionError("run has no failed publication to resume")
+        self.load_completed_run(finished_at=publication.finished_at)
         with self._transaction("publication_resume"):
             state = self.load_run_control()
-            publication = self.load_publication()
+            current_publication = self.load_publication()
             owner = self.load_run_owner()
             if (
                 state.status != "failed"
                 or state.operational_code != "reproduction.publication.failed"
-                or publication is None
+                or current_publication != publication
                 or publication.report_generation is not None
                 or (owner is not None and owner.state != "exited")
             ):
                 raise JobStoreTransitionError("run has no failed publication to resume")
             _require_quiescent_run(self._db, self.accepted.run_id)
-            self.load_completed_run(finished_at=publication.finished_at)
             changed = self._db.execute(
                 "UPDATE run_state SET status=NULL, phase='publishing', "
                 "finished_at=NULL, stopped_at=NULL, stop_requested_at=NULL, "
@@ -1066,6 +1110,11 @@ class LockedWorkJob:
                     raise JobStoreTransitionError("stopped checkpoint is not resumable")
                 self._require_no_live_workers(command_pk)
                 self._db.execute(
+                    "DELETE FROM workers WHERE run_id=? AND command_pk=? "
+                    "AND state='exited'",
+                    (self.accepted.run_id, command_pk),
+                )
+                self._db.execute(
                     "UPDATE execution_checkpoints SET state='active',permit_id=?, "
                     "checkpointed_at=?,stop_reason=NULL,stopped_outputs=NULL "
                     "WHERE run_id=? AND command_pk=?",
@@ -1314,6 +1363,16 @@ class LockedWorkJob:
         _validate_workers(completion.workers)
         if any(worker.state != "exited" for worker in completion.workers):
             raise JobStoreInvariantError("terminal attempt retains a live worker")
+        accepted_plan = self.accepted.plan if plan is None else plan
+        work = accepted_plan.command(result.identity)
+        outputs = dict(work.execution.recipe.outputs)
+        if not result.outputs.keys() <= outputs.keys() or (
+            result.outcome is CommandOutcome.SUCCEEDED
+            and result.outputs.keys() != outputs.keys()
+        ):
+            raise JobStoreInvariantError("terminal output inventory is not accepted")
+        for name, fingerprint in result.outputs.items():
+            parse_fingerprint(fingerprint, kind=outputs[name], subject=name)
         with self._transaction("work_attempt_completion"):
             command_pk = self._command_pk(result.identity)
             row = self._require_permit(command_pk, completion.permit_id)
@@ -1327,18 +1386,6 @@ class LockedWorkJob:
                 raise JobStoreTransitionError(
                     "terminal facts do not match pending invocation"
                 )
-            accepted_plan = self.accepted.plan if plan is None else plan
-            work = accepted_plan.command(result.identity)
-            outputs = dict(work.execution.recipe.outputs)
-            if not result.outputs.keys() <= outputs.keys() or (
-                result.outcome is CommandOutcome.SUCCEEDED
-                and result.outputs.keys() != outputs.keys()
-            ):
-                raise JobStoreInvariantError(
-                    "terminal output inventory is not accepted"
-                )
-            for name, fingerprint in result.outputs.items():
-                parse_fingerprint(fingerprint, kind=outputs[name], subject=name)
             write_command_observation(
                 self._db, self.accepted.run_id, result, completion.problems
             )
@@ -1449,6 +1496,7 @@ class LockedWorkJob:
         callers cannot submit a fabricated failure or overwrite an invocation.
         """
 
+        accepted_plan = self.accepted.plan if plan is None else plan
         with self._transaction("work_dependency_block"):
             self._require_active_work()
             if self._checkpoint(self._command_pk(identity)) is not None:
@@ -1460,7 +1508,7 @@ class LockedWorkJob:
                 if existing.outcome is CommandOutcome.BLOCKED:
                     return existing
                 raise JobStoreTransitionError("completed command cannot become blocked")
-            readiness = self.load_execution_readiness(identity, plan=plan)
+            readiness = self.load_execution_readiness(identity, plan=accepted_plan)
             if readiness.disposition != "dependency_failed":
                 raise JobStoreTransitionError("command has no unsatisfied prerequisite")
             result = blocked_command_observation(
@@ -1561,6 +1609,7 @@ class LockedWorkJob:
         completed = 0
         diagnostic: dict[str, object] | None = None
         diagnostic_at = ""
+        observed_at = datetime.now(timezone.utc)
         for accepted in scheduled:
             identity = ExecutionRef(
                 accepted["entry"], accepted["cid"], accepted["execution_id"]
@@ -1580,13 +1629,24 @@ class LockedWorkJob:
             completed += int(result is not None)
             if checkpoint is not None and checkpoint.started_at is not None:
                 failure = problems[0] if problems else None
+                elapsed = checkpoint.elapsed_seconds
+                if checkpoint.state == "active":
+                    checkpoint_row = self._checkpoint(self._command_pk(identity))
+                    assert checkpoint_row is not None
+                    _require_timestamp(
+                        checkpoint_row["checkpointed_at"], "checkpoint time"
+                    )
+                    anchor = datetime.fromisoformat(
+                        checkpoint_row["checkpointed_at"].replace("Z", "+00:00")
+                    )
+                    elapsed += max(0.0, (observed_at - anchor).total_seconds())
                 timings.append(
                     {
                         **identity.as_dict(),
                         "state": checkpoint.state,
                         "started_at": checkpoint.started_at,
                         "finished_at": finished_at,
-                        "elapsed_seconds": checkpoint.elapsed_seconds,
+                        "elapsed_seconds": elapsed,
                         "failure": None
                         if failure is None
                         else {
@@ -1770,8 +1830,9 @@ class LockedWorkJob:
         """Acknowledge the exact source-state write after durable comparison."""
 
         _require_timestamp(reconciled_at, "source reconciliation acknowledgment")
+        accepted_plan = self.accepted.plan if plan is None else plan
         with self._transaction("work_source_reconciliation"):
-            if not self.source_reconciliation_ready(identity, plan=plan):
+            if not self.source_reconciliation_ready(identity, plan=accepted_plan):
                 raise JobStoreTransitionError("source reconciliation is not ready")
             self._db.execute(
                 "INSERT INTO source_reconciliation_acknowledgments VALUES (?,?,?)",
@@ -1892,23 +1953,32 @@ class LockedWorkJob:
         """
 
         _require_timestamp(finished_at, "publication finish time")
+        publication = self.load_publication()
+        effective_finished_at = (
+            publication.finished_at if publication is not None else finished_at
+        )
+        run = self.load_completed_run(finished_at=effective_finished_at, plan=plan)
         with self._transaction("work_publication_prepare"):
             self._require_publication_owner()
             state = self.load_run_control()
-            if state.status is not None or state.phase == "stopping":
+            if (
+                state.status is not None
+                or state.phase == "stopping"
+                or state.stop_requested_at is not None
+            ):
                 raise JobStoreTransitionError("terminal/stopping run cannot publish")
-            publication = self.load_publication()
-            if publication is not None:
+            current_publication = self.load_publication()
+            if current_publication != publication:
+                raise JobStoreTransitionError("publication changed during preparation")
+            if current_publication is not None:
                 if state.phase != "publishing":
                     raise JobStoreInvariantError(
                         "publication recovery has invalid phase"
                     )
-                return self.load_completed_run(
-                    finished_at=publication.finished_at, plan=plan
-                )
+                return run
             if state.phase not in PERMIT_ADMISSION_PHASES:
                 raise JobStoreTransitionError("run is not ready for publication")
-            run = self.load_completed_run(finished_at=finished_at, plan=plan)
+            _require_quiescent_run(self._db, self.accepted.run_id)
             self._db.execute(
                 "INSERT INTO run_publication VALUES (?, ?, NULL, NULL)",
                 (self.accepted.run_id, finished_at),
@@ -2025,18 +2095,16 @@ class LockedWorkJob:
         _validate_workers(workers)
         if any(worker.state != "exited" for worker in workers):
             raise JobStoreInvariantError("stopped attempt retains a live worker")
+        declared = dict(self.accepted.plan.command(identity).execution.recipe.outputs)
+        if not outputs.keys() <= declared.keys():
+            raise JobStoreInvariantError("stopped output inventory is not accepted")
+        for name, fingerprint in outputs.items():
+            parse_fingerprint(fingerprint, kind=declared[name], subject=name)
         with self._transaction("work_execution_stop"):
             command_pk = self._command_pk(identity)
             row = self._require_permit(command_pk, interruption.permit_id)
             if interruption.elapsed_seconds < row["elapsed_seconds"]:
                 raise JobStoreTransitionError("stopped elapsed time moved backward")
-            declared = dict(
-                self.accepted.plan.command(identity).execution.recipe.outputs
-            )
-            if not outputs.keys() <= declared.keys():
-                raise JobStoreInvariantError("stopped output inventory is not accepted")
-            for name, fingerprint in outputs.items():
-                parse_fingerprint(fingerprint, kind=declared[name], subject=name)
             self._replace_workers(command_pk, workers)
             self._db.execute(
                 "UPDATE execution_checkpoints SET state='stopped',checkpointed_at=?, "

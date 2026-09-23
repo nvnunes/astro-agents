@@ -35,7 +35,7 @@ from log_commands.reproduction_promotion import promote_execution
 from log_commands.reproduction_reconciliation import reconcile_completed_source
 from log_commands.reproduction_saved_run import RunSettings, RunTarget
 from log_commands.reproduction_work_execution import compare_work_outputs
-from log_commands.reproduction_work_job import LockedWorkJob, open_work_job
+from log_commands.reproduction_work_job import WorkJob, open_work_job
 from log_commands.reproduction_work_supervision import execute_work_plan
 from reproduction_planning_test_support import _Fixture
 from test_reproduction_work_execution import TestConfinement
@@ -488,7 +488,7 @@ class PublicNativeJobsTests(unittest.TestCase):
                 if work.identity.cid == "producer"
             )
         with mock.patch.object(
-            LockedWorkJob,
+            WorkJob,
             "acknowledge_source_reconciliation",
             side_effect=ActionError("test.ack.failed", "cut"),
         ):

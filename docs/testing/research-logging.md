@@ -217,13 +217,15 @@ The reproduction suite uses native accepted-work fixtures. Its completion covera
 exercise finding-owned admission over the fresh validation snapshot and shared
 research graph, exact command/execution/output binding, cross-type batch
 independence, blocker dependency propagation, locked fresh preparation, strict
-accepted plan insertion and SQLite
-reconstruction, run-store and scheduler transactions, stop and interruption
-recovery, dependency failure and independent progress, publication-only retry,
+accepted plan insertion and direct typed SQLite reconstruction, run-store and
+scheduler transactions, independent-process worker writers with coherent
+read-only status, durable stop intent and interruption recovery, stopped-attempt
+worker reset, same-root creation races, per-log recovery isolation, dependency
+failure and independent progress, publication-only retry,
 source-change rejection and new-run preparation, comparison-baseline
 invariance, reservation/promotion overlap, and validation-snapshot invariance.
-It must not restore continuation, whole-snapshot certification, JSON job
-decoding, or accepted-attempt lineage coverage.
+It must not restore continuation, whole-snapshot certification, whole-plan JSON
+round trips, run-wide file-mutex retry, or accepted-attempt lineage coverage.
 
 For reproduction execution and process-lifecycle development, run the focused
 controlled-fixture suite outside any enclosing process-observation sandbox:
@@ -231,7 +233,8 @@ controlled-fixture suite outside any enclosing process-observation sandbox:
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   ./.conda/bin/python -m unittest \
-  test_reproduction_work_execution test_reproduction_work_supervision \
+  test_reproduction_work_job test_reproduction_work_execution \
+  test_reproduction_work_supervision \
   test_reproduction_work_recovery test_reproduction_public_jobs \
   test_log_reproduction_execution test_log_command_verify
 ```

@@ -293,6 +293,12 @@ Future validation changes must preserve these invariants:
   Producer artifacts are compared before exact consumers become ready; a
   differing or uncomputed artifact blocks only its consumers and downstream
   dependants while independent work continues to normal publication.
+  Job6 uses SQLite as its sole run-state concurrency authority: read-only
+  snapshot projections and short compare-and-set mutations. Status never
+  inspects processes or recovers an owner; stop records intent for the
+  supervisor, with explicit dead-owner recovery only in lifecycle controls.
+  Normalized accepted-work rows reconstruct one typed plan directly and retain
+  their canonical digest without a whole-plan JSON round trip.
   The
   separate bounded read-only legacy output-record reader is defined by
   `docs/research-log-mechanical-validator-spec.md`; it supplies no data/evidence

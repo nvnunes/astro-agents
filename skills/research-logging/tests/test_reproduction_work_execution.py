@@ -34,7 +34,6 @@ from log_commands.reproduction_inspection import (
 from log_commands.reproduction_job_control import (
     ExecutionIdentity,
     ExecutionPermitAttachment,
-    JobStoreBusyError,
     RunOwner,
 )
 from log_commands.reproduction_paths import canonical_run_path, run_leaf
@@ -252,31 +251,6 @@ class NativeExecutionTests(unittest.TestCase):
                     )
                 )
         return fixture, work, workspace, output
-
-    def test_worker_observation_retries_brief_job_lock_contention(self):
-        _fixture, work, workspace, _output = self.prepare("VALUE = 1\n")
-        real_open = execution.open_work_job
-        calls = 0
-
-        def busy_once(run_root):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise JobStoreBusyError("brief external contention")
-            return real_open(run_root)
-
-        with (
-            mock.patch.object(execution, "open_work_job", side_effect=busy_once),
-            mock.patch.object(execution, "WORKER_RECORD_RETRY_INTERVAL_SECONDS", 0),
-        ):
-            execution._record_workers_with_retry(
-                workspace.run_root,
-                work.identity,
-                "native-grant",
-                (),
-            )
-
-        self.assertEqual(calls, 2)
 
     def test_native_execution_uses_the_log_shared_import_context(self):
         fixture, work, workspace, retained = self.prepare(

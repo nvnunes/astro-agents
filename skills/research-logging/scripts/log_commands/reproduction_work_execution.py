@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, cast
@@ -57,7 +56,7 @@ from .reproduction_execution import (
 from .reproduction_invocation import (
     AcceptedInvocation,
 )
-from .reproduction_job_control import JobStoreBusyError, WorkerRecord
+from .reproduction_job_control import WorkerRecord
 from .reproduction_run import CommandResult
 from .reproduction_work import CommandWork
 from .reproduction_work_job import (
@@ -69,9 +68,6 @@ from .reproduction_work_job import (
     open_work_job,
 )
 from .reproduction_work_plan import ReproductionPlan
-
-WORKER_RECORD_RETRY_SECONDS = 5.0
-WORKER_RECORD_RETRY_INTERVAL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -218,7 +214,7 @@ def _run_attempt(
         raise ReproductionControlPlaneError(error) from error
 
     def record_workers(workers):
-        _record_workers_with_retry(
+        _record_workers(
             workspace.run_root,
             attempt.work.identity,
             control.permit_id,
@@ -257,24 +253,16 @@ def _run_attempt(
     )
 
 
-def _record_workers_with_retry(
+def _record_workers(
     run_root: Path,
     identity: ExecutionRef,
     permit_id: str,
     workers: tuple[WorkerRecord, ...],
 ) -> None:
-    """Persist worker observations across brief external state-lock contention."""
+    """Persist one worker observation through a bounded SQLite transaction."""
 
-    deadline = time.monotonic() + WORKER_RECORD_RETRY_SECONDS
-    while True:
-        try:
-            with open_work_job(run_root) as job:
-                job.replace_execution_workers(identity, permit_id, workers)
-            return
-        except JobStoreBusyError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(WORKER_RECORD_RETRY_INTERVAL_SECONDS)
+    with open_work_job(run_root) as job:
+        job.replace_execution_workers(identity, permit_id, workers)
 
 
 def _materialized_result(
@@ -421,10 +409,7 @@ def compare_work_outputs(
         if (
             artifact.identity in recorded
             or artifact.producer not in succeeded
-            or (
-                only_producer is not None
-                and artifact.producer != only_producer
-            )
+            or (only_producer is not None and artifact.producer != only_producer)
         ):
             continue
         assert artifact.producer is not None

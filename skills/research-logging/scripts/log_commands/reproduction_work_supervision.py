@@ -91,7 +91,7 @@ def _stop_requested(stage: _WorkStage) -> bool:
     local_stop = stage.control.stop_requested()
     with open_work_job(stage.workspace.run_root) as job:
         state = job.load_run_control()
-        if local_stop and state.status is None and state.phase != "stopping":
+        if local_stop and state.status is None and state.stop_requested_at is None:
             job.request_run_stop(RunStopRequest(_utc_now()))
         return (
             local_stop
@@ -146,9 +146,7 @@ def _compare_completed_output(stage: _WorkStage, identity: ExecutionRef) -> None
     """Compare before dependants run, unless a concurrent stop won the race."""
 
     try:
-        compare_work_outputs(
-            stage.workspace, identity, accepted_plan=stage.plan
-        )
+        compare_work_outputs(stage.workspace, identity, accepted_plan=stage.plan)
     except JobStoreTransitionError:
         if _stop_requested(stage):
             return
@@ -357,6 +355,9 @@ def execute_work_plan(
     ) as pool:
         while pending or running:
             stopped = stopped or _stop_requested(stage)
+            if stopped:
+                with open_work_job(workspace.run_root) as job:
+                    job.acknowledge_run_stop()
             if not stopped:
                 ready = _resolve_pending(stage, pending)
                 _launch_ready(stage, pool, pending, running, ready)
@@ -372,11 +373,39 @@ def execute_work_plan(
     return "stopped" if stopped else "completed"
 
 
+def _acknowledge_requested_stop(run_root: Path) -> bool:
+    with open_work_job(run_root) as job:
+        state = job.load_run_control()
+        if state.status is not None:
+            return False
+        if state.phase == "stopping":
+            return True
+        if state.stop_requested_at is None:
+            return False
+        job.acknowledge_run_stop()
+        return True
+
+
 def _finish_stopped(run_root: Path, owner: RunOwner) -> None:
     with open_work_job(run_root) as job:
         now = max(_utc_now(), owner.registered_at, owner.last_observed_at)
         job.replace_run_owner(replace(owner, state="stopped", last_observed_at=now))
         job.finish_run_stop(RunStopCompletion(now))
+
+
+def _publish_or_finish_stopped(
+    log: LogContext,
+    run_root: Path,
+    owner: RunOwner,
+    *,
+    accepted_plan: ReproductionPlan | None = None,
+) -> None:
+    try:
+        publish_work_job(log, run_root, accepted_plan=accepted_plan)
+    except JobStoreTransitionError:
+        if not _acknowledge_requested_stop(run_root):
+            raise
+        _finish_stopped(run_root, owner)
 
 
 def _record_supervisor_failure(run_root: Path, error: BaseException) -> None:
@@ -486,7 +515,7 @@ def supervise_work_job(
     owner, project_root, run_id = _supervisor_context(log, run_root, mode, control)
     try:
         if mode == "publication":
-            publish_work_job(log, run_root)
+            _publish_or_finish_stopped(log, run_root, owner)
             return
         (control.confinement or DarwinSeatbelt()).preflight()
         workspace = (
@@ -496,24 +525,32 @@ def supervise_work_job(
         )
         with open_work_job(run_root) as job:
             plan = job.accepted.plan
-        outcome = execute_work_plan(
-            log, workspace, control, accepted_plan=plan
-        )
-        with open_work_job(run_root) as job:
-            stopping = job.load_run_control().phase == "stopping"
+        outcome = execute_work_plan(log, workspace, control, accepted_plan=plan)
+        stopping = _acknowledge_requested_stop(run_root)
         if outcome == "stopped" or stopping:
             _finish_stopped(run_root, owner)
             return
-        compare_work_outputs(workspace, accepted_plan=plan)
+        try:
+            compare_work_outputs(workspace, accepted_plan=plan)
+        except JobStoreTransitionError:
+            if _acknowledge_requested_stop(run_root):
+                _finish_stopped(run_root, owner)
+                return
+            raise
         from .reproduction_reconciliation import reconcile_completed_sources
 
-        reconcile_completed_sources(log, run_root, accepted_plan=plan)
-        with open_work_job(run_root) as job:
-            stopping = job.load_run_control().phase == "stopping"
+        try:
+            reconcile_completed_sources(log, run_root, accepted_plan=plan)
+        except JobStoreTransitionError:
+            if _acknowledge_requested_stop(run_root):
+                _finish_stopped(run_root, owner)
+                return
+            raise
+        stopping = _acknowledge_requested_stop(run_root)
         if stopping:
             _finish_stopped(run_root, owner)
             return
-        publish_work_job(log, run_root, accepted_plan=plan)
+        _publish_or_finish_stopped(log, run_root, owner, accepted_plan=plan)
     except SystemExit:
         raise
     except BaseException as error:

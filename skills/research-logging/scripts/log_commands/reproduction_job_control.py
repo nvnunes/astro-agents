@@ -1,4 +1,4 @@
-"""Physical job locking, lifecycle requests and process-ownership guardrails.
+"""Job storage, lifecycle requests and process-ownership guardrails.
 
 The native work job owns its schema and research facts. This module owns only
 the genuine filesystem/SQLite safety and scheduler/process control contracts.
@@ -7,16 +7,13 @@ No accepted-plan decoder, comparison packet or result projection belongs here.
 
 from __future__ import annotations
 
-import fcntl
 import math
-import os
 import re
 import sqlite3
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Iterator, Literal, NoReturn, Sequence, cast
+from typing import Literal, NoReturn, Sequence, cast
 
 from .context import ENTRY_ID_RE
 from .reproduction_paths import (
@@ -31,8 +28,8 @@ MAX_EXECUTION_WORKERS = 1_024
 MAX_RUN_WORKERS = 4_096
 MAX_STRING_BYTES = 8 * 1024
 MAX_PATH_BYTES = 2 * 1024
-JOB_LOCK_NAME = "state.lock"
 _COMPANIONS = ("-journal", "-wal", "-shm")
+JOB_WRITE_TIMEOUT_SECONDS = 5.0
 _EXECUTION_ID_RE = re.compile(r"pyrun-exec/v2:[0-9a-f]{64}\Z")
 _CID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
@@ -60,10 +57,10 @@ class JobStoreExistsError(JobStoreError):
     code = "reproduction.run.exists"
 
 
-class JobStoreBusyError(JobStoreError):
-    """The run-state mutex or SQLite writer is already held."""
+class JobStoreUnavailableError(JobStoreError):
+    """A SQLite write could not acquire its short transaction in time."""
 
-    code = "reproduction.run.busy"
+    code = "reproduction.run.unavailable"
 
 
 class JobStoreSymlinkError(JobStoreError):
@@ -262,12 +259,22 @@ def _bounded_string(value: object) -> bool:
     )
 
 
-def _check_database_size(db: sqlite3.Connection) -> None:
-    """Reject a transaction before commit when its allocated data is oversized."""
+def _check_mutation_size(db: sqlite3.Connection, path: Path) -> None:
+    """Reserve enough space for one WAL frame per dirty page before commit.
+
+    Writable connections disable cache spill, so a transaction cannot emit
+    repeated frames for pages evicted before its commit. Include possible main
+    database growth from an automatic checkpoint as well as the WAL growth.
+    """
 
     page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
     page_size = int(db.execute("PRAGMA page_size").fetchone()[0])
-    if page_count * page_size > MAX_JOB_STORE_BYTES:
+    logical_size = page_count * page_size
+    if logical_size > MAX_JOB_STORE_BYTES:
+        raise JobStoreInvariantError("durable job store crossed its byte bound")
+    main_growth = max(0, logical_size - path.stat().st_size)
+    wal_growth = 32 + page_count * (page_size + 24)
+    if _store_size(path) + main_growth + wal_growth > MAX_JOB_STORE_BYTES:
         raise JobStoreInvariantError("durable job store crossed its byte bound")
 
 
@@ -284,7 +291,6 @@ def _checked_state_path(run_root: Path, *, writable: bool) -> Path:
     for candidate in (
         path,
         *(Path(str(path) + suffix) for suffix in _COMPANIONS),
-        run_root / JOB_LOCK_NAME,
     ):
         if candidate.is_symlink():
             raise JobStoreSymlinkError(f"unsafe job-state path: {candidate}")
@@ -293,51 +299,40 @@ def _checked_state_path(run_root: Path, *, writable: bool) -> Path:
     return path
 
 
-@contextmanager
-def _job_mutex(run_root: Path) -> Iterator[None]:
-    lock_path = run_root / JOB_LOCK_NAME
-    if lock_path.is_symlink():
-        raise JobStoreSymlinkError(f"unsafe job-state lock: {lock_path}")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(lock_path, flags, 0o644)
-    except OSError as error:
-        raise JobStoreMalformedError(str(error)) from error
-    with os.fdopen(descriptor, "r+b") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise JobStoreBusyError(f"job state is active: {lock_path}") from error
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
 def _open_database(
     path: Path,
     *,
-    mode: Literal["rw", "rwc"],
+    mode: Literal["ro", "rw", "rwc"],
     allow_uninitialized: bool = False,
     expected_version: int,
 ) -> sqlite3.Connection:
     db: sqlite3.Connection | None = None
     try:
         db = sqlite3.connect(
-            path.as_uri() + f"?mode={mode}", uri=True, timeout=0, isolation_level=None
+            path.as_uri() + f"?mode={mode}",
+            uri=True,
+            timeout=JOB_WRITE_TIMEOUT_SECONDS,
+            isolation_level=None,
         )
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA journal_mode=DELETE")
-        db.execute("PRAGMA synchronous=FULL")
         version = int(db.execute("PRAGMA user_version").fetchone()[0])
-        if version == 0 and allow_uninitialized:
-            return db
-        if version != expected_version:
+        if version != expected_version and not (version == 0 and allow_uninitialized):
             raise JobStoreUnsupportedError(
                 f"job store version {version} is unsupported"
             )
-        _check_store_size(path)
+        if version == expected_version:
+            _check_store_size(path)
+        if mode == "ro":
+            db.execute("PRAGMA query_only=ON")
+        else:
+            journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+            if journal_mode != "wal":
+                changed = db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if changed != "wal":
+                    raise JobStoreMalformedError("job store could not enable WAL")
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("PRAGMA cache_spill=OFF")
         return db
     except BaseException as error:
         if db is not None:
@@ -619,7 +614,7 @@ def _store_size(path: Path) -> int:
 def _sqlite_error_code(error: sqlite3.OperationalError) -> type[JobStoreError]:
     text = str(error).lower()
     if "locked" in text or "busy" in text:
-        return JobStoreBusyError
+        return JobStoreUnavailableError
     return JobStoreMalformedError
 
 

@@ -13,9 +13,18 @@ import json
 import sqlite3
 from typing import Mapping, cast
 
-from .reproduction_domain import ReproductionDomainError, ReproductionProblem
-from .reproduction_saved_run import MAX_WORK_RECORDS
-from .reproduction_work_plan import MAX_PLAN_BYTES, PLAN_SCHEMA, ReproductionPlan
+from validation.domain import plain_json
+
+from .reproduction_domain import (
+    ReproductionDomainError,
+    ReproductionProblem,
+    _fields,
+    _text,
+)
+from .reproduction_run import ArtifactResult
+from .reproduction_saved_run import MAX_WORK_RECORDS, RunSettings, RunTarget
+from .reproduction_work import ArtifactWork, CommandWork
+from .reproduction_work_plan import MAX_PLAN_BYTES, ReproductionPlan
 
 # Every canonical dependency/problem reference needs more than 64 serialized
 # bytes. This conservative read bound cannot exclude any valid 64 MiB plan.
@@ -143,8 +152,12 @@ def _json(value: object) -> str:
         raise ReproductionDomainError("accepted work is not finite JSON") from error
 
 
-def _identity(value: Mapping[str, object]) -> tuple[object, object, object]:
-    return value["entry"], value["cid"], value["execution_id"]
+def _identity(value: Mapping[str, object]) -> tuple[str, str, str]:
+    return (
+        cast(str, value["entry"]),
+        cast(str, value["cid"]),
+        cast(str, value["execution_id"]),
+    )
 
 
 def _write_accepted_work(
@@ -159,25 +172,30 @@ def _write_accepted_work(
     if not isinstance(plan, ReproductionPlan):
         raise ReproductionDomainError("acceptance requires a replacement typed plan")
     serialized = plan.serialized().encode()
-    fields = ReproductionPlan.from_json(serialized).as_dict()
     db.execute(
         "INSERT INTO accepted_work_manifest VALUES (?, ?)",
         (run_id, hashlib.sha256(serialized).hexdigest()),
     )
-    commands = fields["commands"]
-    assert isinstance(commands, list)
-    command_keys = {}
-    for command_pk, command in enumerate(commands, 1):
-        identity = command["identity"]
-        command_keys[_identity(identity)] = command_pk
+    command_keys: dict[tuple[str, str, str], int] = {}
+    for command_pk, command in enumerate(plan.commands, 1):
+        command_fields = command.as_dict()
+        identity = command.identity
+        command_keys[(identity.entry, identity.cid, identity.execution_id)] = command_pk
         payload = {
             key: value
-            for key, value in command.items()
+            for key, value in command_fields.items()
             if key not in {"identity", "dependencies", "problem_ids"}
         }
         db.execute(
             "INSERT INTO accepted_work_commands VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, command_pk, *_identity(identity), _json(payload)),
+            (
+                run_id,
+                command_pk,
+                identity.entry,
+                identity.cid,
+                identity.execution_id,
+                _json(payload),
+            ),
         )
     for problem in plan.problems:
         db.execute(
@@ -188,29 +206,35 @@ def _write_accepted_work(
             "INSERT INTO accepted_work_problems VALUES (?, ?)",
             (run_id, problem.problem_id),
         )
-    for command_pk, command in enumerate(commands, 1):
+    for command_pk, command in enumerate(plan.commands, 1):
         db.executemany(
             "INSERT INTO accepted_work_dependencies VALUES (?, ?, ?, ?)",
             (
-                (run_id, command_pk, position, command_keys[_identity(dependency)])
-                for position, dependency in enumerate(command["dependencies"])
+                (
+                    run_id,
+                    command_pk,
+                    position,
+                    command_keys[
+                        (dependency.entry, dependency.cid, dependency.execution_id)
+                    ],
+                )
+                for position, dependency in enumerate(command.dependencies)
             ),
         )
         db.executemany(
             "INSERT INTO accepted_work_command_problems VALUES (?, ?, ?, ?)",
             (
                 (run_id, command_pk, position, problem_id)
-                for position, problem_id in enumerate(command["problem_ids"])
+                for position, problem_id in enumerate(command.problem_ids)
             ),
         )
-    artifacts = fields["artifacts"]
-    assert isinstance(artifacts, list)
-    for artifact_pk, artifact in enumerate(artifacts, 1):
-        identity = artifact["identity"]
-        producer = artifact["producer"]
+    for artifact_pk, artifact in enumerate(plan.artifacts, 1):
+        artifact_fields = artifact.as_dict()
+        artifact_identity = artifact.identity
+        producer = artifact.producer
         payload = {
             key: value
-            for key, value in artifact.items()
+            for key, value in artifact_fields.items()
             if key not in {"identity", "producer", "problem_ids"}
         }
         db.execute(
@@ -218,9 +242,11 @@ def _write_accepted_work(
             (
                 run_id,
                 artifact_pk,
-                identity["entry"],
-                identity["artifact"],
-                command_keys[_identity(producer)] if producer is not None else None,
+                artifact_identity.entry,
+                artifact_identity.artifact,
+                command_keys[(producer.entry, producer.cid, producer.execution_id)]
+                if producer is not None
+                else None,
                 _json(payload),
             ),
         )
@@ -228,32 +254,45 @@ def _write_accepted_work(
             "INSERT INTO accepted_work_artifact_problems VALUES (?, ?, ?, ?)",
             (
                 (run_id, artifact_pk, position, problem_id)
-                for position, problem_id in enumerate(artifact["problem_ids"])
+                for position, problem_id in enumerate(artifact.problem_ids)
             ),
         )
+    infrastructure = {
+        "materials": plan.materials,
+        "evidence_only": plan.evidence_only,
+        "reusable_artifact_results": plan.reusable_artifact_results,
+    }
     for field, table in _INFRASTRUCTURE.items():
-        records = fields[field]
-        assert isinstance(records, list)
+        records = infrastructure[field]
         db.executemany(
             f"INSERT INTO {table} VALUES (?, ?, ?)",
             (
-                (run_id, position, _json(record))
+                (
+                    run_id,
+                    position,
+                    _json(
+                        record.as_dict()
+                        if isinstance(record, ArtifactResult)
+                        else plain_json(record)
+                    ),
+                )
                 for position, record in enumerate(records)
             ),
         )
     for claims in plan.scheduling:
+        fields = cast(Mapping[str, object], plain_json(claims))
         payload = {
             key: value
-            for key, value in claims.items()
+            for key, value in fields.items()
             if key not in {"identity", "order", "run_path"}
         }
         db.execute(
             "INSERT INTO accepted_work_scheduling VALUES (?, ?, ?, ?, ?)",
             (
                 run_id,
-                command_keys[_identity(cast(Mapping[str, object], claims["identity"]))],
-                claims["order"],
-                claims["run_path"],
+                command_keys[_identity(cast(Mapping[str, object], fields["identity"]))],
+                fields["order"],
+                fields["run_path"],
                 _json(payload),
             ),
         )
@@ -330,7 +369,6 @@ def _load_accepted_work(
     if set(header) != {"summary", "target", "settings", "admission"}:
         raise ReproductionDomainError("accepted run header has invalid fields")
     _require_relation_bounds(db, run_id)
-    fields = {"schema": PLAN_SCHEMA, **header}
     rows = _rows(db, "accepted_work_commands", run_id, "command_pk")
     identities = {
         row["command_pk"]: {key: row[key] for key in ("entry", "cid", "execution_id")}
@@ -349,17 +387,18 @@ def _load_accepted_work(
             db, "accepted_work_command_problems", run_id, "command_pk", command_pk
         )
         commands.append(
-            {
-                **payload,
-                "identity": identities[command_pk],
-                "dependencies": [
-                    _known_execution(identities, item["dependency_pk"])
-                    for item in dependencies
-                ],
-                "problem_ids": [item["problem_id"] for item in problems],
-            }
+            CommandWork.from_dict(
+                {
+                    **payload,
+                    "identity": identities[command_pk],
+                    "dependencies": [
+                        _known_execution(identities, item["dependency_pk"])
+                        for item in dependencies
+                    ],
+                    "problem_ids": [item["problem_id"] for item in problems],
+                }
+            )
         )
-    fields["commands"] = commands
     artifacts = []
     for row in _rows(db, "accepted_work_artifacts", run_id, "artifact_pk"):
         payload = _payload(row["work_json"], {"identity", "producer", "problem_ids"})
@@ -371,16 +410,17 @@ def _load_accepted_work(
             row["artifact_pk"],
         )
         artifacts.append(
-            {
-                **payload,
-                "identity": {"entry": row["entry"], "artifact": row["artifact"]},
-                "producer": _known_execution(identities, row["producer_pk"])
-                if row["producer_pk"] is not None
-                else None,
-                "problem_ids": [item["problem_id"] for item in problems],
-            }
+            ArtifactWork.from_dict(
+                {
+                    **payload,
+                    "identity": {"entry": row["entry"], "artifact": row["artifact"]},
+                    "producer": _known_execution(identities, row["producer_pk"])
+                    if row["producer_pk"] is not None
+                    else None,
+                    "problem_ids": [item["problem_id"] for item in problems],
+                }
+            )
         )
-    fields["artifacts"] = artifacts
     problem_records = []
     for membership in _rows(db, "accepted_work_problems", run_id, "problem_id"):
         row = db.execute(
@@ -394,14 +434,14 @@ def _load_accepted_work(
             raise ReproductionDomainError(
                 "accepted problem identity disagrees with its observation"
             )
-        problem_records.append(problem.as_dict())
-    fields["problems"] = problem_records
+        problem_records.append(problem)
+    infrastructure: dict[str, tuple[Mapping[str, object], ...]] = {}
     for field, table in _INFRASTRUCTURE.items():
-        fields[field] = [
+        infrastructure[field] = tuple(
             _payload(row["record_json"], set())
             for row in _rows(db, table, run_id, "position")
-        ]
-    fields["scheduling"] = [
+        )
+    scheduling = [
         {
             **_payload(row["claims_json"], {"identity", "order", "run_path"}),
             "identity": _known_execution(identities, row["command_pk"]),
@@ -410,7 +450,22 @@ def _load_accepted_work(
         }
         for row in _rows(db, "accepted_work_scheduling", run_id, "plan_order")
     ]
-    plan = ReproductionPlan.from_json(_json(fields).encode())
+    plan = ReproductionPlan(
+        _text(header["summary"]),
+        RunTarget.from_dict(header["target"]),
+        RunSettings.from_dict(header["settings"]),
+        _fields(header["admission"], None, "admission"),
+        tuple(commands),
+        tuple(artifacts),
+        tuple(problem_records),
+        infrastructure["materials"],
+        infrastructure["evidence_only"],
+        tuple(scheduling),
+        tuple(
+            ArtifactResult.from_dict(row)
+            for row in infrastructure["reusable_artifact_results"]
+        ),
+    )
     manifest = db.execute(
         "SELECT plan_digest FROM accepted_work_manifest WHERE run_id=?", (run_id,)
     ).fetchone()

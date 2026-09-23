@@ -1051,13 +1051,17 @@ Observe or control the accepted job by run ID:
 <skill>/scripts/log reproduce resume --path <log> --run-id <run-id>
 ```
 
-Status is operational lifecycle, separate from command/artifact outcomes.
-Agents and confirmed optional monitors use `status --json`. Monitoring never
-controls the job. Stop preserves completed results and diagnostics. Resume
-uses the same accepted plan and settings, never replans, and launches only
-never-started or stopped nonterminal work after cleanup. Durable success/failure
-is not attempted again. Publication-only recovery uses frozen facts without
-execution; source changes require a new run.
+Status is an observational lifecycle snapshot, separate from command/artifact
+outcomes; it does not inspect processes or initiate recovery. Agents and
+confirmed optional monitors use `status --json`. Monitoring never controls the
+job. Stop records durable intent and waits for the stopped result, another
+terminal result, or an exact recovery/control failure. It preserves completed
+results and diagnostics. Resume uses the same accepted plan and settings,
+never replans, and launches only never-started or stopped nonterminal work
+after cleanup. Durable success/failure is not attempted again. Ordinary
+operationally failed runs cannot resume; failed frozen publication can retry
+from its journal without execution. Source changes require a new run. An
+unrelated log's run does not block planning merely because it needs recovery.
 
 Runs live at
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`.

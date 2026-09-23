@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import multiprocessing
 import os
 import shutil
 import sqlite3
@@ -12,9 +13,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
+from log_commands import reproduction_jobs as jobs
 from log_commands import reproduction_planner as planner
 from log_commands import reproduction_scheduler as scheduler
 from log_commands import reproduction_work_job as storage
+from log_commands.context import LogContext
 from log_commands.model import ActionError
 from log_commands.reproduction_artifact_results import (
     ArtifactObservationContext,
@@ -31,13 +34,13 @@ from log_commands.reproduction_job_control import (
     ExecutionIdentity,
     ExecutionPermitAttachment,
     ExecutionStart,
-    JobStoreBusyError,
     JobStoreExistsError,
     JobStoreInvariantError,
     JobStoreMalformedError,
     JobStoreMissingError,
     JobStoreSymlinkError,
     JobStoreTransitionError,
+    JobStoreUnavailableError,
     JobStoreUnsupportedError,
     RecoveryWorkerObservation,
     RunFailure,
@@ -56,7 +59,9 @@ from log_commands.reproduction_work_job import (
     accepted_scheduling_projection,
     create_work_job,
     open_work_job,
+    snapshot_work_job,
 )
+from log_commands.reproduction_work_plan import ReproductionPlan
 from test_reproduction_canonical_records import FINGERPRINT, WHEN
 from test_reproduction_model_preservation import fanout_fixture
 from validation.engine import (
@@ -67,7 +72,313 @@ from validation.engine import (
 from validation.operation_state import research_snapshot
 
 
+def _create_job_process(
+    root, run_id, run_path, project, serialized, ready, start, result
+):
+    plan = ReproductionPlan.from_json(serialized)
+    ready.put(True)
+    if not start.wait(15):
+        result.put("timeout")
+        return
+    try:
+        create_work_job(root, WorkJobAcceptance(run_id, plan, WHEN, run_path, project))
+    except JobStoreExistsError:
+        result.put("exists")
+    else:
+        result.put("created")
+
+
+def _write_workers_process(root, identity, permit, worker_id, ready, start, result):
+    ready.put(True)
+    if not start.wait(15):
+        result.put("timeout")
+        return
+    try:
+        worker = WorkerRecord(worker_id, None, os.getpid(), "running", WHEN, WHEN)
+        for _ in range(6):
+            with open_work_job(root) as job:
+                job.replace_execution_workers(identity, permit, (worker,))
+    except Exception as error:
+        result.put(f"{type(error).__name__}: {error}")
+    else:
+        result.put("written")
+
+
+def _crash_before_stop_commit(root):
+    with mock.patch.object(
+        storage, "_before_commit", side_effect=lambda *_: os._exit(17)
+    ):
+        with open_work_job(root) as job:
+            job.request_run_stop(RunStopRequest(WHEN))
+
+
 class WorkJobTests(unittest.TestCase):
+    def test_status_is_observational_and_does_not_load_plan(self):
+        self.accept()
+        with (
+            mock.patch.object(jobs, "_pid_alive", side_effect=AssertionError("pid")),
+            mock.patch.object(
+                storage, "_load_accepted_work", side_effect=AssertionError("plan")
+            ),
+        ):
+            status = jobs.reproduction_status(self.fixture.log, self.run_id)
+        self.assertEqual(status["phase"], "accepted")
+        with snapshot_work_job(self.root) as job:
+            self.assertEqual(job._db.execute("PRAGMA query_only").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                job._db.execute("UPDATE run_state SET phase='stopping'")
+
+    def test_status_snapshot_does_not_mix_committed_lifecycle_states(self):
+        self.accept()
+        with snapshot_work_job(self.root) as snapshot:
+            self.assertEqual(snapshot.load_run_control().phase, "accepted")
+            with open_work_job(self.root) as writer:
+                writer.request_run_stop(RunStopRequest(WHEN))
+                writer.acknowledge_run_stop()
+            projected = snapshot.load_operational_status()
+            self.assertEqual(projected["phase"], "accepted")
+            self.assertIsNone(snapshot.load_run_control().stop_requested_at)
+        with snapshot_work_job(self.root) as latest:
+            projected = latest.load_operational_status()
+            self.assertEqual(projected["phase"], "stopping")
+            self.assertEqual(latest.load_run_control().stop_requested_at, WHEN)
+
+    def test_active_elapsed_is_projected_without_checkpoint_write(self):
+        self.accept()
+        with open_work_job(self.root) as job:
+            job.replace_run_owner(RunOwner(os.getpid(), "running", WHEN, WHEN))
+            self.attach(job)
+            job.record_execution_start(self.start)
+        with snapshot_work_job(self.root) as job:
+            status = job.load_operational_status()
+            timing = status["execution_timings"][0]
+            self.assertGreater(timing["elapsed_seconds"], 0.0)
+            self.assertEqual(
+                job.load_execution_checkpoint(self.work.identity).elapsed_seconds,
+                0.0,
+            )
+
+    def test_unrelated_log_ignores_corrupt_deeper_run_state(self):
+        self.accept()
+        other_summary = self.project / "docs" / "other.md"
+        other_root = other_summary.with_suffix("")
+        other_root.mkdir()
+        other_log = LogContext(other_summary, other_root)
+        with sqlite3.connect(self.state) as db:
+            db.execute("DELETE FROM run_state")
+        with mock.patch.object(
+            jobs, "_pid_alive", side_effect=AssertionError("process inspection")
+        ):
+            jobs._require_no_recovery_exclusion(
+                other_log, None, ignore_recovery_run_id=None
+            )
+
+    def test_sustained_sqlite_writer_reports_one_bounded_control_failure(self):
+        self.accept()
+        holder = sqlite3.connect(self.state)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            with mock.patch(
+                "log_commands.reproduction_job_control.JOB_WRITE_TIMEOUT_SECONDS",
+                0.05,
+            ):
+                with open_work_job(self.root) as job:
+                    with self.assertRaises(JobStoreUnavailableError):
+                        job.request_run_stop(RunStopRequest(WHEN))
+        finally:
+            holder.rollback()
+            holder.close()
+        with open_work_job(self.root) as job:
+            job.request_run_stop(RunStopRequest(WHEN))
+            self.assertEqual(job.load_run_control().stop_requested_at, WHEN)
+
+    def test_old_delete_journal_and_lock_open_without_data_translation(self):
+        self.accept()
+        with sqlite3.connect(self.state) as db:
+            self.assertEqual(
+                db.execute("PRAGMA journal_mode=DELETE").fetchone()[0], "delete"
+            )
+        (self.root / "state.lock").touch()
+        original_bytes = self.plan.serialized()
+        with snapshot_work_job(self.root) as job:
+            self.assertEqual(job.accepted.plan.serialized(), original_bytes)
+            self.assertEqual(job.load_run_control().phase, "accepted")
+        with sqlite3.connect(self.state) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        with open_work_job(self.root) as job:
+            self.assertEqual(job.accepted.plan.serialized(), original_bytes)
+            self.assertEqual(job.load_run_control().phase, "accepted")
+        with sqlite3.connect(self.state) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        self.assertTrue((self.root / "state.lock").exists())
+
+    def test_wal_growth_is_rejected_before_oversized_mutation_commits(self):
+        self.accept()
+        with sqlite3.connect(self.state) as db:
+            logical_size = (
+                db.execute("PRAGMA page_count").fetchone()[0]
+                * db.execute("PRAGMA page_size").fetchone()[0]
+            )
+        limit = logical_size * 4
+        with mock.patch(
+            "log_commands.reproduction_job_control.MAX_JOB_STORE_BYTES", limit
+        ):
+            with open_work_job(self.root) as job:
+                with self.assertRaises(JobStoreInvariantError):
+                    with job._transaction("oversized_wal_growth"):
+                        job._db.execute(
+                            "UPDATE run_state SET operational_message=?",
+                            ("x" * (2 * logical_size),),
+                        )
+                        self.assertLessEqual(
+                            job._db.execute("PRAGMA page_count").fetchone()[0]
+                            * job._db.execute("PRAGMA page_size").fetchone()[0],
+                            limit,
+                        )
+        with open_work_job(self.root) as job:
+            self.assertEqual(job.load_run_control().phase, "accepted")
+            self.assertIsNone(
+                job._db.execute("SELECT operational_message FROM run_state").fetchone()[
+                    0
+                ]
+            )
+
+    def test_racing_creators_preserve_one_complete_job(self):
+        context = multiprocessing.get_context("spawn")
+        ready, result = context.Queue(), context.Queue()
+        start = context.Event()
+        workers = [
+            context.Process(
+                target=_create_job_process,
+                args=(
+                    self.root,
+                    self.run_id,
+                    self.run_path,
+                    self.project,
+                    self.plan.serialized().encode(),
+                    ready,
+                    start,
+                    result,
+                ),
+            )
+            for _ in range(2)
+        ]
+        try:
+            for worker in workers:
+                worker.start()
+            for _ in workers:
+                self.assertTrue(ready.get(timeout=15))
+            start.set()
+            outcomes = [result.get(timeout=15) for _ in workers]
+            self.assertCountEqual(outcomes, ["created", "exists"])
+            with snapshot_work_job(self.root) as job:
+                self.assertEqual(job.accepted.plan.serialized(), self.plan.serialized())
+            self.assertFalse((self.root / "state.lock").exists())
+        finally:
+            start.set()
+            for worker in workers:
+                worker.join(timeout=15)
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(timeout=5)
+                self.assertEqual(worker.exitcode, 0)
+
+    def test_process_loss_before_stop_commit_rolls_back(self):
+        self.accept()
+        context = multiprocessing.get_context("spawn")
+        worker = context.Process(target=_crash_before_stop_commit, args=(self.root,))
+        worker.start()
+        worker.join(timeout=15)
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=5)
+        self.assertEqual(worker.exitcode, 17)
+        with snapshot_work_job(self.root) as job:
+            self.assertIsNone(job.load_run_control().stop_requested_at)
+        with open_work_job(self.root) as job:
+            job.request_run_stop(RunStopRequest(WHEN))
+            self.assertEqual(job.load_run_control().stop_requested_at, WHEN)
+
+    def test_four_process_writers_and_snapshot_reader_progress(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        project = Path(directory.name).resolve()
+        fixture, entry, _ = fanout_fixture(project, 5)
+        evaluation = evaluate_mechanical(
+            EvaluationRequest(fixture.summary, FullEvaluationTarget())
+        )
+        plan = planner.plan_reproduction_work(
+            fixture.log,
+            planner.prepare_reproduction_context(evaluation),
+            entry=entry,
+            include_all=False,
+        )
+        run_id = "reproduce-concurrent-writers"
+        run_path = canonical_run_path(
+            WHEN, run_leaf(fixture.summary.stem, "e001", run_id)
+        ).as_posix()
+        root = project / run_path
+        root.mkdir(parents=True)
+        create_work_job(root, WorkJobAcceptance(run_id, plan, WHEN, run_path, project))
+        identities = [
+            ExecutionRef.from_dict(row["identity"]) for row in plan.scheduling[:4]
+        ]
+        self.assertEqual(len(identities), 4)
+        with open_work_job(root) as job:
+            job.replace_run_owner(RunOwner(os.getpid(), "running", WHEN, WHEN))
+            for index, identity in enumerate(identities):
+                job.attach_execution_permit(
+                    ExecutionPermitAttachment(
+                        identity.entry,
+                        identity.cid,
+                        identity.execution_id,
+                        f"grant-{index}",
+                        WHEN,
+                    )
+                )
+        context = multiprocessing.get_context("spawn")
+        ready, result = context.Queue(), context.Queue()
+        start = context.Event()
+        workers = [
+            context.Process(
+                target=_write_workers_process,
+                args=(
+                    root,
+                    identity,
+                    f"grant-{index}",
+                    f"worker-{index}",
+                    ready,
+                    start,
+                    result,
+                ),
+            )
+            for index, identity in enumerate(identities)
+        ]
+        try:
+            for worker in workers:
+                worker.start()
+            for _ in workers:
+                self.assertTrue(ready.get(timeout=15))
+            start.set()
+            for _ in range(12):
+                with snapshot_work_job(root) as job:
+                    status = job.load_operational_status()
+                self.assertEqual(status["total_executions"], len(plan.scheduling))
+                self.assertLessEqual(len(status["active_workers"]), 4)
+            self.assertEqual([result.get(timeout=15) for _ in workers], ["written"] * 4)
+            with snapshot_work_job(root) as job:
+                self.assertEqual(
+                    len(job.load_operational_status()["active_workers"]), 4
+                )
+        finally:
+            start.set()
+            for worker in workers:
+                worker.join(timeout=15)
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(timeout=5)
+                self.assertEqual(worker.exitcode, 0)
+
     def test_large_live_control_paths_load_complete_plan_once(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -88,9 +399,7 @@ class WorkJobTests(unittest.TestCase):
         ).as_posix()
         root = project / run_path
         root.mkdir(parents=True)
-        create_work_job(
-            root, WorkJobAcceptance(run_id, plan, WHEN, run_path, project)
-        )
+        create_work_job(root, WorkJobAcceptance(run_id, plan, WHEN, run_path, project))
         identity = ExecutionRef.from_dict(plan.scheduling[0]["identity"])
         worker = WorkerRecord("worker-large", None, 12345, "running", WHEN, WHEN)
 
@@ -143,9 +452,7 @@ class WorkJobTests(unittest.TestCase):
                 )
             for _ in range(20):
                 with open_work_job(root) as job:
-                    job.replace_execution_workers(
-                        identity, "grant-large", (worker,)
-                    )
+                    job.replace_execution_workers(identity, "grant-large", (worker,))
                     scheduler._validate_accepted_request(
                         job, root, request, accepted=accepted
                     )
@@ -167,7 +474,7 @@ class WorkJobTests(unittest.TestCase):
         with sqlite3.connect(self.state) as db:
             db.execute(
                 "UPDATE accepted_work_scheduling SET claims_json="
-                "'{\"read_paths\":[],\"write_paths\":[],\"writable_paths\":[]}' "
+                '\'{"read_paths":[],"write_paths":[],"writable_paths":[]}\' '
                 "WHERE command_pk=1"
             )
         with self.assertRaisesRegex(ReproductionDomainError, "digest"):
@@ -201,6 +508,7 @@ class WorkJobTests(unittest.TestCase):
 
     def test_status_totals_follow_acceptance_not_observed_terminal_rows(self):
         self.accept()
+        self.assertFalse((self.root / "state.lock").exists())
         with open_work_job(self.root) as job:
             total = len(self.plan.commands)
             self.assertGreater(total, 1)
@@ -340,12 +648,11 @@ class WorkJobTests(unittest.TestCase):
             job.record_execution_start(self.start)
             with self.assertRaises(JobStoreInvariantError):
                 job.record_attempt_completion(self.result(outputs={}))
-        with (self.root / "state.lock").open("r+b") as lock:
+        with (self.root / "state.lock").open("w+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
-                with self.assertRaises(JobStoreBusyError):
-                    with open_work_job(self.root):
-                        pass
+                with snapshot_work_job(self.root) as job:
+                    self.assertEqual(job.load_run_control().phase, "executing")
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -461,6 +768,7 @@ class WorkJobTests(unittest.TestCase):
             self.assertEqual(status["active_executions"], [])
             self.assertEqual(len(status["surviving_workers"]), 1)
             job.request_run_stop(RunStopRequest(WHEN))
+            job.acknowledge_run_stop()
             with self.assertRaises(JobStoreTransitionError):
                 job.finish_run_stop(RunStopCompletion(WHEN))
             job.replace_recovery_workers((), observed_at=WHEN)
@@ -561,7 +869,6 @@ class WorkJobTests(unittest.TestCase):
 
     def test_existing_or_old_job_is_not_replaced_or_translated(self):
         self.accept()
-        before = self.state.read_bytes()
         with self.assertRaises(JobStoreExistsError):
             self.accept()
         with open_work_job(self.root) as job:
@@ -573,7 +880,8 @@ class WorkJobTests(unittest.TestCase):
             with open_work_job(self.root):
                 self.fail("native reader opened old job")
         self.assertEqual(self.state.read_bytes(), old)
-        self.assertNotEqual(before, old)
+        with sqlite3.connect(self.state) as db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_old_plan_and_wrong_run_location_fail_before_store_creation(self):
         for accepted in (
@@ -804,6 +1112,7 @@ class WorkJobTests(unittest.TestCase):
             job.request_run_stop(RunStopRequest(WHEN))
             job.request_run_stop(RunStopRequest("2030-01-01T00:00:00Z"))
             self.assertEqual(job.load_run_control().stop_requested_at, WHEN)
+            job.acknowledge_run_stop()
             with self.assertRaises(JobStoreTransitionError):
                 job.finish_run_stop(RunStopCompletion(WHEN))
             with self.assertRaises(JobStoreTransitionError):
@@ -816,7 +1125,7 @@ class WorkJobTests(unittest.TestCase):
                     0.0,
                     "Stopped before launch.",
                     {},
-                    (),
+                    (self.worker,),
                 )
             )
             job.clear_execution_permit(
@@ -829,6 +1138,8 @@ class WorkJobTests(unittest.TestCase):
             self.assertIsNone(job.load_run_control().stop_requested_at)
             self.assertEqual(job.accepted.plan, self.plan)
             self.attach(job, permit="resumed", expected="stopped")
+            job.replace_execution_workers(self.work.identity, "resumed", ())
+            self.assertEqual(job.load_execution_workers(self.work.identity), ())
             self.assertIsNone(job.load_command_result(self.work.identity))
 
     def test_operational_failure_retains_one_exact_intent_and_cannot_resume(self):

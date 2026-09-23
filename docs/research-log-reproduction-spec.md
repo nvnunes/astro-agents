@@ -197,10 +197,12 @@ and fixed worker/timeout settings from accepted work. Failed prerequisites retai
 only actual block links, without an invented dependent attempt. Completed work
 must pass the existing private-output currentness/materialization guards before
 reuse; a local stop becomes durable before waits are canceled. Native state
-operations serialize same-process threads before the existing nonblocking
-process mutex. Worker-monitor writes retry brief bounded contention so a normal
-observation race cannot abort an execution; sustained contention and external
-busy errors remain explicit.
+operations use short SQLite mutations and coherent read-only snapshots. Stop
+records durable intent without taking the supervisor's lifecycle ownership;
+the supervisor acknowledges it and drains workers. Status reads neither process
+state nor current research sources and never initiates recovery. Sustained
+storage contention is an explicit control-plane failure, not a routine
+worker-observation retry.
 
 A successful producer's accepted artifacts are compared before its consumers
 become ready. Each consumer is bound to the exact producer artifacts named by
@@ -217,8 +219,14 @@ grant reconciliation, confined scratch cleanup and terminal ownership closure.
 Ordinary interruption becomes stopped, preserving any real operational failure;
 interrupted publication becomes the publication-only-resumable failure with its
 frozen journal intact. Recovery reads no research sources, replans nothing and
-executes nothing. Ordinary public launch/status/stop/resume and supervisor
+executes nothing. Ordinary public launch/status/stop/resume and explicit
 recovery consume this native accepted-job authority without an old-format fallback.
+One stop request waits for the supervisor's durable stopped result, another
+terminal result, or an exact recovery/control failure. Ordinary operationally
+failed runs remain terminal; only stopped runs and failed frozen publication
+may resume. A stopped attempt's exited worker observations do not have to
+reappear in its next attempt. An unrelated log's run is ignored before deeper
+state or process inspection during planning.
 
 The `supervise_work_job` lifecycle requires the exact live native owner
 and composes the fixed accepted execution graph, trusted comparison and native
@@ -1673,7 +1681,7 @@ are never held while commands execute.
 
 The scheduler uses its existing project-wide SQLite coordinator, exclusive
 ticket fairness and exact read/write/writable claims. Poll authenticates accepted
-claims and live owner before attaching a grant under the job mutex.
+claims and live owner before attaching a grant through a short job-state mutation.
 Grant-before-attachment and attachment-before-return interruptions are retryable.
 Exact unchanged polls perform no writes. Wrong identities cannot release grants;
 release is idempotent only for an already absent exact grant. Dead-owner grants
@@ -1682,7 +1690,10 @@ or waiters require quiescent native proof; live/surviving workers exclude reuse.
 The detached start gate registers the actual child PID before execution.
 Stop is durable intent, not a fabricated command failure. Fixed-plan resume
 uses immutable acceptance and completed native facts; relaunchable stopped
-attempts receive fresh scratch. Publication-only resume opens no workspace and
+attempts receive fresh scratch. Status is an observational snapshot and does not
+inspect processes or recover an absent supervisor. Stop and resume may explicitly
+recover an absent owner; ordinary failed runs cannot resume. Publication-only
+resume opens no workspace and
 performs no preflight, execution, planning or research-file reads.
 
 Result publication owns the reproduction-publication lock then the shared

@@ -373,26 +373,44 @@ to follow a cross-reference merely to find the reproduction command.
 
 ## Synchronize A Recorded Command
 
-Edit Markdown first, then synchronize every expansion owned by its full
-effective CID. Pass the derived program stem when Markdown omits `--cid`, and
-pass `run_study-2` rather than the authored shorthand `2` for the example
-above. The sync command's required `--cid` selects an effective CID; it does
-not imply that the recorded `pyrun` command should declare `--cid`:
+Edit Markdown first, then synchronize every expansion owned by each selected
+full effective CID. Pass the derived program stem when Markdown omits `--cid`,
+and pass `run_study-2` rather than the authored shorthand `2` for the example
+above. The sync command's `--cid` selects an effective CID; it does not imply
+that the recorded `pyrun` command should declare `--cid`:
 
 ```bash
 log command sync --path <log> --entry <entry> --cid <cid> --dry-run
 ```
 
-Review both registry diffs, then repeat without `--dry-run`. Supply simple
+For related command changes, use one entry-scoped change set with repeatable
+`--cid CID`, explicit `--rename OLD=NEW`, and `--delete CID` flags. A rename
+destination is selected automatically. Remove every old or deleted CID from
+Markdown before sync. Do not infer deletion from Markdown absence. Preview the
+complete set with `--dry-run`, then remove only `--dry-run` to apply it:
+
+```bash
+log command sync --path <log> --entry <entry> \
+  --rename old_analysis=new_analysis --delete obsolete_plot --cid summary \
+  --dry-run
+```
+
+Review both registry diffs and the selected-CID results. Supply simple
 missing declarations with repeatable `--add-origin NAME=PATH` and
 `--add-generated NAME=PATH`, with directory variants for directories.
-Use `--change-target NAME=PATH` for a safe command-local target correction.
-Declaration rename and deletion use `log data rename/delete`; shared targets,
+Use `--change-target NAME=PATH` when every command consumer is selected and no
+evidence or cross-entry consumer uses that declaration.
+Material-name rename and deletion use `log data rename/delete`; shared targets,
 specialized identities, boundaries and reproduction policies use `log data update`.
+Command deletion removes its execution bucket and exclusively owned generated
+declarations only after downstream use is gone. It never deletes retained
+output bytes; inspect any reported disconnected paths for a separate retention
+decision.
 
-When parameters disappear, sync refuses and reports one exact
-`--delete-execution EXECUTION_ID` retry flag for every stale member. Pass all and only
-those flags. Sync does not run the command or sample retained bytes. Changed or
+When parameters disappear, sync reports the exact stale members. Add one
+`--delete-stale-executions CID` for each affected selected CID to authorize
+retirement of all its stale members; a redundant acknowledgement is harmless.
+Sync does not run the command or sample retained bytes. Changed or
 new recipes require reproduction; policy-only changes retain their current
 reproduction state.
 

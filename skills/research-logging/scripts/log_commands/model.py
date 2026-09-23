@@ -70,9 +70,11 @@ class DataUpdateArguments:
 
 @dataclass(frozen=True)
 class CommandSyncArguments:
-    """Complete selected-CID synchronization request."""
+    """Complete entry-scoped command synchronization request."""
 
-    cid: str
+    cids: tuple[str, ...]
+    renames: tuple[str, ...]
+    deletions: tuple[str, ...]
     add_origins: tuple[str, ...]
     add_origin_directories: tuple[str, ...]
     add_origin_git: tuple[str, ...]
@@ -80,7 +82,7 @@ class CommandSyncArguments:
     add_generated_directories: tuple[str, ...]
     add_from_entries: tuple[str, ...]
     target_changes: tuple[str, ...]
-    execution_deletions: tuple[str, ...]
+    stale_execution_deletions: tuple[str, ...]
     dry_run: bool
 
 

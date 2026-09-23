@@ -343,10 +343,12 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     parser = _AuthoringParser(prog="log command")
     actions = parser.add_subparsers(dest="action", required=True)
     sync = actions.add_parser(
-        "sync", help="Synchronize one Markdown-owned CID and its declarations"
+        "sync", help="Synchronize selected Markdown-owned commands and lifecycle edits"
     )
     _entry_arguments(sync)
-    sync.add_argument("--cid", required=True, help="stable command ID")
+    sync.add_argument("--cid", action="append", default=[], help="stable command ID")
+    sync.add_argument("--rename", action="append", default=[], metavar="OLD=NEW")
+    sync.add_argument("--delete", action="append", default=[], metavar="CID")
     sync.add_argument("--add-origin", action="append", default=[], metavar="NAME=PATH")
     sync.add_argument(
         "--add-origin-directory",
@@ -376,23 +378,12 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
         "--change-target", action="append", default=[], metavar="NAME=TARGET"
     )
     sync.add_argument(
-        "--delete-execution",
+        "--delete-stale-executions",
         action="append",
         default=[],
-        metavar="EXECUTION_ID",
+        metavar="CID",
     )
     _mutation_argument(sync)
-    rename = actions.add_parser("rename", help="Rename a CID after Markdown edits")
-    _entry_arguments(rename)
-    _mutation_argument(rename)
-    rename.add_argument("old_id")
-    rename.add_argument("new_id")
-    delete = actions.add_parser(
-        "delete", help="Delete an absent command and its unconsumed outputs"
-    )
-    _entry_arguments(delete)
-    _mutation_argument(delete)
-    delete.add_argument("--cid", required=True)
     release = actions.add_parser(
         "release", help="Release abandoned ordinary execution reservations"
     )
@@ -427,7 +418,7 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
         return _run_command_verification(args)
     if args.action == "show":
         return _show_command_diagnostic(args)
-    if args.action in {"rename", "delete", "list", "release"}:
+    if args.action in {"list", "release"}:
         entry = resolve_entry(resolve_log(args.path), args.entry)
         return _dispatch_command_lifecycle(entry, args)
     from .command_sync import sync_command
@@ -435,7 +426,9 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     return sync_command(
         resolve_entry(resolve_log(args.path), args.entry),
         CommandSyncArguments(
-            cid=args.cid,
+            cids=tuple(args.cid),
+            renames=tuple(args.rename),
+            deletions=tuple(args.delete),
             add_origins=tuple(args.add_origin),
             add_origin_directories=tuple(args.add_origin_directory),
             add_origin_git=tuple(args.add_origin_git),
@@ -443,7 +436,7 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
             add_generated_directories=tuple(args.add_generated_directory),
             add_from_entries=tuple(args.add_from_entry),
             target_changes=tuple(args.change_target),
-            execution_deletions=tuple(args.delete_execution),
+            stale_execution_deletions=tuple(args.delete_stale_executions),
             dry_run=args.dry_run,
         ),
     )
@@ -454,12 +447,6 @@ def _dispatch_command_lifecycle(
 ) -> ActionResult:
     from . import command_lifecycle
 
-    if args.action == "rename":
-        return command_lifecycle.rename(
-            entry, args.old_id, args.new_id, dry_run=args.dry_run
-        )
-    if args.action == "delete":
-        return command_lifecycle.delete(entry, args.cid, dry_run=args.dry_run)
     if args.action == "list":
         return command_lifecycle.list_commands(entry)
     from research_log_reservations import release_abandoned

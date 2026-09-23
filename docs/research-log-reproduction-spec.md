@@ -1181,26 +1181,31 @@ otherwise specify the logical log base to resolve missing or ambiguous context.
 
 
 ```text
-log command sync [--path LOG] --entry ENTRY --cid CID [--dry-run]
+log command sync [--path LOG] --entry ENTRY
+  [--cid CID]... [--rename OLD=NEW]... [--delete CID]...
+  [--delete-stale-executions CID]... [--dry-run]
 ```
 
-Sync reconciles every current parameter expansion in the selected CID. It
+Sync reconciles every current parameter expansion in each selected CID. It
 preserves unchanged records, retains only applicable observations when a recipe
 changes, applies policy-only changes without changing reproduction state, and
 creates observation-empty pending records for missing expansions. Stale
-parameter identities require explicit repeatable `--delete-execution EXECUTION_ID`
-acknowledgements; sync reports the exact retry flags and refuses partial or
-extra acknowledgement.
+parameter identities require `--delete-stale-executions CID`, which retires
+all stale members of that selected CID. Dry-run reports the exact members.
+Redundant acknowledgement of a CID with no stale members is accepted.
 
 Supply missing file declarations in the same transaction with repeatable
 `--add-origin NAME=PATH` or `--add-generated NAME=PATH`; directory variants
 explicitly declare directories. Git origins use `--add-origin-git NAME=COMMIT:PATH`
 and cross-entry references use `--add-from-entry NAME=ENTRY`.
-Local target changes use `--change-target NAME=TARGET`. Shared or advanced
-changes, rename, and deletion remain under `log data`.
+Local target changes use `--change-target NAME=TARGET` only when all command
+consumers are selected and no evidence or cross-entry consumer exists. Command
+renames and deletions use `--rename OLD=NEW` and `--delete CID` after editing
+Markdown. Material-name identity changes, shared or advanced target changes,
+and material-name deletion remain under `log data`.
 
 The operation validates complete `data.json` and `pyrun.json` candidates and
-publishes both atomically under the entry lock. It never samples script, input,
+publishes both atomically under short entry and log locks. It never samples script, input,
 or output bytes. `--dry-run` performs the same semantic checks and returns both
 complete unified diffs without writing registries, diagnostics, or caches.
 

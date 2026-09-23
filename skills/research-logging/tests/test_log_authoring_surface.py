@@ -17,8 +17,6 @@ class AuthoringSurfaceTests(unittest.TestCase):
         expected = {
             "command": {
                 "sync",
-                "rename",
-                "delete",
                 "release",
                 "list",
                 "verify",
@@ -47,6 +45,10 @@ class AuthoringSurfaceTests(unittest.TestCase):
         sync_help = run_log(SCRIPTS, "evidence", "sync", "--help")
         for selector in ("--id", "--rename", "--delete"):
             self.assertIn(selector, sync_help.stdout)
+        command_help = run_log(SCRIPTS, "command", "sync", "--help")
+        for selector in ("--cid", "--rename", "--delete", "--delete-stale-executions"):
+            self.assertIn(selector, command_help.stdout)
+        self.assertNotIn("--delete-execution ", command_help.stdout)
 
     def test_retired_evidence_actions_fail_at_parser_without_writes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,7 +107,7 @@ class AuthoringSurfaceTests(unittest.TestCase):
     def test_maintained_workflow_builders_use_current_surface(self):
         root = Path(__file__).resolve().parent
         command_guide = root.parent / "references/file-entry-commands.md"
-        for removed in ("--rename", "--remove", "--retire"):
+        for removed in ("--remove", "--retire", "--delete-execution "):
             self.assertNotIn(removed, command_guide.read_text())
         # These are active workflow builders, not unsupported-route tests.
         for name in (

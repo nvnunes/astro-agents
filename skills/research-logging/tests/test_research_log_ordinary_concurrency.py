@@ -471,6 +471,68 @@ class OrdinarySyncConcurrencyTests(unittest.TestCase):
             self.assertIn("authoring.state.changed", result.stderr)
             self.assertEqual(retained_files(logical), saved)
 
+    def test_new_unselected_consumer_blocks_command_target_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py --input '<source>'"
+            )
+            first = entry / "data/first.csv"
+            second = entry / "data/second.csv"
+            first.write_text("value\n1\n")
+            second.write_text("value\n2\n")
+            self.assertEqual(
+                sync(logical, "--add-origin", "source=data/first.csv").returncode,
+                0,
+            )
+            prepare = command_sync._candidate_data
+            saved = {}
+
+            def during(*args, **kwargs):
+                result = prepare(*args, **kwargs)
+                document.write_text(
+                    document.read_text()
+                    + "\n## Other\n\n`Steps:`\n\n```bash\n"
+                    + "./pyrun --cid other -- scripts/build.py --input '<source>'\n"
+                    + "```\n\n`Results:`\n\nPending.\n"
+                )
+                saved.update(retained_files(logical))
+                return result
+
+            with mock.patch.object(command_sync, "_candidate_data", side_effect=during):
+                result = sync(logical, "--change-target", "source=data/second.csv")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("command.sync.target.shared", result.stderr)
+            self.assertEqual(retained_files(logical), saved)
+
+    def test_new_markdown_only_evidence_blocks_command_target_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py --input '<source>'"
+            )
+            (entry / "data/first.json").write_text('{"value": 1}')
+            (entry / "data/second.json").write_text('{"value": 2}')
+            self.assertEqual(
+                sync(logical, "--add-origin", "source=data/first.json").returncode,
+                0,
+            )
+            prepare = command_sync._candidate_data
+            saved = {}
+
+            def during(*args, **kwargs):
+                result = prepare(*args, **kwargs)
+                document.write_text(
+                    document.read_text()
+                    + "\n``<!-- eid:preview source=source select=/value -->\n"
+                )
+                saved.update(retained_files(logical))
+                return result
+
+            with mock.patch.object(command_sync, "_candidate_data", side_effect=during):
+                result = sync(logical, "--change-target", "source=data/second.json")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("command.sync.target.shared", result.stderr)
+            self.assertEqual(retained_files(logical), saved)
+
 
 class OrdinaryExecutionConcurrencyTests(unittest.TestCase):
     def test_comparison_policy_can_change_without_relocating_a_reserved_artifact(self):

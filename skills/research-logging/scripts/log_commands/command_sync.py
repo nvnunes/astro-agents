@@ -1,7 +1,8 @@
-"""Transactional synchronization of one Markdown-owned command bucket."""
+"""Transactional synchronization of selected Markdown-owned command buckets."""
 
 from __future__ import annotations
 
+import re
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from difflib import unified_diff
@@ -34,6 +35,7 @@ from validation.commands import (
     CommandDeclarationResult,
     CommandDiscoveryFailure,
     Invocation,
+    _command_fences,
     index_commands,
     materialize_declared_commands,
     order_invocations,
@@ -47,6 +49,7 @@ from validation.operation_state import (
 )
 from validation.provenance import build_producer_index
 from validation.pyrun_contract import automatic_option_role, recipe_script_parameters
+from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PYRUN_FILENAME,
     PyrunCommand,
@@ -81,6 +84,12 @@ from .data_assertions import (
 from .data_assertions import (
     require_local_target as _require_local_target,
 )
+from .graph_state import (
+    authored_evidence_uses,
+    declaration_uses,
+    describe_uses,
+    material_consumers,
+)
 from .model import ActionError, ActionResult, CommandSyncArguments
 from .retention import require_unretained_paths
 from .storage import PublicationError, atomic_write_texts, entry_locks
@@ -101,10 +110,22 @@ class _PreparedCommand:
     """Unlocked command preparation, with only relevant state retained."""
 
     before: DataFile | None
+    before_state: PyrunFile
     candidate: DataFile | None
     declarations: tuple[CommandDeclaration, ...]
     invocations: tuple[Invocation, ...]
     failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
+    selection: _Selection
+
+
+@dataclass(frozen=True)
+class _Selection:
+    """Normalized, non-overlapping command identities in one change set."""
+
+    selected: tuple[str, ...]
+    renames: tuple[tuple[str, str], ...]
+    deleted: tuple[str, ...]
+    stale_acknowledged: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -112,19 +133,21 @@ class _PublicationCandidate:
     """Complete generated command-sync state and diagnostics."""
 
     data_text: str | None
-    pyrun_text: str
+    pyrun_text: str | None
     failures: tuple[tuple[str, CommandDiscoveryFailure], ...]
     warnings: tuple[dict[str, object], ...]
+    changes: tuple[dict[str, object], ...]
 
 
 def sync_command(
     entry: EntryContext,
     arguments: CommandSyncArguments,
 ) -> ActionResult:
-    """Synchronize one selected CID and its supplemental data declarations."""
+    """Synchronize selected CIDs and lifecycle edits in one publication."""
 
     project = resolve_project_root(entry.root)
     try:
+        selection = _selection(arguments)
         source_ids = tuple(
             dict.fromkeys(
                 _mapping(value, "--add-from-entry")[1]
@@ -136,7 +159,7 @@ def sync_command(
         referenced_entries = tuple(
             resolve_entry(entry.log, source_id) for source_id in source_ids
         )
-        prepared = _prepare_command(entry, project, arguments)
+        prepared = _prepare_command(entry, project, arguments, selection)
         if arguments.dry_run:
             return _finish_command(entry, project, arguments, prepared)
         with (
@@ -163,10 +186,52 @@ def sync_command(
         raise ActionError("command.sync.unavailable", str(error)) from error
 
 
+def _selection(arguments: CommandSyncArguments) -> _Selection:
+    """Reject contradictory selectors before reading or writing registry state."""
+
+    renames = {_mapping(raw, "--rename") for raw in arguments.renames}
+    sources = [old for old, _ in renames]
+    targets = [new for _, new in renames]
+    if (
+        len(set(sources)) != len(sources)
+        or len(set(targets)) != len(targets)
+        or set(sources) & set(targets)
+    ):
+        raise ActionError(
+            "command.sync.selection.conflict",
+            "renames must be one-to-one without chains or cycles",
+        )
+    selected = set(arguments.cids) | set(targets)
+    deleted = set(arguments.deletions)
+    if not selected and not deleted:
+        raise ActionError(
+            "cli.arguments.invalid",
+            "command sync requires --cid, --rename, or --delete",
+        )
+    if deleted & (selected | set(sources)) or set(sources) & set(arguments.cids):
+        raise ActionError(
+            "command.sync.selection.conflict",
+            "a command ID cannot be selected for incompatible actions",
+        )
+    stale_acknowledged = frozenset(arguments.stale_execution_deletions)
+    if stale_acknowledged - selected:
+        raise ActionError(
+            "command.sync.selection.conflict",
+            "--delete-stale-executions must name a selected final CID",
+        )
+    return _Selection(
+        tuple(sorted(selected)),
+        tuple(sorted(renames)),
+        tuple(sorted(deleted)),
+        stale_acknowledged,
+    )
+
+
 def _prepare_command(
     entry: EntryContext,
     project: Path,
     arguments: CommandSyncArguments,
+    selection: _Selection,
 ) -> _PreparedCommand:
     with (
         nullcontext()
@@ -174,14 +239,23 @@ def _prepare_command(
         else entry_locks(entry.log, (entry,), timeout_seconds=10)
     ):
         current_data = _load_data(entry)
+        current_state = _load_state(entry, project)
         indexed = _index_entry(entry, project, current_data)
-    selected = _selected_declarations(indexed, arguments.cid)
+    _require_removed_markdown_absent(indexed, selection)
+    selected = tuple(
+        declaration
+        for cid in selection.selected
+        for declaration in _selected_declarations(indexed, cid)
+    )
     candidate_data = _candidate_data(
         entry,
         current_data,
-        selected,
         arguments,
         indexed,
+        selection,
+    )
+    candidate_data = _remove_deleted_declarations(
+        entry, current_state, candidate_data, selection
     )
     missing = _missing_declarations(selected, candidate_data)
     if missing:
@@ -193,7 +267,7 @@ def _prepare_command(
         )
     invocations, failures = _materialize(indexed, candidate_data)
     selected_invocations = tuple(
-        item for item in invocations if item.cid == arguments.cid
+        item for item in invocations if item.cid in selection.selected
     )
     relevant_failures = tuple(
         (document, failure)
@@ -214,7 +288,8 @@ def _prepare_command(
             diagnostic_log=entry.log.root,
         )
     if not selected_invocations:
-        raise ActionError("command.sync.cid.missing", arguments.cid)
+        if selection.selected:
+            raise ActionError("command.sync.cid.missing", str(selection.selected))
     try:
         validate_command_structure(selected_invocations)
     except MechanicalContractError as error:
@@ -259,10 +334,158 @@ def _prepare_command(
             and candidate_data.by_name[name].origin
         ),
     )
-
     return _PreparedCommand(
-        current_data, candidate_data, selected, selected_invocations, failures
+        current_data,
+        current_state,
+        candidate_data,
+        selected,
+        selected_invocations,
+        failures,
+        selection,
     )
+
+
+def _load_state(entry: EntryContext, project: Path) -> PyrunFile:
+    path = entry.root / PYRUN_FILENAME
+    if not path.exists() and not path.is_symlink():
+        return empty_pyrun_state(entry.root)
+    try:
+        return load_pyrun_state(path, entry_root=entry.root, project_root=project)
+    except MechanicalContractError as error:
+        raise ActionError(
+            "command.sync.registry.invalid",
+            "the owned pyrun registry requires direct Repair before sync",
+            records=({"code": error.code, "registry": error.subject},),
+            diagnostic_log=entry.log.root,
+        ) from error
+
+
+def _deleted_outputs(
+    entry: EntryContext, state: PyrunFile, selection: _Selection
+) -> set[str]:
+    project = resolve_project_root(entry.root)
+    return {
+        output_target_path(path, entry_root=entry.root, project_root=project)
+        .resolve()
+        .as_posix()
+        for cid in selection.deleted
+        for execution in state.commands.get(cid, PyrunCommand({})).executions.values()
+        for path, _ in execution.recipe.outputs
+    }
+
+
+def _remove_deleted_declarations(
+    entry: EntryContext,
+    state: PyrunFile,
+    candidate: DataFile | None,
+    selection: _Selection,
+) -> DataFile | None:
+    if not selection.deleted:
+        return candidate
+    outputs = _deleted_outputs(entry, state, selection)
+    owned = tuple(
+        item
+        for item in (candidate.inputs if candidate is not None else ())
+        if not item.origin
+        and item.reference_entry is None
+        and item.canonical_target in outputs
+    )
+    blocked: list[dict[str, object]] = []
+    for output in sorted(outputs):
+        blocked.extend(
+            use
+            for use in material_consumers(entry, Path(output))
+            if not (
+                use.get("entry") == entry.id and use.get("command") in selection.deleted
+            )
+        )
+    for item in owned:
+        blocked.extend(
+            use
+            for use in declaration_uses(entry, item.name)
+            if not (
+                use.get("entry") == entry.id and use.get("command") in selection.deleted
+            )
+        )
+    if blocked:
+        raise ActionError(
+            "command.sync.outputs_in_use",
+            "downstream consumers still use deleted command outputs"
+            + describe_uses(tuple(blocked)),
+            records=tuple(blocked),
+        )
+    if candidate is None:
+        return None
+    remaining = tuple(item for item in candidate.inputs if item not in owned)
+    return (
+        data_file_from_inputs(
+            entry.root / "data.json", entry_root=entry.root, inputs=remaining
+        )
+        if remaining
+        else None
+    )
+
+
+def _require_removed_markdown_absent(
+    indexed: tuple[
+        tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
+    ],
+    selection: _Selection,
+) -> None:
+    removed = set(selection.deleted) | {old for old, _ in selection.renames}
+    found = sorted(
+        {
+            declaration.parsed.cid
+            for _, _, result in indexed
+            for declaration in result.declarations
+            if declaration.parsed.cid in removed
+        }
+    )
+    for path, _, result in indexed:
+        if not result.failures:
+            continue
+        bodies = tuple(
+            body for body, _, _ in _command_fences(path.read_text(encoding="utf-8"))
+        )
+        for failure in result.failures:
+            body = bodies[failure.fence - 1]
+            found.extend(
+                cid for cid in sorted(removed) if _failed_fence_mentions_cid(body, cid)
+            )
+    if found:
+        raise ActionError(
+            "command.sync.markdown_present",
+            f"remove old command blocks from Markdown first: {sorted(set(found))}",
+        )
+
+
+def _failed_fence_mentions_cid(body: str, cid: str) -> bool:
+    """Conservatively recognize a removed CID inside a failed command fence."""
+
+    starts = tuple(
+        match.start()
+        for match in re.finditer(r"(?<![A-Za-z0-9_./-])(?:\./)?pyrun(?=\s|$)", body)
+    )
+    for index, start in enumerate(starts):
+        segment = body[start : starts[index + 1] if index + 1 < len(starts) else None]
+        explicit = re.findall(r"(?<!\S)--cid(?:\s+|=)[\"']?([A-Za-z0-9_-]+)", segment)
+        stems = {
+            Path(value).stem
+            for value in re.findall(
+                r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_./-]+\.py)", segment
+            )
+        }
+        if explicit:
+            if any(
+                value == cid
+                or value.isdecimal()
+                and any(f"{stem}-{int(value)}" == cid for stem in stems)
+                for value in explicit
+            ):
+                return True
+        elif cid in stems:
+            return True
+    return False
 
 
 def _finish_command(
@@ -271,21 +494,29 @@ def _finish_command(
     arguments: CommandSyncArguments,
     prepared: _PreparedCommand,
 ) -> ActionResult:
+    selection = prepared.selection
     names = {
         parts[0]
         for declaration in prepared.declarations
         for value in declaration.tokens
         if (parts := input_token_parts(value)) is not None
     }
+    fresh_data = _load_data(entry)
     data = merge_data(
-        prepared.before, prepared.candidate, _load_data(entry), names=names, entry=entry
+        prepared.before, prepared.candidate, fresh_data, names=names, entry=entry
     )
     indexed = _index_entry(entry, project, data)
-    selected = _selected_declarations(indexed, arguments.cid)
+    _recheck_target_change_ownership(entry, fresh_data, data, arguments, indexed)
+    _require_removed_markdown_absent(indexed, selection)
+    selected = tuple(
+        declaration
+        for cid in selection.selected
+        for declaration in _selected_declarations(indexed, cid)
+    )
     require_unchanged(
         tuple((item.document, item.parsed) for item in prepared.declarations),
         tuple((item.document, item.parsed) for item in selected),
-        f"{entry.id}/{arguments.cid} Markdown command",
+        f"{entry.id}/{selection.selected} Markdown command",
     )
     for raw in arguments.add_from_entries:
         name, source_id = _mapping(raw, "--add-from-entry")
@@ -300,21 +531,75 @@ def _finish_command(
         )
     invocations, failures = _materialize(indexed, data)
     selected_invocations = tuple(
-        item for item in invocations if item.cid == arguments.cid
+        item for item in invocations if item.cid in selection.selected
     )
+    current_state = _load_state(entry, project)
+    for cid in (
+        set(selection.selected)
+        | set(selection.deleted)
+        | {old for old, _ in selection.renames}
+    ):
+        before_bucket = prepared.before_state.commands.get(cid)
+        current_bucket = current_state.commands.get(cid)
+        if before_bucket != current_bucket:
+            redundant = False
+            if cid in selection.selected and before_bucket is None:
+                comparison = compare_command(
+                    current_state,
+                    cid,
+                    tuple(item for item in selected_invocations if item.cid == cid),
+                    project_root=project,
+                )
+                redundant = not (
+                    comparison.missing
+                    or comparison.stale
+                    or comparison.recipe_changed
+                    or comparison.policy_changed
+                )
+            if not redundant:
+                require_unchanged(
+                    before_bucket,
+                    current_bucket,
+                    f"{entry.id}/{cid} execution state",
+                )
+    _remove_deleted_declarations(entry, current_state, _load_data(entry), selection)
     _require_output_safety(indexed, invocations, selected_invocations)
     _require_generated_boundaries(entry, prepared.before, data, arguments, invocations)
     warnings = _effective_code_warnings(entry, project, selected_invocations)
-    pyrun_text = _candidate_pyrun_text(
+    pyrun_text, stale_records = _candidate_pyrun_text(
         entry,
         project,
-        arguments.cid,
+        current_state,
+        selection,
         selected_invocations,
-        arguments.execution_deletions,
     )
     data_text = data.canonical_json() if data is not None else None
-    require_artifact_access(project, writes=data_change_paths(prepared.before, data))
-    candidate = _PublicationCandidate(data_text, pyrun_text, failures, warnings)
+    require_artifact_access(
+        project,
+        writes=(
+            *data_change_paths(prepared.before, data),
+            *(
+                Path(path)
+                for path in sorted(_deleted_outputs(entry, current_state, selection))
+            ),
+        ),
+    )
+    renamed_from = {new: old for old, new in selection.renames}
+    change_rows: list[dict[str, object]] = []
+    for cid in selection.selected:
+        row: dict[str, object] = {"cid": cid, "synchronized": True}
+        if cid in renamed_from:
+            row["renamed_from"] = renamed_from[cid]
+        change_rows.append(row)
+    change_rows.extend({"cid": cid, "deleted": True} for cid in selection.deleted)
+    change_rows.extend(
+        {"disconnected": path}
+        for path in sorted(_deleted_outputs(entry, current_state, selection))
+        if Path(path).exists()
+    )
+    candidate = _PublicationCandidate(
+        data_text, pyrun_text, failures, warnings, tuple(change_rows) + stale_records
+    )
     return _publish_candidates(entry, candidate, dry_run=arguments.dry_run)
 
 
@@ -440,77 +725,103 @@ def _project_relative(path: Path, project: Path) -> str:
 def _candidate_pyrun_text(
     entry: EntryContext,
     project: Path,
-    cid: str,
+    state: PyrunFile,
+    selection: _Selection,
     invocations: tuple[Invocation, ...],
-    deletions: tuple[str, ...],
-) -> str:
-    path = entry.root / PYRUN_FILENAME
-    if path.exists() or path.is_symlink():
-        try:
-            state = load_pyrun_state(path, entry_root=entry.root, project_root=project)
-        except MechanicalContractError as error:
+) -> tuple[str | None, tuple[dict[str, object], ...]]:
+    commands = dict(state.commands)
+    already_renamed = _apply_command_renames(commands, selection.renames)
+    stale_records: list[dict[str, object]] = []
+    for cid in selection.deleted:
+        commands.pop(cid, None)
+    for cid in selection.selected:
+        provisional = PyrunFile(state.path, state.entry_root, commands)
+        members = tuple(item for item in invocations if item.cid == cid)
+        comparison = compare_command(provisional, cid, members, project_root=project)
+        stale = comparison.stale
+        if stale and cid not in selection.stale_acknowledged:
             raise ActionError(
-                "command.sync.registry.invalid",
-                "the owned pyrun registry requires direct Repair before sync",
-                records=(
+                "command.sync.execution.deletion_required",
+                "acknowledge all stale executions for this CID",
+                records=tuple(
                     {
-                        "code": error.code,
-                        "observed": error.observed,
-                        "registry": error.subject,
-                        "required_action": "direct Repair",
-                    },
+                        "cid": cid,
+                        "execution_id": item.identity,
+                        "parameters": list(
+                            recipe_script_parameters(item.execution.recipe.parameters)
+                        ),
+                        "retry_flag": f"--delete-stale-executions {cid}",
+                        "script": item.execution.recipe.script,
+                    }
+                    for item in stale
                 ),
                 diagnostic_log=entry.log.root,
-            ) from error
-    else:
-        state = empty_pyrun_state(entry.root)
-    comparison = compare_command(state, cid, invocations, project_root=project)
-    stale_ids = tuple(item.identity for item in comparison.stale)
-    invalid_deletions = sorted(set(deletions) - set(stale_ids))
-    if invalid_deletions:
-        current_ids = set(state.commands.get(cid, PyrunCommand({})).executions)
-        raise ActionError(
-            "command.sync.execution.not_stale",
-            "only stale executions may be deleted during command sync",
-            records=tuple(
-                {
-                    "cid": cid,
-                    "execution_id": identity,
-                    "status": "current" if identity in current_ids else "unknown",
-                }
-                for identity in invalid_deletions
-            ),
-            diagnostic_log=entry.log.root,
+            )
+        if cid in already_renamed and (
+            comparison.missing
+            or comparison.stale
+            or comparison.recipe_changed
+            or comparison.policy_changed
+        ):
+            raise ActionError(
+                "command.sync.source.missing",
+                f"renamed source is missing and {cid} is not already synchronized",
+            )
+        stale_records.extend(
+            {
+                "cid": cid,
+                "execution_id": item.identity,
+                "deleted_stale_execution": True,
+                "parameters": list(
+                    recipe_script_parameters(item.execution.recipe.parameters)
+                ),
+            }
+            for item in stale
         )
-    if set(deletions) != set(stale_ids) or len(deletions) != len(set(deletions)):
-        raise ActionError(
-            "command.sync.execution.deletion_required",
-            "delete every stale execution ID exactly once",
-            records=tuple(
-                {
-                    "cid": item.cid,
-                    "execution_id": item.identity,
-                    "parameters": list(
-                        recipe_script_parameters(item.execution.recipe.parameters)
-                    ),
-                    "retry_flag": f"--delete-execution {item.identity}",
-                    "script": item.execution.recipe.script,
-                }
-                for item in comparison.stale
-            ),
-            diagnostic_log=entry.log.root,
-        )
-    executions = dict(state.commands.get(cid, PyrunCommand({})).executions)
-    for identity in stale_ids:
-        del executions[identity]
-    for member in comparison.missing:
-        executions[member.identity] = pending_execution(member)
-    for change in (*comparison.recipe_changed, *comparison.policy_changed):
-        executions[change.current.identity] = changed_execution(change)
-    commands = dict(state.commands)
-    commands[cid] = PyrunCommand(executions)
-    candidate_state = PyrunFile(state.path, state.entry_root, commands)
-    return validated_pyrun_serialization(candidate_state, project_root=project)
+        executions = dict(commands.get(cid, PyrunCommand({})).executions)
+        for stale_member in stale:
+            executions.pop(stale_member.identity)
+        for missing_member in comparison.missing:
+            executions[missing_member.identity] = pending_execution(missing_member)
+        for changed_member in (
+            *comparison.recipe_changed,
+            *comparison.policy_changed,
+        ):
+            executions[changed_member.current.identity] = changed_execution(
+                changed_member
+            )
+        commands[cid] = PyrunCommand(executions)
+    return (
+        (
+            validated_pyrun_serialization(
+                PyrunFile(state.path, state.entry_root, commands), project_root=project
+            )
+            if commands
+            else None
+        ),
+        tuple(stale_records),
+    )
+
+
+def _apply_command_renames(
+    commands: dict[str, PyrunCommand], renames: tuple[tuple[str, str], ...]
+) -> set[str]:
+    """Move stored buckets and identify already-applied rename requests."""
+
+    already_renamed: set[str] = set()
+    for old, new in renames:
+        if old in commands:
+            if new in commands:
+                raise ActionError("command.sync.destination.conflict", new)
+            commands[new] = commands.pop(old)
+        elif new not in commands:
+            raise ActionError(
+                "command.sync.source.missing",
+                f"{old}: missing source and no synchronized destination {new}",
+            )
+        else:
+            already_renamed.add(new)
+    return already_renamed
 
 
 def _publish_candidates(
@@ -529,24 +840,23 @@ def _publish_candidates(
         _diff_record(data_path, before_data, candidate.data_text),
         _diff_record(state_path, before_pyrun, candidate.pyrun_text),
     ]
+    records.extend(candidate.changes)
     records.extend(candidate.warnings)
     records.extend(
-        _failure_record(document, failure)
-        for document, failure in candidate.failures
+        _failure_record(document, failure) for document, failure in candidate.failures
     )
-    changed = (
-        before_data != candidate.data_text
-        or before_pyrun != candidate.pyrun_text
-    )
-    if not dry_run and changed:
+    updates = {
+        path: text
+        for path, before, text in (
+            (data_path, before_data, candidate.data_text),
+            (state_path, before_pyrun, candidate.pyrun_text),
+        )
+        if before != text
+    }
+    if not dry_run and updates:
         residue = begin_registry_transaction(entry.log.root, entry.id)
         try:
-            atomic_write_texts(
-                {
-                    data_path: candidate.data_text,
-                    state_path: candidate.pyrun_text,
-                }
-            )
+            atomic_write_texts(updates)
         except PublicationError as error:
             if error.rollback_complete:
                 finish_guarded_publication(residue)
@@ -554,10 +864,10 @@ def _publish_candidates(
         finish_guarded_publication(residue)
     return ActionResult(
         "command.sync",
-        "dry-run" if dry_run else "changed" if changed else "unchanged",
+        "dry-run" if dry_run else "changed" if updates else "unchanged",
         "command.sync.dry-run" if dry_run else "command.sync.complete",
-        changed,
-        (data_path.as_posix(), state_path.as_posix()),
+        bool(updates),
+        tuple(path.as_posix() for path in updates),
         tuple(records),
     )
 
@@ -640,11 +950,11 @@ def _selected_declarations(
 def _candidate_data(
     entry: EntryContext,
     current: DataFile | None,
-    selected: tuple[CommandDeclaration, ...],
     arguments: CommandSyncArguments,
     indexed: tuple[
         tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
     ],
+    selection: _Selection,
 ) -> DataFile | None:
     items = {item.name: item for item in current.inputs} if current is not None else {}
     _apply_local_declarations(
@@ -684,7 +994,7 @@ def _candidate_data(
     )
     _apply_from_entries(entry, items, arguments.add_from_entries)
     _apply_target_changes(
-        entry, items, arguments.cid, arguments.target_changes, indexed
+        entry, items, set(selection.selected), arguments.target_changes, indexed
     )
     if not items:
         return None
@@ -764,7 +1074,7 @@ def _apply_from_entries(
 def _apply_target_changes(
     entry: EntryContext,
     items: dict[str, InputResource],
-    cid: str,
+    selected_cids: set[str],
     values: tuple[str, ...],
     indexed: tuple[
         tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
@@ -782,11 +1092,19 @@ def _apply_target_changes(
                 records=({"name": name, "owner": "log data update"},),
                 diagnostic_log=entry.log.root,
             )
-        if name not in _declaration_names_for_cid(indexed, cid):
+        if not any(
+            name in _declaration_names_for_cid(indexed, cid) for cid in selected_cids
+        ):
             raise ActionError(
                 "command.sync.target.not_owned",
-                f"{cid} does not use {name}",
-                records=({"cid": cid, "name": name, "owner": "log data update"},),
+                f"selected commands do not use {name}",
+                records=(
+                    {
+                        "cids": sorted(selected_cids),
+                        "name": name,
+                        "owner": "log data update",
+                    },
+                ),
                 diagnostic_log=entry.log.root,
             )
         if existing.kind == "git-repository":
@@ -817,7 +1135,7 @@ def _apply_target_changes(
             )
         if candidate == existing:
             continue
-        consumers = sorted(_declaration_cids_for_name(indexed, name) - {cid})
+        consumers = sorted(_declaration_cids_for_name(indexed, name) - selected_cids)
         references = list(_cross_entry_references(entry, name))
         evidence = _evidence_use_ids(entry, name)
         if consumers or references or evidence:
@@ -836,6 +1154,44 @@ def _apply_target_changes(
                 diagnostic_log=entry.log.root,
             )
         items[name] = candidate
+
+
+def _recheck_target_change_ownership(
+    entry: EntryContext,
+    fresh: DataFile | None,
+    candidate: DataFile | None,
+    arguments: CommandSyncArguments,
+    indexed: tuple[
+        tuple[Path, CommandDeclarationContext, CommandDeclarationResult], ...
+    ],
+) -> None:
+    """Reject new unselected consumers before publishing a local target edit."""
+
+    old = fresh.by_name if fresh else {}
+    new = candidate.by_name if candidate else {}
+    selected = set(_selection(arguments).selected)
+    for raw in arguments.target_changes:
+        name, _ = _mapping(raw, "--change-target")
+        if resource_authority(old.get(name)) == resource_authority(new.get(name)):
+            continue
+        consumers = sorted(_declaration_cids_for_name(indexed, name) - selected)
+        references = list(_cross_entry_references(entry, name))
+        evidence = _evidence_use_ids(entry, name)
+        if consumers or references or evidence:
+            raise ActionError(
+                "command.sync.target.shared",
+                "shared declarations are changed through log data update",
+                records=(
+                    {
+                        "command_consumers": consumers,
+                        "cross_entry_consumers": references,
+                        "evidence_consumers": list(evidence),
+                        "name": name,
+                        "owner": "log data update",
+                    },
+                ),
+                diagnostic_log=entry.log.root,
+            )
 
 
 def _git_target(value: str, flag: str) -> tuple[str, str]:
@@ -1008,7 +1364,11 @@ def _require_requested_declarations_consumed(
             "command.sync.declaration.unused",
             "added declarations must be consumed by the selected command",
             records=tuple(
-                {"cid": arguments.cid, "name": name, "owner": "log data update"}
+                {
+                    "cids": sorted({item.cid for item in selected}),
+                    "name": name,
+                    "owner": "log data update",
+                }
                 for name in unused
             ),
             diagnostic_log=entry.log.root,
@@ -1057,7 +1417,11 @@ def _require_generated_boundaries(
         for value in values
     }
     index = build_producer_index(invocations)
-    selected_ids = {item.identity for item in invocations if item.cid == arguments.cid}
+    selected_ids = {
+        item.identity
+        for item in invocations
+        if item.cid in _selection(arguments).selected
+    }
     for name in sorted(names):
         resource = candidate.by_name[name]
         if resource.origin or resource.reference_entry is not None:
@@ -1138,17 +1502,21 @@ def _cross_entry_references(entry: EntryContext, name: str) -> tuple[str, ...]:
 
 def _evidence_use_ids(entry: EntryContext, name: str) -> tuple[str, ...]:
     path = entry.root / "evidence.json"
-    if not path.exists() and not path.is_symlink():
-        return ()
-    evidence = load_evidence_file(path, log_root=entry.log.root, entry_root=entry.root)
-    return tuple(
+    normalized = (
+        load_evidence_file(path, log_root=entry.log.root, entry_root=entry.root).records
+        if path.exists() or path.is_symlink()
+        else ()
+    )
+    ids = {
         record.id
-        for record in evidence.records
+        for record in normalized
         if any(
             (parts := input_token_parts(source.source)) is not None and parts[0] == name
             for source in record.sources
         )
-    )
+    }
+    ids.update(use["evidence"] for use in authored_evidence_uses(entry, name))
+    return tuple(sorted(ids))
 
 
 def _load_data(entry: EntryContext) -> DataFile | None:

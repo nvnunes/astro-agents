@@ -56,13 +56,16 @@ After editing the corresponding marker, maintained-summary reference, or
 recorded-command token, use exactly one owning command:
 
 ```text
+<skill>/scripts/log command sync --path <log> --entry <entry-id> --rename <old>=<new>
 <skill>/scripts/log evidence sync --path <log> --entry <entry-id> --rename <old>=<new>
 <skill>/scripts/log data rename --path <log> --entry <entry-id> <old> <new>
 <skill>/scripts/log retention rename --path <log> --entry <entry-id> <old> <new>
 ```
 
 Do not use `log reorganize transfer` for a no-move rename. Complete every
-producer rerun reported by `data rename`.
+producer rerun reported by `data rename`. For a CID rename, first change the
+Markdown command, then dry-run and apply `log command sync`; combine other
+related CID edits in that same command change set.
 
 ## Remove An Empty Entry
 

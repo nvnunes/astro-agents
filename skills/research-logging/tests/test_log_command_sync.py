@@ -55,6 +55,361 @@ def sync(logical: Path, *extra: str):
 
 
 class LogCommandSyncTests(unittest.TestCase):
+    def test_multiple_selected_commands_share_one_declaration_and_target_change(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --input "<source>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Other\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid other -- scripts/build.py --input "<source>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            first = entry / "data/first.csv"
+            second = entry / "data/second.csv"
+            first.write_text("value\n1\n", encoding="utf-8")
+            second.write_text("value\n2\n", encoding="utf-8")
+            self.assertEqual(
+                sync(
+                    logical,
+                    "--cid",
+                    "other",
+                    "--add-origin",
+                    "source=data/first.csv",
+                ).returncode,
+                0,
+            )
+            refused = sync(logical, "--change-target", "source=data/second.csv")
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("command.sync.target.shared", refused.stderr)
+            changed = sync(
+                logical,
+                "--cid",
+                "other",
+                "--change-target",
+                "source=data/second.csv",
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            item = json.loads((entry / "data.json").read_text(encoding="utf-8"))[
+                "inputs"
+            ][0]
+            self.assertEqual(item["location"], "data/second.csv")
+            third = entry / "data/third.csv"
+            third.write_text("value\n3\n", encoding="utf-8")
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n``<!-- eid:preview source=source select=/value -->\n",
+                encoding="utf-8",
+            )
+            blocked = sync(
+                logical,
+                "--cid",
+                "other",
+                "--change-target",
+                "source=data/third.csv",
+            )
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("command.sync.target.shared", blocked.stderr)
+
+    def test_one_invalid_selected_command_prevents_every_registry_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _ = fixture(root, "./pyrun scripts/build.py --count 1")
+            refused = sync(logical, "--cid", "missing", "--dry-run")
+            self.assertEqual(refused.returncode, 2)
+            self.assertFalse((entry / "data.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
+            refused = sync(logical, "--cid", "missing")
+            self.assertEqual(refused.returncode, 2)
+            self.assertFalse((entry / "data.json").exists())
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_conflicting_renames_fail_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _ = fixture(root, "./pyrun scripts/build.py --count 1")
+            refused = sync(
+                logical, "--rename", "old=build", "--rename", "another=build"
+            )
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("command.sync.selection.conflict", refused.stderr)
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_malformed_old_command_fence_cannot_be_deleted_or_renamed(self) -> None:
+        for explicit in (False, True):
+            with (
+                self.subTest(explicit=explicit),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                invocation = (
+                    "./pyrun --cid build -- scripts/build.py --count 1"
+                    if explicit
+                    else "./pyrun scripts/build.py --count 1"
+                )
+                logical, entry, document = fixture(root, invocation)
+                self.assertEqual(sync(logical).returncode, 0)
+                before = (entry / "pyrun.json").read_bytes()
+                document.write_text(
+                    document.read_text(encoding="utf-8").replace(
+                        "--count 1", "--count 1 --label 'unterminated"
+                    )
+                    + "\n## Replacement\n\n`Steps:`\n\n```bash\n"
+                    + "./pyrun --cid make -- scripts/build.py --count 1\n"
+                    + "```\n\n`Results:`\n\nPending.\n",
+                    encoding="utf-8",
+                )
+                for selector in (("--delete", "build"), ("--rename", "build=make")):
+                    with self.subTest(selector=selector):
+                        result = run_log(
+                            root,
+                            "command",
+                            "sync",
+                            "--path",
+                            str(logical),
+                            "--entry",
+                            "e001",
+                            *selector,
+                        )
+                        self.assertEqual(result.returncode, 2)
+                        self.assertIn("command.sync.markdown_present", result.stderr)
+                        self.assertEqual((entry / "pyrun.json").read_bytes(), before)
+
+    def test_mixed_failed_fence_retains_implicit_old_cid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                "./pyrun scripts/build.py --count 1",
+            )
+            self.assertEqual(sync(logical).returncode, 0)
+            before = (entry / "pyrun.json").read_bytes()
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "./pyrun scripts/build.py --count 1",
+                    "./pyrun --cid other -- scripts/build.py --count 2\n"
+                    "./pyrun scripts/build.py --count 1 --label 'unterminated",
+                ),
+                encoding="utf-8",
+            )
+            rejected = run_log(
+                root,
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--delete",
+                "build",
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("command.sync.markdown_present", rejected.stderr)
+            self.assertEqual((entry / "pyrun.json").read_bytes(), before)
+
+    def test_batch_rename_and_delete_are_one_preview_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --output "<built>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Other\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid other -- scripts/build.py --output "<discarded>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                sync(logical, "--add-generated", "built=data/built.txt").returncode,
+                0,
+            )
+            self.assertEqual(
+                run_log(
+                    root,
+                    "command",
+                    "sync",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--cid",
+                    "other",
+                    "--add-generated",
+                    "discarded=data/discarded.txt",
+                ).returncode,
+                0,
+            )
+            original_state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            retained = entry / "data/discarded.txt"
+            retained.write_text("keep\n", encoding="utf-8")
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                .replace("--cid build", "--cid make")
+                .split("\n## Other\n", 1)[0]
+                + "\n",
+                encoding="utf-8",
+            )
+            args = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--rename",
+                "build=make",
+                "--delete",
+                "other",
+            )
+            preview = run_log(root, *args, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                },
+                before,
+            )
+            applied = run_log(root, *args)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(set(state.commands), {"make"})
+            self.assertEqual(
+                state.commands["make"].executions,
+                original_state.commands["build"].executions,
+            )
+            data = json.loads((entry / "data.json").read_text(encoding="utf-8"))
+            self.assertEqual({item["name"] for item in data["inputs"]}, {"built"})
+            self.assertEqual(retained.read_text(encoding="utf-8"), "keep\n")
+            unchanged = run_log(root, *args)
+            self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
+            self.assertFalse(json.loads(unchanged.stdout)["changed"])
+
+    def test_rename_only_does_not_rewrite_unchanged_data_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root, './pyrun --cid build -- scripts/build.py --input "<source>"'
+            )
+            (entry / "data/source.csv").write_text("value\n1\n")
+            self.assertEqual(
+                sync(logical, "--add-origin", "source=data/source.csv").returncode,
+                0,
+            )
+            data_path = entry / "data.json"
+            data_bytes = data_path.read_bytes()
+            data_stat = data_path.stat()
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "--cid build", "--cid make"
+                ),
+                encoding="utf-8",
+            )
+            applied = run_log(
+                root,
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--rename",
+                "build=make",
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(data_path.read_bytes(), data_bytes)
+            self.assertEqual(data_path.stat().st_ino, data_stat.st_ino)
+            self.assertEqual(data_path.stat().st_mtime_ns, data_stat.st_mtime_ns)
+            self.assertEqual(
+                {Path(path).resolve() for path in json.loads(applied.stdout)["paths"]},
+                {(entry / "pyrun.json").resolve()},
+            )
+
+    def test_one_cid_acknowledges_all_stale_parameter_executions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                "for case in H J K; do\n"
+                '  ./pyrun --cid build -- scripts/build.py --case "$case"\n'
+                "done",
+            )
+            self.assertEqual(sync(logical).returncode, 0)
+            document.write_text(
+                document.read_text(encoding="utf-8").replace("H J K", "L"),
+                encoding="utf-8",
+            )
+            preview = sync(logical, "--delete-stale-executions", "build", "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            records = json.loads(preview.stdout)["records"]
+            stale = [
+                record for record in records if record.get("deleted_stale_execution")
+            ]
+            self.assertEqual(len(stale), 3)
+            applied = sync(logical, "--delete-stale-executions", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(len(state.commands["build"].executions), 1)
+
+    def test_rename_with_changed_parameters_needs_one_aggregate_acknowledgement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root, "./pyrun --cid build -- scripts/build.py --count 1"
+            )
+            self.assertEqual(sync(logical).returncode, 0)
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                .replace("--cid build", "--cid make")
+                .replace("--count 1", "--count 2"),
+                encoding="utf-8",
+            )
+            command = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--rename",
+                "build=make",
+            )
+            refused = run_log(root, *command)
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("command.sync.execution.deletion_required", refused.stderr)
+            accepted = run_log(
+                root,
+                *command,
+                "--delete-stale-executions",
+                "make",
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(set(state.commands), {"make"})
+            self.assertEqual(len(state.commands["make"].executions), 1)
+
     def test_pinned_git_origin_allows_outputs_beneath_repository_locator(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -252,8 +607,12 @@ class LogCommandSyncTests(unittest.TestCase):
         self.assertEqual(family.returncode, 0, family.stderr)
         self.assertEqual(action.returncode, 0, action.stderr)
         self.assertIn("sync", family.stdout)
+        self.assertNotIn("rename", family.stdout)
+        self.assertNotIn("delete", family.stdout)
         for flag in (
             "--cid",
+            "--rename",
+            "--delete",
             "--add-origin",
             "--add-origin-directory",
             "--add-origin-git",
@@ -261,10 +620,55 @@ class LogCommandSyncTests(unittest.TestCase):
             "--add-generated-directory",
             "--add-from-entry",
             "--change-target",
-            "--delete-execution",
+            "--delete-stale-executions",
             "--dry-run",
         ):
             self.assertIn(flag, action.stdout)
+
+    def test_retired_lifecycle_and_exact_execution_flags_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _ = fixture(root, "./pyrun scripts/build.py --count 1")
+            for args in (
+                (
+                    "command",
+                    "rename",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "old",
+                    "new",
+                ),
+                (
+                    "command",
+                    "delete",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--cid",
+                    "build",
+                ),
+                (
+                    "command",
+                    "sync",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--cid",
+                    "build",
+                    "--delete-execution",
+                    "old",
+                ),
+            ):
+                with self.subTest(args=args):
+                    rejected = run_log(root, *args)
+                    self.assertEqual(rejected.returncode, 2)
+                    self.assertIn("cli.arguments.invalid", rejected.stderr)
+                    self.assertFalse((entry / "pyrun.json").exists())
+                    self.assertFalse((entry / "data.json").exists())
         self.assertEqual(run_log(Path.cwd(), "pyrun", "--help").returncode, 2)
 
     def test_dry_run_has_two_diffs_and_zero_writes(self) -> None:
@@ -281,8 +685,8 @@ class LogCommandSyncTests(unittest.TestCase):
             result = sync(logical, "--dry-run")
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
-            self.assertEqual(len(payload["records"]), 2)
-            self.assertTrue(all("diff" in item for item in payload["records"]))
+            self.assertEqual(len(payload["records"]), 3)
+            self.assertTrue(all("diff" in item for item in payload["records"][:2]))
             after = {
                 path.relative_to(Path(directory)): path.read_bytes()
                 for path in Path(directory).rglob("*")
@@ -368,9 +772,7 @@ class LogCommandSyncTests(unittest.TestCase):
                 warnings[0]["code"],
                 "command.sync.effective_code.unavailable",
             )
-            self.assertEqual(
-                warnings[0]["construct"], "effective_code.syntax_invalid"
-            )
+            self.assertEqual(warnings[0]["construct"], "effective_code.syntax_invalid")
             self.assertEqual(warnings[0]["line"], 1)
             self.assertIn(
                 "reproduction will select this command on every incremental plan",
@@ -1004,14 +1406,14 @@ class LogCommandSyncTests(unittest.TestCase):
                 for identity, execution in state.commands["build"].executions.items()
                 if "H" in execution.recipe.parameters
             )
-            retired = sync(logical, "--delete-execution", stale)
+            retired = sync(logical, "--delete-stale-executions", "build")
             self.assertEqual(retired.returncode, 0, retired.stderr)
             current = load_pyrun_state(
                 entry / "pyrun.json", entry_root=entry, project_root=Path(directory)
             )
             self.assertNotIn(stale, current.commands["build"].executions)
 
-    def test_current_execution_cannot_be_deleted(self) -> None:
+    def test_redundant_stale_acknowledgement_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(
                 Path(directory),
@@ -1030,18 +1432,15 @@ class LogCommandSyncTests(unittest.TestCase):
                 )
             )
 
-            refused = sync(
+            accepted = sync(
                 logical,
-                "--delete-execution",
-                identity,
+                "--delete-stale-executions",
+                "build",
                 "--dry-run",
             )
 
-            self.assertEqual(refused.returncode, 2)
-            self.assertIn("command.sync.execution.not_stale", refused.stderr)
-            record = json.loads(refused.stdout.splitlines()[-1])["records"][0]
-            self.assertEqual(record["execution_id"], identity)
-            self.assertEqual(record["status"], "current")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertIn(identity, (entry / "pyrun.json").read_text())
 
     def test_stale_dry_run_returns_exact_retry_flags_without_diagnostic_write(
         self,
@@ -1063,7 +1462,7 @@ class LogCommandSyncTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(
                 records[0]["retry_flag"],
-                f"--delete-execution {records[0]['execution_id']}",
+                "--delete-stale-executions build",
             )
             after = tuple(sorted(path.as_posix() for path in logical.rglob("*")))
             self.assertEqual(after, before)
@@ -1079,6 +1478,7 @@ class LogCommandSyncTests(unittest.TestCase):
             self.assertEqual(
                 sync(logical, "--add-origin", f"source={source}").returncode, 0
             )
+            (entry / "data/changed.csv").write_text("value\n2\n")
             document.write_text(document.read_text().replace("--count 1", "--count 2"))
             before = {
                 name: (entry / name).read_bytes()
@@ -1102,18 +1502,10 @@ class LogCommandSyncTests(unittest.TestCase):
             ):
                 failed = sync(
                     logical,
-                    "--delete-execution",
-                    next(
-                        iter(
-                            load_pyrun_state(
-                                entry / "pyrun.json",
-                                entry_root=entry,
-                                project_root=Path(directory),
-                            )
-                            .commands["build"]
-                            .executions
-                        )
-                    ),
+                    "--delete-stale-executions",
+                    "build",
+                    "--change-target",
+                    "source=data/changed.csv",
                 )
             self.assertEqual(failed.returncode, 2)
             self.assertIn("fixture second publication failure", failed.stderr)
@@ -1202,7 +1594,7 @@ class LogCommandSyncTests(unittest.TestCase):
             )
             refused = sync(logical, "--rename", "source=renamed")
             self.assertEqual(refused.returncode, 2)
-            self.assertIn("cli.arguments.invalid", refused.stderr)
+            self.assertIn("command.sync.cid.missing", refused.stderr)
             data = json.loads((entry / "data.json").read_text())
             self.assertEqual(data["inputs"][0]["name"], "source")
 

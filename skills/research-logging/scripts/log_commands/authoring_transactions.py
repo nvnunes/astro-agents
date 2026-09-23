@@ -67,13 +67,11 @@ def merge_data(
         if name in prepared:
             declaration = prepared[name]
             if name in fresh:
-                declaration = replace(
-                    declaration, comparison=fresh[name].comparison
-                )
+                declaration = replace(declaration, comparison=fresh[name].comparison)
             fresh[name] = declaration
         else:
             fresh.pop(name, None)
-    if not fresh and current is None and candidate is None:
+    if not fresh:
         return None
     return data_file_from_inputs(
         entry.root / "data.json", entry_root=entry.root, inputs=tuple(fresh.values())

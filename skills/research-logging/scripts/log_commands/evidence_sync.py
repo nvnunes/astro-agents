@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,7 +28,6 @@ from validation.evidence import (
     SUMMARY_REFERENCE_RE,
     EvidenceRecord,
     PresentedItem,
-    authored_eid_comments,
     evidence_file_from_records,
     evidence_record_from_fields,
     index_entry_presentations,
@@ -81,7 +79,7 @@ from .context import (
     resolve_project_root,
 )
 from .data_assertions import assignment, ensure_declaration, require_local_target
-from .graph_state import source_tokens, token_name
+from .graph_state import authored_evidence_uses
 from .materials import inspect_log_materials
 from .model import ActionError, ActionResult, EvidenceSyncArguments
 from .retention import require_unretained_paths
@@ -878,38 +876,9 @@ def _target_blockers(
                     _source_name(source.source) == name for source in record.sources
                 ):
                     blockers.append({"entry": entry.id, "evidence": record.id})
-    blockers.extend(_authored_evidence_blockers(entry, name, record_ids))
-    return tuple(blockers)
-
-
-def _authored_evidence_blockers(
-    entry: EntryContext, name: str, selected: set[str]
-) -> tuple[dict[str, object], ...]:
-    """Inspect only comments that could consume this name, including unsynced ones."""
-
-    hint = re.compile(
-        r"(?:^|[\s;])source=(?:[\"'])?<?" + re.escape(name) + r"(?=[/>\s;\"']|$)"
+    blockers.extend(
+        authored_evidence_uses(entry, name, excluded_ids=frozenset(record_ids))
     )
-    blockers: list[dict[str, object]] = []
-    for document in sorted(entry.root.glob("*.md")):
-        for marker in authored_eid_comments(document.read_text(encoding="utf-8")):
-            if marker["id"] in selected or not hint.search(marker["definition"]):
-                continue
-            try:
-                uses_name = any(
-                    token_name(source) == name
-                    for source in source_tokens(marker["definition"])
-                )
-            except ActionError:
-                uses_name = True
-            if uses_name:
-                blockers.append(
-                    {
-                        "entry": entry.id,
-                        "evidence": marker["id"],
-                        "document": document.relative_to(entry.log.root).as_posix(),
-                    }
-                )
     return tuple(blockers)
 
 

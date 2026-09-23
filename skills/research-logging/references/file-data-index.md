@@ -48,6 +48,9 @@ Pass both `<name>` and `<name:commit>` to a consuming command.
 
 A command- or evidence-local path change uses its sync's
 `--change-target NAME=PATH`; command Git targets also accept `COMMIT:PATH`.
+For command sync, select every command consumer of the name in one change set;
+an evidence or cross-entry consumer makes the target shared and routes it to
+`log data update`.
 A shared change routes to:
 
 ```text

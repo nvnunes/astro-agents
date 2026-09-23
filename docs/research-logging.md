@@ -645,7 +645,10 @@ rerun an unchanged command solely to test reproducibility or Provenance.
 For corrections to a recorded command, edit its Markdown first, then use the
 [command synchronization workflow](../skills/research-logging/references/file-entry-commands.md#synchronize-a-recorded-command)
 to update its declarations and execution records. The CLI verifies the complete
-CID without changing Markdown or retained files.
+selected CID set without changing Markdown or retained files. One dry-run/apply
+pair may select multiple CIDs, rename old CIDs, and delete command blocks that
+have been removed from Markdown. Stale parameter executions are acknowledged
+per CID with `--delete-stale-executions CID` after reviewing the dry-run list.
 
 ### Input registry
 

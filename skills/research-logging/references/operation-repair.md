@@ -68,11 +68,11 @@ authorized malformed state the CLI cannot decode. Preserve the original in versi
 | Defect | Owner |
 |---|---|
 | Missing command/evidence declaration | The consumer's `log command sync` or `log evidence sync` add clause |
-| Shared target, boundary, kind, identity, reproduction policy, rename, deletion | `log data` |
+| Shared material target, boundary, kind, identity, reproduction policy, material-name rename or deletion | `log data` |
 | Retained execution-observation mismatch | Report the mismatch and request explicit Reproduce authority for confirmation; promotion or a fresh `./pyrun` requires a separately authorized researcher decision |
 | Evidence record or association | `log evidence` |
 | Disconnected-retention declaration | `log retention` |
-| Recorded execution policy or recipe | `log command sync`; edit Markdown first, then synchronize its CID |
+| Recorded execution policy, recipe, CID rename, or command deletion | `log command sync`; edit Markdown first, then synchronize the complete selected CID set in one dry-run/apply pair |
 | Provenance shape | Matching card in `references/provenance-patterns.md` |
 
 Use the producer's `log command sync --add-generated` or

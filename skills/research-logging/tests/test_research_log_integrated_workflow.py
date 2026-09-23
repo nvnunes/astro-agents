@@ -243,8 +243,8 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 *common,
                 "--cid",
                 "build",
-                "--delete-execution",
-                original_identity,
+                "--delete-stale-executions",
+                "build",
             )
             self.assertEqual(recipe_sync.returncode, 0, recipe_sync.stderr)
             recipe_state = load_pyrun_state(

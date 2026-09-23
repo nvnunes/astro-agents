@@ -34,9 +34,10 @@ class ValidationCliTests(unittest.TestCase):
             ),
         )
         for case, code, call in calls:
-            with self.subTest(case=case), self.assertRaises(
-                VALIDATION_RUN.ActionError
-            ) as raised:
+            with (
+                self.subTest(case=case),
+                self.assertRaises(VALIDATION_RUN.ActionError) as raised,
+            ):
                 call()
             self.assertEqual(raised.exception.code, code)
 
@@ -54,7 +55,7 @@ class ValidationCliTests(unittest.TestCase):
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertIn("{findings,batches,blocked,failed}", listing.stdout)
         self.assertEqual(command.returncode, 0, command.stderr)
-        self.assertIn("{sync,rename,delete,release,list,verify,show}", command.stdout)
+        self.assertIn("{sync,release,list,verify,show}", command.stdout)
         self.assertNotIn("repair-check", command.stdout)
         self.assertEqual(verify.returncode, 0, verify.stderr)
         self.assertIn("--path PATH", verify.stdout)
@@ -848,9 +849,7 @@ class ValidationCliTests(unittest.TestCase):
                 "clear",
             )
             self.assertTrue(
-                good_summary.with_suffix("")
-                .joinpath(".cache/results.sqlite")
-                .is_file()
+                good_summary.with_suffix("").joinpath(".cache/results.sqlite").is_file()
             )
 
     def test_cli_generated_residue_is_a_published_orphan_finding(self) -> None:
@@ -1408,9 +1407,7 @@ class ValidationCliTests(unittest.TestCase):
                 "--format",
                 "json",
             )
-            rendered = run_log(
-                root, "validate", "list", "batches", "--path", str(log)
-            )
+            rendered = run_log(root, "validate", "list", "batches", "--path", str(log))
 
             self.assertEqual(validated.returncode, 0, validated.stderr)
             self.assertEqual(structured.returncode, 0, structured.stderr)

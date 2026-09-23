@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 from typing import Any, Mapping
@@ -52,6 +53,37 @@ def source_tokens(definition: str) -> tuple[str, ...]:
         value if value.startswith("<") else "<" + value.partition("/")[0] + ">"
         for value in values
     )
+
+
+def authored_evidence_uses(
+    entry: EntryContext, name: str, *, excluded_ids: frozenset[str] = frozenset()
+) -> tuple[dict[str, Any], ...]:
+    """Find relevant Markdown-only evidence users without parsing unrelated ones."""
+
+    hint = re.compile(
+        r"(?:^|[\s;])source=(?:[\"'])?<?" + re.escape(name) + r"(?=[/>\s;\"']|$)"
+    )
+    uses: list[dict[str, Any]] = []
+    for document in sorted(entry.root.glob("*.md")):
+        for marker in authored_eid_comments(document.read_text(encoding="utf-8")):
+            if marker["id"] in excluded_ids or not hint.search(marker["definition"]):
+                continue
+            try:
+                consumes = any(
+                    token_name(source) == name
+                    for source in source_tokens(marker["definition"])
+                )
+            except ActionError:
+                consumes = True
+            if consumes:
+                uses.append(
+                    {
+                        "entry": entry.id,
+                        "evidence": marker["id"],
+                        "document": document.relative_to(entry.log.root).as_posix(),
+                    }
+                )
+    return tuple(uses)
 
 
 def related_entries(

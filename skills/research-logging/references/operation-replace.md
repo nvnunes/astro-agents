@@ -61,6 +61,7 @@ delete an unmentioned dependent section or file.
    dry-run the complete set, then repeat the same call without `--dry-run`:
 
    ```text
+   <skill>/scripts/log command sync --path <log> --entry <entry-id> [--delete <cid>]... [--dry-run]
    <skill>/scripts/log evidence sync --path <log> --entry <entry-id> [--delete <id>]... [--dry-run]
    <skill>/scripts/log data delete --path <log> --entry <entry-id> <name>
    <skill>/scripts/log retention delete --path <log> --entry <entry-id> --id <id>
@@ -69,8 +70,10 @@ delete an unmentioned dependent section or file.
    Invoke only the families required by the authorized replacement and stop on
    the first failure. Never repair the failure by editing a registry directly.
    Leave every old source and retained artifact in place until all required
-   mutations succeed. Delete an absent producer through `log command delete --cid CID` only after
-   removing its downstream uses. This owns execution and exclusive generated
+   mutations succeed. Delete an absent producer through entry-scoped
+   `log command sync --delete CID` only after removing its downstream uses;
+   group related command edits into the same dry-run/apply pair. This owns
+   execution and exclusive generated
    declarations; do not edit `pyrun.json` by hand.
 8. Only after all required record removals succeed, delete the explicitly
    authorized old source and retained artifacts. Leave the durable backup in

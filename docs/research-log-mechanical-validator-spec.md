@@ -3648,7 +3648,10 @@ The Record and Repair authoring contracts are:
 ### Command Synchronization
 
 ```text
-log command sync [--path LOG] --entry ENTRY --cid CID
+log command sync [--path LOG] --entry ENTRY
+  [--cid CID]...
+  [--rename OLD=NEW]...
+  [--delete CID]...
   [--add-origin NAME=PATH]...
   [--add-origin-directory NAME=PATH]...
   [--add-origin-git NAME=COMMIT:PATH]...
@@ -3656,11 +3659,14 @@ log command sync [--path LOG] --entry ENTRY --cid CID
   [--add-generated-directory NAME=PATH]...
   [--add-from-entry NAME=ENTRY]...
   [--change-target NAME=TARGET]...
-  [--delete-execution EXECUTION_ID]...
+  [--delete-stale-executions CID]...
   [--dry-run]
 ```
 
-The selector takes the full effective CID stored in normalized state. A
+At least one `--cid`, `--rename`, or `--delete` is required. Repeated identical
+selectors are accepted. A rename destination is selected implicitly; old CIDs
+and deleted CIDs must already be absent from Markdown. The selectors take full
+effective CIDs stored in normalized state. A
 recorded `pyrun` invocation may omit `--cid` and derive the CID from its Python
 program stem, or use numeric shorthand to derive `PROGRAM_STEM-N`. A full CID
 in Markdown remains the explicit override.
@@ -3675,15 +3681,24 @@ The add forms are idempotent ensure operations:
 - `--add-from-entry NAME=ENTRY` declares a same-name reference to a generated
   artifact in another entry.
 
-`--change-target` changes a path or `COMMIT:PATH` only when the declaration is
-local to the selected command. Shared target changes route to `log data
-update`. Kind, boundary, directory identity, `reproduction_comparison`, rename,
-deletion, and cross-entry source replacement also belong to `log data`.
+`--change-target` changes a path or `COMMIT:PATH` only when every command
+consumer is selected and there are no evidence or cross-entry consumers.
+Shared target changes route to `log data update`. Material-name rename and
+deletion, kind, boundary, directory identity, `reproduction_comparison`, and
+cross-entry source replacement also belong to `log data`.
 
-`--delete-execution` removes a named stale execution. If its Markdown
-invocation remains, sync recreates it as pending with
-`requires_reproduction: true`. A current valid execution cannot be deleted
-through this option.
+`--delete-stale-executions CID` authorizes retirement of every stale parameter
+execution in that selected CID. Dry-run lists the exact members. A redundant
+acknowledgement when there are no stale members is accepted. Sync creates
+observation-empty pending executions for new parameters. It never removes a
+current execution through this option.
+
+An entry-scoped sync prepares the selected final commands together, including
+their declaration additions and local target changes. Rename preserves matching
+execution observations while applying normal recipe and policy currentness to
+the destination. Delete removes an absent CID's bucket and exclusively owned,
+unconsumed generated declarations, but never retained output bytes. One invalid
+member prevents publication of the entire `data.json`/`pyrun.json` pair.
 
 ### Evidence Comparison And Synchronization
 
@@ -3878,16 +3893,14 @@ action.
 ### Command And Evidence Lifecycles
 
 ```text
-log command rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
-log command delete [--path LOG] --entry ENTRY --cid CID [--dry-run]
 log command list [--path LOG] --entry ENTRY
 
 log evidence list [--path LOG] --entry ENTRY
 ```
 
-For command rename, the agent edits the Markdown CID first. The lifecycle
-action verifies that the old identity is gone and the new identity is present
-before updating normalized state and references. Evidence rename and delete
+Command rename and delete belong to entry-scoped `log command sync`. The agent
+edits Markdown first, then supplies explicit `--rename OLD=NEW` and/or
+`--delete CID` selectors in one dry-run/apply pair. Evidence rename and delete
 belong to entry-scoped `log evidence sync` as specified above.
 
 Evidence sync validates only markers and summary references for its selected
@@ -3899,8 +3912,8 @@ For evidence deletion, the agent removes the presentation and marker first.
 Sync removes only the selected evidence record and reports newly unused data
 for a separate `data delete` decision.
 
-For command deletion, the agent removes the command block first. The delete
-action fails while downstream consumers use its outputs, removes its execution
+For command deletion, the agent removes the command block first. Sync
+fails while downstream consumers use its outputs, removes its execution
 records and command-exclusive generated declarations together, and reports
 output material left disconnected. It never deletes output files.
 

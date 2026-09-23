@@ -30,7 +30,7 @@ def action(logical: Path, family: str, verb: str, *extra: str, entry: str = "e00
 
 def checked(result):
     if result.returncode:
-        raise AssertionError(result.stderr)
+        raise AssertionError(result.stderr + "\n" + result.stdout)
     return json.loads(result.stdout)
 
 
@@ -106,8 +106,8 @@ class GraphLifecycleTests(unittest.TestCase):
             for verb, args, code in (
                 (
                     "command",
-                    ("delete", "--cid", "build"),
-                    "command.delete.outputs_in_use",
+                    ("sync", "--delete", "build"),
+                    "command.sync.outputs_in_use",
                 ),
                 (
                     "retention",
@@ -130,7 +130,7 @@ class GraphLifecycleTests(unittest.TestCase):
             checked(
                 action(logical, "evidence", "sync", "--delete", "alias", entry="e002")
             )
-            checked(action(logical, "command", "delete", "--cid", "build"))
+            checked(action(logical, "command", "sync", "--delete", "build"))
             checked(
                 action(
                     logical,
@@ -592,9 +592,6 @@ class GraphLifecycleTests(unittest.TestCase):
                 {"algorithm": "directory-sha256-v1"},
             )
             repository, commit, _ = source_repository(root)
-            prior = checked(action(logical, "command", "list"))["records"][0][
-                "execution_id"
-            ]
             document.write_text(
                 document.read_text().replace(
                     "--input-dir '<bundle>'", "--input-commit '<repo:commit>'"
@@ -605,8 +602,8 @@ class GraphLifecycleTests(unittest.TestCase):
                     logical,
                     "--add-origin-git",
                     f"repo={commit}:{repository}",
-                    "--delete-execution",
-                    prior,
+                    "--delete-stale-executions",
+                    "build",
                 )
             )
             checked(
@@ -810,12 +807,12 @@ class GraphLifecycleTests(unittest.TestCase):
             listed = checked(action(logical, "command", "list"))["records"][0]
             self.assertTrue(listed["exclusive"])
             self.assertEqual(listed["script"], "scripts/build.py")
-            rejected = action(logical, "command", "rename", "build", "make")
+            rejected = action(logical, "command", "sync", "--rename", "build=make")
             self.assertNotEqual(rejected.returncode, 0)
             document.write_text(
                 document.read_text().replace("--cid build", "--cid make")
             )
-            checked(action(logical, "command", "rename", "build", "make"))
+            checked(action(logical, "command", "sync", "--rename", "build=make"))
             self.assertEqual(
                 json.loads((entry / "pyrun.json").read_text())["commands"]["make"][
                     "executions"
@@ -834,9 +831,9 @@ class GraphLifecycleTests(unittest.TestCase):
                     "# Removed producer",
                 )
             )
-            rejected = action(logical, "command", "delete", "--cid", "make")
+            rejected = action(logical, "command", "sync", "--delete", "make")
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("command.delete.outputs_in_use", rejected.stderr)
+            self.assertIn("command.sync.outputs_in_use", rejected.stderr)
             document.write_text(
                 document.read_text().replace(
                     "`7`<!-- eid:value source=generated select=/value -->",
@@ -855,15 +852,12 @@ class GraphLifecycleTests(unittest.TestCase):
                 return original(path, value)
 
             with mock.patch.object(storage, "remove_or_write", side_effect=fail_once):
-                rejected = action(logical, "command", "delete", "--cid", "make")
+                rejected = action(logical, "command", "sync", "--delete", "make")
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertGreaterEqual(len(calls), 2)
+            self.assertGreaterEqual(len(calls), 2, rejected.stderr)
             self.assertEqual(retained_files(logical), before)
-            deleted = checked(action(logical, "command", "delete", "--cid", "make"))
-            self.assertEqual(
-                deleted["records"],
-                [{"disconnected": str((entry / "data/output.csv").resolve())}],
-            )
+            deleted = checked(action(logical, "command", "sync", "--delete", "make"))
+            self.assertIn({"cid": "make", "deleted": True}, deleted["records"])
             self.assertEqual(checked(action(logical, "command", "list"))["records"], [])
             self.assertEqual(checked(action(logical, "data", "list"))["records"], [])
             self.assertTrue((entry / "data/output.csv").exists())

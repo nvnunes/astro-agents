@@ -56,10 +56,12 @@ delete an unmentioned dependent section or file.
    uses first. Keep the old source and retained artifacts available. If an
    unapproved summary or dependent change is required, stop and ask instead of
    continuing.
-7. Remove each selected research-owned record through its owning CLI action:
+7. Remove selected research-owned records through their owning CLI actions.
+   Group the entry's evidence deletions into one `log evidence sync` change set;
+   dry-run the complete set, then repeat the same call without `--dry-run`:
 
    ```text
-   <skill>/scripts/log evidence delete --path <log> --entry <entry-id> --id <id>
+   <skill>/scripts/log evidence sync --path <log> --entry <entry-id> [--delete <id>]... [--dry-run]
    <skill>/scripts/log data delete --path <log> --entry <entry-id> <name>
    <skill>/scripts/log retention delete --path <log> --entry <entry-id> --id <id>
    ```

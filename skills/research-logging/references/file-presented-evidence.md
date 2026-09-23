@@ -23,7 +23,8 @@ then sync. Source names may be `metrics`, `bundle/metrics.csv`, or their
 complete named tokens. Raw paths and bare directories are not evidence sources.
 
 ```text
-<skill>/scripts/log evidence sync --path LOG --entry ENTRY --id EID
+<skill>/scripts/log evidence sync --path LOG --entry ENTRY
+  [--id EID]... [--rename OLD=NEW]... [--delete EID]...
   [--add-origin NAME=PATH]... [--add-origin-directory NAME=PATH]...
   [--add-from-entry NAME=ENTRY]... [--change-target NAME=PATH]... [--dry-run]
 ```
@@ -36,7 +37,11 @@ Omission preserves data properties. A conflict names the owning change action.
 
 Sync fills the empty presentation or replaces its existing owned region, derives
 selection expectations, and captures current linked-artifact fingerprints.
-Require success before continuing. Do not inspect JSON to confirm success.
+Use one `--dry-run` invocation to inspect the complete selected change set,
+then repeat it without `--dry-run` to apply. Supply every selected ID in that
+same call; at least one `--id`, `--rename`, or `--delete` is required. Rename
+destinations are selected automatically. Repeated consistent selectors are
+accepted. Require success before continuing. Do not inspect JSON to confirm success.
 A malformed registry is a separate Repair boundary, not an invitation to edit
 around an authoring failure.
 
@@ -107,10 +112,14 @@ ordinary direct-table evidence. Do not emulate the calculation in comments.
 
 ## Lifecycle And Summary References
 
-For rename, edit the entry EID and every summary reference first, then
-`log evidence rename OLD NEW`. For delete, remove the marker and summary
-references first, then `log evidence delete --id EID`. Use `log evidence list`
-for semantic inspection. Mutations accept `--dry-run` and never delete files.
+For rename, edit the entry EID and every summary reference first, then include
+`--rename OLD=NEW` in the evidence sync change set. The destination comment
+defines its current source, render, and presentation; sync does not copy a stale
+record. For delete, remove the marker and summary references first, then include
+`--delete EID`. Select related updates, renames, and deletions together in one
+dry-run/apply pair. Sync never deletes retained files and reports newly unused
+data declarations for separate `log data` decisions. Use `log evidence list`
+for semantic inspection.
 
 A summary reuses an already supported entry value or exact table cell:
 

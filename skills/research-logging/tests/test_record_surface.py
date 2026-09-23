@@ -418,7 +418,7 @@ class RecordSurfaceTests(unittest.TestCase):
     def test_replace_removes_registries_before_old_artifacts(self) -> None:
         replace = reference("operation-replace.md")
         markdown = replace.index("remove the superseded Markdown")
-        evidence = replace.index("log evidence delete")
+        evidence = replace.index("log evidence sync")
         data = replace.index("log data delete")
         retention = replace.index("log retention delete")
         artifacts = replace.index("delete the explicitly\n   authorized old source")

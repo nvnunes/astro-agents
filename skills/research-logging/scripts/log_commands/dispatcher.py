@@ -219,11 +219,26 @@ def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
     for name in ("compare", "sync"):
         action = actions.add_parser(name, help="Evaluate Markdown-owned evidence")
         _entry_arguments(action)
-        scope = action.add_mutually_exclusive_group(required=True)
-        scope.add_argument("--id", help="one Markdown evidence ID")
-        scope.add_argument(
-            "--source", help="direct generated declaration in its owning entry"
-        )
+        if name == "compare":
+            scope = action.add_mutually_exclusive_group(required=True)
+            scope.add_argument("--id", help="one Markdown evidence ID")
+            scope.add_argument(
+                "--source", help="direct generated declaration in its owning entry"
+            )
+        else:
+            action.add_argument(
+                "--id",
+                action="append",
+                default=[],
+                help="selected Markdown evidence ID",
+            )
+            action.add_argument(
+                "--rename", action="append", default=[], metavar="OLD=NEW"
+            )
+            action.add_argument("--delete", action="append", default=[], metavar="ID")
+            action.add_argument(
+                "--source", help="direct generated declaration in its owning entry"
+            )
         if name == "sync":
             _mutation_argument(action)
             for flag in (
@@ -249,8 +264,11 @@ def _dispatch_evidence_refresh(
         entry,
         args.action,
         EvidenceSyncArguments(
-            record_id=args.id,
+            record_id=args.id if args.action == "compare" else None,
             source=args.source,
+            record_ids=tuple(args.id) if args.action == "sync" else (),
+            renames=tuple(getattr(args, "rename", ())),
+            deletions=tuple(getattr(args, "delete", ())),
             add_origins=tuple(getattr(args, "add_origin", ())),
             add_origin_directories=tuple(getattr(args, "add_origin_directory", ())),
             add_from_entries=tuple(getattr(args, "add_from_entry", ())),
@@ -264,19 +282,6 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log evidence")
     actions = parser.add_subparsers(dest="action", required=True)
     _evidence_refresh_parsers(actions)
-    rename = actions.add_parser(
-        "rename", help="Rename one evidence ID after every Markdown edit"
-    )
-    _entry_arguments(rename)
-    _mutation_argument(rename)
-    rename.add_argument("old_id")
-    rename.add_argument("new_id")
-    remove = actions.add_parser(
-        "delete", help="Delete one record after its Markdown references"
-    )
-    _entry_arguments(remove)
-    _mutation_argument(remove)
-    remove.add_argument("--id", required=True)
     listed = actions.add_parser("list", help="List bounded evidence semantics")
     _entry_arguments(listed)
     args = parser.parse_args(arguments)
@@ -285,10 +290,6 @@ def _dispatch_evidence(arguments: Sequence[str]) -> ActionResult:
         return _dispatch_evidence_refresh(entry, args)
     from . import evidence
 
-    if args.action == "rename":
-        return evidence.rename(entry, args.old_id, args.new_id, dry_run=args.dry_run)
-    if args.action == "delete":
-        return evidence.remove(entry, args.id, dry_run=args.dry_run)
     return evidence.list_records(entry)
 
 

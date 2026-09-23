@@ -44,6 +44,303 @@ def retained_files(logical: Path) -> dict[Path, bytes]:
 
 
 class EvidenceSyncTests(unittest.TestCase):
+    def test_target_change_rejects_unselected_markdown_only_consumer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/first.json").write_text('{"value":7}')
+            (entry / "data/second.json").write_text('{"value":8}')
+            set_results(document, "``<!-- eid:selected source=values select=/value -->")
+            created = evidence(
+                logical,
+                "sync",
+                "--id",
+                "selected",
+                "--add-origin",
+                "values=data/first.json",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            document.write_text(
+                document.read_text()
+                + "\n``<!-- eid:unsynced source=values select=/value -->\n"
+            )
+            before = retained_files(logical)
+            rejected = evidence(
+                logical,
+                "sync",
+                "--id",
+                "selected",
+                "--change-target",
+                "values=data/second.json",
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("evidence.sync.target.shared", rejected.stderr)
+            self.assertIn("unsynced", rejected.stderr)
+            self.assertEqual(retained_files(logical), before)
+
+    def test_delete_ignores_unrelated_malformed_eid_definition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(document, "``<!-- eid:selected source=values select=/value -->")
+            created = evidence(
+                logical,
+                "sync",
+                "--id",
+                "selected",
+                "--add-origin",
+                "values=data/value.json",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            document.write_text(
+                document.read_text().replace(
+                    "`7`<!-- eid:selected source=values select=/value -->",
+                    "Retired.",
+                )
+                + "\n``<!-- eid:broken source='unterminated -->\n"
+            )
+            deleted = evidence(logical, "sync", "--delete", "selected")
+            self.assertEqual(deleted.returncode, 0, deleted.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+
+    def test_target_change_requires_every_evidence_consumer_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/first.json").write_text('{"value":7}')
+            (entry / "data/second.json").write_text('{"value":8}')
+            set_results(
+                document,
+                "``<!-- eid:first source=values select=/value -->\n"
+                "``<!-- eid:second source=values select=/value -->",
+            )
+            created = evidence(
+                logical,
+                "sync",
+                "--id",
+                "first",
+                "--id",
+                "second",
+                "--add-origin",
+                "values=data/first.json",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            before = retained_files(logical)
+            rejected = evidence(
+                logical,
+                "sync",
+                "--id",
+                "first",
+                "--change-target",
+                "values=data/second.json",
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("evidence.sync.target.shared", rejected.stderr)
+            self.assertEqual(retained_files(logical), before)
+            accepted = evidence(
+                logical,
+                "sync",
+                "--id",
+                "first",
+                "--id",
+                "second",
+                "--change-target",
+                "values=data/second.json",
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(document.read_text().count("`8`<!-- eid:"), 2)
+            resources = json.loads((entry / "data.json").read_text())["inputs"]
+            self.assertEqual(resources[0]["location"], "data/second.json")
+
+    def test_rename_reevaluates_new_definition_and_updates_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/first.json").write_text('{"value":7}')
+            (entry / "data/second.json").write_text('{"value":8.25}')
+            set_results(
+                document,
+                "``<!-- eid:old source=first select=/value -->",
+            )
+            first = evidence(
+                logical, "sync", "--id", "old", "--add-origin", "first=data/first.json"
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text()
+                + "\n## Summary\n\n`7`<!-- ref entry = e001; eid = old -->\n"
+            )
+            document.write_text(
+                document.read_text().replace(
+                    "`7`<!-- eid:old source=first select=/value -->",
+                    "``<!-- eid:new source=second select=/value render=fixed:1 -->",
+                )
+            )
+            summary.write_text(summary.read_text().replace("eid = old", "eid = new"))
+            arguments = (
+                "--rename",
+                "old=new",
+                "--add-origin",
+                "second=data/second.json",
+            )
+            before = retained_files(logical)
+            preview = evidence(logical, "sync", *arguments, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", *arguments)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("`8.2`<!-- eid:new", document.read_text())
+            self.assertIn(
+                "`8.2`<!-- ref entry = e001; eid = new -->", summary.read_text()
+            )
+            records = json.loads((entry / "evidence.json").read_text())["records"]
+            self.assertEqual([record["id"] for record in records], ["new"])
+            self.assertEqual(records[0]["sources"][0]["source"], "<second>")
+            after = retained_files(logical)
+            repeated = evidence(logical, "sync", *arguments)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(retained_files(logical), after)
+
+    def test_invalid_member_prevents_batch_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(
+                document,
+                "``<!-- eid:good source=values select=/value -->\n"
+                "``<!-- eid:bad source=values select=/missing -->",
+            )
+            before = retained_files(logical)
+            result = evidence(
+                logical,
+                "sync",
+                "--id",
+                "good",
+                "--id",
+                "bad",
+                "--add-origin",
+                "values=data/value.json",
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(retained_files(logical), before)
+            self.assertFalse((entry / "evidence.json").exists())
+
+    def test_delete_only_is_idempotent_and_reports_unused_declaration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(document, "``<!-- eid:old source=values select=/value -->")
+            created = evidence(
+                logical, "sync", "--id", "old", "--add-origin", "values=data/value.json"
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            document.write_text(
+                document.read_text().replace(
+                    "`7`<!-- eid:old source=values select=/value -->", "Retired."
+                )
+            )
+            before = retained_files(logical)
+            preview = evidence(logical, "sync", "--delete", "old", "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(retained_files(logical), before)
+            self.assertIn(
+                {"unused_data": "values"}, json.loads(preview.stdout)["records"]
+            )
+            deleted = evidence(logical, "sync", "--delete", "old")
+            self.assertEqual(deleted.returncode, 0, deleted.stderr)
+            self.assertFalse((entry / "evidence.json").exists())
+            self.assertTrue((entry / "data.json").exists())
+            after = retained_files(logical)
+            repeated = evidence(logical, "sync", "--delete", "old")
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(retained_files(logical), after)
+
+    def test_conflicting_batch_selection_rejects_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            set_results(document, "``<!-- eid:new source=values select=/value -->")
+            before = retained_files(logical)
+            for arguments in (
+                ("--id", "new", "--delete", "new"),
+                ("--rename", "old=new", "--rename", "another=new"),
+                ("--rename", "old=new", "--rename", "new=third"),
+                ("--delete", "old", "--add-origin", "values=data/value.json"),
+            ):
+                with self.subTest(arguments=arguments):
+                    rejected = evidence(logical, "sync", *arguments)
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertEqual(retained_files(logical), before)
+
+    def test_replaces_six_records_with_one_in_one_public_change_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            old = "\n".join(
+                f"``<!-- eid:old-{index} source=values select=/value -->"
+                for index in range(6)
+            )
+            set_results(document, old)
+            for index in range(6):
+                arguments = (
+                    ("--add-origin", "values=data/value.json") if index == 0 else ()
+                )
+                result = evidence(logical, "sync", "--id", f"old-{index}", *arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            document.write_text(
+                document.read_text().replace(
+                    "\n".join(
+                        f"`7`<!-- eid:old-{index} source=values select=/value -->"
+                        for index in range(6)
+                    ),
+                    "``<!-- eid:new source=values select=/value -->",
+                )
+            )
+            arguments = (
+                "--id",
+                "new",
+                *(item for index in range(6) for item in ("--delete", f"old-{index}")),
+            )
+            before = retained_files(logical)
+            preview = evidence(logical, "sync", *arguments, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(retained_files(logical), before)
+            self.assertEqual(
+                [record["id"] for record in json.loads(preview.stdout)["records"]],
+                ["new", *(f"old-{index}" for index in range(6))],
+            )
+            applied = evidence(logical, "sync", *arguments)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("`7`<!-- eid:new", document.read_text())
+            self.assertEqual(
+                [
+                    item["id"]
+                    for item in json.loads((entry / "evidence.json").read_text())[
+                        "records"
+                    ]
+                ],
+                ["new"],
+            )
+            self.assertEqual((entry / "data/value.json").read_text(), '{"value":7}')
+            after = retained_files(logical)
+            repeated = evidence(logical, "sync", *arguments)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(retained_files(logical), after)
+
     def test_numeric_comment_filters_accept_matching_native_types_only(self):
         for kind, value in (("integer", 6), ("decimal", 7.5)):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:

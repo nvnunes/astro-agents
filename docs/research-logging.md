@@ -776,6 +776,11 @@ use empty code spans; direct tables use an authored header and alignment row;
 retained-output excerpts use an empty text fence and explicit source bounds.
 The same format is used for subsequent edits. Sync derives the evidence record,
 fills the presentation, and accepts current linked-artifact fingerprints.
+Several IDs can be synchronized together. After editing entry markers and
+maintained-summary references, `--rename OLD=NEW` and `--delete ID` can join
+the same entry-scoped change set. One dry run previews all selected changes;
+the identical call without `--dry-run` applies them atomically. Sync reports
+newly unused data declarations but never deletes retained files.
 
 After an artifact is updated by `pyrun`, the agent runs
 `log evidence compare --source NAME` once to inspect exact before/after

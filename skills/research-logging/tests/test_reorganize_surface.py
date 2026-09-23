@@ -31,7 +31,7 @@ class ReorganizeSurfaceTests(unittest.TestCase):
         self.assertIn("log reorganize reorder --help", identity)
         self.assertIn("log reorganize relocate-log --help", identity)
         self.assertIn("log reorganize remove-empty-entry --help", identity)
-        self.assertIn("log evidence rename", identity)
+        self.assertIn("log evidence sync", identity)
         self.assertNotIn("## Split One Stable Entry", identity)
 
         self.assertIn("## Move Within One Document", documents)

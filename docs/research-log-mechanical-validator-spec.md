@@ -3690,7 +3690,10 @@ through this option.
 ```text
 log evidence compare [--path LOG] --entry ENTRY --id ID
 
-log evidence sync [--path LOG] --entry ENTRY --id ID
+log evidence sync [--path LOG] --entry ENTRY
+  [--id ID]...
+  [--rename OLD=NEW]...
+  [--delete ID]...
   [--add-origin NAME=PATH]...
   [--add-origin-directory NAME=PATH]...
   [--add-from-entry NAME=ENTRY]...
@@ -3702,13 +3705,32 @@ log evidence compare [--path LOG] --entry ENTRY --source NAME
 log evidence sync [--path LOG] --entry ENTRY --source NAME
 ```
 
-The ID-scoped form reads the complete definition from the Markdown `eid`
-comment. Compare shows only that EID and its exact before and after presented
-Markdown. Sync validates and normalizes the definition into `evidence.json`,
-evaluates it, and replaces the adjacent placeholder or prior presentation.
+ID-scoped compare reads the complete definition from the Markdown `eid`
+comment and shows only that EID and its exact before and after presented
+Markdown. Entry-scoped sync requires at least one `--id`, `--rename`, or
+`--delete`. It evaluates every selected final EID, normalizes its current
+definition into `evidence.json`, and replaces its adjacent placeholder or prior
+presentation. Rename destinations are selected implicitly. Repeated consistent
+selectors normalize to one change.
 
-ID-scoped compare and sync validate only the selected evidence item's markers,
-definition, presentation, and surrounding Markdown context. Its marker must be
+Renames and deletions are explicit; absence from Markdown never infers them.
+The old EID and its maintained-summary references must already be absent.
+Rename evaluates the destination's current Markdown definition rather than
+copying old presentation or source expectations. Deletion removes the
+normalized record but not retained source bytes or data declarations; newly
+unused declarations are reported. A missing deleted record is unchanged.
+When a rename source is already absent, the destination must already be fully
+synchronized for an unchanged success. Conflicting mappings, chains, cycles,
+destination collisions, or incompatible actions fail before publication.
+
+The dry run evaluates the full change set without writing. The identical call
+without `--dry-run` publishes the selected Markdown, summary, `evidence.json`,
+and permitted `data.json` changes atomically. One invalid member prevents all
+writes. Unrelated prose and registry records remain untouched.
+
+ID-scoped compare and entry-scoped sync validate only the selected evidence
+items' markers, definitions, presentations, and surrounding Markdown context.
+Each marker must be
 unique across the entry's owned documents. Invalid unrelated evidence markers
 or definitions do not block the operation; whole-document evidence validation
 belongs to `log validate`.
@@ -3716,12 +3738,14 @@ belongs to `log validate`.
 Summary refresh validates and updates only references forwarding the selected
 evidence. Malformed references to unrelated evidence remain untouched.
 
-The ID-scoped add forms have the same ensure behavior as command sync and must
-be consumed by the candidate evidence definition. Evidence may add a file or
+The entry-scoped add forms have the same ensure behavior as command sync and must
+be consumed by a selected final evidence definition. Evidence may add a file or
 directory origin or a same-name cross-entry reference. It cannot create a
 generated declaration; an unknown generated source must direct the agent to
 author and synchronize its producer command. `--change-target` is limited to a
-declaration used only by that evidence record.
+declaration whose every evidence consumer is selected and which has no command,
+cross-entry, or unselected evidence consumer. Shared changes route to
+`log data update`.
 
 The source-scoped form (including --dry-run on sync) selects one direct generated declaration in its owning
 entry, follows same-log references, and finds every evidence record that uses
@@ -3858,23 +3882,22 @@ log command rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
 log command delete [--path LOG] --entry ENTRY --cid CID [--dry-run]
 log command list [--path LOG] --entry ENTRY
 
-log evidence rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
-log evidence delete [--path LOG] --entry ENTRY --id ID [--dry-run]
 log evidence list [--path LOG] --entry ENTRY
 ```
 
-For rename, the agent edits the Markdown CID or EID first. The lifecycle action
-verifies that the old identity is gone and the new identity is present before
-updating normalized state and references.
+For command rename, the agent edits the Markdown CID first. The lifecycle
+action verifies that the old identity is gone and the new identity is present
+before updating normalized state and references. Evidence rename and delete
+belong to entry-scoped `log evidence sync` as specified above.
 
-Evidence rename and delete validate only markers and summary references for
-their selected IDs. Unrelated invalid markers, definitions, and references do
-not block either action. Registry files must still satisfy their data contracts
+Evidence sync validates only markers and summary references for its selected
+IDs. Unrelated invalid markers, definitions, and references do not block a
+focused change set. Registry files must still satisfy their data contracts
 before publication; focused edits do not repair unrelated records.
 
 For evidence deletion, the agent removes the presentation and marker first.
-The delete action removes only the evidence record and reports newly unused
-data for a separate `data delete` decision.
+Sync removes only the selected evidence record and reports newly unused data
+for a separate `data delete` decision.
 
 For command deletion, the agent removes the command block first. The delete
 action fails while downstream consumers use its outputs, removes its execution

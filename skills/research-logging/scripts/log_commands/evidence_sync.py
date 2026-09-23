@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,6 +29,7 @@ from validation.evidence import (
     SUMMARY_REFERENCE_RE,
     EvidenceRecord,
     PresentedItem,
+    authored_eid_comments,
     evidence_file_from_records,
     evidence_record_from_fields,
     index_entry_presentations,
@@ -54,7 +56,10 @@ from validation.operation_state import (
     finish_guarded_publication,
     operation_lock,
 )
-from validation.presentation import require_artifact_source_association
+from validation.presentation import (
+    index_entry_presentations_all,
+    require_artifact_source_association,
+)
 from validation.provenance import require_origin_boundary
 from validation.transformation import (
     TransformationResult,
@@ -76,6 +81,7 @@ from .context import (
     resolve_project_root,
 )
 from .data_assertions import assignment, ensure_declaration, require_local_target
+from .graph_state import source_tokens, token_name
 from .materials import inspect_log_materials
 from .model import ActionError, ActionResult, EvidenceSyncArguments
 from .retention import require_unretained_paths
@@ -100,14 +106,321 @@ class EvidenceEdit:
     artifact_observation: tuple[Path, str, Mapping[str, object]] | None = None
 
 
+@dataclass(frozen=True)
+class EvidenceBatch:
+    """Prepared entry evidence edits and the state their publication must recheck."""
+
+    entry: EntryContext
+    edits: tuple[EvidenceEdit, ...]
+    data: DataFile | None
+    before_data: DataFile | None
+    before_records: Mapping[str, EvidenceRecord]
+    observations: Mapping[Path, SourceObservation]
+    removed: set[str]
+    arguments: EvidenceSyncArguments
+    lock_entries: tuple[EntryContext, ...]
+
+
 def compare_or_sync(
     entry: EntryContext, action: str, arguments: EvidenceSyncArguments
 ) -> ActionResult:
     """Preflight all selected records, then publish only changed owned files."""
 
-    if action == "compare" or arguments.dry_run:
-        return _prepare_operation(entry, action, arguments)
+    if action == "sync" and arguments.source is None:
+        return _prepare_entry_set(entry, arguments)
+    if arguments.record_ids or arguments.renames or arguments.deletions:
+        raise ActionError(
+            "evidence.sync.arguments.conflict",
+            "--source cannot be combined with --id, --rename, or --delete",
+        )
+    if arguments.source is None and arguments.record_id is None:
+        raise ActionError(
+            "cli.arguments.invalid", "evidence compare requires --id or --source"
+        )
     return _prepare_operation(entry, action, arguments)
+
+
+def _entry_selection(
+    arguments: EvidenceSyncArguments,
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Normalize a bounded entry change set and reject incompatible identities."""
+
+    renames = {assignment(raw, "--rename") for raw in arguments.renames}
+    sources = [old for old, _ in renames]
+    targets = [new for _, new in renames]
+    if (
+        len(set(sources)) != len(sources)
+        or len(set(targets)) != len(targets)
+        or set(sources) & set(targets)
+    ):
+        raise ActionError(
+            "evidence.sync.selection.conflict",
+            "renames must be one-to-one without chains or cycles",
+        )
+    deleted = set(arguments.deletions)
+    selected = set(arguments.record_ids) | set(targets)
+    if not selected and not deleted:
+        raise ActionError(
+            "cli.arguments.invalid",
+            "evidence sync requires --id, --rename, or --delete",
+        )
+    if deleted & (selected | set(sources)) or set(sources) & set(arguments.record_ids):
+        raise ActionError(
+            "evidence.sync.selection.conflict",
+            "an evidence ID cannot be selected for incompatible actions",
+        )
+    return tuple(sorted(selected)), tuple(sorted(renames)), tuple(sorted(deleted))
+
+
+def _require_old_markdown_absent(entry: EntryContext, ids: set[str]) -> None:
+    if not ids:
+        return
+    selected = frozenset((entry.id, record_id) for record_id in ids)
+    references = index_summary_references(
+        entry.log.summary.read_text(encoding="utf-8"), selected=selected
+    )
+    markers = [
+        item
+        for record_id in ids
+        for item in index_entry_presentations_all(
+            entry.root, entry.log.root, record_id=record_id
+        )
+    ]
+    if markers or references:
+        names = sorted(
+            {item.id for item in markers}
+            | {item.evidence_id for item in references if item.entry == entry.id}
+        )
+        raise ActionError(
+            "evidence.sync.markdown_present",
+            f"remove old entry markers and summary references first: {names}",
+        )
+
+
+def _prepare_entry_set(
+    entry: EntryContext, arguments: EvidenceSyncArguments
+) -> ActionResult:
+    selected, renames, deleted = _entry_selection(arguments)
+    removed = set(deleted) | {old for old, _ in renames}
+    lock_entries = _lock_entries(entry, arguments)
+    with (
+        nullcontext()
+        if arguments.dry_run
+        else entry_locks(entry.log, (entry,), timeout_seconds=10)
+    ):
+        before_data = _load_data(entry)
+        before_records = {record.id: record for record in _load_records(entry)}
+    _require_old_markdown_absent(entry, removed)
+    observations: dict[Path, SourceObservation] = {}
+    owned = tuple(_owned_marker(entry, record_id) for record_id in selected)
+    if not owned and (
+        arguments.add_origins
+        or arguments.add_origin_directories
+        or arguments.add_from_entries
+        or arguments.target_changes
+    ):
+        raise ActionError(
+            "evidence.sync.declaration.unused",
+            "declaration options require a selected final evidence ID",
+        )
+    data = (
+        _candidate_data(
+            entry,
+            tuple(item[1] for item in owned),
+            arguments,
+            before_data,
+            covered_ids=set(selected) | removed,
+        )
+        if owned
+        else None
+    )
+    edits = (
+        tuple(_evaluate_edit(entry, item, data, observations) for item in owned)
+        if data is not None
+        else ()
+    )
+    _check_renames(renames, before_records, edits)
+    report = _entry_report(entry, renames, deleted, before_records, edits)
+    _recheck_sources(edits, observations)
+    data_updates = {data.path: data.canonical_json()} if data is not None else {}
+    changed = (
+        _changed_updates(entry, edits, data_updates, removed)
+        if arguments.dry_run
+        else _publish_entry_set(
+            EvidenceBatch(
+                entry,
+                edits,
+                data,
+                before_data,
+                before_records,
+                observations,
+                removed,
+                arguments,
+                lock_entries,
+            )
+        )
+    )
+    return ActionResult(
+        "evidence.sync",
+        "dry-run" if arguments.dry_run else "changed" if changed else "unchanged",
+        "evidence.synced",
+        bool(changed),
+        tuple(str(path) for path in sorted(changed)),
+        records=report,
+    )
+
+
+def _check_renames(
+    renames: tuple[tuple[str, str], ...],
+    before_records: Mapping[str, EvidenceRecord],
+    edits: tuple[EvidenceEdit, ...],
+) -> None:
+    by_id = {edit.record.id: edit for edit in edits}
+    for old, new in renames:
+        if old in before_records:
+            if new in before_records:
+                raise ActionError("evidence.sync.destination.conflict", new)
+        elif before_records.get(new) != by_id[new].record or (
+            by_id[new].marker.before != by_id[new].after
+        ):
+            raise ActionError(
+                "evidence.sync.source.missing",
+                f"{old}: missing source; {new} is not already synchronized",
+            )
+
+
+def _entry_report(
+    entry: EntryContext,
+    renames: tuple[tuple[str, str], ...],
+    deleted: tuple[str, ...],
+    before_records: Mapping[str, EvidenceRecord],
+    edits: tuple[EvidenceEdit, ...],
+) -> tuple[dict[str, object], ...]:
+    renamed_from = {new: old for old, new in renames}
+    report_rows: list[dict[str, object]] = []
+    for edit in edits:
+        row: dict[str, object] = {
+            "id": edit.record.id,
+            "before": edit.marker.before,
+            "after": edit.after,
+        }
+        if edit.record.id in renamed_from:
+            row["renamed_from"] = renamed_from[edit.record.id]
+        report_rows.append(row)
+    report_rows.extend({"id": record_id, "deleted": True} for record_id in deleted)
+    superseded = (
+        {edit.record.id for edit in edits} | set(deleted) | {old for old, _ in renames}
+    )
+    potentially_unused = {
+        _source_name(source.source)
+        for record_id in superseded
+        if record_id in before_records
+        for source in before_records[record_id].sources
+    }
+    final_names = {
+        _source_name(source.source) for edit in edits for source in edit.record.sources
+    }
+    unused: tuple[dict[str, object], ...] = tuple(
+        {"unused_data": name}
+        for name in sorted(potentially_unused - final_names)
+        if _is_unused_data(entry, name, superseded)
+    )
+    report_rows.extend(unused)
+    return tuple(report_rows)
+
+
+def _is_unused_data(entry: EntryContext, name: str, superseded: set[str]) -> bool:
+    """Report an unused name only when unrelated graph state is inspectable."""
+
+    try:
+        return not _target_blockers(entry, name, superseded)
+    except (ActionError, DataContractError, MechanicalContractError):
+        return False
+
+
+def _publish_entry_set(batch: EvidenceBatch) -> dict[Path, str | None]:
+    entry = batch.entry
+    edits = batch.edits
+    data = batch.data
+    removed = batch.removed
+    data_updates = {data.path: data.canonical_json()} if data is not None else {}
+    with (
+        entry_locks(entry.log, batch.lock_entries, timeout_seconds=10),
+        operation_lock(entry.log.root, "summary.lock", timeout_seconds=10),
+        artifact_transaction(resolve_project_root(entry.root)),
+    ):
+        _require_old_markdown_absent(entry, removed)
+        current_records = {record.id: record for record in _load_records(entry)}
+        for old in removed:
+            require_unchanged(
+                batch.before_records.get(old),
+                current_records.get(old),
+                f"{old} evidence record",
+            )
+        _check_selected_edits(
+            edits, {entry.id: batch.before_records}, batch.observations
+        )
+        if data is not None:
+            edits, fresh = _merge_entry_data(entry, edits, data, batch.before_data)
+            _recheck_from_entries(batch, fresh)
+            _recheck_target_ownership(batch, fresh)
+            data_updates = {fresh.path: fresh.canonical_json()}
+        changed = _changed_updates(entry, edits, data_updates, removed)
+        _publish_edits(edits, changed, entries=(entry,))
+    return changed
+
+
+def _recheck_target_ownership(batch: EvidenceBatch, fresh: DataFile) -> None:
+    covered = {edit.record.id for edit in batch.edits} | batch.removed
+    before = batch.before_data.by_name if batch.before_data else {}
+    for raw in batch.arguments.target_changes:
+        name, _ = assignment(raw, "--change-target")
+        prior = before.get(name)
+        if (
+            prior is not None
+            and prior.canonical_target == fresh.by_name[name].canonical_target
+        ):
+            continue
+        blockers = _target_blockers(batch.entry, name, covered)
+        if blockers:
+            _raise_target_shared(batch.entry, name, blockers)
+
+
+def _recheck_from_entries(batch: EvidenceBatch, data: DataFile) -> None:
+    for raw in batch.arguments.add_from_entries:
+        name, source_id = assignment(raw, "--add-from-entry")
+        source = _load_data(resolve_entry(batch.entry.log, source_id))
+        expected = data.by_name[name]
+        require_unchanged(
+            resource_authority(replace(expected, reference_entry=None)),
+            resource_authority(source.by_name.get(name) if source else None),
+            f"{source_id}/{name} source declaration",
+        )
+
+
+def _merge_entry_data(
+    entry: EntryContext,
+    edits: tuple[EvidenceEdit, ...],
+    data: DataFile,
+    before_data: DataFile | None,
+) -> tuple[tuple[EvidenceEdit, ...], DataFile]:
+    names = {
+        _source_name(source.source) for edit in edits for source in edit.record.sources
+    }
+    fresh = merge_data(before_data, data, _load_data(entry), names=names, entry=entry)
+    assert fresh is not None
+    for name in names:
+        require_unchanged(
+            resource_authority(data.by_name[name]),
+            resource_authority(fresh.by_name[name]),
+            f"{entry.id}/{name} source target",
+        )
+    require_artifact_access(
+        resolve_project_root(entry.root),
+        reads=artifact_locations(fresh, names),
+        writes=data_change_paths(before_data, fresh),
+    )
+    return tuple(replace(edit, data=fresh) for edit in edits), fresh
 
 
 def _lock_entries(
@@ -155,7 +468,7 @@ def _prepare_operation(
         assert arguments.record_id is not None
         _load_records(entry)
         document, marker, presentation = _owned_marker(entry, arguments.record_id)
-        data = _candidate_data(entry, marker, arguments)
+        data = _candidate_data(entry, (marker,), arguments, before_data[entry.id])
         edits = (
             _evaluate_edit(entry, (document, marker, presentation), data, observations),
         )
@@ -245,13 +558,14 @@ def _changed_updates(
     entry: EntryContext,
     edits: tuple[EvidenceEdit, ...],
     data_updates: Mapping[Path, str],
-) -> dict[Path, str]:
-    updates = _publication_updates(entry, edits)
+    removed: set[str] | None = None,
+) -> dict[Path, str | None]:
+    updates = _publication_updates(entry, edits, removed=removed)
     updates.update(data_updates)
     return {
         path: value
         for path, value in updates.items()
-        if not path.exists() or path.read_text(encoding="utf-8") != value
+        if (path.read_text(encoding="utf-8") if path.exists() else None) != value
     }
 
 
@@ -296,14 +610,18 @@ def _check_selected_edits(
 
 
 def _publish_edits(
-    edits: tuple[EvidenceEdit, ...], updates: Mapping[Path, str]
+    edits: tuple[EvidenceEdit, ...],
+    updates: Mapping[Path, str | None],
+    *,
+    entries: tuple[EntryContext, ...] = (),
 ) -> None:
     if not updates:
         return
-    entries = {edit.entry.id: edit.entry for edit in edits}
+    selected_entries = {edit.entry.id: edit.entry for edit in edits}
+    selected_entries.update({entry.id: entry for entry in entries})
     residues = []
     try:
-        for target in sorted(entries.values(), key=lambda item: item.id):
+        for target in sorted(selected_entries.values(), key=lambda item: item.id):
             residues.append(begin_registry_transaction(target.log.root, target.id))
     except OSError:
         for residue in residues:
@@ -386,11 +704,19 @@ def _load_records(entry: EntryContext) -> tuple[EvidenceRecord, ...]:
 
 
 def _candidate_data(
-    entry: EntryContext, marker: MarkdownEvidence, arguments: EvidenceSyncArguments
+    entry: EntryContext,
+    markers: tuple[MarkdownEvidence, ...],
+    arguments: EvidenceSyncArguments,
+    current: DataFile | None,
+    *,
+    covered_ids: set[str] | None = None,
 ) -> DataFile:
-    current = _load_data(entry)
     items = dict(current.by_name) if current else {}
-    used_names = {_source_name(source["source"]) for source in marker.sources}
+    used_names = {
+        _source_name(source["source"])
+        for marker in markers
+        for source in marker.sources
+    }
     asserted = set()
     for values, kind, flag in (
         (arguments.add_origins, "file", "--add-origin"),
@@ -440,7 +766,13 @@ def _candidate_data(
             "--add-origin-directory NAME=PATH; for generated data author "
             "and run log command sync on its producer",
         )
-    _change_targets(entry, items, marker.id, used_names, arguments.target_changes)
+    _change_targets(
+        entry,
+        items,
+        covered_ids if covered_ids is not None else {marker.id for marker in markers},
+        used_names,
+        arguments.target_changes,
+    )
     built = data_file_from_inputs(
         entry.root / "data.json", entry_root=entry.root, inputs=tuple(items.values())
     )
@@ -462,17 +794,25 @@ def _candidate_data(
 def _change_targets(
     entry: EntryContext,
     items: dict[str, InputResource],
-    record_id: str,
+    record_ids: set[str],
     used_names: set[str],
     values: tuple[str, ...],
 ) -> None:
+    changes: dict[str, str] = {}
     for raw in values:
         name, target = assignment(raw, "--change-target")
+        if name in changes and changes[name] != target:
+            raise ActionError(
+                "evidence.sync.target.conflict",
+                f"{name}: conflicting --change-target values",
+            )
+        changes[name] = target
+    for name, target in sorted(changes.items()):
         existing = items.get(name)
         if existing is None or name not in used_names:
             raise ActionError(
                 "evidence.sync.target.not_owned",
-                f"{record_id} does not use {name}; use log data update",
+                f"selected evidence does not use {name}; use log data update",
             )
         if existing.reference_entry or existing.kind == "git-repository":
             raise ActionError(
@@ -490,19 +830,29 @@ def _change_targets(
         )
         if candidate == existing:
             continue
-        blockers = _target_blockers(entry, name, record_id)
+        blockers = _target_blockers(entry, name, record_ids)
         if blockers:
-            raise ActionError(
-                "evidence.sync.target.shared",
-                f"{name}: use log data update",
-                records=blockers,
-                diagnostic_log=entry.log.root,
-            )
+            _raise_target_shared(entry, name, blockers)
         items[name] = candidate
 
 
+def _raise_target_shared(
+    entry: EntryContext, name: str, blockers: tuple[dict[str, object], ...]
+) -> None:
+    owners = set()
+    for item in blockers:
+        identity = item.get("evidence", item.get("command", "reference"))
+        owners.add(f"{item.get('entry')}/{identity}")
+    raise ActionError(
+        "evidence.sync.target.shared",
+        f"{name}: unselected consumers {sorted(owners)}; use log data update",
+        records=blockers,
+        diagnostic_log=entry.log.root,
+    )
+
+
 def _target_blockers(
-    entry: EntryContext, name: str, record_id: str
+    entry: EntryContext, name: str, record_ids: set[str]
 ) -> tuple[dict[str, object], ...]:
     materials = inspect_log_materials(entry.log)
     blockers: list[dict[str, object]] = (
@@ -524,10 +874,42 @@ def _target_blockers(
                 path, log_root=entry.log.root, entry_root=entry.root
             ).records
             for record in records:
-                if record.id != record_id and any(
+                if record.id not in record_ids and any(
                     _source_name(source.source) == name for source in record.sources
                 ):
                     blockers.append({"entry": entry.id, "evidence": record.id})
+    blockers.extend(_authored_evidence_blockers(entry, name, record_ids))
+    return tuple(blockers)
+
+
+def _authored_evidence_blockers(
+    entry: EntryContext, name: str, selected: set[str]
+) -> tuple[dict[str, object], ...]:
+    """Inspect only comments that could consume this name, including unsynced ones."""
+
+    hint = re.compile(
+        r"(?:^|[\s;])source=(?:[\"'])?<?" + re.escape(name) + r"(?=[/>\s;\"']|$)"
+    )
+    blockers: list[dict[str, object]] = []
+    for document in sorted(entry.root.glob("*.md")):
+        for marker in authored_eid_comments(document.read_text(encoding="utf-8")):
+            if marker["id"] in selected or not hint.search(marker["definition"]):
+                continue
+            try:
+                uses_name = any(
+                    token_name(source) == name
+                    for source in source_tokens(marker["definition"])
+                )
+            except ActionError:
+                uses_name = True
+            if uses_name:
+                blockers.append(
+                    {
+                        "entry": entry.id,
+                        "evidence": marker["id"],
+                        "document": document.relative_to(entry.log.root).as_posix(),
+                    }
+                )
     return tuple(blockers)
 
 
@@ -758,13 +1140,21 @@ def _source_record_ids(
 
 
 def _publication_updates(
-    entry: EntryContext, edits: tuple[EvidenceEdit, ...]
-) -> dict[Path, str]:
-    updates: dict[Path, str] = {}
+    entry: EntryContext,
+    edits: tuple[EvidenceEdit, ...],
+    *,
+    removed: set[str] | None = None,
+) -> dict[Path, str | None]:
+    updates: dict[Path, str | None] = {}
     entries = {edit.entry.id: edit.entry for edit in edits}
+    if removed:
+        entries[entry.id] = entry
     for target in entries.values():
         path = target.root / "evidence.json"
         records = {record.id: record for record in _load_records(target)}
+        if target.id == entry.id:
+            for record_id in removed or ():
+                records.pop(record_id, None)
         records.update(
             {
                 edit.record.id: edit.record
@@ -772,13 +1162,16 @@ def _publication_updates(
                 if edit.entry.id == target.id
             }
         )
-        built = evidence_file_from_records(
-            path,
-            log_root=entry.log.root,
-            entry_root=target.root,
-            records=tuple(records.values()),
+        updates[path] = (
+            evidence_file_from_records(
+                path,
+                log_root=entry.log.root,
+                entry_root=target.root,
+                records=tuple(records.values()),
+            ).canonical_json()
+            if records
+            else None
         )
-        updates[path] = built.canonical_json()
     for document in {edit.document for edit in edits}:
         text = document.read_text(encoding="utf-8")
         rebound = [

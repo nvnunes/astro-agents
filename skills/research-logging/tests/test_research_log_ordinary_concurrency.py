@@ -6,13 +6,16 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from log_commands import command_sync, evidence_sync
+from log_commands import command_sync, evidence_sync, storage
+from log_commands.context import resolve_entry, resolve_log
+from log_commands.model import ActionError, EvidenceSyncArguments
 from research_log_cli_test_support import run_log_process, run_pyrun_process
 from research_log_reservations import (
     ArtifactReservationError,
@@ -54,6 +57,205 @@ def concurrent_sync(logical: Path, family: str, *arguments: str):
 
 
 class OrdinarySyncConcurrencyTests(unittest.TestCase):
+    def test_cross_entry_evidence_reference_rechecks_source_after_interleaved_update(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, owner, document = fixture(
+                Path(directory), "./pyrun scripts/build.py --output '<values>'"
+            )
+            (owner / "data/first.json").write_text('{"value":7}')
+            (owner / "data/second.json").write_text('{"value":8}')
+            declared = sync(logical, "--add-generated", "values=data/first.json")
+            self.assertEqual(declared.returncode, 0, declared.stderr)
+            referenced = logical / "entries/2030-01-02-e002-reference"
+            referenced.mkdir()
+            (referenced / "e002.md").write_text(
+                "# Reference\n\n## Execution\n\n`Steps:`\n\nRecorded input.\n\n"
+                "`Results:`\n\n``<!-- eid:alias source=values select=/value -->\n"
+            )
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text() + "- `2030-01-02` [Reference](study/entries/"
+                "2030-01-02-e002-reference/e002.md)\n"
+            )
+            source = resolve_entry(resolve_log(logical), "e002")
+            prepared = threading.Event()
+            proceed = threading.Event()
+            recheck = evidence_sync._recheck_sources
+
+            def pause_after_preparation(*args, **kwargs):
+                result = recheck(*args, **kwargs)
+                prepared.set()
+                if not proceed.wait(10):
+                    raise AssertionError("interleaved update did not finish")
+                return result
+
+            arguments = EvidenceSyncArguments(
+                record_id=None,
+                source=None,
+                record_ids=("alias",),
+                add_from_entries=("values=e001",),
+            )
+            with (
+                mock.patch.object(
+                    evidence_sync,
+                    "_recheck_sources",
+                    side_effect=pause_after_preparation,
+                ),
+                ThreadPoolExecutor(max_workers=1) as executor,
+            ):
+                future = executor.submit(
+                    evidence_sync.compare_or_sync, source, "sync", arguments
+                )
+                self.assertTrue(prepared.wait(10))
+                changed = run_log_process(
+                    logical.parent,
+                    "data",
+                    "update",
+                    "values",
+                    "--target",
+                    "data/second.json",
+                    "--acknowledge-shared",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                )
+                proceed.set()
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                with self.assertRaises(ActionError) as caught:
+                    future.result(timeout=10)
+            self.assertEqual(caught.exception.code, "authoring.state.changed")
+            self.assertFalse((referenced / "data.json").exists())
+            self.assertFalse((referenced / "evidence.json").exists())
+
+    def test_batch_target_change_rechecks_new_unselected_consumer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/first.json").write_text('{"value":7}')
+            (entry / "data/second.json").write_text('{"value":8}')
+            set_results(document, "``<!-- eid:selected source=values select=/value -->")
+            created = evidence(
+                logical,
+                "sync",
+                "--id",
+                "selected",
+                "--add-origin",
+                "values=data/first.json",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            recheck = evidence_sync._recheck_sources
+            saved = {}
+
+            def during(*args, **kwargs):
+                result = recheck(*args, **kwargs)
+                document.write_text(
+                    document.read_text()
+                    + "\n``<!-- eid:new-consumer source=values select=/value -->\n"
+                )
+                saved.update(retained_files(logical))
+                return result
+
+            with mock.patch.object(
+                evidence_sync, "_recheck_sources", side_effect=during
+            ):
+                rejected = evidence(
+                    logical,
+                    "sync",
+                    "--id",
+                    "selected",
+                    "--change-target",
+                    "values=data/second.json",
+                )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("evidence.sync.target.shared", rejected.stderr)
+            self.assertIn("new-consumer", rejected.stderr)
+            self.assertEqual(retained_files(logical), saved)
+
+    def test_batch_evidence_rejects_relevant_edit_before_any_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value": 3}')
+            set_results(
+                document,
+                "``<!-- eid:first source=values select=/value -->\n"
+                "``<!-- eid:second source=values select=/value -->",
+            )
+            evaluate = evidence_sync._evaluate_edit
+            saved = {}
+            calls = 0
+
+            def during(*args, **kwargs):
+                nonlocal calls
+                result = evaluate(*args, **kwargs)
+                calls += 1
+                if calls == 2:
+                    document.write_text(
+                        document.read_text().replace(
+                            "eid:first source=values",
+                            "eid:first source=values render=integer",
+                        )
+                    )
+                    saved.update(retained_files(logical))
+                return result
+
+            with mock.patch.object(evidence_sync, "_evaluate_edit", side_effect=during):
+                result = evidence(
+                    logical,
+                    "sync",
+                    "--id",
+                    "first",
+                    "--id",
+                    "second",
+                    "--add-origin",
+                    "values=data/value.json",
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("authoring.state.changed", result.stderr)
+            self.assertEqual(retained_files(logical), saved)
+
+    def test_batch_evidence_restores_every_file_after_late_write_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py"
+            )
+            (entry / "data/value.json").write_text('{"value": 3}')
+            set_results(
+                document,
+                "``<!-- eid:first source=values select=/value -->\n"
+                "``<!-- eid:second source=values select=/value -->",
+            )
+            before = retained_files(logical)
+            publish = storage.atomic_write_text
+            failed = False
+
+            def during(path, value):
+                nonlocal failed
+                if path.name == "evidence.json" and not failed:
+                    failed = True
+                    raise OSError("controlled late publication failure")
+                return publish(path, value)
+
+            with mock.patch.object(storage, "atomic_write_text", side_effect=during):
+                result = evidence(
+                    logical,
+                    "sync",
+                    "--id",
+                    "first",
+                    "--id",
+                    "second",
+                    "--add-origin",
+                    "values=data/value.json",
+                )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertTrue(failed)
+            self.assertEqual(retained_files(logical), before)
+
     def test_redundant_command_add_preserves_concurrent_comparison_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

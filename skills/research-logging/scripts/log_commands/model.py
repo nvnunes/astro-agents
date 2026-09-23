@@ -32,6 +32,9 @@ class EvidenceSyncArguments:
 
     record_id: str | None
     source: str | None
+    record_ids: tuple[str, ...] = ()
+    renames: tuple[str, ...] = ()
+    deletions: tuple[str, ...] = ()
     add_origins: tuple[str, ...] = ()
     add_origin_directories: tuple[str, ...] = ()
     add_from_entries: tuple[str, ...] = ()

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
 from research_log_cli_test_support import SCRIPTS, run_log
+from test_log_command_sync import fixture
+from test_log_evidence_sync import retained_files
 
 
 class AuthoringSurfaceTests(unittest.TestCase):
@@ -21,7 +24,7 @@ class AuthoringSurfaceTests(unittest.TestCase):
                 "verify",
                 "show",
             },
-            "evidence": {"compare", "sync", "rename", "delete", "list"},
+            "evidence": {"compare", "sync", "list"},
             "data": {"update", "rename", "delete", "list"},
             "retention": {"add", "update", "rename", "delete", "list"},
         }
@@ -41,6 +44,32 @@ class AuthoringSurfaceTests(unittest.TestCase):
                     "--comparison-id",
                 ):
                     self.assertNotIn(removed, result.stdout)
+        sync_help = run_log(SCRIPTS, "evidence", "sync", "--help")
+        for selector in ("--id", "--rename", "--delete"):
+            self.assertIn(selector, sync_help.stdout)
+
+    def test_retired_evidence_actions_fail_at_parser_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _ = fixture(Path(directory), "./pyrun scripts/build.py")
+            before = retained_files(logical)
+            for action, extra in (
+                ("rename", ("old", "new")),
+                ("delete", ("--id", "old")),
+            ):
+                with self.subTest(action=action):
+                    result = run_log(
+                        logical.parent,
+                        "evidence",
+                        action,
+                        "--path",
+                        str(logical),
+                        "--entry",
+                        "e001",
+                        *extra,
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("cli.arguments.invalid", result.stderr)
+                    self.assertEqual(retained_files(logical), before)
 
     def test_runtime_and_active_guidance_have_no_removed_authoring_path(self):
         package = Path(__file__).resolve().parents[1]

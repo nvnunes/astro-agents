@@ -73,19 +73,19 @@ class FocusedEditingTests(unittest.TestCase):
                 text = document.read_text()
                 if verb == "rename":
                     text = text.replace("eid:selected ", "eid:renamed ")
-                    args = ("selected", "renamed")
+                    args = ("--rename", "selected=renamed")
                 else:
                     text = text.replace(SELECTED, "")
-                    args = ("--id", "selected")
+                    args = ("--delete", "selected")
                 text += "\n" + UNRELATED + "\n"
                 document.write_text(text)
                 summary = logical.with_suffix(".md")
                 original_summary = summary.read_text() + "\n" + BAD_REFERENCE + "\n"
                 summary.write_text(original_summary)
                 before = retained_files(logical)
-                checked(action(logical, "evidence", verb, *args, "--dry-run"))
+                checked(action(logical, "evidence", "sync", *args, "--dry-run"))
                 self.assertEqual(retained_files(logical), before)
-                checked(action(logical, "evidence", verb, *args))
+                checked(action(logical, "evidence", "sync", *args))
                 self.assertEqual(document.read_text(), text)
                 self.assertEqual(summary.read_text(), original_summary)
                 records = json.loads((entry / "evidence.json").read_text())["records"]
@@ -149,15 +149,15 @@ class FocusedEditingTests(unittest.TestCase):
                     text = document.read_text()
                     if verb == "rename":
                         text = text.replace("eid:selected ", "eid:renamed ")
-                        args = ("selected", "renamed")
+                        args = ("--rename", "selected=renamed")
                     else:
                         text = text.replace(SELECTED, "")
-                        args = ("--id", "selected")
+                        args = ("--delete", "selected")
                     document.write_text(text)
                     summary = logical.with_suffix(".md")
                     summary.write_text(summary.read_text() + "\n" + raw + "\n")
                     before = retained_files(logical)
-                    result = action(logical, "evidence", verb, *args)
+                    result = action(logical, "evidence", "sync", *args)
                     self.assertEqual(result.returncode, 2, result.stdout)
                     self.assertEqual(retained_files(logical), before)
 
@@ -171,6 +171,6 @@ class FocusedEditingTests(unittest.TestCase):
                 + SELECTED.replace("eid:selected ", "eid:renamed ")
             )
             before = retained_files(logical)
-            result = action(logical, "evidence", "rename", "selected", "renamed")
+            result = action(logical, "evidence", "sync", "--rename", "selected=renamed")
             self.assertEqual(result.returncode, 2, result.stdout)
             self.assertEqual(retained_files(logical), before)

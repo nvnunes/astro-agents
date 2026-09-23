@@ -56,7 +56,7 @@ After editing the corresponding marker, maintained-summary reference, or
 recorded-command token, use exactly one owning command:
 
 ```text
-<skill>/scripts/log evidence rename --path <log> --entry <entry-id> <old> <new>
+<skill>/scripts/log evidence sync --path <log> --entry <entry-id> --rename <old>=<new>
 <skill>/scripts/log data rename --path <log> --entry <entry-id> <old> <new>
 <skill>/scripts/log retention rename --path <log> --entry <entry-id> <old> <new>
 ```

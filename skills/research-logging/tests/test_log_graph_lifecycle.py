@@ -58,7 +58,7 @@ class GraphLifecycleTests(unittest.TestCase):
             document.write_text(
                 document.read_text().replace("eid:image ", "eid:figure ")
             )
-            checked(action(logical, "evidence", "rename", "image", "figure"))
+            checked(action(logical, "evidence", "sync", "--rename", "image=figure"))
             after = json.loads((entry / "evidence.json").read_text())["records"][0]
             self.assertEqual(after, {**before, "id": "figure"})
             self.assertEqual((entry / "data/image.png").read_bytes(), b"accepted image")
@@ -128,7 +128,7 @@ class GraphLifecycleTests(unittest.TestCase):
                 )
             )
             checked(
-                action(logical, "evidence", "delete", "--id", "alias", entry="e002")
+                action(logical, "evidence", "sync", "--delete", "alias", entry="e002")
             )
             checked(action(logical, "command", "delete", "--cid", "build"))
             checked(
@@ -457,7 +457,7 @@ class GraphLifecycleTests(unittest.TestCase):
             document.write_text(
                 document.read_text().replace("eid:rate ", "eid:success ")
             )
-            checked(action(logical, "evidence", "rename", "rate", "success"))
+            checked(action(logical, "evidence", "sync", "--rename", "rate=success"))
             self.assertEqual(
                 checked(action(logical, "evidence", "list"))["records"][0]["id"],
                 "success",
@@ -472,8 +472,10 @@ class GraphLifecycleTests(unittest.TestCase):
                     "Removed evidence.",
                 )
             )
-            deleted = checked(action(logical, "evidence", "delete", "--id", "success"))
-            self.assertEqual(deleted["records"], [{"unused_data": "measurements"}])
+            deleted = checked(
+                action(logical, "evidence", "sync", "--delete", "success")
+            )
+            self.assertIn({"unused_data": "measurements"}, deleted["records"])
             deleted = checked(action(logical, "data", "delete", "measurements"))
             self.assertEqual(
                 deleted["records"],
@@ -841,7 +843,7 @@ class GraphLifecycleTests(unittest.TestCase):
                     "Removed evidence.",
                 )
             )
-            checked(action(logical, "evidence", "delete", "--id", "value"))
+            checked(action(logical, "evidence", "sync", "--delete", "value"))
             before = retained_files(logical)
             original = storage.remove_or_write
             calls = []

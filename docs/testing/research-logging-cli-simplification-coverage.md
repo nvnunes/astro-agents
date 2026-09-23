@@ -17,15 +17,23 @@ supply their expected results. Engine-only fixtures are not authoring proof.
 | Surface or contract | Named public proof |
 | --- | --- |
 | Implicit program CID; full override; explicit numbered invocation | `test_implicit_cid_selects_the_python_program_owner`; `test_full_override_selects_a_cid_different_from_the_program_stem`; `test_numeric_cid_distinguishes_multiple_invocations_of_one_program` |
+| Batch selection, rename/delete, one dry-run/apply pair, invalid-member refusal | `test_batch_rename_and_delete_are_one_preview_and_apply`; `test_one_invalid_selected_command_prevents_every_registry_write`; `test_conflicting_renames_fail_before_publication` |
+| Producer deletion with selected, renamed, or retargeted consumers; live-use refusal | `test_selected_consumer_edit_and_producer_delete_share_one_sync`; `test_renamed_consumer_edit_and_producer_delete_share_one_sync`; `test_retargeted_replacement_and_old_producer_delete_share_one_sync` |
+| Selected target ownership and unchanged-registry publication | `test_multiple_selected_commands_share_one_declaration_and_target_change`; `test_rename_only_does_not_rewrite_unchanged_data_registry` |
 | Generated file and missing directory bootstrap; real execution | `test_success_creates_pending_no_output_member_without_observing`; `test_generated_directory_bootstraps_and_runs_through_pyrun` |
 | Origin file, origin directory, pinned Git, same-name cross-entry additions | `test_explicit_file_directory_git_and_cross_entry_add_forms` |
 | Consistent assertions, omission, redundant ensure, conflicting assertion | `test_declaration_ensure_is_additive_idempotent_and_conflict_safe` |
 | Local target update, identity preservation, shared ownership routing | `test_target_change_preserves_identity_and_rejects_shared_consumers`; `test_shared_target_change_lists_command_evidence_and_entry_consumers` |
 | Policy change without observation loss | `test_combined_declarations_and_policy_update` |
-| Exact stale-execution deletion; current execution refusal | `test_stale_member_requires_exact_retirement`; `test_current_execution_cannot_be_deleted` |
+| Per-CID stale-execution acknowledgement; current execution preserved | `test_one_cid_acknowledges_all_stale_parameter_executions`; `test_rename_with_changed_parameters_needs_one_aggregate_acknowledgement`; `test_redundant_stale_acknowledgement_is_accepted` |
 | Missing name, missing producer, wrong kind, malformed registry diagnostics | `test_missing_name_shows_file_and_directory_declaration_forms`; `test_missing_generated_producer_names_the_bootstrap_action`; `test_wrong_add_kind_fails_without_writes`; `test_malformed_registry_requires_direct_repair_without_writes` |
 | Dry run and coupled publication failure | `test_dry_run_has_two_diffs_and_zero_writes`; `test_second_file_failure_rolls_back_both_registries` |
 | Scoped parse failures and competing producers | `test_unrelated_parse_failure_is_reported_without_blocking`; `test_rejected_competing_output_blocks_selected_sync` |
+
+`test_log_command_sync.py::test_late_unselected_consumer_blocks_producer_delete`
+is a bounded internal publication-recheck test. It inserts an unselected
+Markdown consumer after preparation and asserts that deletion fails without
+publishing either registry; it complements the public dispatcher proofs above.
 
 ## Evidence Compare And Sync
 
@@ -35,6 +43,8 @@ normalized-state checks:
 | Surface or contract | Named public proof |
 | --- | --- |
 | ID-scoped compare, placeholder fill and surrounding-byte preservation | `test_scalar_placeholder_compare_then_sync_preserves_neighbors` |
+| Batch selectors, rename/delete, one dry-run/apply pair, invalid-member refusal | `test_replaces_six_records_with_one_in_one_public_change_set`; `test_rename_reevaluates_new_definition_and_updates_summary`; `test_invalid_member_prevents_batch_publication`; `test_conflicting_batch_selection_rejects_without_writes` |
+| Unselected Markdown-only consumer blocks a target change | `test_target_change_rejects_unselected_markdown_only_consumer` |
 | Additive changes to one definition aspect | `test_changed_aspect_needs_only_the_changed_comment_and_call` |
 | Origins and directory members, unused/conflicting assertions | `test_directory_origin_reads_only_explicit_member`; `test_conflicting_and_unused_additions_are_no_write` |
 | Source-scoped compare/sync across entries and summary references; same-name add-from-entry | `test_source_scope_updates_related_entries_and_forwarded_summary` |
@@ -64,8 +74,8 @@ also reaches public sync and its real filesystem publication boundary.
 | Retention add/update/rename/delete/list, additive targets/reason and connected refusal | `test_retention_additive_round_trip_and_connected_refusal` |
 | Retention versus both consumer syncs; explicit coverage removal first | `test_retention_transfers_require_explicit_removal_before_either_sync` |
 | Differently named cross-entry physical aliases block destructive ownership changes | `test_cross_entry_alias_blocks_physical_ownership_changes` |
-| Command rename/delete/list, observations preserved and failure no-write | `test_command_rename_delete_and_late_failure` |
-| Evidence rename/delete/list, baseline preservation and remaining-use refusal | `test_data_and_evidence_round_trip_preserves_omitted_properties`; `test_artifact_evidence_rename_preserves_accepted_baseline` |
+| Command sync rename/delete, observations preserved and failure no-write; list query | `test_command_rename_delete_and_late_failure` |
+| Evidence sync rename/delete, baseline preservation and remaining-use refusal; list query | `test_data_and_evidence_round_trip_preserves_omitted_properties`; `test_artifact_evidence_rename_preserves_accepted_baseline` |
 | Semantic listing preserves declared numeric values without JSON editing | `test_semantic_evidence_list_preserves_numeric_declaration_values` |
 
 Command `verify` and `show` retain `test_log_command_verify.py` and the

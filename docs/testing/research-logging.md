@@ -86,6 +86,16 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_research_log_integrated_workflow.py
 ```
 
+When changing command or evidence sync authoring, use the focused public
+dispatcher tests while iterating:
+
+```bash
+PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
+  ./.conda/bin/python -m unittest \
+  skills/research-logging/tests/test_log_command_sync.py \
+  skills/research-logging/tests/test_log_evidence_sync.py
+```
+
 For output-code currentness or shared-research-graph material classification,
 use these focused tests while iterating before running that complete validator
 set:

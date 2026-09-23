@@ -61,14 +61,16 @@ delete an unmentioned dependent section or file.
    dry-run the complete set, then repeat the same call without `--dry-run`:
 
    ```text
-   <skill>/scripts/log command sync --path <log> --entry <entry-id> [--delete <cid>]... [--dry-run]
    <skill>/scripts/log evidence sync --path <log> --entry <entry-id> [--delete <id>]... [--dry-run]
+   <skill>/scripts/log command sync --path <log> --entry <entry-id> [--delete <cid>]... [--dry-run]
    <skill>/scripts/log data delete --path <log> --entry <entry-id> <name>
    <skill>/scripts/log retention delete --path <log> --entry <entry-id> --id <id>
    ```
 
    Invoke only the families required by the authorized replacement and stop on
    the first failure. Never repair the failure by editing a registry directly.
+   Remove downstream evidence records before deleting a command that produced
+   their source; command sync refuses deletion while those consumers remain.
    Leave every old source and retained artifact in place until all required
    mutations succeed. Delete an absent producer through entry-scoped
    `log command sync --delete CID` only after removing its downstream uses;

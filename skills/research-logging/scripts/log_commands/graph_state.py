@@ -238,12 +238,16 @@ def describe_uses(uses: tuple[dict[str, Any], ...]) -> str:
 
 
 def material_consumers(
-    entry: EntryContext, target: Path, *, excluded_command: str | None = None
+    entry: EntryContext,
+    target: Path,
+    *,
+    excluded_command: str | None = None,
+    data_overrides: Mapping[Path, DataFile | None] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Find physical consumers, including different names for the same material."""
 
     consumers: list[dict[str, Any]] = []
-    materials = inspect_log_materials(entry.log)
+    materials = inspect_log_materials(entry.log, data_overrides=data_overrides)
     for invocation in materials.invocations:
         if (
             invocation.cid == excluded_command

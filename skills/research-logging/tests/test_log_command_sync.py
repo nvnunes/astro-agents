@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from log_commands import command_sync as command_sync_module
+from log_commands.context import resolve_entry, resolve_log
+from log_commands.model import ActionError, CommandSyncArguments
 from research_log_cli_test_support import (
     PROCESS_TIMEOUT_SECONDS,
     run_log,
@@ -300,6 +303,289 @@ class LogCommandSyncTests(unittest.TestCase):
             unchanged = run_log(root, *args)
             self.assertEqual(unchanged.returncode, 0, unchanged.stderr)
             self.assertFalse(json.loads(unchanged.stdout)["changed"])
+
+    def test_selected_consumer_edit_and_producer_delete_share_one_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --output "<built>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid consume -- scripts/build.py --input "<built>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            first = sync(
+                logical,
+                "--cid",
+                "consume",
+                "--add-generated",
+                "built=data/built.txt",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            document.write_text(
+                "# Test\n\n## Consumer\n"
+                + document.read_text(encoding="utf-8").split("\n## Consumer\n", 1)[1],
+                encoding="utf-8",
+            )
+            still_used = run_log(
+                root,
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "consume",
+                "--delete",
+                "build",
+                "--dry-run",
+            )
+            self.assertEqual(still_used.returncode, 2)
+            self.assertIn("command.sync.outputs_in_use", still_used.stderr)
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    '--input "<built>"', "--count 2"
+                ),
+                encoding="utf-8",
+            )
+            args = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "consume",
+                "--delete",
+                "build",
+                "--delete-stale-executions",
+                "consume",
+            )
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            preview = run_log(root, *args, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                },
+                before,
+            )
+            applied = run_log(root, *args)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse((entry / "data.json").exists())
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(set(state.commands), {"consume"})
+            again = run_log(root, *args)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse(json.loads(again.stdout)["changed"])
+
+    def test_renamed_consumer_edit_and_producer_delete_share_one_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --output "<built>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid consume -- scripts/build.py --input "<built>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            first = sync(
+                logical,
+                "--cid",
+                "consume",
+                "--add-generated",
+                "built=data/built.txt",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            document.write_text(
+                "# Test\n\n## Consumer\n"
+                + document.read_text(encoding="utf-8")
+                .split("\n## Consumer\n", 1)[1]
+                .replace("--cid consume", "--cid process")
+                .replace('--input "<built>"', "--count 2"),
+                encoding="utf-8",
+            )
+            args = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--rename",
+                "consume=process",
+                "--delete",
+                "build",
+                "--delete-stale-executions",
+                "process",
+            )
+            preview = run_log(root, *args, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            applied = run_log(root, *args)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse((entry / "data.json").exists())
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(set(state.commands), {"process"})
+            self.assertTrue(
+                all(
+                    "built" not in execution.recipe.inputs
+                    for execution in state.commands["process"].executions.values()
+                )
+            )
+            again = run_log(root, *args)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse(json.loads(again.stdout)["changed"])
+
+    def test_retargeted_replacement_and_old_producer_delete_share_one_sync(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --output "<built>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid consume -- scripts/build.py --input "<built>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            first = sync(
+                logical,
+                "--cid",
+                "consume",
+                "--add-generated",
+                "built=data/old.txt",
+            )
+            self.assertEqual(first.returncode, 0, first.stderr)
+            old_output = entry / "data/old.txt"
+            old_output.write_text("retained\n", encoding="utf-8")
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "--cid build", "--cid make"
+                ),
+                encoding="utf-8",
+            )
+            args = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "make",
+                "--cid",
+                "consume",
+                "--delete",
+                "build",
+                "--change-target",
+                "built=data/new.txt",
+                "--delete-stale-executions",
+                "consume",
+            )
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            preview = run_log(root, *args, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                },
+                before,
+            )
+            applied = run_log(root, *args)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            data = json.loads((entry / "data.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["inputs"][0]["location"], "data/new.txt")
+            state = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            self.assertEqual(set(state.commands), {"make", "consume"})
+            self.assertEqual(old_output.read_text(encoding="utf-8"), "retained\n")
+            again = run_log(root, *args)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertFalse(json.loads(again.stdout)["changed"])
+
+    def test_late_unselected_consumer_blocks_producer_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --output "<built>"',
+            )
+            created = sync(logical, "--add-generated", "built=data/built.txt")
+            self.assertEqual(created.returncode, 0, created.stderr)
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            document.write_text("# Test\n\nNo commands.\n", encoding="utf-8")
+            entry_context = resolve_entry(resolve_log(logical), "e001")
+            arguments = CommandSyncArguments(
+                cids=(),
+                renames=(),
+                deletions=("build",),
+                add_origins=(),
+                add_origin_directories=(),
+                add_origin_git=(),
+                add_generated=(),
+                add_generated_directories=(),
+                add_from_entries=(),
+                target_changes=(),
+                stale_execution_deletions=(),
+                dry_run=False,
+            )
+            prepare = command_sync_module._prepare_command
+
+            def add_late_consumer(*args):
+                prepared = prepare(*args)
+                document.write_text(
+                    '# Test\n\n## Late\n\n`Steps:`\n\n```bash\n'
+                    './pyrun --cid late -- scripts/build.py --input "<built>"\n'
+                    '```\n\n`Results:`\n\nPending.\n',
+                    encoding="utf-8",
+                )
+                return prepared
+
+            with mock.patch.object(
+                command_sync_module,
+                "_prepare_command",
+                side_effect=add_late_consumer,
+            ):
+                with self.assertRaises(ActionError) as caught:
+                    command_sync_module.sync_command(entry_context, arguments)
+            self.assertEqual(caught.exception.code, "command.sync.outputs_in_use")
+            self.assertEqual(
+                {
+                    name: (entry / name).read_bytes()
+                    for name in ("data.json", "pyrun.json")
+                },
+                before,
+            )
 
     def test_rename_only_does_not_rewrite_unchanged_data_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -379,6 +379,8 @@ def _remove_deleted_declarations(
     state: PyrunFile,
     candidate: DataFile | None,
     selection: _Selection,
+    *,
+    live: DataFile | None = None,
 ) -> DataFile | None:
     if not selection.deleted:
         return candidate
@@ -390,21 +392,42 @@ def _remove_deleted_declarations(
         and item.reference_entry is None
         and item.canonical_target in outputs
     )
+    candidate_names = set(candidate.by_name) if candidate is not None else set()
+    removed_live = tuple(
+        item
+        for item in (live.inputs if live is not None else ())
+        if not item.origin
+        and item.reference_entry is None
+        and item.canonical_target in outputs
+        and item.name not in candidate_names
+    )
+    superseded_command_uses = set(selection.selected) | {
+        old for old, _ in selection.renames
+    }
     blocked: list[dict[str, object]] = []
     for output in sorted(outputs):
         blocked.extend(
             use
-            for use in material_consumers(entry, Path(output))
+            for use in material_consumers(
+                entry, Path(output), data_overrides={entry.root: candidate}
+            )
             if not (
                 use.get("entry") == entry.id and use.get("command") in selection.deleted
             )
         )
-    for item in owned:
+    for item in {item.name: item for item in (*owned, *removed_live)}.values():
         blocked.extend(
             use
             for use in declaration_uses(entry, item.name)
             if not (
-                use.get("entry") == entry.id and use.get("command") in selection.deleted
+                use.get("entry") == entry.id
+                and (
+                    use.get("command") in selection.deleted
+                    or (
+                        use.get("command") in superseded_command_uses
+                        and use.get("registry") == str(entry.root / PYRUN_FILENAME)
+                    )
+                )
             )
         )
     if blocked:
@@ -562,7 +585,9 @@ def _finish_command(
                     current_bucket,
                     f"{entry.id}/{cid} execution state",
                 )
-    _remove_deleted_declarations(entry, current_state, _load_data(entry), selection)
+    _remove_deleted_declarations(
+        entry, current_state, data, selection, live=fresh_data
+    )
     _require_output_safety(indexed, invocations, selected_invocations)
     _require_generated_boundaries(entry, prepared.before, data, arguments, invocations)
     warnings = _effective_code_warnings(entry, project, selected_invocations)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,6 +29,8 @@ from validation.evidence import (
     SUMMARY_REFERENCE_RE,
     EvidenceRecord,
     PresentedItem,
+    authored_eid_candidates,
+    authored_eid_comments,
     evidence_file_from_records,
     evidence_record_from_fields,
     index_entry_presentations,
@@ -36,6 +39,7 @@ from validation.evidence import (
     require_markdown_definition,
 )
 from validation.evidence_markdown import (
+    MAX_DEFINITION_BYTES,
     MarkdownEvidence,
     materialize_statistic,
     read_markdown_evidence,
@@ -58,7 +62,8 @@ from validation.presentation import (
     index_entry_presentations_all,
     require_artifact_source_association,
 )
-from validation.provenance import require_origin_boundary
+from validation.provenance import build_producer_index, require_origin_boundary
+from validation.pyrun_state import PYRUN_FILENAME, compare_command, load_pyrun_state
 from validation.transformation import (
     TransformationResult,
     compare_presentation,
@@ -78,8 +83,9 @@ from .context import (
     resolve_entry,
     resolve_project_root,
 )
+from .current_invocations import entry_invocations
 from .data_assertions import assignment, ensure_declaration, require_local_target
-from .graph_state import authored_evidence_uses
+from .graph_state import authored_evidence_uses, source_tokens
 from .materials import inspect_log_materials
 from .model import ActionError, ActionResult, EvidenceSyncArguments
 from .retention import require_unretained_paths
@@ -89,6 +95,8 @@ from .storage import (
     atomic_write_texts,
     entry_locks,
 )
+
+SOURCE_CLAUSE_RE = re.compile(r"(?:^|[\s;])source\s*=\s*['\"]?([^'\";\s]+)")
 
 
 @dataclass(frozen=True)
@@ -124,14 +132,31 @@ def compare_or_sync(
 ) -> ActionResult:
     """Preflight all selected records, then publish only changed owned files."""
 
-    if action == "sync" and arguments.source is None:
+    if arguments.producer is not None:
+        if (
+            arguments.sources
+            or arguments.record_id is not None
+            or arguments.record_ids
+            or arguments.renames
+            or arguments.deletions
+        ):
+            raise ActionError(
+                "evidence.sync.arguments.conflict",
+                "--producer cannot be combined with other evidence selectors",
+            )
+        arguments = replace(
+            arguments, sources=_producer_sources(entry, arguments.producer)
+        )
+    if action == "sync" and not arguments.sources:
         return _prepare_entry_set(entry, arguments)
-    if arguments.record_ids or arguments.renames or arguments.deletions:
+    if arguments.sources and (
+        arguments.record_ids or arguments.renames or arguments.deletions
+    ):
         raise ActionError(
             "evidence.sync.arguments.conflict",
             "--source cannot be combined with --id, --rename, or --delete",
         )
-    if arguments.source is None and arguments.record_id is None:
+    if not arguments.sources and arguments.record_id is None:
         raise ActionError(
             "cli.arguments.invalid", "evidence compare requires --id or --source"
         )
@@ -395,8 +420,8 @@ def _merge_entry_data(
 def _lock_entries(
     entry: EntryContext, arguments: EvidenceSyncArguments
 ) -> tuple[EntryContext, ...]:
-    if arguments.source is not None:
-        return tuple(item[0] for item in _source_entries(entry, arguments.source))
+    if arguments.sources:
+        return tuple(item[0] for item in _source_targets(entry, arguments.sources))
     entries = {entry.id: entry}
     for raw in arguments.add_from_entries:
         _, source_id = assignment(raw, "--add-from-entry")
@@ -417,10 +442,10 @@ def _prepare_operation(
         before_records = {
             target.id: {record.id: record for record in _load_records(target)}
             for target in targets
-            if arguments.source is not None or target.id == entry.id
+            if arguments.sources or target.id == entry.id
         }
     observations: dict[Path, SourceObservation] = {}
-    if arguments.source is not None:
+    if arguments.sources:
         if (
             arguments.add_origins
             or arguments.add_origin_directories
@@ -429,9 +454,9 @@ def _prepare_operation(
         ):
             raise ActionError(
                 "evidence.sync.arguments.conflict",
-                "source-scoped sync refreshes existing definitions only",
+                "source-scoped sync cannot change data declarations",
             )
-        edits = _source_edits(entry, arguments.source, observations)
+        edits = _source_edits(entry, arguments.sources, observations)
         data_updates: dict[Path, str] = {}
     else:
         assert arguments.record_id is not None
@@ -448,6 +473,8 @@ def _prepare_operation(
     )
     if action == "compare":
         _recheck_sources(edits, observations)
+        if arguments.sources:
+            _changed_updates(entry, edits, data_updates)
         return ActionResult(
             "evidence.compare", "unchanged", "evidence.compared", False, records=report
         )
@@ -481,20 +508,11 @@ def _prepare_operation(
                         f"{edit.entry.id}/{name} source target",
                     )
                 fresh_edits.append(replace(edit, data=fresh))
-                if arguments.source is None:
+                if not arguments.sources:
                     data_updates[fresh.path] = fresh.canonical_json()
             edits = tuple(fresh_edits)
-            if arguments.source is not None:
-                require_unchanged(
-                    tuple(target.id for target in targets),
-                    tuple(target.id for target in _lock_entries(entry, arguments)),
-                    "source-scoped evidence entries",
-                )
-                require_unchanged(
-                    tuple(sorted((edit.entry.id, edit.record.id) for edit in edits)),
-                    _source_record_ids(entry, arguments.source),
-                    "source-scoped evidence selection",
-                )
+            if arguments.sources:
+                _recheck_source_selection(entry, arguments, targets, edits)
             reads = tuple(
                 path
                 for edit in edits
@@ -521,6 +539,30 @@ def _prepare_operation(
         tuple(str(path) for path in sorted(changed)),
         records=report,
     )
+
+
+def _recheck_source_selection(
+    entry: EntryContext,
+    arguments: EvidenceSyncArguments,
+    targets: tuple[EntryContext, ...],
+    edits: tuple[EvidenceEdit, ...],
+) -> None:
+    require_unchanged(
+        tuple(target.id for target in targets),
+        tuple(target.id for target in _lock_entries(entry, arguments)),
+        "source-scoped evidence entries",
+    )
+    require_unchanged(
+        tuple(sorted((edit.entry.id, edit.record.id) for edit in edits)),
+        _source_record_ids(entry, arguments.sources),
+        "source-scoped evidence selection",
+    )
+    if arguments.producer is not None:
+        require_unchanged(
+            arguments.sources,
+            _producer_sources(entry, arguments.producer),
+            "producer-generated evidence sources",
+        )
 
 
 def _changed_updates(
@@ -1016,7 +1058,7 @@ def _source_entries(
             "evidence.source.not_owned",
             f"{entry.id}: {name} must be directly declared generated data",
         )
-    selected = []
+    selected: list[tuple[EntryContext, DataFile]] = []
     for observed in observe_physical_entries(entry.log):
         candidate_entry = EntryContext(entry.log, observed.id, observed.root)
         candidate_data = (
@@ -1039,48 +1081,226 @@ def _source_entries(
     return tuple(selected)
 
 
-def _source_edits(
-    entry: EntryContext, raw_source: str, observations: dict[Path, SourceObservation]
-) -> tuple[EvidenceEdit, ...]:
-    name = _source_name(raw_source)
-    edits = []
-    for target, data in _source_entries(entry, raw_source):
-        path = target.root / "evidence.json"
-        if not path.exists():
+def _producer_sources(entry: EntryContext, cid: str) -> tuple[str, ...]:
+    """Resolve one current recorded CID to its directly generated data names."""
+
+    project = resolve_project_root(entry.root)
+    invocations = entry_invocations(entry, project_root=project)
+    members = tuple(item for item in invocations if item.cid == cid)
+    if not members:
+        raise ActionError(
+            "evidence.producer.missing",
+            f"{entry.id}/{cid}: no current Markdown command has this full "
+            "effective CID",
+        )
+    path = entry.root / PYRUN_FILENAME
+    if not path.exists() or path.is_symlink():
+        raise ActionError(
+            "evidence.producer.not_recorded",
+            f"{entry.id}/{cid}: run log command sync for this command first",
+        )
+    try:
+        state = load_pyrun_state(path, entry_root=entry.root, project_root=project)
+        comparison = compare_command(state, cid, members, project_root=project)
+    except MechanicalContractError as error:
+        raise ActionError(
+            "evidence.producer.registry.invalid", f"{path}: {error}"
+        ) from error
+    if (
+        comparison.missing
+        or comparison.stale
+        or comparison.recipe_changed
+        or comparison.policy_changed
+    ):
+        raise ActionError(
+            "evidence.producer.unsynced",
+            f"{entry.id}/{cid}: command recording differs from Markdown; "
+            "run log command sync for this CID first",
+        )
+    data = _load_data(entry)
+    index = build_producer_index(invocations)
+    selected = {member.identity for member in members}
+    names = set()
+    for resource in data.inputs if data is not None else ():
+        if resource.origin or resource.reference_entry is not None:
             continue
-        records = load_evidence_file(
-            path, log_root=entry.log.root, entry_root=target.root
-        ).records
-        for record in records:
-            if any(_source_name(source.source) == name for source in record.sources):
-                document, marker, presentation = _owned_marker(target, record.id)
-                if not any(
-                    _source_name(source["source"]) == name for source in marker.sources
-                ):
-                    raise ActionError(
-                        "evidence.source.definition_changed",
-                        f"{target.id}/{record.id}: sync its ID-scoped definition first",
-                    )
-                edits.append(
-                    _evaluate_edit(
-                        target, (document, marker, presentation), data, observations
-                    )
+        target = resource.canonical_target
+        owners = {item.identity for item in index.outputs.get(target, ())}
+        if not owners & selected:
+            continue
+        owners.update(item.producer.identity for item in index.lookup(target))
+        if owners - selected:
+            raise ActionError(
+                "evidence.producer.ambiguous",
+                f"{entry.id}/{cid}: {resource.name} has another current producer",
+            )
+        names.add(resource.name)
+    if not names:
+        raise ActionError(
+            "evidence.producer.no_sources",
+            f"{entry.id}/{cid}: no directly generated declaration matches its "
+            "recorded outputs; declare outputs through log command sync",
+        )
+    return tuple(sorted(names))
+
+
+def _source_targets(
+    entry: EntryContext, sources: tuple[str, ...]
+) -> tuple[tuple[EntryContext, DataFile, frozenset[str]], ...]:
+    """Resolve selected direct names and their existing cross-entry references."""
+
+    targets: dict[str, tuple[EntryContext, DataFile, set[str]]] = {}
+    for raw_source in sources:
+        name = _source_name(raw_source)
+        for target, data in _source_entries(entry, raw_source):
+            if target.id not in targets:
+                targets[target.id] = target, data, set()
+            targets[target.id][2].add(name)
+    return tuple(
+        (target, data, frozenset(names))
+        for _, (target, data, names) in sorted(targets.items())
+    )
+
+
+def _partial_fields(definition: str) -> tuple[str, ...]:
+    """Keep an unfinished quoted field intact for bounded source attribution."""
+
+    fields: list[str] = []
+    field: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for character in definition:
+        if escaped:
+            field.append(character)
+            escaped = False
+        elif character == "\\" and quote is not None:
+            escaped = True
+        elif quote is not None:
+            if character == quote:
+                quote = None
+            else:
+                field.append(character)
+        elif character in {"'", '"'}:
+            quote = character
+        elif character.isspace() or character == ";":
+            if field:
+                fields.append("".join(field))
+                field = []
+        else:
+            field.append(character)
+    if field:
+        fields.append("".join(field))
+    return tuple(fields)
+
+
+def _incomplete_source_names(definition: str) -> set[str]:
+    """Attribute an incomplete definition without reading values as fields."""
+
+    names = set()
+    for token in _partial_fields(definition):
+        if not token.startswith("source="):
+            continue
+        match = SOURCE_CLAUSE_RE.search(token)
+        if match is not None:
+            parts = input_token_parts(source_token(match[1]))
+            if parts is not None:
+                names.add(parts[0])
+    return names
+
+
+def _authored_source_ids(entry: EntryContext, names: frozenset[str]) -> set[str]:
+    """Find selected authored comments, rejecting their incomplete candidates."""
+
+    selected: set[str] = set()
+    for document in sorted(entry.root.iterdir()):
+        identity = parse_entry_document_name(document.name)
+        if (
+            identity is None
+            or identity.id != entry.id
+            or document.is_symlink()
+            or not document.is_file()
+        ):
+            continue
+        text = document.read_text(encoding="utf-8")
+        complete = {marker.start(): marker for marker in authored_eid_comments(text)}
+        for offset, record_id, line in authored_eid_candidates(text):
+            marker = complete.get(offset)
+            if marker is None:
+                next_comment = text.find("<!--", offset + 4)
+                closing = text.find("-->", offset + 4)
+                bounds = [
+                    value for value in (next_comment, closing) if value >= 0
+                ]
+                end = min(bounds) if bounds else len(text)
+                definition = text[offset : min(end, offset + MAX_DEFINITION_BYTES)]
+            else:
+                definition = marker["definition"]
+            try:
+                declared = {
+                    _source_name(source) for source in source_tokens(definition)
+                }
+            except ActionError:
+                declared = _incomplete_source_names(definition)
+            if not declared & names:
+                continue
+            if marker is None or record_id is None:
+                raise ActionError(
+                    "evidence.marker.invalid",
+                    f"{document}:{line}: incomplete selected evidence marker",
                 )
+            selected.add(record_id)
+    return selected
+
+
+def _source_selected_ids(
+    entry: EntryContext, sources: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    selected: list[tuple[str, str]] = []
+    for target, _, names in _source_targets(entry, sources):
+        ids = _authored_source_ids(target, names)
+        ids.update(
+            record.id
+            for record in _load_records(target)
+            if any(_source_name(source.source) in names for source in record.sources)
+        )
+        selected.extend((target.id, record_id) for record_id in ids)
+    return tuple(sorted(selected))
+
+
+def _source_edits(
+    entry: EntryContext,
+    sources: tuple[str, ...],
+    observations: dict[Path, SourceObservation],
+) -> tuple[EvidenceEdit, ...]:
+    edits = []
+    for target, data, names in _source_targets(entry, sources):
+        ids = _authored_source_ids(target, names)
+        ids.update(
+            record.id
+            for record in _load_records(target)
+            if any(_source_name(source.source) in names for source in record.sources)
+        )
+        for record_id in sorted(ids):
+            document, marker, presentation = _owned_marker(target, record_id)
+            authored = {_source_name(source["source"]) for source in marker.sources}
+            if not authored & names:
+                raise ActionError(
+                    "evidence.source.definition_changed",
+                    f"{target.id}/{record_id}: marker no longer cites the selected "
+                    "source; select its new source or sync --id",
+                )
+            edits.append(
+                _evaluate_edit(
+                    target, (document, marker, presentation), data, observations
+                )
+            )
     return tuple(edits)
 
 
 def _source_record_ids(
-    entry: EntryContext, raw_source: str
+    entry: EntryContext, sources: tuple[str, ...]
 ) -> tuple[tuple[str, str], ...]:
-    name = _source_name(raw_source)
-    return tuple(
-        sorted(
-            (target.id, record.id)
-            for target, _ in _source_entries(entry, raw_source)
-            for record in _load_records(target)
-            if any(_source_name(source.source) == name for source in record.sources)
-        )
-    )
+    return _source_selected_ids(entry, sources)
 
 
 def _publication_updates(

@@ -77,7 +77,7 @@ class EvidenceSyncTests(unittest.TestCase):
                                     "sync",
                                     evidence_sync.EvidenceSyncArguments(
                                         record_id=None,
-                                        source=None,
+                                        sources=(),
                                         record_ids=("value",),
                                         add_origins=("values=data/value.json",)
                                         if asserted
@@ -121,7 +121,7 @@ class EvidenceSyncTests(unittest.TestCase):
                             "sync",
                             evidence_sync.EvidenceSyncArguments(
                                 record_id=None,
-                                source=None,
+                                sources=(),
                                 deletions=("old",),
                                 dry_run=dry_run,
                             ),
@@ -1220,6 +1220,528 @@ def related_fixture(root: Path):
 
 
 class SourceEvidenceSyncTests(unittest.TestCase):
+    def test_source_compare_and_sync_create_all_new_table_cells(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"first":1.25,"second":2.5}')
+            owner = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            original = set_results(
+                document,
+                "| First | Second |\n"
+                "| ---: | ---: |\n"
+                "| ``<!-- eid:first source=values select=/first render=fixed:2 --> "
+                "| ``<!-- eid:second source=values select=/second render=fixed:1 --> |",
+            )
+            before = retained_files(logical)
+            compared = evidence(logical, "compare", "--source", "values")
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertEqual(
+                json.loads(compared.stdout)["records"],
+                [
+                    {"id": "first", "before": "``", "after": "`1.25`"},
+                    {"id": "second", "before": "``", "after": "`2.5`"},
+                ],
+            )
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("`1.25`<!-- eid:first", document.read_text())
+            self.assertIn("`2.5`<!-- eid:second", document.read_text())
+            records = json.loads((entry / "evidence.json").read_text())["records"]
+            self.assertEqual([record["id"] for record in records], ["first", "second"])
+            repeated = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertFalse(json.loads(repeated.stdout)["changed"])
+            self.assertNotEqual(document.read_text(), original)
+
+    def test_repeated_sources_select_one_union_including_compound_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            (entry / "data/alpha.json").write_text('{"value":1.2}')
+            (entry / "data/beta.json").write_text('{"value":2.3}')
+            owner = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(
+                document,
+                "``<!-- eid:alpha-value source=alpha select=/value "
+                "render=fixed:1 -->\n"
+                "``<!-- eid:beta-value source=beta select=/value "
+                "render=fixed:1 -->\n"
+                "``<!-- eid:combined form=plus_minus; "
+                "source=alpha select=/value render=fixed:1; "
+                "source=beta select=/value render=fixed:1 -->",
+            )
+            before = retained_files(logical)
+            selector = (
+                "--source", "alpha", "--source", "beta", "--source", "alpha"
+            )
+            compared = evidence(logical, "compare", *selector)
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            records = json.loads(compared.stdout)["records"]
+            self.assertEqual(
+                [record["id"] for record in records],
+                ["alpha-value", "beta-value", "combined"],
+            )
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", *selector)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                [record["id"] for record in json.loads(applied.stdout)["records"]],
+                ["alpha-value", "beta-value", "combined"],
+            )
+            stored = json.loads((entry / "evidence.json").read_text())["records"]
+            self.assertEqual(
+                [record["id"] for record in stored],
+                ["alpha-value", "beta-value", "combined"],
+            )
+
+    def test_new_source_selection_updates_existing_eid_after_source_move(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            (entry / "data/alpha.json").write_text('{"value":1}')
+            (entry / "data/beta.json").write_text('{"value":2}')
+            owner = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(document, "``<!-- eid:value source=alpha select=/value -->")
+            initial = evidence(logical, "sync", "--source", "alpha")
+            self.assertEqual(initial.returncode, 0, initial.stderr)
+            document.write_text(
+                document.read_text().replace("source=alpha", "source=beta")
+            )
+            before = retained_files(logical)
+            old = evidence(logical, "sync", "--source", "alpha")
+            self.assertEqual(old.returncode, 2, old.stderr)
+            self.assertIn("evidence.source.definition_changed", old.stderr)
+            self.assertEqual(retained_files(logical), before)
+            moved = evidence(logical, "sync", "--source", "beta")
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            record = json.loads((entry / "evidence.json").read_text())["records"][0]
+            self.assertEqual(record["sources"][0]["source"], "<beta>")
+            self.assertIn("`2`<!-- eid:value source=beta", document.read_text())
+
+    def test_source_scope_adds_new_marker_in_already_related_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _, ref_document, summary = related_fixture(
+                Path(directory)
+            )
+            ref_document.write_text(
+                ref_document.read_text()
+                + "\n``<!-- eid:new-forward source=values select=/value "
+                "render=fixed:2 -->\n"
+            )
+            (entry / "data/value.json").write_text('{"value":2.345}')
+            before = retained_files(logical)
+            preview = evidence(logical, "compare", "--source", "values")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(preview.stdout)["records"]],
+                ["owner", "forward", "new-forward"],
+            )
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("`2.34`<!-- eid:new-forward", ref_document.read_text())
+            self.assertIn(
+                "`2.34`<!-- ref entry = e001; eid = owner -->",
+                summary.read_text(),
+            )
+
+    def test_selected_incomplete_marker_fails_without_scanning_unrelated_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            owner = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(document, "``<!-- eid:good source=values select=/value -->")
+            document.write_text(
+                document.read_text()
+                + "\n``<!-- eid:broken source=values select=/value\n"
+            )
+            before = retained_files(logical)
+            rejected = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("evidence.marker.invalid", rejected.stderr)
+            self.assertIn(str(document), rejected.stderr)
+            self.assertEqual(retained_files(logical), before)
+            document.write_text(
+                document.read_text().replace(
+                    "eid:broken source=values", "eid:broken source=other"
+                )
+            )
+            accepted = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertIn("`7`<!-- eid:good", document.read_text())
+
+    def test_bad_second_source_prevents_whole_union_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            (entry / "data/alpha.json").write_text('{"value":1}')
+            (entry / "data/beta.json").write_text('{"value":2}')
+            owner = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(
+                document,
+                "``<!-- eid:good source=alpha select=/value -->\n"
+                "``<!-- eid:bad source=beta select=/missing -->",
+            )
+            before = retained_files(logical)
+            rejected = evidence(
+                logical, "sync", "--source", "alpha", "--source", "beta"
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertEqual(retained_files(logical), before)
+
+    def test_unknown_source_and_duplicate_selected_id_leave_owned_files_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            owner = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(document, "``<!-- eid:same source=values select=/value -->")
+            before = retained_files(logical)
+            unknown = evidence(logical, "sync", "--source", "missing")
+            self.assertEqual(unknown.returncode, 2, unknown.stderr)
+            self.assertIn("evidence.source.not_owned", unknown.stderr)
+            self.assertEqual(retained_files(logical), before)
+            document.write_text(
+                document.read_text()
+                + "\n``<!-- eid:same source=values select=/value -->\n"
+            )
+            before = retained_files(logical)
+            duplicate = evidence(logical, "sync", "--source", "values")
+            self.assertEqual(duplicate.returncode, 2, duplicate.stderr)
+            self.assertIn("presentation.marker.duplicate", duplicate.stderr)
+            self.assertEqual(retained_files(logical), before)
+
+    def test_source_selector_ignores_source_text_inside_unrelated_where_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            (entry / "data/alpha.json").write_text('{"value":1}')
+            (entry / "data/beta.json").write_text(
+                '{"label":"source=alpha","value":2}'
+            )
+            owner = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(
+                document,
+                "``<!-- eid:alpha-value source=alpha select=/value -->\n"
+                "``<!-- eid:beta-value source=beta "
+                "where=/label:eq:string:source=alpha select=/value -->",
+            )
+            applied = evidence(logical, "sync", "--source", "alpha")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(applied.stdout)["records"]],
+                ["alpha-value"],
+            )
+            self.assertIn("``<!-- eid:beta-value", document.read_text())
+
+    def test_quoted_source_field_is_selected_by_source_and_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<alpha>"'
+            )
+            (entry / "data/alpha.json").write_text('{"value":7}')
+            owner = sync(logical, "--add-generated", "alpha=data/alpha.json")
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(
+                document,
+                '``<!-- eid:value "source=alpha" select=/value -->',
+            )
+            compared = evidence(logical, "compare", "--source", "alpha")
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(compared.stdout)["records"]],
+                ["value"],
+            )
+            applied = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn('`7`<!-- eid:value "source=alpha"', document.read_text())
+
+    def test_source_selector_ignores_unrelated_unterminated_where_quote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            (entry / "data/alpha.json").write_text('{"value":1}')
+            (entry / "data/beta.json").write_text('{"value":2}')
+            owner = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(
+                document,
+                "``<!-- eid:alpha-value source=alpha select=/value -->\n"
+                "``<!-- eid:beta-value source=beta "
+                'where="/label:eq:string:foo source=alpha select=/value -->',
+            )
+            applied = evidence(logical, "sync", "--source", "alpha")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(applied.stdout)["records"]],
+                ["alpha-value"],
+            )
+
+    def test_producer_selects_only_its_two_generated_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            document.write_text(
+                document.read_text().replace(
+                    "```\n\n`Results:`",
+                    "```\n\n```bash\n./pyrun --cid other -- scripts/build.py --output "
+                    '"<gamma>"\n```\n\n`Results:`',
+                )
+            )
+            for name, value in (("alpha", 1), ("beta", 2), ("gamma", 3)):
+                (entry / f"data/{name}.json").write_text(json.dumps({"value": value}))
+            built = sync(
+                logical,
+                "--add-generated", "alpha=data/alpha.json",
+                "--add-generated", "beta=data/beta.json",
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+            other = run_log(
+                logical.parent,
+                "command", "sync", "--path", str(logical), "--entry", "e001",
+                "--cid", "other", "--add-generated", "gamma=data/gamma.json",
+            )
+            self.assertEqual(other.returncode, 0, other.stderr)
+            set_results(
+                document,
+                "``<!-- eid:alpha-value source=alpha select=/value -->\n"
+                "``<!-- eid:beta-value source=beta select=/value -->\n"
+                "``<!-- eid:gamma-value source=gamma select=/value -->",
+            )
+            before = retained_files(logical)
+            preview = evidence(logical, "compare", "--producer", "build")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(preview.stdout)["records"]],
+                ["alpha-value", "beta-value"],
+            )
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(applied.stdout)["records"]],
+                ["alpha-value", "beta-value"],
+            )
+            self.assertIn("``<!-- eid:gamma-value", document.read_text())
+
+    def test_producer_batches_figure_and_direct_table_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<figure>" --output "<table>"',
+            )
+            (entry / "data/figure.png").write_bytes(b"figure")
+            (entry / "data/table.csv").write_text("name,value\nalpha,1.25\n")
+            recorded = sync(
+                logical,
+                "--add-generated", "figure=data/figure.png",
+                "--add-generated", "table=data/table.csv",
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            set_results(
+                document,
+                "![Plot](data/figure.png)<!-- eid:plot source=figure -->\n\n"
+                "<!-- eid:measurements source=table identity=/name; "
+                "column=/name render=text; "
+                "column=/value parse=decimal render=fixed:2 -->\n"
+                "| Name | Value |\n| --- | ---: |\n",
+            )
+            before = retained_files(logical)
+            compared = evidence(logical, "compare", "--producer", "build")
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(compared.stdout)["records"]],
+                ["measurements", "plot"],
+            )
+            dry_run = evidence(
+                logical, "sync", "--producer", "build", "--dry-run"
+            )
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertEqual(
+                json.loads(compared.stdout)["records"],
+                json.loads(dry_run.stdout)["records"],
+            )
+            self.assertEqual(retained_files(logical), before)
+            applied = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertIn("| alpha | 1.25 |", document.read_text())
+            self.assertIn("![Plot](data/figure.png)", document.read_text())
+
+    def test_producer_selects_generated_directory_member_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<bundle>"'
+            )
+            bundle = entry / "data/bundle"
+            bundle.mkdir()
+            (bundle / "first.png").write_bytes(b"first")
+            (bundle / "second.png").write_bytes(b"second")
+            recorded = sync(
+                logical, "--add-generated-directory", "bundle=data/bundle"
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            set_results(
+                document,
+                "![First](data/bundle/first.png)"
+                "<!-- eid:first source=bundle/first.png -->\n"
+                "![Second](data/bundle/second.png)"
+                "<!-- eid:second source=bundle/second.png -->",
+            )
+            applied = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(
+                [row["id"] for row in json.loads(applied.stdout)["records"]],
+                ["first", "second"],
+            )
+
+    def test_producer_uses_full_effective_cid_without_a_successful_run(self):
+        for authored, cid in (("2", "build-2"), ("special", "special")):
+            with self.subTest(cid=cid), tempfile.TemporaryDirectory() as directory:
+                logical, entry, document = fixture(
+                    Path(directory),
+                    './pyrun --cid ' + authored
+                    + ' -- scripts/build.py --output "<values>"',
+                )
+                (entry / "data/value.json").write_text('{"value":7}')
+                recorded = run_log(
+                    logical.parent,
+                    "command", "sync", "--path", str(logical),
+                    "--entry", "e001", "--cid", cid,
+                    "--add-generated", "values=data/value.json",
+                )
+                self.assertEqual(recorded.returncode, 0, recorded.stderr)
+                set_results(
+                    document, "``<!-- eid:value source=values select=/value -->"
+                )
+                compared = evidence(logical, "compare", "--producer", cid)
+                self.assertEqual(compared.returncode, 0, compared.stderr)
+                self.assertEqual(
+                    [row["id"] for row in json.loads(compared.stdout)["records"]],
+                    ["value"],
+                )
+                state = json.loads((entry / "pyrun.json").read_text())
+                execution = next(iter(state["commands"][cid]["executions"].values()))
+                self.assertEqual(execution["observed"]["outputs"], {})
+                self.assertIsNone(execution["last_run_at"])
+
+    def test_producer_with_no_evidence_is_an_unchanged_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            recorded = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            before = retained_files(logical)
+            compared = evidence(logical, "compare", "--producer", "build")
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertEqual(json.loads(compared.stdout)["records"], [])
+            applied = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertFalse(json.loads(applied.stdout)["changed"])
+            self.assertEqual(retained_files(logical), before)
+
+    def test_producer_missing_stale_and_output_free_fail_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            recorded = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            before = retained_files(logical)
+            missing = evidence(logical, "sync", "--producer", "absent")
+            self.assertEqual(missing.returncode, 2, missing.stderr)
+            self.assertIn("evidence.producer.missing", missing.stderr)
+            self.assertEqual(retained_files(logical), before)
+            document.write_text(
+                document.read_text().replace(
+                    '--output "<values>"', '--output "<values>" --tag fresh'
+                )
+            )
+            before = retained_files(logical)
+            stale = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(stale.returncode, 2, stale.stderr)
+            self.assertIn("evidence.producer.unsynced", stale.stderr)
+            self.assertEqual(retained_files(logical), before)
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _ = fixture(Path(directory), "./pyrun scripts/build.py")
+            recorded = sync(logical)
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            before = retained_files(logical)
+            empty = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(empty.returncode, 2, empty.stderr)
+            self.assertIn("evidence.producer.no_sources", empty.stderr)
+            self.assertEqual(retained_files(logical), before)
+
+    def test_competing_current_output_blocks_producer_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            recorded = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+            set_results(document, "``<!-- eid:value source=values select=/value -->")
+            document.write_text(
+                document.read_text().replace(
+                    "```\n\n`Results:`",
+                    "```\n\n```bash\n"
+                    "./pyrun --cid competing -- scripts/build.py "
+                    '--output "<values>"\n```\n\n`Results:`',
+                )
+            )
+            before = retained_files(logical)
+            rejected = evidence(logical, "sync", "--producer", "build")
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("evidence.producer.ambiguous", rejected.stderr)
+            self.assertEqual(retained_files(logical), before)
+
     def test_redundant_cross_entry_reference_skips_origin_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, _, _, _, _ = related_fixture(Path(directory))
@@ -1238,7 +1760,7 @@ class SourceEvidenceSyncTests(unittest.TestCase):
                             "sync",
                             evidence_sync.EvidenceSyncArguments(
                                 record_id=None,
-                                source=None,
+                                sources=(),
                                 record_ids=("forward",),
                                 add_from_entries=("values=e001",),
                                 dry_run=dry_run,
@@ -1358,6 +1880,45 @@ class SourceEvidenceSyncTests(unittest.TestCase):
             self.assertEqual(status, 2)
             # The external update belongs to the source, not this publication.
             before[source] = source.read_bytes()
+            self.assertEqual(retained_files(logical), before)
+
+    def test_changed_selected_document_after_preview_prevents_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), './pyrun scripts/build.py --output "<values>"'
+            )
+            (entry / "data/value.json").write_text('{"value":7}')
+            owner = sync(logical, "--add-generated", "values=data/value.json")
+            self.assertEqual(owner.returncode, 0, owner.stderr)
+            set_results(document, "``<!-- eid:value source=values select=/value -->")
+            preview = evidence(logical, "compare", "--source", "values")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            before = retained_files(logical)
+            original = evidence_sync._check_selected_edits
+
+            def change_then_check(edits, records, observations):
+                document.write_text(
+                    document.read_text().replace("select=/value", "select=/other")
+                )
+                return original(edits, records, observations)
+
+            with (
+                mock.patch.object(
+                    evidence_sync,
+                    "_check_selected_edits",
+                    side_effect=change_then_check,
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                status = dispatcher.main(
+                    [
+                        "evidence", "sync", "--path", str(logical),
+                        "--entry", "e001", "--source", "values",
+                    ]
+                )
+            self.assertEqual(status, 2)
+            before[document] = document.read_bytes()
             self.assertEqual(retained_files(logical), before)
 
     def test_late_publication_failure_restores_all_owned_files(self):

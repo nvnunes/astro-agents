@@ -107,6 +107,12 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_log_evidence_sync.py
 ```
 
+For source- or producer-scoped evidence changes, these public tests cover
+new Markdown markers, multi-source and multi-output selection, compare/dry-run
+previews, cross-entry forwarding, source moves, and no-write failures. Also run
+the current-format integrated workflow test above when changing their shared
+publication path.
+
 For output-code currentness or shared-research-graph material classification,
 use these focused tests while iterating before running that complete validator
 set:

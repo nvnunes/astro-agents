@@ -132,13 +132,23 @@ class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            evidence = run_log(
+            before_compare = document.read_bytes()
+            compared = run_log(
                 entry,
                 "evidence",
-                "sync",
+                "compare",
                 *common,
-                "--id",
-                "generated-result",
+                "--producer",
+                "build",
+            )
+            self.assertEqual(compared.returncode, 0, compared.stderr)
+            self.assertEqual(
+                [record["id"] for record in payload(compared)["records"]],
+                ["generated-result"],
+            )
+            self.assertEqual(document.read_bytes(), before_compare)
+            evidence = run_log(
+                entry, "evidence", "sync", *common, "--producer", "build"
             )
             self.assertEqual(evidence.returncode, 0, evidence.stderr)
             evidence_before = (entry / "evidence.json").read_bytes()

@@ -37,27 +37,41 @@ Omission preserves data properties. A conflict names the owning change action.
 
 Sync fills the empty presentation or replaces its existing owned region, derives
 selection expectations, and captures current linked-artifact fingerprints.
-Use one `--dry-run` invocation to inspect the complete selected change set,
-then repeat it without `--dry-run` to apply. Supply every selected ID in that
-same call; at least one `--id`, `--rename`, or `--delete` is required. Rename
-destinations are selected automatically. Repeated consistent selectors are
-accepted. Require success before continuing. Do not inspect JSON to confirm success.
+For explicit EIDs, renames, or deletions, use one `--dry-run` invocation to
+inspect the complete change set, then repeat it without `--dry-run` to apply.
+Supply every selected ID in that same call; at least one `--id`, `--rename`, or
+`--delete` is required. Rename destinations are selected automatically.
+Repeated consistent selectors are accepted. For new markers from already
+declared generated sources, use the source/producer compare-and-sync path below
+to fill the group without listing each EID. Require success before continuing.
+Do not inspect JSON to confirm success.
 A malformed registry is a separate Repair boundary, not an invitation to edit
 around an authoring failure.
 
 ## Refresh After Execution
 
-After `pyrun` updates a generated artifact, compare related evidence once:
+After `pyrun` updates generated artifacts, or after authoring new markers from
+declared generated sources, compare the affected evidence once:
 
 ```text
-<skill>/scripts/log evidence compare --path LOG --entry OWNER --source NAME
-<skill>/scripts/log evidence sync --path LOG --entry OWNER --source NAME
+<skill>/scripts/log evidence compare --path LOG --entry OWNER --source NAME [--source NAME]...
+<skill>/scripts/log evidence sync --path LOG --entry OWNER --source NAME [--source NAME]...
+
+<skill>/scripts/log evidence compare --path LOG --entry OWNER --producer CID
+<skill>/scripts/log evidence sync --path LOG --entry OWNER --producer CID
 ```
 
 Compare is read-only and returns each EID and the exact before and after
-presentation. Judge whether differences make scientific sense before sync.
-Source scope reaches references in other entries and forwarded summary values.
-For a single item use `--id EID` in either command.
+presentation; for a new marker, `before` is its literal current Markdown
+placeholder (two backticks for an empty inline code span). Judge whether
+differences make scientific sense before sync, then call sync with the same
+selector. A separate `sync --dry-run` is optional for this source/producer path.
+Repeat `--source` for several direct generated declarations in their owning
+entry. `--producer` uses the full effective CID of a synchronized command in
+that entry and selects its directly generated outputs, not origins or other
+commands. Either selector includes new complete markers by default, reaches
+same-name references in other entries, and updates forwarded summary values.
+For a single item use `--id EID`; its sync retains the dry-run/apply pair above.
 Call sync even when the presentation did not change: it refreshes fingerprints
 and expectations without rewriting unchanged Markdown.
 

@@ -624,18 +624,26 @@ def _bind_markdown_definitions(
 def authored_eid_comments(text: str) -> tuple[re.Match[str], ...]:
     """Return actual definition comments, excluding literal fenced content."""
 
+    return tuple(
+        marker
+        for offset, _, _ in authored_eid_candidates(text)
+        if (marker := EID_COMMENT_RE.match(text, offset)) is not None
+    )
+
+
+def authored_eid_candidates(text: str) -> tuple[tuple[int, str | None, int], ...]:
+    """Return positions, optional IDs, and lines of non-fenced EID candidates."""
+
     lines = text.splitlines(keepends=True)
     fenced = _fenced_lines([line.rstrip("\r\n") for line in lines])
     offset = 0
-    markers: list[re.Match[str]] = []
-    for line, inside_fence in zip(lines, fenced):
+    candidates: list[tuple[int, str | None, int]] = []
+    for number, (line, inside_fence) in enumerate(zip(lines, fenced), 1):
         if not inside_fence:
             for candidate in EID_CANDIDATE_RE.finditer(line):
-                marker = EID_COMMENT_RE.match(text, offset + candidate.start())
-                if marker is not None:
-                    markers.append(marker)
+                candidates.append((offset + candidate.start(), candidate["id"], number))
         offset += len(line)
-    return tuple(markers)
+    return tuple(candidates)
 
 
 def require_markdown_definition(record: EvidenceRecord, item: PresentedItem) -> None:

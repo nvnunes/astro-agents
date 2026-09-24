@@ -93,7 +93,6 @@ class OrdinarySyncConcurrencyTests(unittest.TestCase):
 
             arguments = EvidenceSyncArguments(
                 record_id=None,
-                source=None,
                 record_ids=("alias",),
                 add_from_entries=("values=e001",),
             )

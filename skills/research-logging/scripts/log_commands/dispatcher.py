@@ -223,7 +223,9 @@ def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
                 help="Show read-only before/after values for Markdown evidence",
                 description=(
                     "Show read-only before/after presented values for one "
-                    "evidence ID or all related evidence from a source."
+                    "evidence ID, selected generated sources, or one recorded "
+                    "producer. Source and producer compare also preview new "
+                    "Markdown markers before sync."
                 ),
             )
         else:
@@ -231,8 +233,10 @@ def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
                 name,
                 help="Apply Markdown evidence and refresh fingerprints",
                 description=(
-                    "Apply selected Markdown evidence, or all related evidence "
-                    "from a source, and refresh fingerprints."
+                    "Apply selected Markdown evidence and refresh fingerprints. "
+                    "Source and producer selection include new markers; compare "
+                    "their before/after values first, then sync with the same "
+                    "selector. A separate --dry-run is optional for that path."
                 ),
             )
         _entry_arguments(action)
@@ -241,10 +245,16 @@ def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
             scope.add_argument("--id", help="one Markdown evidence ID")
             scope.add_argument(
                 "--source",
+                action="append",
                 help=(
-                    "compare related evidence from a direct generated declaration "
-                    "in its owning entry"
+                    "repeatable direct generated name in its owning entry; "
+                    "compare all related evidence"
                 ),
+            )
+            scope.add_argument(
+                "--producer",
+                metavar="CID",
+                help="compare evidence from one recorded command's generated outputs",
             )
         else:
             action.add_argument(
@@ -257,12 +267,19 @@ def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
                 "--rename", action="append", default=[], metavar="OLD=NEW"
             )
             action.add_argument("--delete", action="append", default=[], metavar="ID")
-            action.add_argument(
+            scope = action.add_mutually_exclusive_group()
+            scope.add_argument(
                 "--source",
+                action="append",
                 help=(
-                    "sync related evidence from a direct generated declaration "
-                    "in its owning entry"
+                    "repeatable direct generated name in its owning entry; "
+                    "sync all related evidence"
                 ),
+            )
+            scope.add_argument(
+                "--producer",
+                metavar="CID",
+                help="sync evidence from one recorded command's generated outputs",
             )
         if name == "sync":
             _mutation_argument(action)
@@ -290,7 +307,8 @@ def _dispatch_evidence_refresh(
         args.action,
         EvidenceSyncArguments(
             record_id=args.id if args.action == "compare" else None,
-            source=args.source,
+            sources=tuple(args.source or ()),
+            producer=args.producer,
             record_ids=tuple(args.id) if args.action == "sync" else (),
             renames=tuple(getattr(args, "rename", ())),
             deletions=tuple(getattr(args, "delete", ())),

@@ -31,7 +31,8 @@ class EvidenceSyncArguments:
     """One evidence authoring sync or artifact-wide refresh request."""
 
     record_id: str | None
-    source: str | None
+    sources: tuple[str, ...] = ()
+    producer: str | None = None
     record_ids: tuple[str, ...] = ()
     renames: tuple[str, ...] = ()
     deletions: tuple[str, ...] = ()

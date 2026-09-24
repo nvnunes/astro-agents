@@ -3720,9 +3720,15 @@ log evidence sync [--path LOG] --entry ENTRY
   [--change-target NAME=PATH]...
   [--dry-run]
 
-log evidence compare [--path LOG] --entry ENTRY --source NAME
+log evidence compare [--path LOG] --entry ENTRY
+  --source NAME [--source NAME]...
 
-log evidence sync [--path LOG] --entry ENTRY --source NAME
+log evidence sync [--path LOG] --entry ENTRY
+  --source NAME [--source NAME]... [--dry-run]
+
+log evidence compare [--path LOG] --entry ENTRY --producer CID
+
+log evidence sync [--path LOG] --entry ENTRY --producer CID [--dry-run]
 ```
 
 ID-scoped compare reads the complete definition from the Markdown `eid`
@@ -3768,17 +3774,35 @@ declaration whose every evidence consumer is selected and which has no command,
 cross-entry, or unselected evidence consumer. Shared changes route to
 `log data update`.
 
-The source-scoped form (including --dry-run on sync) selects one direct generated declaration in its owning
-entry, follows same-log references, and finds every evidence record that uses
-the artifact. Compare returns each EID with only its exact before and after
-presentation. Sync reevaluates the same set from current state and atomically
-updates:
+The source-scoped form selects one or more direct generated declarations in
+their owning entry. Repeated names are deduplicated. It follows existing
+same-name cross-entry references and selects both maintained records and
+complete new Markdown markers naming any selected source. An EID naming
+several selected sources is evaluated once. An existing EID moved from source
+A to B is selected by B; selection of A alone fails instead of silently
+retaining the old definition. A recognizable incomplete selected marker fails
+without auditing unrelated malformed evidence. The producer-scoped form
+expands one full effective CID of a current synchronized Markdown command to
+its directly generated declaration names; it does not depend on successful
+execution observations, include origins, or select unrelated commands.
+It fails when the command has no matching direct generated declaration or a
+declared output has another current producer. A producer with valid generated
+declarations but no related evidence selects nothing and succeeds unchanged.
+
+Compare reports only each selected EID and its exact before and after
+presentation. For a new marker, `before` is its literal current Markdown
+presentation, such as an empty code span or fence. Compare performs
+the same read-only current-snapshot preflight as sync dry-run. The agent may
+use a successful source- or producer-scoped compare as the preview, judge the
+scientific differences, then call sync with the same selector; a separate
+`sync --dry-run` remains optional. Sync independently reevaluates and rechecks
+current state on apply and atomically updates:
 
 - every related Markdown presentation;
 - any summary value that forwards one of those presentations; and
 - every applicable path-based `artifact_fingerprint`.
 
-One invalid or unstable related record rejects the source-scoped sync without
+One invalid or unstable selected record rejects the whole batch without
 partial publication. When a presentation is unchanged, sync leaves its
 Markdown bytes alone and still refreshes the applicable fingerprint. Compare
 creates no stored preview or comparison ID, and sync does not require a prior

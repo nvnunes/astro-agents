@@ -18,5 +18,6 @@ line endings normalized to LF. There is no substring-search locator,
 transformation, trimming, or inference from the currently displayed payload.
 
 Run `log evidence compare --id EID` to see before/after, then
-`log evidence sync --id EID` to accept. For complete inline diffs use a
+`log evidence sync --id EID --dry-run` and `log evidence sync --id EID`
+to apply an explicit-ID edit. For complete inline diffs use a
 `diff` fence and one whole-artifact source instead of excerpt bounds.

@@ -13,6 +13,32 @@ from test_log_evidence_sync import retained_files
 
 
 class AuthoringSurfaceTests(unittest.TestCase):
+    def test_help_distinguishes_evidence_and_lifecycle_actions(self):
+        compare = run_log(SCRIPTS, "evidence", "compare", "--help")
+        evidence_sync = run_log(SCRIPTS, "evidence", "sync", "--help")
+        data_delete = run_log(SCRIPTS, "data", "delete", "--help")
+        retention_add = run_log(SCRIPTS, "retention", "add", "--help")
+        retention_update = run_log(SCRIPTS, "retention", "update", "--help")
+        for result in (
+            compare,
+            evidence_sync,
+            data_delete,
+            retention_add,
+            retention_update,
+        ):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("read-only", compare.stdout)
+        self.assertIn("before/after", compare.stdout)
+        self.assertIn("in its owning entry", compare.stdout)
+        self.assertIn("refresh fingerprints", evidence_sync.stdout)
+        self.assertIn("related evidence", evidence_sync.stdout)
+        self.assertIn("in its owning entry", evidence_sync.stdout)
+        self.assertIn("declaration", data_delete.stdout)
+        self.assertIn("retained bytes", data_delete.stdout)
+        self.assertIn("sync", data_delete.stdout)
+        self.assertIn("new", retention_add.stdout)
+        self.assertIn("existing", retention_update.stdout)
+
     def test_help_contains_current_actions_without_removed_parameters(self):
         expected = {
             "command": {

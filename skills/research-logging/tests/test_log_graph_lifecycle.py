@@ -35,6 +35,53 @@ def checked(result):
 
 
 class GraphLifecycleTests(unittest.TestCase):
+    def test_retention_add_update_errors_name_the_next_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(Path(directory), "./pyrun scripts/build.py")
+            (entry / "data/one.txt").write_text("retained\n", encoding="utf-8")
+            checked(
+                action(
+                    logical,
+                    "retention",
+                    "add",
+                    "--id",
+                    "kept",
+                    "--target",
+                    "data/one.txt",
+                )
+            )
+            before = retained_files(logical)
+            for dry_run in (True, False):
+                for verb, record_id, extra, next_action in (
+                    (
+                        "add",
+                        "kept",
+                        ("--target", "data/one.txt", "--reason", "changed"),
+                        "log retention update",
+                    ),
+                    (
+                        "update",
+                        "absent",
+                        ("--add-target", "data/one.txt"),
+                        "log retention add",
+                    ),
+                ):
+                    with self.subTest(dry_run=dry_run, verb=verb):
+                        result = action(
+                            logical,
+                            "retention",
+                            verb,
+                            "--id",
+                            record_id,
+                            *extra,
+                            *(("--dry-run",) if dry_run else ()),
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("retention.record.", result.stderr)
+                        self.assertIn(record_id, result.stderr)
+                        self.assertIn(next_action, result.stderr)
+                        self.assertEqual(retained_files(logical), before)
+
     def test_artifact_evidence_rename_preserves_accepted_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = fixture(

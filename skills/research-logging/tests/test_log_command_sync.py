@@ -57,6 +57,17 @@ def sync(logical: Path, *extra: str):
     )
 
 
+def preserved_material(entry: Path) -> dict[Path, bytes]:
+    evidence = entry / "evidence.json"
+    evidence.write_text(
+        json.dumps({"schema": "research-log-evidence/v5", "records": []}),
+        encoding="utf-8",
+    )
+    retained = entry / "data/preserved.txt"
+    retained.write_text("retained\n", encoding="utf-8")
+    return {path: path.read_bytes() for path in (evidence, retained)}
+
+
 class LogCommandSyncTests(unittest.TestCase):
     def test_redundant_input_on_outputless_command_skips_producer_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -927,12 +938,33 @@ class LogCommandSyncTests(unittest.TestCase):
                     "--add-origin-directory" if kind == "directory" else "--add-origin"
                 )
 
-                result = sync(logical, flag, "source=data/source", "--dry-run")
-
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("command.sync.origin.produced", result.stderr)
-                self.assertFalse((entry / "data.json").exists())
-                self.assertFalse((entry / "pyrun.json").exists())
+                original = document.read_bytes()
+                before = preserved_material(entry)
+                before.update(
+                    (path, path.read_bytes())
+                    for path in source.rglob("*")
+                    if path.is_file()
+                )
+                if source.is_file():
+                    before[source] = source.read_bytes()
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        result = sync(
+                            logical,
+                            flag,
+                            "source=data/source",
+                            *(("--dry-run",) if dry_run else ()),
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("command.sync.origin.produced", result.stderr)
+                        self.assertIn("e001/other", result.stderr)
+                        self.assertIn("--add-generated", result.stderr)
+                        self.assertEqual(document.read_bytes(), original)
+                        self.assertEqual(
+                            {path: path.read_bytes() for path in before}, before
+                        )
+                        self.assertFalse((entry / "data.json").exists())
+                        self.assertFalse((entry / "pyrun.json").exists())
 
     def test_help_exposes_only_sync(self) -> None:
         family = run_log(Path.cwd(), "command", "--help")
@@ -957,6 +989,56 @@ class LogCommandSyncTests(unittest.TestCase):
             "--dry-run",
         ):
             self.assertIn(flag, action.stdout)
+
+    def test_cid_help_and_missing_error_explain_effective_identity(self) -> None:
+        help_result = run_log(Path.cwd(), "command", "sync", "--help")
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("effective CID", help_result.stdout)
+        self.assertIn("program stem", help_result.stdout)
+        self.assertIn("stem-N", help_result.stdout)
+
+        commands = (
+            ("./pyrun scripts/build.py --count 1", "build-2"),
+            ("./pyrun --cid 2 -- scripts/build.py --count 1", "build"),
+            (
+                "./pyrun --cid publish-results -- scripts/build.py --count 1",
+                "build",
+            ),
+            ("./pyrun --cid build -- scripts/build.py | tee output.txt", "build"),
+        )
+        for command, requested in commands:
+            with (
+                self.subTest(command=command),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                logical, entry, document = fixture(Path(directory), command)
+                original = document.read_bytes()
+                before = preserved_material(entry)
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        result = run_log(
+                            logical.parent,
+                            "command",
+                            "sync",
+                            "--path",
+                            str(logical),
+                            "--entry",
+                            "e001",
+                            "--cid",
+                            requested,
+                            *(("--dry-run",) if dry_run else ()),
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("command.sync.cid.missing", result.stderr)
+                        self.assertIn(requested, result.stderr)
+                        self.assertIn("effective CID", result.stderr)
+                        self.assertIn("Markdown", result.stderr)
+                        self.assertEqual(document.read_bytes(), original)
+                        self.assertEqual(
+                            {path: path.read_bytes() for path in before}, before
+                        )
+                        self.assertFalse((entry / "data.json").exists())
+                        self.assertFalse((entry / "pyrun.json").exists())
 
     def test_retired_lifecycle_and_exact_execution_flags_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1610,25 +1692,38 @@ class LogCommandSyncTests(unittest.TestCase):
 
     def test_missing_generated_producer_names_the_bootstrap_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            logical, entry, _ = fixture(
+            logical, entry, document = fixture(
                 Path(directory),
                 './pyrun scripts/build.py --input "<generated>"',
             )
-
-            refused = sync(
-                logical,
-                "--add-generated",
-                "generated=data/generated.csv",
-                "--dry-run",
-            )
-
-            self.assertEqual(refused.returncode, 2)
-            self.assertIn("producer.missing", refused.stderr)
-            record = json.loads(refused.stdout.splitlines()[-1])["records"][0]
-            self.assertEqual(record["name"], "generated")
-            self.assertEqual(record["owner"], "log command sync")
-            self.assertFalse((entry / "data.json").exists())
-            self.assertFalse((entry / "pyrun.json").exists())
+            original = document.read_bytes()
+            before = preserved_material(entry)
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    refused = sync(
+                        logical,
+                        "--add-generated",
+                        "generated=data/generated.csv",
+                        *(("--dry-run",) if dry_run else ()),
+                    )
+                    self.assertEqual(refused.returncode, 2)
+                    self.assertIn("producer.missing", refused.stderr)
+                    self.assertIn("<generated>", refused.stderr)
+                    self.assertIn("--add-generated", refused.stderr)
+                    self.assertIn("same sync", refused.stderr)
+                    self.assertIn("--add-origin", refused.stderr)
+                    if dry_run:
+                        record = json.loads(refused.stdout.splitlines()[-1])[
+                            "records"
+                        ][0]
+                        self.assertEqual(record["name"], "generated")
+                        self.assertEqual(record["owner"], "log command sync")
+                    self.assertEqual(document.read_bytes(), original)
+                    self.assertEqual(
+                        {path: path.read_bytes() for path in before}, before
+                    )
+                    self.assertFalse((entry / "data.json").exists())
+                    self.assertFalse((entry / "pyrun.json").exists())
 
     def test_malformed_registry_requires_direct_repair_without_writes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

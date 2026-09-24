@@ -107,9 +107,11 @@ def add_or_update(
         if action == "add" and arguments.record_id in existing:
             if existing[arguments.record_id] == candidate:
                 return _result(action, "unchanged", False)
-            raise ActionError("retention.record.conflict", arguments.record_id)
-        if action == "update" and arguments.record_id not in existing:
-            raise ActionError("retention.record.missing", arguments.record_id)
+            raise ActionError(
+                "retention.record.conflict",
+                f"{arguments.record_id}: existing retention decision differs; "
+                "use log retention update to change it",
+            )
         if action == "update" and existing[arguments.record_id] == candidate:
             return _result(action, "unchanged", False)
         existing[arguments.record_id] = candidate
@@ -146,7 +148,11 @@ def _candidate_record(
         )
         return _record(entry, arguments.record_id, arguments.targets, reason)
     if previous is None:
-        raise ActionError("retention.record.missing", arguments.record_id)
+        raise ActionError(
+            "retention.record.missing",
+            f"{arguments.record_id}: no existing retention decision; "
+            "use log retention add first",
+        )
     added = {_relative_target(entry.root, target) for target in arguments.targets}
     removed = {
         _relative_target(entry.root, target) for target in arguments.remove_targets

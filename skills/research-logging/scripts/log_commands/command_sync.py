@@ -287,7 +287,13 @@ def _prepare_command(
         )
     if not selected_invocations:
         if selection.selected:
-            raise ActionError("command.sync.cid.missing", str(selection.selected))
+            raise ActionError(
+                "command.sync.cid.missing",
+                f"{', '.join(selection.selected)}: no supported Markdown command "
+                "materialized for the selected effective CID; check the "
+                "command fence syntax and the program stem, stem-N numeric "
+                "override, or full authored override",
+            )
     try:
         validate_command_structure(selected_invocations)
     except MechanicalContractError as error:
@@ -941,7 +947,12 @@ def _selected_declarations(
         if declaration.parsed.cid == cid
     )
     if not selected:
-        raise ActionError("command.sync.cid.missing", cid)
+        raise ActionError(
+            "command.sync.cid.missing",
+            f"{cid}: no supported Markdown command has this effective CID; "
+            "check the program stem, stem-N numeric override, full authored "
+            "override, and command fence syntax",
+        )
     owners = {
         (item.document, item.fence, item.parsed.authored_group) for item in selected
     }
@@ -1427,9 +1438,19 @@ def _require_origin_boundaries(
         owners = {item.identity for item in index.outputs.get(canonical, ())}
         owners.update(item.producer.identity for item in index.lookup(canonical))
         if owners:
+            producers = sorted(
+                {
+                    f"{item.entry}/{item.cid}"
+                    for item in invocations
+                    if item.identity in owners
+                }
+            )
             raise ActionError(
                 "command.sync.origin.produced",
-                f"origin {name} has a current recorded producer",
+                f"origin {name} has a current recorded producer "
+                f"({', '.join(producers)}); it cannot be an origin. Declare it "
+                "as generated through the producing command's log command sync "
+                "with --add-generated or --add-generated-directory",
             )
 
 
@@ -1476,8 +1497,11 @@ def _require_generated_boundaries(
         if not owners:
             raise ActionError(
                 "producer.missing",
-                f"generated data {name} has no recorded producer; "
-                "author its command first",
+                f"generated data {name} at {target} has no recorded producer; "
+                f"declare <{name}> as an output of the selected Markdown command "
+                "and use --add-generated or --add-generated-directory in the same "
+                "sync. If this is imported data, use --add-origin or "
+                "--add-origin-directory instead",
                 records=(
                     {"name": name, "target": target, "owner": "log command sync"},
                 ),

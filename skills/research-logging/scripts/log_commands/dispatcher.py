@@ -217,27 +217,52 @@ def _dispatch_add(arguments: Sequence[str]) -> ActionResult:
 
 def _evidence_refresh_parsers(actions: argparse._SubParsersAction) -> None:
     for name in ("compare", "sync"):
-        action = actions.add_parser(name, help="Evaluate Markdown-owned evidence")
+        if name == "compare":
+            action = actions.add_parser(
+                name,
+                help="Show read-only before/after values for Markdown evidence",
+                description=(
+                    "Show read-only before/after presented values for one "
+                    "evidence ID or all related evidence from a source."
+                ),
+            )
+        else:
+            action = actions.add_parser(
+                name,
+                help="Apply Markdown evidence and refresh fingerprints",
+                description=(
+                    "Apply selected Markdown evidence, or all related evidence "
+                    "from a source, and refresh fingerprints."
+                ),
+            )
         _entry_arguments(action)
         if name == "compare":
             scope = action.add_mutually_exclusive_group(required=True)
             scope.add_argument("--id", help="one Markdown evidence ID")
             scope.add_argument(
-                "--source", help="direct generated declaration in its owning entry"
+                "--source",
+                help=(
+                    "compare related evidence from a direct generated declaration "
+                    "in its owning entry"
+                ),
             )
         else:
             action.add_argument(
                 "--id",
                 action="append",
                 default=[],
-                help="selected Markdown evidence ID",
+                help="sync selected Markdown evidence ID",
             )
             action.add_argument(
                 "--rename", action="append", default=[], metavar="OLD=NEW"
             )
             action.add_argument("--delete", action="append", default=[], metavar="ID")
             action.add_argument(
-                "--source", help="direct generated declaration in its owning entry"
+                "--source",
+                help=(
+                    "sync related evidence from a direct generated declaration "
+                    "in its owning entry"
+                ),
             )
         if name == "sync":
             _mutation_argument(action)
@@ -305,7 +330,13 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     rename.add_argument("old_name")
     rename.add_argument("new_name")
     remove = actions.add_parser(
-        "delete", help="Delete an input after command and evidence use"
+        "delete",
+        help="Delete an unused data declaration, never retained bytes",
+        description=(
+            "Delete an unused data declaration, never retained bytes. First "
+            "remove its command and evidence uses and sync those edits; "
+            "remaining consumers block deletion."
+        ),
     )
     _entry_arguments(remove)
     _mutation_argument(remove)
@@ -343,10 +374,19 @@ def _dispatch_command(arguments: Sequence[str]) -> ActionResult | int:
     parser = _AuthoringParser(prog="log command")
     actions = parser.add_subparsers(dest="action", required=True)
     sync = actions.add_parser(
-        "sync", help="Synchronize selected Markdown-owned commands and lifecycle edits"
+        "sync",
+        help="Synchronize selected Markdown-owned commands and lifecycle edits",
+        description=(
+            "Select each command by its full effective CID: the Python program "
+            "stem by default, stem-N for an authored numeric --cid N, or a full "
+            "authored override. The CLI selector does not require adding "
+            "--cid to Markdown."
+        ),
     )
     _entry_arguments(sync)
-    sync.add_argument("--cid", action="append", default=[], help="stable command ID")
+    sync.add_argument(
+        "--cid", action="append", default=[], help="full effective CID"
+    )
     sync.add_argument("--rename", action="append", default=[], metavar="OLD=NEW")
     sync.add_argument("--delete", action="append", default=[], metavar="CID")
     sync.add_argument("--add-origin", action="append", default=[], metavar="NAME=PATH")
@@ -574,11 +614,11 @@ def _dispatch_retention(arguments: Sequence[str]) -> ActionResult:
     parser = _AuthoringParser(prog="log retention")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("add", "update"):
-        verb = "Add" if name == "add" else "Update"
+        verb = "Add a new" if name == "add" else "Update an existing"
         action = actions.add_parser(
             name,
-            help=f"{verb} one disconnected-retention decision",
-            description=f"{verb} one disconnected-retention decision.",
+            help=f"{verb} disconnected-retention decision",
+            description=f"{verb} disconnected-retention decision.",
         )
         _entry_arguments(action)
         _mutation_argument(action)

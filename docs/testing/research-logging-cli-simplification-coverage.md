@@ -1,7 +1,7 @@
 # Research-Logging Authoring Coverage
 
 This index maps the current Record and Repair CLI to maintained public tests.
-It supplements [the complete tool gate](research-logging.md), not the normative
+Use it to select [scoped checks](research-logging.md#scoped-tool-checks); it is not the normative
 [mechanical-validator contract](../research-log-mechanical-validator-spec.md)
 or [reproduction contract](../research-log-reproduction-spec.md).
 

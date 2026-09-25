@@ -4,9 +4,9 @@ Use this reference for changes to research-logging tools, contracts, or
 command/input-registry guidance affecting `pyrun`, as selected by
 [Testing](../testing.md). Commands run from the project root in
 the [repository environment](agent-surface.md#environment-and-deterministic-checks).
-Focused checks belong to the affected change; the complete gate blocks
-completion of any research-tool change. Unrelated research data problems do
-not add work to these implementation gates.
+Select checks for the changed behavior and its direct consumers. Use the
+complete tool gate only under the escalation criteria below. Unrelated
+research data problems do not add work to these implementation checks.
 For subprocess-backed checks, put the project `.conda/bin` first on `PATH` as
 well as invoking its Python explicitly; fixture launchers inherit `PATH`.
 
@@ -16,6 +16,26 @@ The replacement validation model has a durable
 [contract-to-test coverage index](research-log-validation-model-coverage.md).
 The native reproduction model has a separate
 [contract-to-test coverage index](research-log-reproduction-model-coverage.md).
+
+## Scoped Tool Checks
+
+For a tool or contract change, run the owning tests and tests of public entry
+points or direct consumers affected by that behavior. Add or update focused
+fixtures for the changed contract. Do not run unrelated subsystem suites just
+because they share the research-logging package. Repeat affected checks after
+relevant edits, not after unrelated work.
+
+For Python changes, compile changed source files and run the repository-local
+Ruff, mypy, and complexity checks shown in the [complete tool gate](#complete-tool-gate).
+For skill-surface changes, also run the deterministic harness selected by
+[Testing](../testing.md). Use the pinned local Conda environment for completion
+evidence; ambient tools are diagnostic only.
+
+For example, a bounded change to cross-entry data or image path declarations
+needs declaration tests, the affected command and validation-material consumer
+tests, and a read-only smoke test of a maintained example when one exposed the
+problem. It does not automatically need reproduction or process-lifecycle
+tests.
 
 ## Focused Contract And Validator Checks
 
@@ -81,7 +101,7 @@ differing-result suppression, promotion coherence,
 and migration preservation, failure, idempotence, and bounds.
 
 When changing research-log section classification, evidence presentation, or
-validation behavior, also run:
+validation behavior across multiple validation modules, also run:
 
 ```bash
 ./.conda/bin/python -m unittest discover \
@@ -114,8 +134,8 @@ the current-format integrated workflow test above when changing their shared
 publication path.
 
 For output-code currentness or shared-research-graph material classification,
-use these focused tests while iterating before running that complete validator
-set:
+use these focused tests, then add other directly affected validation consumers
+if needed:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
@@ -150,8 +170,12 @@ tests the launcher's bootstrap behavior through explicit shell dispatch.
 
 ## Complete Tool Gate
 
-For any research-logging tool change, run the complete tool gate rather than
-linting only the main validator:
+Run this gate when a change cannot be credibly bounded by owning and direct-
+consumer tests (for example, a broad schema or lifecycle change), when focused
+checks reveal effects outside the selected scope, or at a designated
+integration or release checkpoint. An active implementation plan may require
+the gate at an earlier milestone. A localized change does not trigger it merely
+because its code lives in a shared package.
 
 The complete unittest suite includes process-lifecycle tests that enumerate
 the host process table to track detached descendants. When running this gate
@@ -181,14 +205,14 @@ observation sandbox and retry after the expected permission failure.
   -s skills/research-logging/tests -p 'test_*.py'
 ```
 
-The pinned local Conda environment is the quality gate. Ambient Python, Ruff,
-or mypy installations may be used for diagnosis, but not as completion
-evidence for a research-logging tool change.
+The pinned local Conda environment provides completion evidence. Ambient
+Python, Ruff, or mypy installations may be used for diagnosis only.
 
 ## Reproduction Checks
 
-For native reproduction work, planning, execution, comparison, saved storage and
-inspection development, run:
+For changes spanning native reproduction planning, execution, comparison,
+saved storage, and inspection, run this suite. For a bounded reproduction
+change, select the affected modules and direct consumers instead:
 
 ```bash
 PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
@@ -218,7 +242,8 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   test_reproduction_inspection test_reproduction_public_jobs
 ```
 
-These focused commands supplement rather than replace the complete tool gate.
+Select these tests when the changed behavior affects native reproduction,
+shared result storage, report rendering, or scaffolding, respectively.
 
 For changes to the canonical validation model, publication lifecycle, saved
 queries, or public validation projections, run:
@@ -238,8 +263,8 @@ PYTHONPATH=skills/research-logging/scripts:skills/research-logging/tests \
   skills/research-logging/tests/test_research_log_validation_cli.py
 ```
 
-This is the focused validation model, publication, read-model, and projection
-gate. It also supplements rather than replaces the complete tool gate.
+This is the validation model, publication, read-model, and projection gate
+when those boundaries are affected.
 
 The reproduction suite uses native accepted-work fixtures. Its completion coverage must
 exercise finding-owned admission over the fresh validation snapshot and shared
@@ -323,10 +348,11 @@ The complete research-logging tool gate must cover:
   and neighboring-workflow cases in
   [`skills/research-logging/tests/semantic-review-cases.md`](../../skills/research-logging/tests/semantic-review-cases.md).
 
-Run the complete research-logging tool gate after any validator change. Use the
-focused controller, engine, evidence, command, locator, transformation,
-provenance, shared-graph material-classification, and publication tests during
-iteration.
+For validator changes, select the focused controller, engine, evidence,
+command, locator, transformation, provenance, shared-graph material-
+classification, and publication tests that exercise the changed rules and
+their direct consumers. Escalate to the complete gate only under the criteria
+above.
 
 Wall time is diagnostic rather than an objective gate. Require bounded
 complexity, no avoidable repeated reads or hashes, correct cache reuse, and no

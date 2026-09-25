@@ -5,8 +5,8 @@ representative exact tests. The [reproduction specification](../research-log-rep
 owns behavior; this index owns coverage navigation, not another contract.
 Update the owning implementation, specification and corresponding coverage when
 behavior changes. Refactor-equivalence evidence and passing commands belong in
-the active implementation plan; the [complete tool gate](research-logging.md#complete-tool-gate)
-remains mandatory.
+the active implementation plan; use the [complete tool gate](research-logging.md#complete-tool-gate)
+when its escalation criteria apply.
 
 ## Work And Classification
 

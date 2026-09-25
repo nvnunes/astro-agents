@@ -11,15 +11,15 @@ guidance. Commands run from the project root; use the
 |---|---|---|
 | `AGENTS.md`, `SKILL.md`, skill references/scripts, or agent-facing prompts | Deterministic harness before completion. | [Harness](testing/agent-surface.md#environment-and-deterministic-checks) |
 | Skill names, descriptions, `agents/openai.yaml`, discovery layout, or downstream skill-discovery guidance | Runtime discovery smoke test before completion, in addition to applicable surface checks. | [Discovery](testing/agent-surface.md#codex-runtime-discovery) |
-| Research-logging tool or contract | Applicable focused checks while iterating; complete tool gate before any tool change is complete. | [Focused checks](testing/research-logging.md#focused-contract-and-validator-checks), [complete gate](testing/research-logging.md#complete-tool-gate), and [reproduction checks](testing/research-logging.md#reproduction-checks) |
-| Research-log command/input-registry guidance affecting `pyrun` | Focused `pyrun` test before completion; guidance-only edits do not require the complete tool gate. | [Focused checks](testing/research-logging.md#focused-contract-and-validator-checks) |
+| Research-logging tool or contract | Run checks for the changed behavior and its direct consumers before completion; use the complete tool gate only when its escalation criteria apply. | [Scoped checks](testing/research-logging.md#scoped-tool-checks), [focused checks](testing/research-logging.md#focused-contract-and-validator-checks), [complete gate](testing/research-logging.md#complete-tool-gate), and [reproduction checks](testing/research-logging.md#reproduction-checks) |
+| Research-log command/input-registry guidance affecting `pyrun` | Focused `pyrun` test before completion; guidance-only edits do not require tool tests beyond this named check. | [Focused checks](testing/research-logging.md#focused-contract-and-validator-checks) |
 | Skill-selection evaluation explicitly chosen for a relevant selection change | Optional model evaluation after the deterministic fixture/discovery checks. | [Selection evaluation](testing/agent-surface.md#skill-selection-eval-cases) |
 | Agent behavior evaluation explicitly chosen | Optional diagnostic workflow; run its cheap compatibility check before model trials. | [Behavior evaluations](testing/agent-behavior-evaluations.md) |
 
 All changes require the [whitespace check](testing/agent-surface.md#environment-and-deterministic-checks).
-A prose-only relocation of testing instructions does not trigger the research
-tool suite. A status-only plan update uses existing evidence; it does not
-trigger implementation tests again.
+Testing-policy edits alone do not trigger research-tool tests. A status-only
+plan update uses existing evidence; it does not trigger implementation tests
+again.
 
 ## Completion Scope
 

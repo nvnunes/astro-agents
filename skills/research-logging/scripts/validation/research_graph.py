@@ -426,16 +426,21 @@ def _add_entries(entries: Sequence[object], state: _EvaluationGraphState) -> Non
         entry_node = ResearchNode(NodeKind.ENTRY, entry_id)
         state.builder.add_node(entry_node)
         state.entry_nodes[entry_id] = entry_node
-        document = Path(getattr(entry, "document")).as_posix()
-        document_node = ResearchNode(NodeKind.DOCUMENT, document, entry_id)
-        state.builder.add_node(document_node)
-        state.builder.add_edge(
-            ResearchEdge(
-                EdgeKind.DECLARATION,
-                entry_node.node_id,
-                document_node.node_id,
+        documents = getattr(entry, "documents", None)
+        if documents is None:
+            documents = (getattr(entry, "document"),)
+        for document in documents:
+            document_node = ResearchNode(
+                NodeKind.DOCUMENT, Path(document).as_posix(), entry_id
             )
-        )
+            state.builder.add_node(document_node)
+            state.builder.add_edge(
+                ResearchEdge(
+                    EdgeKind.DECLARATION,
+                    entry_node.node_id,
+                    document_node.node_id,
+                )
+            )
         _add_data_records(entry, entry_node, state)
         _add_evidence_records(entry, entry_node, state)
         _add_retention_records(entry, entry_node, state)

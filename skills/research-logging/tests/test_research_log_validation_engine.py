@@ -3498,6 +3498,56 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertIs(entries[0].evidence_file, entries[1].evidence_file)
             self.assertIs(entries[0].data_file, entries[1].data_file)
 
+    def test_split_entry_finding_in_second_document_has_graph_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            first = entry.with_name("e001a.md")
+            second = entry.with_name("e001b.md")
+            entry.rename(first)
+            write(
+                second,
+                "# Second\n\n## Trial\n\n`Steps:`\n\nNo command.\n\n"
+                "`Results:`\n\n"
+                "- Differences are `1.83–1.95%` against the first reference "
+                "and `2.16–2.63%` against the second.\n",
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                .replace("e001.md", "e001a.md")
+                .replace("ref entry = e001;", "ref entry = e001a;")
+                + "\n- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
+            )
+            evidence_path = first.parent / "evidence.json"
+            write(
+                evidence_path,
+                evidence_path.read_text(encoding="utf-8").replace(
+                    "e001.md", "e001a.md"
+                ),
+            )
+
+            evaluation = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(
+                    summary, ENGINE.EntryEvaluationTarget("e001", first.parent)
+                )
+            )
+
+            self.assertTrue(
+                any(
+                    finding.code == "association.declaration_missing"
+                    and finding.subject.startswith(second.resolve().as_posix())
+                    for finding in evaluation.attempt.findings
+                )
+            )
+            self.assertIn(
+                RESEARCH_GRAPH.ResearchNode(
+                    RESEARCH_GRAPH.NodeKind.DOCUMENT,
+                    second.resolve().as_posix(),
+                    "e001",
+                ).node_id,
+                {node.node_id for node in evaluation.context.graph.nodes},
+            )
+
     def test_split_document_summary_reference_uses_authored_document_identity(
         self,
     ) -> None:

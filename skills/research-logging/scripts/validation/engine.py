@@ -479,13 +479,15 @@ class EvaluationEntryMaterial:
     The evaluator, rather than a later planner, owns these observations.  A
     missing or malformed execution-state file is represented by ``pyrun``
     being ``None`` and its concrete loading failure, never by an invented empty
-    state.
+    state. Shared entry material appears once; ``documents`` retains every
+    authored split document while ``document`` remains its representative.
     """
 
     entry_id: str
     material_owner: str
     entry_root: Path
     document: Path
+    documents: tuple[Path, ...]
     data: DataFile | None
     evidence: EvidenceFile | None
     retention: RetentionFile | None
@@ -517,12 +519,16 @@ def _evaluation_materials(
 ) -> tuple[EvaluationEntryMaterial, ...]:
     """Project already loaded entry surfaces for graph and consumer context."""
 
+    documents_by_root: dict[Path, list[Path]] = {}
+    for entry in state.entries:
+        documents_by_root.setdefault(entry.root, []).append(entry.document)
     return tuple(
         EvaluationEntryMaterial(
             entry_id=_stable_entry_id(entry.document),
             material_owner=_material_owner(entry, state),
             entry_root=entry.root,
             document=entry.document,
+            documents=tuple(documents_by_root[entry.root]),
             data=entry.data_file,
             evidence=entry.evidence_file,
             retention=entry.retention_file,

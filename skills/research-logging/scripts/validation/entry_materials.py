@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from research_log_entry_identity import parse_entry_directory_name
+
 ENTRY_MATERIAL_DIRECTORY_NAMES = frozenset({"data", "images"})
 
 
@@ -48,10 +50,10 @@ def validate_entry_path_symlinks(path: Path, entry_root: Path) -> Path:
 def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
     """Resolve one local path after rejecting unsupported lexical symlinks.
 
-    Entry-root ``data`` and ``images`` directory symlinks remain allowed. A
-    shared ancestor alias is allowed only when its canonical target contains
-    both the entry root and the requested target; this preserves platform path
-    aliases without accepting an external material alias.
+    Exact ``data`` and ``images`` roots of maintained entries may be directory
+    symlinks, including when another entry consumes their material. A shared
+    ancestor alias is allowed only when its canonical target contains both the
+    entry root and the requested target. Other aliases are rejected.
     """
 
     root = entry_root.resolve()
@@ -73,6 +75,8 @@ def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
             and current.is_dir()
         ):
             continue
+        if _is_maintained_entry_material_link(current):
+            continue
         canonical_component = current.resolve()
         if _within(root, canonical_component) and _within(
             canonical_target, canonical_component
@@ -80,6 +84,36 @@ def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
             continue
         raise EntryMaterialPathError(path, "symlink")
     return canonical_target
+
+
+def _is_maintained_entry_material_link(path: Path) -> bool:
+    """Recognize the exact material root of a regular maintained entry."""
+
+    entry = path.parent
+    entries = entry.parent
+    log = entries.parent
+    summary = log.parent / f"{log.name}.md"
+    return (
+        path.name in ENTRY_MATERIAL_DIRECTORY_NAMES
+        and path.is_dir()
+        and not entry.is_symlink()
+        and parse_entry_directory_name(entry.name) is not None
+        and entries.name == "entries"
+        and entries.is_dir()
+        and not entries.is_symlink()
+        and summary.is_file()
+        and not summary.is_symlink()
+    )
+
+
+def uses_maintained_entry_material_link(path: Path) -> bool:
+    """Return whether a path crosses an exact maintained entry material link."""
+
+    return any(
+        component.is_symlink() and _is_maintained_entry_material_link(component)
+        for component in (path, *path.parents)
+        if component.name in ENTRY_MATERIAL_DIRECTORY_NAMES
+    )
 
 
 def is_entry_material_path(path: Path, entry_root: Path) -> bool:

@@ -62,9 +62,10 @@ for programmatic consumers.
 ## Correct The Source
 
 Use the owning CLI action for valid registries; edit Markdown or scripts first
-when that action consumes them. For a well-formed `data.json` blocked only by
+when that action consumes them. Another maintained entry's exact `data` or
+`images` link is valid. For a well-formed `data.json` blocked by unsupported
 symlinked locations, use `log data repair-locations` for every affected name
-with direct paths to the same material. Direct JSON editing is reserved for
+with supported paths to the same material. Direct JSON editing is reserved for
 explicitly authorized malformed state the CLI cannot repair. Preserve the
 original in version control or a backup.
 

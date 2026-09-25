@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
+
+from research_log_entry_identity import parse_entry_directory_name
 
 from .model import ActionError
 
 ENTRY_ID_RE = re.compile(r"e(?P<number>[0-9]{3,})\Z")
 ENTRY_DOCUMENT_RE = re.compile(r"(?P<id>e[0-9]{3,})(?P<suffix>[a-z]?)\.md\Z")
-ENTRY_DIRECTORY_RE = re.compile(
-    r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})-"
-    r"(?P<id>e[0-9]{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\Z"
-)
 
 
 @dataclass(frozen=True)
@@ -44,15 +41,6 @@ class EntryContext:
 
 
 @dataclass(frozen=True)
-class EntryDirectoryIdentity:
-    """One canonical entry directory identity parsed from its basename."""
-
-    date: str
-    id: str
-    slug: str
-
-
-@dataclass(frozen=True)
 class EntryDocumentIdentity:
     """One canonical entry document identity parsed from its basename."""
 
@@ -68,23 +56,6 @@ def entry_number(value: str) -> int | None:
         return None
     number = int(match.group("number"))
     return number if number > 0 else None
-
-
-def parse_entry_directory_name(value: str) -> EntryDirectoryIdentity | None:
-    """Return one fully canonical date-ID-slug directory identity."""
-
-    match = ENTRY_DIRECTORY_RE.fullmatch(value)
-    if match is None or entry_number(match.group("id")) is None:
-        return None
-    try:
-        parsed_date = date.fromisoformat(match.group("date"))
-    except ValueError:
-        return None
-    if parsed_date.isoformat() != match.group("date"):
-        return None
-    return EntryDirectoryIdentity(
-        match.group("date"), match.group("id"), match.group("slug")
-    )
 
 
 def parse_entry_document_name(value: str) -> EntryDocumentIdentity | None:

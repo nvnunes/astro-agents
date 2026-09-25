@@ -480,6 +480,73 @@ class DataFileTests(unittest.TestCase):
                     "aliased-source", "file", location, entry_root=entry
                 )
 
+    def test_other_maintained_entry_material_links_are_valid_and_retargeted(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry, _ = data_fixture(root)
+            other_log = root / "docs" / "other"
+            source_entry = other_log / "entries" / "2026-09-02-e002-source"
+            write(other_log.with_suffix(".md"), "# Other\n")
+            first = root / "output" / "first"
+            second = root / "output" / "second"
+            write(first / "value.txt", "one\n")
+            write(second / "value.txt", "two\n")
+            source_entry.mkdir(parents=True)
+
+            for material_root in ("data", "images"):
+                with self.subTest(material_root=material_root):
+                    link = source_entry / material_root
+                    link.symlink_to(first, target_is_directory=True)
+                    target = link / "value.txt"
+                    relative = Path(os.path.relpath(target, entry)).as_posix()
+                    resource = DATA.build_local_input(
+                        "other-value", "file", relative, entry_root=entry
+                    )
+                    self.assertEqual(
+                        resource.canonical_target, str((first / "value.txt").resolve())
+                    )
+                    self.assertEqual(
+                        DATA.normalize_input_location(str(target), entry_root=entry),
+                        str(target),
+                    )
+                    before = DATA.observe_fingerprint(resource).fingerprint.digest
+
+                    link.unlink()
+                    link.symlink_to(second, target_is_directory=True)
+                    updated = DATA.build_local_input(
+                        "other-value", "file", relative, entry_root=entry
+                    )
+                    after = DATA.observe_fingerprint(updated).fingerprint.digest
+                    self.assertEqual(
+                        updated.canonical_target, str((second / "value.txt").resolve())
+                    )
+                    self.assertNotEqual(before, after)
+                    link.unlink()
+
+    def test_material_link_exception_requires_a_maintained_entry_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry, _ = data_fixture(root)
+            retained = root / "output" / "retained"
+            write(retained / "value.txt", "value\n")
+            fake = root / "docs" / "unmaintained" / "entries" / "2026-09-02-e002-source"
+            fake.mkdir(parents=True)
+            (fake / "data").symlink_to(retained, target_is_directory=True)
+            nested = entry / "data" / "alias"
+            nested.symlink_to(retained, target_is_directory=True)
+
+            for target in (fake / "data/value.txt", nested / "value.txt"):
+                with self.subTest(target=target):
+                    location = Path(os.path.relpath(target, entry)).as_posix()
+                    with self.assertRaisesRegex(
+                        DATA.DataContractError, "data.declaration.invalid"
+                    ):
+                        DATA.build_local_input(
+                            "invalid-alias", "file", location, entry_root=entry
+                        )
+
     def test_data_registry_remains_declarative_when_file_bytes_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry, source = data_fixture(Path(directory))

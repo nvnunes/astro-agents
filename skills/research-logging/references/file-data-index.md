@@ -66,8 +66,10 @@ identity; bounded identities require explicit researcher intent and must cover
 the relevant consumed bytes. A shared update identifies its other consumers.
 `--acknowledge-shared` acknowledges that wider scope, not a validation bypass.
 
+Locations may cross another maintained entry's exact `data` or `images`
+directory link. Do not replace such a location with its physical storage path.
 If a well-formed `data.json` cannot load because an existing location crosses
-another entry's `data` or `images` symlink, repair the locations in one call:
+an unsupported symlink, repair the locations in one call:
 
 ```text
 <skill>/scripts/log data repair-locations --path LOG --entry ENTRY
@@ -75,10 +77,10 @@ another entry's `data` or `images` symlink, repair the locations in one call:
 ```
 
 Include every invalid alias so the complete candidate can decode. Each new
-path must resolve to the same retained material as the old one; use its direct
-location rather than the other entry's symlink. Preview first, then repeat
-without `--dry-run`. This action changes no material identity, declaration
-policy, or retained bytes. Use `log data update` for an actual target change.
+path must resolve to the same retained material as the old one. Preview first,
+then repeat without `--dry-run`. This action changes no material identity,
+declaration policy, or retained bytes. Use `log data update` for an actual
+target change.
 
 For rename, update every Markdown use first, then
 `log data rename OLD NEW`. It verifies each affected command and evidence

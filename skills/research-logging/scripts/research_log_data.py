@@ -19,6 +19,7 @@ from typing import Any, Mapping, NoReturn, cast
 from validation.entry_materials import (
     EntryMaterialPathError,
     is_entry_material_root,
+    uses_maintained_entry_material_link,
     validate_local_path_symlinks,
 )
 from validation.errors import MechanicalContractError
@@ -626,7 +627,9 @@ def normalize_input_location(value: str, *, entry_root: Path) -> str:
 
     Relative inputs remain relative to the entry. Absolute paths beneath the
     entry, including its first-class ``data`` and ``images`` links, become
-    entry-relative. Other absolute inputs use their safely resolved path.
+    entry-relative. An absolute path through another entry's first-class
+    material link retains that link; other absolute inputs use their safely
+    resolved path.
     """
 
     if (
@@ -657,7 +660,11 @@ def normalize_input_location(value: str, *, entry_root: Path) -> str:
     linked = _linked_material_location(canonical, root)
     if linked is not None:
         return linked
-    result = canonical.as_posix()
+    result = (
+        lexical.as_posix()
+        if uses_maintained_entry_material_link(lexical)
+        else canonical.as_posix()
+    )
     _location(result, "input location", root)
     return result
 

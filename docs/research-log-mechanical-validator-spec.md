@@ -2366,13 +2366,17 @@ segment. Relative paths may use `..`; resolution from the entry root determines
 their canonical target. A location contains no URI, token, environment, glob,
 shell, or template expansion. One location is at most 2,048 UTF-8 bytes.
 
-A canonical target is the safely resolved filesystem locator after the
-existing first-class entry `data` or `images` symlink rule. No other declared
-or nested symlink is allowed. Names are unique within one file. File and
-directory canonical targets are also unique. Git repository declarations use
-their selected commit as material identity, so one repository locator may
-identify different commits under different names; the same pinned commit may
-not be declared twice in one file.
+A canonical target is the safely resolved filesystem locator. A declaration
+may cross the exact `data` or `images` directory symlink of its owning entry or
+another maintained entry, including an entry in another maintained log. The
+other entry must have a regular canonical entry directory beneath a regular
+`entries/` root and a regular maintained-log summary. Nested and arbitrary
+symlinks remain invalid. Retargeting an allowed link changes the resolved
+canonical target and requires normal material-currentness checks. Names are
+unique within one file. File and directory canonical targets are also unique.
+Git repository declarations use their selected commit as material identity, so
+one repository locator may identify different commits under different names;
+the same pinned commit may not be declared twice in one file.
 
 Separate entries may declare the same material when each consumes it. Within
 one maintained log, all file and directory declarations of one target must

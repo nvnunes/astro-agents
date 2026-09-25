@@ -118,7 +118,6 @@ class LogDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, entry = scaffold(root)
-            source = add_entry(logical, date="2026-09-05", slug="source")
             retained = root / "output" / "source-data"
             retained.mkdir(parents=True)
             names = ("first", "second")
@@ -126,8 +125,8 @@ class LogDataTests(unittest.TestCase):
                 target = retained / name
                 target.mkdir()
                 (target / "value.txt").write_text(name, encoding="utf-8")
-            (source / "data").rmdir()
-            (source / "data").symlink_to(retained, target_is_directory=True)
+            alias = root / "material-alias"
+            alias.symlink_to(retained, target_is_directory=True)
             registry = entry / "data.json"
             original = {
                 "schema": "research-log-data/v6",
@@ -135,7 +134,7 @@ class LogDataTests(unittest.TestCase):
                     {
                         "identity": {"algorithm": "directory-sha256-v1"},
                         "kind": "directory",
-                        "location": (source / "data" / name).as_posix(),
+                        "location": (alias / name).as_posix(),
                         "name": name,
                         "origin": True,
                     }
@@ -191,20 +190,19 @@ class LogDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, entry = scaffold(root)
-            source = add_entry(logical, date="2026-09-05", slug="source")
             retained = root / "output" / "source-data"
             retained.mkdir(parents=True)
             first = retained / "first"
             second = retained / "second"
             first.mkdir()
             second.mkdir()
-            (source / "data").rmdir()
-            (source / "data").symlink_to(retained, target_is_directory=True)
+            alias = root / "material-alias"
+            alias.symlink_to(retained, target_is_directory=True)
             registry = entry / "data.json"
             declaration = {
                 "identity": {"algorithm": "directory-sha256-v1"},
                 "kind": "directory",
-                "location": str(source / "data/first"),
+                "location": str(alias / "first"),
                 "name": "first",
                 "origin": True,
             }

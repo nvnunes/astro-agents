@@ -246,7 +246,29 @@ def material_consumers(
 ) -> tuple[dict[str, Any], ...]:
     """Find physical consumers, including different names for the same material."""
 
-    consumers: list[dict[str, Any]] = []
+    return material_consumers_many(
+        entry,
+        (target,),
+        excluded_command=excluded_command,
+        data_overrides=data_overrides,
+    )[target]
+
+
+def material_consumers_many(
+    entry: EntryContext,
+    targets: tuple[Path, ...],
+    *,
+    excluded_command: str | None = None,
+    data_overrides: Mapping[Path, DataFile | None] | None = None,
+) -> dict[Path, tuple[dict[str, Any], ...]]:
+    """Find consumers of multiple targets with one same-log command discovery."""
+
+    if not targets:
+        return {}
+    consumers: dict[Path, list[dict[str, Any]]] = {
+        target: [] for target in targets
+    }
+    resolved_targets = {target: target.resolve() for target in consumers}
     materials = inspect_log_materials(entry.log, data_overrides=data_overrides)
     for invocation in materials.invocations:
         if (
@@ -255,28 +277,37 @@ def material_consumers(
         ):
             continue
         paths = [
-            relationship.path
+            Path(relationship.path).resolve()
             for relationship in (*invocation.inputs, *invocation.outputs)
         ]
         paths.extend(
-            collection.root for collection in invocation.collections if collection.root
+            Path(collection.root).resolve()
+            for collection in invocation.collections
+            if collection.root
         )
         if invocation.script:
-            paths.append(invocation.script)
-        if any(paths_overlap(target, Path(path)) for path in paths):
-            consumers.append(
-                {
-                    "entry": invocation.entry,
-                    "command": invocation.cid,
-                    "document": invocation.document,
-                }
-            )
-    consumers.extend(_material_evidence(entry, target))
-    return tuple(consumers)
+            paths.append(Path(invocation.script).resolve())
+        for target, resolved in resolved_targets.items():
+            if any(_resolved_paths_overlap(resolved, path) for path in paths):
+                consumers[target].append(
+                    {
+                        "entry": invocation.entry,
+                        "command": invocation.cid,
+                        "document": invocation.document,
+                    }
+                )
+    evidence_consumers = _material_evidence_many(entry, tuple(consumers))
+    for target in consumers:
+        consumers[target].extend(evidence_consumers[target])
+    return {target: tuple(uses) for target, uses in consumers.items()}
 
 
-def _material_evidence(entry: EntryContext, target: Path) -> tuple[dict[str, Any], ...]:
-    consumers = []
+def _material_evidence_many(
+    entry: EntryContext, targets: tuple[Path, ...]
+) -> dict[Path, tuple[dict[str, Any], ...]]:
+    consumers: dict[Path, list[dict[str, Any]]] = {
+        target: [] for target in targets
+    }
     for observed in observe_physical_entries(entry.log):
         data_path = observed.root / "data.json"
         evidence_path = observed.root / "evidence.json"
@@ -287,32 +318,35 @@ def _material_evidence(entry: EntryContext, target: Path) -> tuple[dict[str, Any
             evidence_path, log_root=entry.log.root, entry_root=observed.root
         )
         for record in evidence.records:
-            relevant = [
-                source
-                for source in record.sources
-                if (resource := data.by_name.get(token_name(source.source) or ""))
-                is not None
-                and paths_overlap(target, Path(resource.canonical_target))
-            ]
-            if any(
-                paths_overlap(
-                    target, Path(resolve_input_token(source.source, data).path)
-                )
-                for source in relevant
-            ):
-                consumers.append(
-                    {
-                        "entry": observed.id,
-                        "evidence": record.id,
-                        "document": record.document,
-                    }
-                )
-    return tuple(consumers)
+            for target in targets:
+                relevant = [
+                    source
+                    for source in record.sources
+                    if (resource := data.by_name.get(token_name(source.source) or ""))
+                    is not None
+                    and paths_overlap(target, Path(resource.canonical_target))
+                ]
+                if any(
+                    paths_overlap(
+                        target, Path(resolve_input_token(source.source, data).path)
+                    )
+                    for source in relevant
+                ):
+                    consumers[target].append(
+                        {
+                            "entry": observed.id,
+                            "evidence": record.id,
+                            "document": record.document,
+                        }
+                    )
+    return {target: tuple(uses) for target, uses in consumers.items()}
 
 
 def paths_overlap(first: Path, second: Path) -> bool:
-    first = first.resolve()
-    second = second.resolve()
+    return _resolved_paths_overlap(first.resolve(), second.resolve())
+
+
+def _resolved_paths_overlap(first: Path, second: Path) -> bool:
     return (
         first == second or first.is_relative_to(second) or second.is_relative_to(first)
     )

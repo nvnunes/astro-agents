@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from log_commands import command_sync as command_sync_module
+from log_commands import graph_state, materials
 from log_commands.context import resolve_entry, resolve_log
 from log_commands.model import ActionError, CommandSyncArguments
 from research_log_cli_test_support import (
@@ -15,7 +16,9 @@ from research_log_cli_test_support import (
     run_log,
     run_pyrun_process,
 )
+from research_log_data import load_data_file
 from research_log_reservations import reserve_execution
+from validation.fingerprint_cache import FingerprintCache
 from validation.pyrun_state import load_pyrun_state
 
 
@@ -69,6 +72,100 @@ def preserved_material(entry: Path) -> dict[Path, bytes]:
 
 
 class LogCommandSyncTests(unittest.TestCase):
+    def test_deleted_outputs_share_one_consumer_scan_per_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root, "./pyrun --cid build -- scripts/build.py"
+            )
+            self.assertEqual(sync(logical).returncode, 0)
+            document.write_text("# Test\n\nNo commands.\n", encoding="utf-8")
+            context = resolve_entry(resolve_log(logical), "e001")
+            arguments = CommandSyncArguments(
+                cids=(),
+                renames=(),
+                deletions=("build",),
+                add_origins=(),
+                add_origin_directories=(),
+                add_origin_git=(),
+                add_generated=(),
+                add_generated_directories=(),
+                add_from_entries=(),
+                target_changes=(),
+                stale_execution_deletions=(),
+                dry_run=True,
+            )
+            outputs = {
+                (entry / "data/first.txt").as_posix(),
+                (entry / "data/second.txt").as_posix(),
+            }
+            with (
+                mock.patch.object(
+                    command_sync_module, "_deleted_outputs", return_value=outputs
+                ),
+                mock.patch.object(
+                    graph_state,
+                    "inspect_log_materials",
+                    wraps=graph_state.inspect_log_materials,
+                ) as inspect,
+            ):
+                command_sync_module.sync_command(context, arguments)
+            self.assertEqual(inspect.call_count, 2)
+
+    def test_consumer_scan_reuses_cached_directory_and_one_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root,
+                './pyrun --cid build -- scripts/build.py --input "<source>"',
+            )
+            document.write_text(
+                document.read_text(encoding="utf-8")
+                + "\n## Other\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid other -- scripts/build.py --input "<source>"\n'
+                + "```\n\n`Results:`\n\nPending.\n",
+                encoding="utf-8",
+            )
+            bundle = entry / "data/bundle"
+            bundle.mkdir()
+            source = bundle / "source.txt"
+            source.write_text("first\n", encoding="utf-8")
+            self.assertEqual(
+                sync(
+                    logical, "--add-origin-directory", "source=data/bundle"
+                ).returncode,
+                0,
+            )
+            data = load_data_file(entry / "data.json", entry_root=entry)
+            with FingerprintCache(root, writable=True) as cache:
+                cache.observe_resource(data.by_name["source"])
+
+            observe = FingerprintCache.observe_resource
+            observed: list[str] = []
+
+            def count_observation(cache: FingerprintCache, resource):
+                observed.append(resource.name)
+                return observe(cache, resource)
+
+            with (
+                mock.patch.object(
+                    FingerprintCache, "observe_resource", count_observation
+                ),
+                mock.patch(
+                    "validation.fingerprint_cache.observe_file_content",
+                    side_effect=AssertionError("cached content was rehashed"),
+                ),
+            ):
+                materials.inspect_log_materials(resolve_log(logical))
+            self.assertEqual(observed, ["source"])
+
+            source.write_text("changed\n", encoding="utf-8")
+            with mock.patch.object(
+                FingerprintCache, "observe_resource", count_observation
+            ):
+                materials.inspect_log_materials(resolve_log(logical))
+            self.assertEqual(observed, ["source", "source"])
+
     def test_redundant_input_on_outputless_command_skips_producer_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(

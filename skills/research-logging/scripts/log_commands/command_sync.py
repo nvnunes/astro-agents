@@ -88,7 +88,7 @@ from .graph_state import (
     authored_evidence_uses,
     declaration_uses,
     describe_uses,
-    material_consumers,
+    material_consumers_many,
 )
 from .model import ActionError, ActionResult, CommandSyncArguments
 from .retention import require_unretained_paths
@@ -409,12 +409,15 @@ def _remove_deleted_declarations(
         old for old, _ in selection.renames
     }
     blocked: list[dict[str, object]] = []
-    for output in sorted(outputs):
+    consumers = material_consumers_many(
+        entry,
+        tuple(Path(output) for output in sorted(outputs)),
+        data_overrides={entry.root: candidate},
+    )
+    for output in sorted(consumers):
         blocked.extend(
             use
-            for use in material_consumers(
-                entry, Path(output), data_overrides={entry.root: candidate}
-            )
+            for use in consumers[output]
             if not (
                 use.get("entry") == entry.id and use.get("command") in selection.deleted
             )

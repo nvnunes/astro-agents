@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -9,7 +10,9 @@ from typing import Mapping
 from research_log_data import (
     DataFile,
     Fingerprint,
+    FingerprintObservation,
     InputResource,
+    ResourceIdentity,
     load_data_file,
     observe_fingerprint,
 )
@@ -476,37 +479,60 @@ def inspect_log_materials(
     normalized_overrides = {
         root.resolve(): data for root, data in (data_overrides or {}).items()
     }
-    for entry in observe_entries(log):
-        root = entry.root.resolve()
-        owner = root.relative_to(log.root).as_posix()
-        roots[owner] = root
-        data_file = (
-            normalized_overrides[root]
-            if root in normalized_overrides
-            else _load_data(root)
-        )
-        for document in entry.documents:
-            try:
-                text = document.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as error:
-                raise ActionError(
-                    "association.document_unavailable", f"{document}: {error}"
-                ) from error
-            names.setdefault(root, set()).update(command_input_names(text))
-            discovery = discover_commands(
-                text,
-                CommandContext(
-                    log_id=log.root.as_posix(),
-                    entry=document.stem,
-                    document=document.relative_to(log.root).as_posix(),
-                    entry_root=root,
-                    log_root=log.root,
-                    project_root=project_root,
-                    data_file=data_file,
-                ),
+    observations: dict[tuple[str, str, ResourceIdentity], FingerprintObservation] = {}
+    with ExitStack() as stack:
+        try:
+            cache = stack.enter_context(
+                FingerprintCache(project_root, writable=False)
             )
-            documents.append(discovery.invocations)
-            failures.setdefault(root, []).extend(discovery.failures)
+        except FingerprintCacheError:
+            cache = None
+
+        def observe_input(resource: InputResource) -> FingerprintObservation:
+            key = (resource.canonical_target, resource.kind, resource.identity)
+            if key not in observations:
+                try:
+                    observations[key] = (
+                        cache.observe_resource(resource)
+                        if cache is not None
+                        else observe_fingerprint(resource)
+                    )
+                except FingerprintCacheError:
+                    observations[key] = observe_fingerprint(resource)
+            return observations[key]
+
+        for entry in observe_entries(log):
+            root = entry.root.resolve()
+            owner = root.relative_to(log.root).as_posix()
+            roots[owner] = root
+            data_file = (
+                normalized_overrides[root]
+                if root in normalized_overrides
+                else _load_data(root)
+            )
+            for document in entry.documents:
+                try:
+                    text = document.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as error:
+                    raise ActionError(
+                        "association.document_unavailable", f"{document}: {error}"
+                    ) from error
+                names.setdefault(root, set()).update(command_input_names(text))
+                discovery = discover_commands(
+                    text,
+                    CommandContext(
+                        log_id=log.root.as_posix(),
+                        entry=document.stem,
+                        document=document.relative_to(log.root).as_posix(),
+                        entry_root=root,
+                        log_root=log.root,
+                        project_root=project_root,
+                        data_file=data_file,
+                        input_fingerprint_verifier=observe_input,
+                    ),
+                )
+                documents.append(discovery.invocations)
+                failures.setdefault(root, []).extend(discovery.failures)
     return LogMaterials(
         log,
         project_root,

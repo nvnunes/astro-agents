@@ -1010,6 +1010,24 @@ class RetentionFileTests(unittest.TestCase):
 
 
 class BoundedFilesystemTests(unittest.TestCase):
+    def test_descendant_enumeration_prunes_an_excluded_top_level_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root / "adhoc/one.txt", "one\n")
+            write(root / "adhoc/nested/two.txt", "two\n")
+            expected = root / "kept.txt"
+            write(expected, "kept\n")
+
+            observed = FILESYSTEM.bounded_descendants(
+                root,
+                maximum_entries=1,
+                excluded_top_level_directories=frozenset({"adhoc"}),
+            )
+
+            self.assertEqual(observed, (expected,))
+
     def test_descendant_enumeration_stops_at_the_first_over_limit_entry(
         self,
     ) -> None:

@@ -153,7 +153,10 @@ state does not start Repair without an explicit correction request.
 - If validation reports `research-owned state changed during validation`,
   retry the identical command once; do not infer concurrent activity unless it
   fails again.
-- Retained or logged results, figures, and tables should be produced by executable code that works with real data. The agent may help write, review, or debug that code, but the output should come from executing code.
+- Results, figures, and tables used by the recorded workflow or presented as
+  evidence should be produced by executable code that works with real data. The
+  agent may help write, review, or debug that code, but the output should come
+  from executing code.
 - Do not invent data unless the user specifically asks for synthetic or draft data.
 
 ## Command Verification

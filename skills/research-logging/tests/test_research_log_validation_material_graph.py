@@ -179,6 +179,38 @@ def _request(
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_adhoc_directory_is_outside_the_material_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, entry_root, data_file, invocations = _surface(Path(directory))
+            notes = entry_root / "adhoc/investigation/notes.md"
+            script = entry_root / "adhoc/investigation/check.py"
+            artifact = entry_root / "adhoc/investigation/output/result.txt"
+            write(notes, "Working notes.\n")
+            write(script, "print('exploratory')\n")
+            write(artifact, "candidate result\n")
+
+            before = GRAPH.classify_research_graph_materials(
+                _request(entry_root, data_file, invocations)
+            )
+            write(notes, "Revised working notes.\n")
+            write(artifact, "changed candidate result\n")
+            after = GRAPH.classify_research_graph_materials(
+                _request(entry_root, data_file, invocations)
+            )
+
+            adhoc = {
+                notes.resolve().as_posix(),
+                script.resolve().as_posix(),
+                artifact.resolve().as_posix(),
+            }
+            self.assertTrue(adhoc.isdisjoint(before.orphan.inventory))
+            self.assertTrue(adhoc.isdisjoint(before.orphan.orphaned))
+            self.assertEqual(before.dependency_projection, after.dependency_projection)
+            self.assertIn(
+                (entry_root / "data/sibling.csv").resolve().as_posix(),
+                before.orphan.orphaned,
+            )
+
     def test_evidence_edge_is_authoritative_for_material_reachability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))

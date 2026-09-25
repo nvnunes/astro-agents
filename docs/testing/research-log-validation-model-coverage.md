@@ -33,6 +33,9 @@ not here.
 | Localized failed checks, transitive blocked checks, and whole-operation source-change nonpublication | `validation.engine`, `validation.domain`, `validation.controller` | `test_research_log_validation_engine.EngineV2EndToEndTests.test_entry_unreadable_declaration_index_fails_then_recovers`; `test_research_log_validation_domain.ValidationDomainTests.test_transient_source_change_creates_failed_check_and_snapshot`; `test_research_log_validation_domain.ValidationDomainTests.test_one_failed_root_blocks_all_dependent_checks`; `test_research_log_validation_cli.ValidationCliTests.test_entry_source_change_is_operation_failure_without_replacing_snapshot` |
 | Evaluation target closure and equivalence between entry and full-log validation | `validation.engine`, `validation.controller` | `test_research_log_validation_engine.EngineV2EndToEndTests.test_invalid_data_file_blocks_dependent_checks_without_cascade`; `test_research_log_validation_engine.EngineV2EndToEndTests.test_entry_checks_match_the_full_evaluation_for_its_selected_entry`; `test_research_log_validation_engine.EngineV2EndToEndTests.test_entry_producer_closure_covers_exact_reverse_and_rejected_declarations`; `test_research_log_validation_cli.ValidationCliTests.test_entry_selector_evaluates_all_split_documents_but_rejects_a_split_id` |
 
+Entry-local `adhoc/` exclusion from the orphan inventory is covered by
+`test_research_log_validation_material_graph.MaterialGraphTests.test_adhoc_directory_is_outside_the_material_inventory`.
+
 ## Canonical Model And Repair Coverage
 
 | Contract | Maintained implementation | Representative exact scenarios |

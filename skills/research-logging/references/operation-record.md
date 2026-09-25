@@ -53,7 +53,12 @@ material as a new routing event and load only its matching reference.
 
 - Substantive prose or descriptive sections: read
   `references/file-entry-labels.md` and `references/research-log-writing.md`.
-- Scripts, figures, or serialized artifacts: read `references/file-script.md`.
+- Ad hoc notes, scripts, or artifacts intentionally retained outside the
+  recorded workflow: read `references/file-adhoc.md`. This route takes
+  precedence over type-specific script, artifact, command, and evidence
+  guidance.
+- Scripts, figures, or serialized artifacts in the recorded workflow: read
+  `references/file-script.md`.
 - Executable or recorded commands: read `references/file-entry-commands.md`.
 - Presented results, evidence records, summary references, or artifact links:
   read `references/file-presented-evidence.md`. It routes selection, numeric,
@@ -63,6 +68,7 @@ material as a new routing event and load only its matching reference.
   cards. A material command or evidence input, a `<name>` token, or an explicit
   origin boundary also reads `references/file-data-index.md` when introduced.
 - Intentional retention outside the evidence-rooted graph: read
-  `references/file-retention.md` when introduced.
+  `references/file-retention.md` when introduced. Do not use retention records
+  for material beneath `adhoc/`.
 - Citations or `refs.bib`: read `references/file-references.md`; also read
   `references/operation-reference.md` only for lookup or metadata verification.

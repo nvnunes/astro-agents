@@ -44,6 +44,7 @@ MAX_GRAPH_DEPTH = 64
 RUNTIME_CACHE_DIRECTORY_NAMES = frozenset(
     {".cache", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__"}
 )
+EXCLUDED_ENTRY_DIRECTORY_NAMES = frozenset({"adhoc"})
 IGNORED_FILE_NAMES = frozenset(
     {
         ".DS_Store",
@@ -700,7 +701,10 @@ def _inventory(roots: Mapping[str, Path]) -> set[str]:
     for root in roots.values():
         if root.is_symlink() or not root.is_dir():
             _fail("provenance.observation.unavailable", str(root), {"directory": False})
-        for path in _bounded_inventory_descendants(root):
+        for path in _bounded_inventory_descendants(
+            root,
+            excluded_top_level_directories=EXCLUDED_ENTRY_DIRECTORY_NAMES,
+        ):
             relative = path.relative_to(root)
             if _excluded(relative):
                 continue
@@ -751,9 +755,17 @@ def _bound_inventory(inventory: set[str]) -> None:
         )
 
 
-def _bounded_inventory_descendants(root: Path) -> tuple[Path, ...]:
+def _bounded_inventory_descendants(
+    root: Path,
+    *,
+    excluded_top_level_directories: frozenset[str] = frozenset(),
+) -> tuple[Path, ...]:
     try:
-        return bounded_descendants(root, maximum_entries=MAX_GRAPH_NODES)
+        return bounded_descendants(
+            root,
+            maximum_entries=MAX_GRAPH_NODES,
+            excluded_top_level_directories=excluded_top_level_directories,
+        )
     except BoundedTraversalError as error:
         if error.reason == "entry_limit":
             _fail(

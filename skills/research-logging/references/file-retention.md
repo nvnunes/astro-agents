@@ -5,6 +5,9 @@ outside the active command and evidence graph. It records intent, not a missing
 producer, consumer, evidence relationship, or reproduction exception.
 Do not inspect or edit its JSON; use the owning CLI.
 
+Do not create retention records for material beneath `adhoc/`; follow
+`references/file-adhoc.md` instead.
+
 Choose a stable ID and one existing nonempty directory or regular-file targets,
 all entry-relative. Do not mix files and directories, use symlinks or missing
 targets, or overlap records.

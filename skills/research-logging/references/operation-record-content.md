@@ -23,6 +23,10 @@ inside an entry.
   or an unclear correction.
 - Never turn an entry into an agent diary or work log. Omit agent workflow,
   housekeeping, progress, and routine successful checks.
+- When the researcher asks only to retain earlier exploratory work, place it
+  under the entry's `adhoc/` directory and link it without reconstructing it as
+  a recorded experiment. Do not normalize or rerun it unless the researcher
+  separately requests that work.
 - When a request moves earlier exploratory work into the log, Record begins at
   that transition; it does not retroactively make the earlier work fully
   reproducible. Preserve the actual scripts, commands, settings, artifacts, and

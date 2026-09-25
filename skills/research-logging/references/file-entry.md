@@ -41,6 +41,9 @@ and `images/` are independent artifact folders; either may be a normal
 directory, ignored directory, or symlink according to the project using the
 log.
 
+Use entry-local `adhoc/` for notes, exploratory scripts, and artifacts retained
+for context but not admitted as validated or reproducible evidence.
+
 The entry that creates an artifact owns it. Later entries should reference that
 artifact by path, or through a `<name>` token when a recorded command consumes
 it; store any transformed output in the later entry.

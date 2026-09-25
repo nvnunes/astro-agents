@@ -3165,6 +3165,10 @@ including first-class `data` and `images`, and excluding entry Markdown,
 `evidence.json`, `data.json`, `retention.json`, `pyrun`,
 `pyrun.json`, legacy `pyrun-outputs.json`, their recognized recovery backups,
 validator output, research-log temporary paths, and runtime-cache descendants.
+The exact top-level entry directory `adhoc/` and all of its descendants are
+also outside the orphan universe. Validation prunes that directory before
+inventory traversal, does not include its contents in the dependency
+projection, and requires no retention declarations for them.
 
 A `<project>/...` output outside an entry participates in Provenance and may be
 registered as a generated input, but its location alone does not add it to the

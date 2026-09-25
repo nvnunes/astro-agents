@@ -93,11 +93,19 @@ def file_identity(observation: os.stat_result) -> FileIdentity:
     )
 
 
-def bounded_descendants(root: Path, *, maximum_entries: int) -> tuple[Path, ...]:
+def bounded_descendants(
+    root: Path,
+    *,
+    maximum_entries: int,
+    excluded_top_level_directories: frozenset[str] = frozenset(),
+) -> tuple[Path, ...]:
     """Return all descendants without following symlinks or exceeding the bound.
 
     Enumeration stops as soon as ``maximum_entries + 1`` descendants have been
-    observed. The returned paths use deterministic entry-relative byte order.
+    observed. Exact top-level directories named by
+    ``excluded_top_level_directories`` are pruned before observation, so neither
+    they nor their descendants consume the bound. The returned paths use
+    deterministic entry-relative byte order.
     """
 
     pending = [root]
@@ -108,6 +116,13 @@ def bounded_descendants(root: Path, *, maximum_entries: int) -> tuple[Path, ...]
             with os.scandir(directory) as entries:
                 for entry in entries:
                     path = Path(entry.path)
+                    is_directory = entry.is_dir(follow_symlinks=False)
+                    if (
+                        directory == root
+                        and is_directory
+                        and path.name in excluded_top_level_directories
+                    ):
+                        continue
                     descendants.append(path)
                     if len(descendants) > maximum_entries:
                         raise BoundedTraversalError(
@@ -116,7 +131,7 @@ def bounded_descendants(root: Path, *, maximum_entries: int) -> tuple[Path, ...]
                             maximum_entries,
                             observed=len(descendants),
                         )
-                    if entry.is_dir(follow_symlinks=False):
+                    if is_directory:
                         pending.append(path)
         except BoundedTraversalError:
             raise

@@ -70,6 +70,7 @@ class NativePublicationTests(unittest.TestCase):
                     )
                     if phase == "stopping":
                         job.request_run_stop(RunStopRequest(WHEN))
+                        job.acknowledge_run_stop()
                     else:
                         job.prepare_publication(finished_at=WHEN)
                     before = (workspace.run_root / "state.sqlite").read_bytes()

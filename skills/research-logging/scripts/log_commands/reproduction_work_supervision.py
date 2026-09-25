@@ -275,14 +275,24 @@ def _resolve_pending(
 ) -> list[ExecutionRef]:
     ready: list[ExecutionRef] = []
     with open_work_job(stage.workspace.run_root) as job:
-        if job.load_run_control().phase == "stopping":
+        control = job.load_run_control()
+        if control.phase == "stopping" or control.stop_requested_at is not None:
             return ready
         for identity in tuple(pending):
             disposition = job.load_execution_readiness(
                 identity, plan=stage.plan
             ).disposition
             if disposition == "dependency_failed":
-                job.record_dependency_block(identity, plan=stage.plan)
+                try:
+                    job.record_dependency_block(identity, plan=stage.plan)
+                except JobStoreTransitionError:
+                    control = job.load_run_control()
+                    if (
+                        control.phase == "stopping"
+                        or control.stop_requested_at is not None
+                    ):
+                        return []
+                    raise
                 pending.remove(identity)
             elif disposition == "ready":
                 ready.append(identity)

@@ -21,6 +21,7 @@ from log_commands.reproduction_execution import (
     populate_current_output_workspace,
 )
 from log_commands.reproduction_job_control import (
+    RunFailure,
     RunOwner,
     RunResumeRequest,
     RunStopRequest,
@@ -420,6 +421,29 @@ class NativeSupervisionTests(unittest.TestCase):
             )
             self.assertIsNone(job.load_run_control().status)
 
+    def test_stop_racing_with_failure_intent_reports_incomplete(self):
+        from log_commands import reproduction_jobs as jobs
+
+        fixture, workspace = self.prepare_graph()
+        original = storage.WorkJob.request_run_stop
+        interrupted = []
+
+        def fail_before_stop(job, request):
+            if not interrupted:
+                job.request_run_failure(RunFailure("test.failure", "cut", WHEN))
+                interrupted.append(True)
+            return original(job, request)
+
+        with (
+            mock.patch.object(storage.WorkJob, "request_run_stop", fail_before_stop),
+            mock.patch.object(jobs, "STOP_WAIT_SECONDS", 0.02),
+            mock.patch.object(jobs, "STATUS_POLL_SECONDS", 0.005),
+        ):
+            with self.assertRaises(ActionError) as caught:
+                jobs.stop_reproduction(fixture.log, workspace.run_id)
+        self.assertEqual(interrupted, [True])
+        self.assertEqual(caught.exception.code, "reproduction.stop.incomplete")
+
     def test_durable_stop_before_supervisor_start_remains_resumable(self):
         fixture, workspace = self.fresh_graph()
         with open_work_job(workspace.run_root) as job:
@@ -675,6 +699,31 @@ class NativeSupervisionTests(unittest.TestCase):
 
         with mock.patch.object(
             supervision, "_resolve_pending", side_effect=stop_at_block_boundary
+        ):
+            self.assertEqual(
+                execute_work_plan(fixture.log, workspace, self.control()), "stopped"
+            )
+        self.assertEqual(interrupted, [True])
+        with open_work_job(workspace.run_root) as job:
+            self.assertEqual(job.load_run_control().phase, "stopping")
+            for work in job.accepted.plan.commands:
+                if work.identity.cid in {"first", "second"}:
+                    self.assertIsNone(job.load_command_result(work.identity))
+
+    def test_stop_during_dependency_block_drains_cleanly(self):
+        fixture, workspace = self.prepare_graph(fail_producer=True)
+        original = storage.WorkJob.record_dependency_block
+        interrupted = []
+
+        def stop_before_block(job, identity, *, plan=None):
+            if not interrupted:
+                with open_work_job(workspace.run_root) as control:
+                    control.request_run_stop(RunStopRequest(WHEN))
+                interrupted.append(True)
+            return original(job, identity, plan=plan)
+
+        with mock.patch.object(
+            storage.WorkJob, "record_dependency_block", stop_before_block
         ):
             self.assertEqual(
                 execute_work_plan(fixture.log, workspace, self.control()), "stopped"

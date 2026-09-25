@@ -769,6 +769,7 @@ class PublicNativeJobsTests(unittest.TestCase):
         self.assertEqual(load_inspection(fixture.log).run, before.run)
         with open_work_job(run_root) as job:
             job.request_run_stop(RunStopRequest(WHEN))
+            job.acknowledge_run_stop()
             job.finish_run_stop(RunStopCompletion(WHEN))
         promoted = promote_execution(
             fixture.log,
@@ -916,6 +917,7 @@ class PublicNativeJobsTests(unittest.TestCase):
         with open_work_job(workspace.run_root) as job:
             when = jobs._utc_now()
             job.request_run_stop(RunStopRequest(when))
+            job.acknowledge_run_stop()
             job.replace_run_owner(RunOwner(os.getpid(), "stopped", when, when))
             job.finish_run_stop(RunStopCompletion(when))
         start = threading.Barrier(2)

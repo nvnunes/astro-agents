@@ -41,6 +41,7 @@ from .reproduction_invocation import (
 )
 from .reproduction_job_control import (
     JobStoreError,
+    JobStoreTransitionError,
     JobStoreUnsupportedError,
     RunOwner,
     RunResumeRequest,
@@ -62,6 +63,7 @@ from .reproduction_process_recovery import (
 )
 from .reproduction_saved_run import RunSettings, RunTarget
 from .reproduction_work_job import (
+    WorkJob,
     WorkJobAcceptance,
     create_work_job,
     open_work_job,
@@ -326,19 +328,34 @@ def format_reproduction_status(status: Mapping[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _request_stop_intent(job: WorkJob) -> Mapping[str, object] | None:
+    """Request user stop unless failure intent already owns shutdown."""
+
+    status = job.load_run_control()
+    if status.status is None and status.operational_code is None:
+        try:
+            job.request_run_stop(RunStopRequest(_utc_now()))
+        except JobStoreTransitionError:
+            status = job.load_run_control()
+            if status.status is None and status.operational_code is None:
+                raise
+    if status.status == "stopped":
+        return _bounded_status(job.load_operational_status())
+    if status.status is not None:
+        raise ActionError(
+            "reproduction.stop.invalid_state", f"run is already {status.status}"
+        )
+    return None
+
+
 def stop_reproduction(log: LogContext, run_id: str) -> Mapping[str, object]:
     """Request bounded worker-tree shutdown and wait for a stable native result."""
     root = _find_run(log, run_id)
     _reconcile_lost_supervisor(log, root)
     with open_work_job(root) as job:
-        status = job.load_run_control()
-        if status.status == "stopped":
-            return _bounded_status(job.load_operational_status())
-        if status.status is not None:
-            raise ActionError(
-                "reproduction.stop.invalid_state", f"run is already {status.status}"
-            )
-        job.request_run_stop(RunStopRequest(_utc_now()))
+        terminal = _request_stop_intent(job)
+        if terminal is not None:
+            return terminal
     from .reproduction_scheduler import cancel_run_waiters
 
     cancel_run_waiters(resolve_project_root(log.root), run_id)

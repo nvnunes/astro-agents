@@ -114,6 +114,174 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class LogDataTests(unittest.TestCase):
+    def test_repair_locations_replaces_symlink_aliases_in_one_validated_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry = scaffold(root)
+            source = add_entry(logical, date="2026-09-05", slug="source")
+            retained = root / "output" / "source-data"
+            retained.mkdir(parents=True)
+            names = ("first", "second")
+            for name in names:
+                target = retained / name
+                target.mkdir()
+                (target / "value.txt").write_text(name, encoding="utf-8")
+            (source / "data").rmdir()
+            (source / "data").symlink_to(retained, target_is_directory=True)
+            registry = entry / "data.json"
+            original = {
+                "schema": "research-log-data/v6",
+                "inputs": [
+                    {
+                        "identity": {"algorithm": "directory-sha256-v1"},
+                        "kind": "directory",
+                        "location": (source / "data" / name).as_posix(),
+                        "name": name,
+                        "origin": True,
+                    }
+                    for name in names
+                ],
+            }
+            registry.write_text(json.dumps(original), encoding="utf-8")
+            before = registry.read_bytes()
+            listed = run(
+                root, "data", "list", "--path", str(logical), "--entry", "e001"
+            )
+            self.assertEqual(listed.returncode, 2)
+            self.assertIn("reason': 'symlink'", listed.stderr)
+            self.assertIn("log data repair-locations", listed.stderr)
+
+            action = (
+                "data",
+                "repair-locations",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                *(
+                    value
+                    for name in names
+                    for value in ("--location", f"{name}={retained / name}")
+                ),
+            )
+            incomplete = run(root, *action[:-2], "--dry-run")
+            self.assertEqual(incomplete.returncode, 2)
+            self.assertEqual(registry.read_bytes(), before)
+            preview = run(root, *action, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(registry.read_bytes(), before)
+            applied = run(root, *action)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            expected = {
+                **original,
+                "inputs": [
+                    {**item, "location": str(retained / item["name"])}
+                    for item in original["inputs"]
+                ],
+            }
+            self.assertEqual(json.loads(registry.read_text(encoding="utf-8")), expected)
+            self.assertEqual((retained / "first/value.txt").read_text(), "first")
+            self.assertEqual((retained / "second/value.txt").read_text(), "second")
+            listed = run(
+                root, "data", "list", "--path", str(logical), "--entry", "e001"
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+
+    def test_repair_locations_refuses_material_change_and_valid_declaration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry = scaffold(root)
+            source = add_entry(logical, date="2026-09-05", slug="source")
+            retained = root / "output" / "source-data"
+            retained.mkdir(parents=True)
+            first = retained / "first"
+            second = retained / "second"
+            first.mkdir()
+            second.mkdir()
+            (source / "data").rmdir()
+            (source / "data").symlink_to(retained, target_is_directory=True)
+            registry = entry / "data.json"
+            declaration = {
+                "identity": {"algorithm": "directory-sha256-v1"},
+                "kind": "directory",
+                "location": str(source / "data/first"),
+                "name": "first",
+                "origin": True,
+            }
+            registry.write_text(
+                json.dumps({"schema": "research-log-data/v6", "inputs": [declaration]}),
+                encoding="utf-8",
+            )
+            before = registry.read_bytes()
+            action = (
+                "data",
+                "repair-locations",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+            )
+            changed = run(root, *action, "--location", f"first={second}")
+            self.assertEqual(changed.returncode, 2)
+            self.assertIn("repair_target_changed", changed.stderr)
+            self.assertEqual(registry.read_bytes(), before)
+            repaired = run(root, *action, "--location", f"first={first}")
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            valid = run(root, *action, "--location", f"first={first}")
+            self.assertEqual(valid.returncode, 2)
+            self.assertIn("repair_not_needed", valid.stderr)
+
+    def test_repair_locations_rejects_unknown_duplicate_and_malformed_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry = scaffold(root)
+            registry = entry / "data.json"
+            registry.write_text(
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v6",
+                        "inputs": [
+                            {
+                                "identity": {"algorithm": "sha256"},
+                                "kind": "file",
+                                "location": "data/value.txt",
+                                "name": "value",
+                                "origin": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            action = (
+                "data",
+                "repair-locations",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+            )
+            before = registry.read_bytes()
+            unknown = run(root, *action, "--location", "missing=data/value.txt")
+            self.assertEqual(unknown.returncode, 2)
+            self.assertIn("repair_name_missing", unknown.stderr)
+            duplicate = run(
+                root,
+                *action,
+                "--location",
+                "value=data/value.txt",
+                "--location",
+                "value=data/value.txt",
+            )
+            self.assertEqual(duplicate.returncode, 2)
+            self.assertIn("data.repair.duplicate", duplicate.stderr)
+            self.assertEqual(registry.read_bytes(), before)
+            registry.write_bytes(b'{"broken":')
+            malformed = run(root, *action, "--location", "value=data/value.txt")
+            self.assertEqual(malformed.returncode, 2)
+            self.assertIn("data.declaration.invalid", malformed.stderr)
+            self.assertEqual(registry.read_bytes(), b'{"broken":')
+
     def test_removed_creation_routes_are_unknown_without_writes(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry = scaffold(Path(directory))
@@ -131,7 +299,9 @@ class LogDataTests(unittest.TestCase):
     def test_help_exposes_only_graph_ownership_actions(self):
         help_result = run(Path.cwd(), "data", "--help")
         self.assertEqual(help_result.returncode, 0)
-        self.assertIn("{update,rename,delete,list}", help_result.stdout)
+        self.assertIn(
+            "{update,rename,delete,list,repair-locations}", help_result.stdout
+        )
         update = run(Path.cwd(), "data", "update", "--help")
         for flag in (
             "--boundary",

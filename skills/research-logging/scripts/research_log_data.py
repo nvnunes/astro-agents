@@ -347,8 +347,32 @@ def load_data_file(path: Path, *, entry_root: Path) -> DataFile:
     return _load_data_file(path, entry_root=entry_root, loading=frozenset())
 
 
+def load_data_file_with_location_repairs(
+    path: Path, *, entry_root: Path, locations: Mapping[str, str]
+) -> DataFile:
+    """Decode a candidate with named symlink aliases replaced by the same targets.
+
+    Only selected declarations whose current location fails the symlink rule
+    may change. Every replacement must identify the identical canonical
+    material, and the complete resulting registry must pass normal decoding.
+    """
+
+    if not locations:
+        _invalid(path, {"reason": "repair_empty"})
+    return _load_data_file(
+        path,
+        entry_root=entry_root,
+        loading=frozenset(),
+        location_repairs=locations,
+    )
+
+
 def _load_data_file(
-    path: Path, *, entry_root: Path, loading: frozenset[Path]
+    path: Path,
+    *,
+    entry_root: Path,
+    loading: frozenset[Path],
+    location_repairs: Mapping[str, str] | None = None,
 ) -> DataFile:
     """Resolve one data file and its bounded cross-entry references."""
 
@@ -376,17 +400,97 @@ def _load_data_file(
     if canonical in loading:
         _invalid(path, {"reason": "reference_cycle"})
     nested = loading | {canonical}
-    inputs = tuple(
-        _decode_input(
-            raw,
-            f"{path}:inputs[{index}]",
-            entry_root,
-            loading=nested,
-        )
-        for index, raw in enumerate(raw_inputs)
-    )
+    if location_repairs is not None:
+        present = {
+            name
+            for raw in raw_inputs
+            if isinstance(raw, Mapping)
+            and isinstance(name := raw.get("name"), str)
+        }
+        missing = sorted(set(location_repairs) - present)
+        if missing:
+            _invalid(path, {"reason": "repair_name_missing", "names": missing})
+    inputs_list: list[InputResource] = []
+    for index, raw in enumerate(raw_inputs):
+        subject = f"{path}:inputs[{index}]"
+        name = raw.get("name") if isinstance(raw, Mapping) else None
+        if (
+            location_repairs is not None
+            and isinstance(name, str)
+            and name in location_repairs
+        ):
+            inputs_list.append(
+                _repair_input_location(
+                    raw,
+                    subject,
+                    entry_root,
+                    location_repairs[name],
+                    loading=nested,
+                )
+            )
+        else:
+            inputs_list.append(
+                _decode_input(
+                    raw,
+                    subject,
+                    entry_root,
+                    loading=nested,
+                )
+            )
+    inputs = tuple(inputs_list)
     _require_unique_inputs(inputs, path)
     return DataFile(path=expected, entry_root=entry_root, inputs=inputs)
+
+
+def _repair_input_location(
+    raw: Mapping[str, Any],
+    subject: str,
+    entry_root: Path,
+    location: str,
+    *,
+    loading: frozenset[Path],
+) -> InputResource:
+    """Admit only a symlink-path correction to the same existing material."""
+
+    if set(raw) == {"from_entry", "name"}:
+        _invalid(subject, {"reason": "repair_reference", "name": raw["name"]})
+    try:
+        _decode_input(raw, subject, entry_root, loading=loading)
+    except DataContractError as error:
+        if (
+            error.code != "data.declaration.invalid"
+            or not isinstance(error.observed, Mapping)
+            or error.observed.get("reason") != "symlink"
+        ):
+            raise
+    else:
+        _invalid(subject, {"reason": "repair_not_needed", "name": raw["name"]})
+    original_location = raw["location"]
+    assert isinstance(original_location, str)
+    try:
+        original_target = (entry_root / original_location).resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        _invalid(
+            subject,
+            {
+                "reason": "repair_target_unavailable",
+                "location": original_location,
+                "error": str(error),
+            },
+        )
+    candidate = _decode_input(
+        {**raw, "location": location}, subject, entry_root, loading=loading
+    )
+    if candidate.canonical_target != original_target.as_posix():
+        _invalid(
+            subject,
+            {
+                "reason": "repair_target_changed",
+                "current": original_target.as_posix(),
+                "replacement": candidate.canonical_target,
+            },
+        )
+    return candidate
 
 
 def validate_log_consistency(data_files: tuple[DataFile, ...]) -> None:

@@ -6,10 +6,11 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from glob import has_magic
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from research_log_data import (
     EVIDENCE_COMPARISON_CONTRACT,
+    DataContractError,
     DataFile,
     InputResource,
     ReproductionComparison,
@@ -21,6 +22,7 @@ from research_log_data import (
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
+    load_data_file_with_location_repairs,
     normalize_input_location,
     observe_fingerprint,
     resolve_input_token,
@@ -47,12 +49,14 @@ from validation.pyrun_state import (
 )
 
 from .context import EntryContext, resolve_project_root
+from .data_assertions import assignment
 from .graph_state import (
     authored_uses,
     declaration_uses,
     describe_uses,
     material_consumers,
     normalized_uses,
+    publish_same_target_location_repair,
     publish_updates,
     related_entries,
 )
@@ -118,6 +122,43 @@ def list_inputs(entry: EntryContext) -> ActionResult:
             for item in sorted(inputs, key=lambda value: value.name)
         ),
     )
+
+
+def repair_locations(
+    entry: EntryContext, assignments: tuple[str, ...], *, dry_run: bool
+) -> ActionResult:
+    """Replace invalid symlink aliases without changing their material targets."""
+
+    locations: dict[str, str] = {}
+    for raw in assignments:
+        name, location = assignment(raw, "--location")
+        if name in locations:
+            raise ActionError("data.repair.duplicate", f"repeated name: {name}")
+        locations[name] = location
+    with (
+        nullcontext() if dry_run else log_lock(entry.log),
+        nullcontext() if dry_run else entry_lock_under_log(entry),
+    ):
+        candidate = _load(entry, location_repairs=locations)
+        if candidate is None:
+            raise ActionError("data.input.missing", "data registry is absent")
+        if not dry_run:
+            publish_same_target_location_repair(entry, candidate.canonical_json())
+        return ActionResult(
+            "data.repair-locations",
+            "dry-run" if dry_run else "changed",
+            "data.dry-run" if dry_run else "data.changed",
+            True,
+            paths=(candidate.path.as_posix(),),
+            records=tuple(
+                {
+                    "name": name,
+                    "location": candidate.by_name[name].location,
+                    "target": candidate.by_name[name].canonical_target,
+                }
+                for name in sorted(locations)
+            ),
+        )
 
 
 def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
@@ -739,7 +780,9 @@ def _token_name(value: str) -> str | None:
     return parts[0] if parts is not None else None
 
 
-def _load(entry: EntryContext) -> DataFile | None:
+def _load(
+    entry: EntryContext, *, location_repairs: Mapping[str, str] | None = None
+) -> DataFile | None:
     path = entry.root / "data.json"
     legacy = entry.root / "data.csv"
     unsupported = [
@@ -759,11 +802,28 @@ def _load(entry: EntryContext) -> DataFile | None:
         )
     if legacy.exists() or legacy.is_symlink():
         raise ActionError("data.file.location_invalid", "legacy data.csv")
-    return (
-        load_data_file(path, entry_root=entry.root)
-        if path.exists() or path.is_symlink()
-        else None
-    )
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        return (
+            load_data_file(path, entry_root=entry.root)
+            if location_repairs is None
+            else load_data_file_with_location_repairs(
+                path, entry_root=entry.root, locations=location_repairs
+            )
+        )
+    except DataContractError as error:
+        if (
+            error.code == "data.declaration.invalid"
+            and isinstance(error.observed, Mapping)
+            and error.observed.get("reason") == "symlink"
+        ):
+            raise ActionError(
+                error.code,
+                f"{error}; use log data repair-locations with every invalid "
+                "--location NAME=PATH, previewing with --dry-run first",
+            ) from error
+        raise
 
 
 def _load_evidence(entry: EntryContext) -> EvidenceFile | None:

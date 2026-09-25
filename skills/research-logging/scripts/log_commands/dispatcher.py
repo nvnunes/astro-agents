@@ -361,6 +361,21 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
     remove.add_argument("name")
     listed = actions.add_parser("list", help="List bounded input semantics")
     _entry_arguments(listed)
+    repair = actions.add_parser(
+        "repair-locations",
+        help="Replace invalid symlink aliases without changing material targets",
+        description=(
+            "Repair one or more data.json locations rejected for symlink traversal. "
+            "Each replacement must resolve to the same material as the old "
+            "location; ordinary target changes use log data update. The complete "
+            "resulting registry must decode before anything is written."
+        ),
+    )
+    _entry_arguments(repair)
+    _mutation_argument(repair)
+    repair.add_argument(
+        "--location", action="append", required=True, metavar="NAME=PATH"
+    )
     args = parser.parse_args(arguments)
     from . import data
 
@@ -383,6 +398,10 @@ def _dispatch_data(arguments: Sequence[str]) -> ActionResult:
         result = data.rename(entry, args.old_name, args.new_name, dry_run=args.dry_run)
     elif args.action == "delete":
         result = data.remove(entry, args.name, dry_run=args.dry_run)
+    elif args.action == "repair-locations":
+        result = data.repair_locations(
+            entry, tuple(args.location), dry_run=args.dry_run
+        )
     else:
         result = data.list_inputs(entry)
     return result

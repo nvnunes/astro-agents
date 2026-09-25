@@ -62,8 +62,11 @@ for programmatic consumers.
 ## Correct The Source
 
 Use the owning CLI action for valid registries; edit Markdown or scripts first
-when that action consumes them. Direct JSON editing is reserved for explicitly
-authorized malformed state the CLI cannot decode. Preserve the original in version control or a backup.
+when that action consumes them. For a well-formed `data.json` blocked only by
+symlinked locations, use `log data repair-locations` for every affected name
+with direct paths to the same material. Direct JSON editing is reserved for
+explicitly authorized malformed state the CLI cannot repair. Preserve the
+original in version control or a backup.
 
 | Defect | Owner |
 |---|---|

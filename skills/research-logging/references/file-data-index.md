@@ -66,6 +66,20 @@ identity; bounded identities require explicit researcher intent and must cover
 the relevant consumed bytes. A shared update identifies its other consumers.
 `--acknowledge-shared` acknowledges that wider scope, not a validation bypass.
 
+If a well-formed `data.json` cannot load because an existing location crosses
+another entry's `data` or `images` symlink, repair the locations in one call:
+
+```text
+<skill>/scripts/log data repair-locations --path LOG --entry ENTRY
+  --location NAME=PATH [--location NAME=PATH]... [--dry-run]
+```
+
+Include every invalid alias so the complete candidate can decode. Each new
+path must resolve to the same retained material as the old one; use its direct
+location rather than the other entry's symlink. Preview first, then repeat
+without `--dry-run`. This action changes no material identity, declaration
+policy, or retained bytes. Use `log data update` for an actual target change.
+
 For rename, update every Markdown use first, then
 `log data rename OLD NEW`. It verifies each affected command and evidence
 definition, updates normalized uses and same-log references together, and
@@ -85,6 +99,7 @@ The optional `reproduction_tolerance` belongs to each evidence comment, not
 the artifact declaration. It affects reproduction only and never relaxes
 comparison with Markdown or accepts a changed retained baseline.
 
-If the CLI cannot decode an owned registry, stop and report the precise
-failure. Direct JSON repair requires explicit authority and is reserved for
-malformed state the owning CLI cannot handle.
+If the CLI cannot decode an owned registry for a reason other than a repairable
+symlink alias, stop and report the precise failure. Direct JSON repair requires
+explicit authority and is reserved for malformed state the owning CLI cannot
+handle.

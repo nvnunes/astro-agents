@@ -361,6 +361,12 @@ def publish_updates(
         _publish_updates_locked(entries, updates)
 
 
+def publish_same_target_location_repair(entry: EntryContext, text: str) -> None:
+    """Publish a proven same-target registry repair without artifact writes."""
+
+    _publish_updates_locked((entry,), {entry.root / "data.json": text})
+
+
 def _publish_updates_locked(
     entries: tuple[EntryContext, ...], updates: Mapping[Path, str | None]
 ) -> None:

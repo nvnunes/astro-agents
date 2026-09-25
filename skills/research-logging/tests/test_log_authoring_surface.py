@@ -53,13 +53,13 @@ class AuthoringSurfaceTests(unittest.TestCase):
                 "show",
             },
             "evidence": {"compare", "sync", "list"},
-            "data": {"update", "rename", "delete", "list"},
+            "data": {"update", "rename", "delete", "list", "repair-locations"},
             "retention": {"add", "update", "rename", "delete", "list"},
         }
         for family, names in expected.items():
             result = run_log(SCRIPTS, family, "--help")
             self.assertEqual(result.returncode, 0, result.stderr)
-            choice = re.search(r"\{([a-z,]+)\}", result.stdout)
+            choice = re.search(r"\{([a-z,-]+)\}", result.stdout)
             self.assertIsNotNone(choice, result.stdout)
             self.assertEqual(set(choice[1].split(",")), names, family)
             for action in names:

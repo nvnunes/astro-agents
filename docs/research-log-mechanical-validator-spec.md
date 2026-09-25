@@ -3867,6 +3867,8 @@ log data update [--path LOG] --entry ENTRY NAME
 log data rename [--path LOG] --entry ENTRY OLD NEW [--dry-run]
 log data delete [--path LOG] --entry ENTRY NAME [--dry-run]
 log data list [--path LOG] --entry ENTRY
+log data repair-locations [--path LOG] --entry ENTRY
+  --location NAME=PATH [--location NAME=PATH]... [--dry-run]
 ```
 
 `IDENTITY` is `byte-complete`, `file:PATH`, or `pattern:GLOB`. Supplying
@@ -3883,6 +3885,15 @@ reproduction comparison to evidence records, whose comments may define
 consumers requires `--acknowledge-shared`; the first rejection lists those
 consumers. The acknowledgment accepts the wider scope but does not bypass
 validation.
+
+`data repair-locations` is a bounded recovery action for a well-formed registry
+whose selected locations fail the symlink rule. It accepts all affected names
+in one call, requires each replacement to resolve to the same existing
+canonical target, and fully decodes the resulting registry before publication.
+An unrelated invalid declaration, unknown name, already-valid selected
+location, or changed material target fails without writing. Dry-run has the
+same checks without publication. The action changes no retained bytes or
+material identity; ordinary target changes remain under `data update`.
 
 For rename, the agent edits every Markdown use first. `data rename` fails with
 remaining old-name uses or missing replacements, then updates the declaration

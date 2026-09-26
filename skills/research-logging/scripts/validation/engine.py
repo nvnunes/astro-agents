@@ -5414,36 +5414,88 @@ def _supported_output_directories(state: _ScanState) -> frozenset[str]:
 
     supported: set[str] = set()
     for invocation in state.invocations:
-        output_file = state.output_files.get(invocation.material_owner)
-        if output_file is None:
-            continue
-        entry_root = _entry_root_for_owner(invocation.material_owner, state)
-        for collection in invocation.collections:
-            if (
-                collection.direction != "output"
-                or collection.mechanism != "directory"
-                or collection.root is None
-            ):
-                continue
-            key = portable_output_path(
-                collection.root,
-                entry_root=entry_root,
-                project_root=state.project_root,
+        execution_state = state.execution_states.get(invocation.material_owner)
+        if execution_state is not None:
+            supported.update(
+                _execution_output_directories(invocation, execution_state, state)
             )
-            record = output_file.outputs.get(key)
-            if (
-                record is None
-                or record.fingerprint.algorithm != "directory-sha256-v1"
-                or output_producer_mismatches(
-                    invocation,
-                    record,
-                    current_inputs=_current_invocation_inputs(invocation, state),
-                    material=collection.root,
-                )
-            ):
-                continue
-            supported.add(collection.root)
+            continue
+        output_file = state.output_files.get(invocation.material_owner)
+        if output_file is not None:
+            supported.update(_legacy_output_directories(invocation, output_file, state))
     return frozenset(supported)
+
+
+def _execution_output_directories(
+    invocation: Invocation, execution_state: PyrunFile, state: _ScanState
+) -> tuple[str, ...]:
+    """Return directory roots owned by the invocation's exact v7 execution."""
+
+    association = associate_exact_execution(
+        execution_state, invocation, project_root=state.project_root
+    )
+    if association is None:
+        return ()
+    owners = state.execution_output_owners[invocation.material_owner]
+    observations = dict(association.execution.observed.outputs)
+    supported: list[str] = []
+    for collection in invocation.collections:
+        if (
+            collection.direction != "output"
+            or collection.mechanism != "directory"
+            or collection.root is None
+        ):
+            continue
+        resolved = resolve_execution_output(
+            invocation,
+            collection.root,
+            project_root=state.project_root,
+            association=association,
+            owners=owners,
+        )
+        observation = observations.get(resolved.key)
+        if (
+            resolved.association is not None
+            and observation is not None
+            and observation.algorithm == "directory-sha256-v1"
+        ):
+            supported.append(collection.root)
+    return tuple(supported)
+
+
+def _legacy_output_directories(
+    invocation: Invocation, output_file: PyrunOutputsFile, state: _ScanState
+) -> tuple[str, ...]:
+    """Return directory roots backed by matching legacy output records."""
+
+    entry_root = _entry_root_for_owner(invocation.material_owner, state)
+    supported: list[str] = []
+    for collection in invocation.collections:
+        if (
+            collection.direction != "output"
+            or collection.mechanism != "directory"
+            or collection.root is None
+        ):
+            continue
+        key = portable_output_path(
+            collection.root,
+            entry_root=entry_root,
+            project_root=state.project_root,
+        )
+        record = output_file.outputs.get(key)
+        if (
+            record is None
+            or record.fingerprint.algorithm != "directory-sha256-v1"
+            or output_producer_mismatches(
+                invocation,
+                record,
+                current_inputs=_current_invocation_inputs(invocation, state),
+                material=collection.root,
+            )
+        ):
+            continue
+        supported.append(collection.root)
+    return tuple(supported)
 
 
 def _evidence_input_names(

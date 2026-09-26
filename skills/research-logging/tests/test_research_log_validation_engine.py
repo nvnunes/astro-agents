@@ -1986,6 +1986,68 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 )
             )
 
+    def test_current_bundle_connects_uncited_sibling_as_one_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            bundle, _member, sibling = _convert_result_to_bundle(entry)
+            _replace_bundle_with_pyrun_state(entry, requires_reproduction=True)
+
+            evaluation = _evaluate(summary)
+
+            collections = [
+                node
+                for node in evaluation.context.graph.nodes
+                if node.kind is RESEARCH_GRAPH.NodeKind.COLLECTION
+                and node.attributes.get("root") == bundle.resolve().as_posix()
+            ]
+            self.assertEqual(len(collections), 1)
+            self.assertTrue(collections[0].attributes["supported"])
+            self.assertFalse(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
+                    and check.subject == sibling.resolve().as_posix()
+                    for check in evaluation.attempt.checks
+                )
+            )
+
+            state_path = entry.parent / "pyrun.json"
+            state_data = json.loads(state_path.read_text(encoding="utf-8"))
+            execution = next(
+                iter(state_data["commands"]["model"]["executions"].values())
+            )
+            observation = execution["observed"]["outputs"].pop("data/bundle")
+            write(state_path, json.dumps(state_data, indent=2) + "\n")
+            partial = _evaluate(summary)
+            partial_collection = next(
+                node
+                for node in partial.context.graph.nodes
+                if node.kind is RESEARCH_GRAPH.NodeKind.COLLECTION
+                and node.attributes.get("root") == bundle.resolve().as_posix()
+            )
+            self.assertFalse(partial_collection.attributes["supported"])
+            self.assertTrue(
+                any(
+                    check.diagnostic is not None
+                    and check.diagnostic.code == "orphan.material.unused"
+                    and check.subject == sibling.resolve().as_posix()
+                    for check in partial.attempt.checks
+                )
+            )
+
+            execution["observed"]["outputs"]["data/bundle"] = observation
+            execution["recipe"]["inputs"] = []
+            execution["observed"]["inputs"] = {}
+            write(state_path, json.dumps(state_data, indent=2) + "\n")
+            unmatched = _evaluate(summary)
+            unmatched_collection = next(
+                node
+                for node in unmatched.context.graph.nodes
+                if node.kind is RESEARCH_GRAPH.NodeKind.COLLECTION
+                and node.attributes.get("root") == bundle.resolve().as_posix()
+            )
+            self.assertFalse(unmatched_collection.attributes["supported"])
+
     def test_unreached_output_only_bundle_is_one_root_orphan_finding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

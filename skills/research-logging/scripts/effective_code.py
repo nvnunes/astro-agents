@@ -63,15 +63,22 @@ class UnsupportedLocation:
 
 @dataclass(frozen=True)
 class EffectiveCodeAnalysis:
-    """A complete fingerprint or a bounded unsupported result, never both."""
+    """A complete fingerprint and its reached sources, or unsupported reasons.
+
+    ``reached_sources`` contains resolved project-local paths only for a
+    complete analysis. It is an in-memory result, not a persisted manifest.
+    """
 
     fingerprint: EffectiveCodeFingerprint | None
     unsupported: tuple[UnsupportedLocation, ...]
     unsupported_truncated: bool = False
+    reached_sources: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.fingerprint is None) == (not self.unsupported):
             raise ValueError("effective-code analysis requires exactly one result kind")
+        if self.unsupported and self.reached_sources:
+            raise ValueError("unsupported analysis cannot expose partial sources")
 
 
 @dataclass(frozen=True)
@@ -213,7 +220,9 @@ class _Analyzer:
         payload = self._fingerprint_payload()
         digest = hashlib.sha256(payload).hexdigest()
         return EffectiveCodeAnalysis(
-            EffectiveCodeFingerprint(FINGERPRINT_ALGORITHM, digest), ()
+            EffectiveCodeFingerprint(FINGERPRINT_ALGORITHM, digest),
+            (),
+            reached_sources=tuple(source.path for source in self._analyzed_sources()),
         )
 
     def _load_source(self, path: Path, context: _ModuleContext) -> _Source:
@@ -744,9 +753,7 @@ class _Analyzer:
 
     def _fingerprint_payload(self) -> bytes:
         modules = []
-        for source in sorted(self._sources.values(), key=lambda item: item.relative):
-            if not source.analyzed:
-                continue
+        for source in self._analyzed_sources():
             projection = _Projection(source.path, self._reached).visit(
                 copy.deepcopy(source.tree)
             )
@@ -765,6 +772,13 @@ class _Analyzer:
         return json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
+
+    def _analyzed_sources(self) -> tuple[_Source, ...]:
+        return tuple(
+            source
+            for source in sorted(self._sources.values(), key=lambda item: item.relative)
+            if source.analyzed
+        )
 
     def _inside_project(self, path: Path) -> bool:
         try:

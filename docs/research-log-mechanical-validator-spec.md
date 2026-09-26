@@ -2906,6 +2906,17 @@ connects its helpers for orphan classification without changing validation check
 Malformed, unavailable, inconsistent, or unmatched support adds no code edge
 and suppresses no helper orphan.
 
+For an associated current `pyrun.json` execution with an associated output,
+validation analyzes the Python script currently on disk using the runner's
+entry, log, and project import roots. A complete effective-code analysis adds
+`code` input edges for its statically reached project-local source files other
+than the directly executed script. Unrelated files under `scripts/` remain
+eligible Orphans. Explicit `PYTHONPATH`, unsupported analysis, and operational
+analysis failure add no partial code edges; they do not create validation
+currentness findings. These edges describe current source connectivity, not a
+reconstruction of the source set at the recorded run. Neither the paths nor
+their analysis are persisted in v7 execution state.
+
 #### Effective-Code Analysis
 
 Before launch, `pyrun` parses the direct Python script and follows statically

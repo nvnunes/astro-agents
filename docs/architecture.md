@@ -267,12 +267,12 @@ Future validation changes must preserve these invariants:
   separate workflows with separate ownership.
 - **End-to-end Provenance:** A passing evidence-rooted chain identifies the
   retained artifact, reaches explicit origins through unique producers, and
-  resolves each generated output to its recorded command and support. Code-map
-  support from the read-only legacy `pyrun-outputs.json` format joins the shared
-  graph so Orphans does not duplicate a Provenance finding. Current v7
-  effective code is a scalar currentness observation and supplies no persisted
-  dependency graph. Whether recorded execution inputs, outputs, parameters, or
-  effective code remain current belongs to Reproduction, not validation.
+  resolves each generated output to its recorded command and support. Legacy
+  `pyrun-outputs.json` code maps and complete current v7 effective-code analysis
+  connect associated helpers in the shared graph for Orphans classification.
+  V7 persists only the scalar effective-code fingerprint, not a dependency
+  graph. Whether recorded execution inputs, outputs, parameters, or effective
+  code remain current belongs to Reproduction, not validation.
 - **Command-owned execution state:** entry-root `pyrun.json` records one stable
   execution identity for each exact command recipe, including its complete
   output set, observed inputs, raw script provenance, one nullable

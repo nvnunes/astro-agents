@@ -94,6 +94,29 @@ class EffectiveCodeTests(unittest.TestCase):
             helper.write_text("def answer():\n    return 2\n", encoding="utf-8")
             self.assertNotEqual(_fingerprint(script, project), baseline)
 
+    def test_reached_sources_match_the_fingerprint_module_set(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            script = _write(
+                project / "script.py", "from helper import answer\nprint(answer())\n"
+            )
+            helper = _write(
+                project / "helper.py",
+                "from nested import VALUE\ndef answer():\n    return VALUE\n",
+            )
+            nested = _write(project / "nested.py", "VALUE = 1\n")
+            _write(project / "unused.py", "VALUE = 2\n")
+
+            result = effective_code.analyze_effective_code(
+                script, project_root=project
+            )
+
+            self.assertIsNotNone(result.fingerprint)
+            self.assertEqual(
+                set(result.reached_sources),
+                {script.resolve(), helper.resolve(), nested.resolve()},
+            )
+
     def test_log_shared_import_uses_the_runner_owned_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()
@@ -375,6 +398,7 @@ class EffectiveCodeTests(unittest.TestCase):
                     _write(project / "script.py", source), project_root=project
                 )
                 self.assertIsNone(result.fingerprint)
+                self.assertEqual(result.reached_sources, ())
                 self.assertIn(expected, {item.construct for item in result.unsupported})
 
     def test_unsupported_standard_library_aliases_cannot_bypass_detection(self) -> None:

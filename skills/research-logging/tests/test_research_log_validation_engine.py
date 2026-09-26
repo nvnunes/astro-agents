@@ -394,6 +394,7 @@ def _replace_with_pyrun_state(
     parameters: tuple[str, ...],
     *,
     requires_reproduction: bool = False,
+    effective_code: DATA.Fingerprint | None = None,
 ) -> str:
     """Replace the legacy fixture registry with one current execution."""
 
@@ -427,7 +428,7 @@ def _replace_with_pyrun_state(
                 ),
             ),
         ),
-        None,
+        effective_code,
         (
             (
                 "data/results.csv",
@@ -1305,6 +1306,55 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertFalse(
                 any(code == "pyrun.output.binding_invalid" for code, _ in failures)
             )
+
+    def test_current_execution_connects_only_reached_python_helpers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            scripts = entry.parent / "scripts"
+            write(scripts / "model.py", "from helper import VALUE\nprint(VALUE)\n")
+            write(scripts / "helper.py", "from nested import VALUE\n")
+            write(scripts / "nested.py", "VALUE = 1\n")
+            unused = scripts / "unused.py"
+            write(unused, "VALUE = 2\n")
+            _replace_with_pyrun_state(
+                entry,
+                (
+                    "--input-catalog",
+                    "<catalog>",
+                    "--output-data",
+                    "data/results.csv",
+                ),
+                effective_code=DATA.Fingerprint(
+                    PYRUN_STATE.FINGERPRINT_ALGORITHM, digest="0" * 64
+                ),
+            )
+
+            result = _evaluate(summary).attempt
+            orphaned = {
+                check.subject
+                for check in result.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.material.unused"
+            }
+            self.assertNotIn((scripts / "helper.py").resolve().as_posix(), orphaned)
+            self.assertNotIn((scripts / "nested.py").resolve().as_posix(), orphaned)
+            self.assertIn(unused.resolve().as_posix(), orphaned)
+
+            write(
+                scripts / "model.py",
+                "# source changed\nfrom helper import VALUE\nprint(VALUE)\n",
+            )
+            changed = _evaluate(summary).attempt
+            changed_orphans = {
+                check.subject
+                for check in changed.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.material.unused"
+            }
+            self.assertNotIn(
+                (scripts / "helper.py").resolve().as_posix(), changed_orphans
+            )
+            self.assertIn(unused.resolve().as_posix(), changed_orphans)
 
     def test_current_code_support_enters_provenance_and_suppresses_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

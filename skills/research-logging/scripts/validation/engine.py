@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, NoReturn, Sequence, cast
 
+from effective_code import EffectiveCodeError, analyze_effective_code
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataContractError,
     DataDeclarationConflict,
@@ -157,16 +159,19 @@ from .pyrun_outputs import (
 from .pyrun_state import (
     PYRUN_FILENAME,
     CommandComparison,
+    ExecutionAssociation,
     ExecutionChange,
     OutputOwnerIndex,
     PyrunExecution,
     PyrunFile,
+    PyrunStateError,
     associate_exact_execution,
     associate_execution,
     compare_command,
     execution_output_owners,
     load_pyrun_state,
     resolve_execution_output,
+    script_target_path,
 )
 from .research_graph import (
     EdgeKind,
@@ -350,6 +355,9 @@ class _ScanState:
     output_files: dict[str, PyrunOutputsFile] = field(default_factory=dict)
     execution_states: dict[str, PyrunFile] = field(default_factory=dict)
     execution_output_owners: dict[str, OutputOwnerIndex] = field(default_factory=dict)
+    effective_code_inputs: dict[
+        tuple[Path, tuple[Path, ...]], tuple[str, ...]
+    ] = field(default_factory=dict)
     output_record_errors: dict[str, MechanicalContractError] = field(
         default_factory=dict
     )
@@ -4874,7 +4882,51 @@ def _execution_code_inputs(
     )
     if associated is None:
         return None
-    return ()
+    return _current_execution_code_inputs(association, execution_state, state)
+
+
+def _current_execution_code_inputs(
+    association: ExecutionAssociation, execution_state: PyrunFile, state: _ScanState
+) -> tuple[str, ...]:
+    """Connect only code reached by a complete current Python analysis."""
+
+    recipe = association.execution.recipe
+    if "PYTHONPATH" in dict(recipe.environment):
+        return ()
+    try:
+        script = script_target_path(
+            recipe.script,
+            entry_root=execution_state.entry_root,
+            project_root=state.project_root,
+        )
+        if script.suffix != ".py":
+            return ()
+        context = PythonExecutionContext.for_research_script(
+            script,
+            entry_root=execution_state.entry_root,
+            log_root=state.log_root,
+            project_root=state.project_root,
+        )
+        identity = script.resolve(strict=False)
+        key = (identity, context.import_roots)
+        if key not in state.effective_code_inputs:
+            analysis = analyze_effective_code(
+                script,
+                project_root=state.project_root,
+                import_roots=context.import_roots,
+            )
+            state.effective_code_inputs[key] = (
+                tuple(
+                    path.as_posix()
+                    for path in analysis.reached_sources
+                    if path != identity
+                )
+                if analysis.fingerprint is not None
+                else ()
+            )
+        return state.effective_code_inputs[key]
+    except (EffectiveCodeError, ValueError, PyrunStateError):
+        return ()
 
 
 def _legacy_code_inputs(

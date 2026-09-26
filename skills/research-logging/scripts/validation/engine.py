@@ -1702,7 +1702,7 @@ def _observe_entries(
             root = document.parent.resolve()
             if root not in surfaces:
                 data_file, data_failure = _read_entry_declaration_data(
-                    document.stem, root, state
+                    _stable_entry_id(document), root, state
                 )
                 surfaces[root] = _EntrySurface(
                     None, None, data_file, data_failure, None
@@ -2014,7 +2014,9 @@ def _load_entry_surface(
         if root in errors:
             raise errors[root]
         if root not in surfaces:
-            surfaces[root] = _read_entry_surface(document.stem, root, state)
+            surfaces[root] = _read_entry_surface(
+                _stable_entry_id(document), root, state
+            )
     except MechanicalContractError as error:
         errors[lexical_root] = error
         state.checks.append(

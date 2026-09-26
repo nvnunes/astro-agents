@@ -3610,6 +3610,38 @@ class EngineV2EndToEndTests(unittest.TestCase):
             self.assertIs(entries[0].evidence_file, entries[1].evidence_file)
             self.assertIs(entries[0].data_file, entries[1].data_file)
 
+    def test_split_entry_input_failure_references_stable_data_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            split = entry.with_name("e001a.md")
+            entry.rename(split)
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                .replace("e001.md", "e001a.md")
+                .replace("ref entry = e001;", "ref entry = e001a;"),
+            )
+            evidence_path = split.parent / "evidence.json"
+            write(
+                evidence_path,
+                evidence_path.read_text(encoding="utf-8").replace(
+                    "e001.md", "e001a.md"
+                ),
+            )
+            (split.parent / "data/catalog.csv").unlink()
+
+            evaluation = _evaluate(summary)
+
+            failure = next(
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.finding_id == "entry:e001:input:catalog-declaration"
+            )
+            self.assertIn(
+                DOMAIN.GraphReference("data_record", "e001:catalog", "e001"),
+                failure.context_nodes,
+            )
+
     def test_split_entry_finding_in_second_document_has_graph_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

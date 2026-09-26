@@ -215,6 +215,21 @@ def _repair_snapshot(root: Path) -> Any:
 
 
 class ValidationReadModelTests(unittest.TestCase):
+    def test_queries_accept_validation_snapshot_in_shared_v22_store(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, snapshot = _published(Path(directory))
+            with sqlite3.connect(STORE.result_store_path(root)) as db:
+                db.execute("PRAGMA user_version=22")
+            _publish(root, snapshot)
+
+            shown = QUERIES.show_validation(root)
+            batches = QUERIES.list_batches(root)
+            detail = QUERIES.batch_detail(root, snapshot.batches[0].batch_id)
+
+        self.assertEqual(shown["rows"][0]["batch_count"], len(snapshot.batches))
+        self.assertEqual(batches["total"], len(snapshot.batches))
+        self.assertEqual(detail["batch"]["batch_id"], snapshot.batches[0].batch_id)
+
     def test_show_and_lists_share_exact_saved_counts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, snapshot = _published(Path(directory))

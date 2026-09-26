@@ -12,7 +12,7 @@ from typing import Any, Iterator, Mapping, Sequence, cast
 
 from research_log_result_store import (
     REPLACEABLE_STORE_VERSIONS,
-    STORE_VERSION,
+    UNCHANGED_DOMAIN_STORE_VERSIONS,
     ResultStoreError,
     result_snapshot,
 )
@@ -1224,7 +1224,7 @@ def _version(db: Any) -> int:
 
 
 def _require_current(version: int) -> None:
-    if version != STORE_VERSION:
+    if version not in UNCHANGED_DOMAIN_STORE_VERSIONS:
         raise ValidationQueryError(
             "validation.schema.unsupported", f"store version {version} is unsupported"
         )

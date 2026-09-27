@@ -476,7 +476,10 @@ def _renamed_pyrun(entry: EntryContext, old: str, new: str) -> str | None:
                     for value in previous.recipe.parameters
                 ),
                 inputs=tuple(
-                    new if value == old else value for value in previous.recipe.inputs
+                    sorted(
+                        new if value == old else value
+                        for value in previous.recipe.inputs
+                    )
                 ),
             )
             identity = execution_id(recipe)
@@ -488,8 +491,13 @@ def _renamed_pyrun(entry: EntryContext, old: str, new: str) -> str | None:
             observed = replace(
                 previous.observed,
                 inputs=tuple(
-                    (new if name == old else name, fingerprint)
-                    for name, fingerprint in previous.observed.inputs
+                    sorted(
+                        (
+                            (new if name == old else name, fingerprint)
+                            for name, fingerprint in previous.observed.inputs
+                        ),
+                        key=lambda item: item[0],
+                    )
                 ),
             )
             executions[identity] = (

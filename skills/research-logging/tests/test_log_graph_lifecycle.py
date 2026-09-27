@@ -452,6 +452,113 @@ class GraphLifecycleTests(unittest.TestCase):
             )
             self.assertTrue(listed["requires_reproduction"])
 
+    def test_data_rename_reorders_recorded_directory_member_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = (
+                "./pyrun scripts/build.py "
+                "--input-first '<alpha>/arrays.npz' "
+                "--input-second '<middle>/arrays.npz' "
+                "--input-third '<zeta>/arrays.npz' "
+                "--output '<result>'"
+            )
+            logical, entry, document = fixture(Path(directory), command)
+            for name in ("alpha", "middle", "zeta"):
+                source = entry / "data" / name
+                source.mkdir()
+                (source / "arrays.npz").write_bytes(name.encode())
+            (entry / "scripts/build.py").write_text(
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "parser = argparse.ArgumentParser()\n"
+                "for name in ('input-first', 'input-second', "
+                "'input-third', 'output'):\n"
+                "    parser.add_argument(f'--{name}', required=True)\n"
+                "args = parser.parse_args()\n"
+                "Path(args.output).write_bytes(Path(args.input_second).read_bytes())\n",
+                encoding="utf-8",
+            )
+            (entry / "pyrun").symlink_to(
+                Path(__file__).resolve().parents[1] / "scripts/pyrun"
+            )
+            checked(
+                sync(
+                    logical,
+                    "--add-origin-directory",
+                    "alpha=data/alpha",
+                    "--add-origin-directory",
+                    "middle=data/middle",
+                    "--add-origin-directory",
+                    "zeta=data/zeta",
+                    "--add-generated",
+                    "result=data/result.txt",
+                )
+            )
+            executed = run_pyrun_process(
+                entry,
+                "--cid",
+                "build",
+                "--",
+                "scripts/build.py",
+                "--input-first",
+                "<alpha>/arrays.npz",
+                "--input-second",
+                "<middle>/arrays.npz",
+                "--input-third",
+                "<zeta>/arrays.npz",
+                "--output",
+                "<result>",
+            )
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            self.assertEqual((entry / "data/result.txt").read_bytes(), b"middle")
+            state_path = entry / "pyrun.json"
+            before = json.loads(state_path.read_text(encoding="utf-8"))
+            prior_id, prior_execution = next(
+                iter(before["commands"]["build"]["executions"].items())
+            )
+            self.assertEqual(
+                prior_execution["recipe"]["inputs"], ["alpha", "middle", "zeta"]
+            )
+            self.assertEqual(
+                sorted(prior_execution["observed"]["inputs"]),
+                ["alpha", "middle", "zeta"],
+            )
+
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "<middle>/arrays.npz", "<zzzz>/arrays.npz"
+                ),
+                encoding="utf-8",
+            )
+            before_bytes = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            preview = checked(
+                action(logical, "data", "rename", "middle", "zzzz", "--dry-run")
+            )
+            self.assertTrue(preview["changed"])
+            self.assertEqual(
+                before_bytes,
+                {name: (entry / name).read_bytes() for name in before_bytes},
+            )
+            checked(action(logical, "data", "rename", "middle", "zzzz"))
+            after = json.loads(state_path.read_text(encoding="utf-8"))
+            new_id, execution = next(
+                iter(after["commands"]["build"]["executions"].items())
+            )
+            self.assertNotEqual(new_id, prior_id)
+            self.assertEqual(execution["recipe"]["inputs"], ["alpha", "zeta", "zzzz"])
+            self.assertEqual(
+                execution["observed"]["inputs"],
+                {
+                    "alpha": prior_execution["observed"]["inputs"]["alpha"],
+                    "zeta": prior_execution["observed"]["inputs"]["zeta"],
+                    "zzzz": prior_execution["observed"]["inputs"]["middle"],
+                },
+            )
+            self.assertTrue(execution["requires_reproduction"])
+            self.assertEqual((entry / "data/result.txt").read_bytes(), b"middle")
+
     def test_cross_entry_data_rename_preserves_presentation_and_rolls_back_late_failure(
         self,
     ):

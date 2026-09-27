@@ -398,7 +398,7 @@ class EffectiveCodeTests(unittest.TestCase):
                     _write(project / "script.py", source), project_root=project
                 )
                 self.assertIsNone(result.fingerprint)
-                self.assertEqual(result.reached_sources, ())
+                self.assertIn((project / "script.py").resolve(), result.reached_sources)
                 self.assertIn(expected, {item.construct for item in result.unsupported})
 
     def test_unsupported_standard_library_aliases_cannot_bypass_detection(self) -> None:
@@ -448,6 +448,47 @@ class EffectiveCodeTests(unittest.TestCase):
             baseline = _fingerprint(script, project)
             child.write_text("print(2)\n", encoding="utf-8")
             self.assertNotEqual(_fingerprint(script, project), baseline)
+
+    def test_script_relative_child_in_command_wrapper_participates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            script = _write(
+                project / "scripts/main.py",
+                "import subprocess\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "SCRIPT_DIR = Path(__file__).resolve().parent\n"
+                "def run_command(command):\n"
+                "    subprocess.run(command, check=True)\n"
+                "def main():\n"
+                "    command = [sys.executable, str(SCRIPT_DIR / 'child.py')]\n"
+                "    run_command(command)\n"
+                "main()\n",
+            )
+            child = _write(project / "scripts/child.py", "print(1)\n")
+            analysis = effective_code.analyze_effective_code(
+                script, project_root=project
+            )
+            self.assertIn(child.resolve(), analysis.reached_sources)
+            baseline = _fingerprint(script, project)
+            child.write_text("print(2)\n", encoding="utf-8")
+            self.assertNotEqual(_fingerprint(script, project), baseline)
+
+    def test_unreached_child_command_does_not_participate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            script = _write(
+                project / "scripts/main.py",
+                "import sys\n"
+                "from pathlib import Path\n"
+                "SCRIPT_DIR = Path(__file__).resolve().parent\n"
+                "def unused():\n"
+                "    return [sys.executable, str(SCRIPT_DIR / 'child.py')]\n",
+            )
+            child = _write(project / "scripts/child.py", "print(1)\n")
+            baseline = _fingerprint(script, project)
+            child.write_text("print(2)\n", encoding="utf-8")
+            self.assertEqual(_fingerprint(script, project), baseline)
 
     def test_static_self_child_entrypoint_uses_dunder_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

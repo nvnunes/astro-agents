@@ -63,10 +63,11 @@ class UnsupportedLocation:
 
 @dataclass(frozen=True)
 class EffectiveCodeAnalysis:
-    """A complete fingerprint and its reached sources, or unsupported reasons.
+    """A complete fingerprint or unsupported reasons, with known reached sources.
 
-    ``reached_sources`` contains resolved project-local paths only for a
-    complete analysis. It is an in-memory result, not a persisted manifest.
+    ``reached_sources`` contains resolved project-local paths the analysis did
+    reach, even if another construct prevented a complete fingerprint. It is
+    an in-memory result, not a persisted manifest.
     """
 
     fingerprint: EffectiveCodeFingerprint | None
@@ -77,8 +78,6 @@ class EffectiveCodeAnalysis:
     def __post_init__(self) -> None:
         if (self.fingerprint is None) == (not self.unsupported):
             raise ValueError("effective-code analysis requires exactly one result kind")
-        if self.unsupported and self.reached_sources:
-            raise ValueError("unsupported analysis cannot expose partial sources")
 
 
 @dataclass(frozen=True)
@@ -122,6 +121,11 @@ class _External:
 
 
 @dataclass(frozen=True)
+class _ScriptDirectory:
+    path: Path
+
+
+@dataclass(frozen=True)
 class _Unknown:
     name: str = ""
 
@@ -133,6 +137,7 @@ _Binding = Union[
     _ClassInstance,
     _LocalValue,
     _External,
+    _ScriptDirectory,
     _Unknown,
 ]
 
@@ -216,6 +221,9 @@ class _Analyzer:
                 None,
                 unsupported[:MAX_UNSUPPORTED_LOCATIONS],
                 unsupported_truncated=truncated,
+                reached_sources=tuple(
+                    source.path for source in self._analyzed_sources()
+                ),
             )
         payload = self._fingerprint_payload()
         digest = hashlib.sha256(payload).hexdigest()
@@ -725,7 +733,14 @@ class _Analyzer:
         command = _static_child_command(scope, node)
         if command is None:
             return
-        child = command[1]
+        self._follow_child_path(scope, node, command[1])
+
+    def follow_child_list(self, scope: _Scope, node: ast.List | ast.Tuple) -> None:
+        command = _static_child_list(scope, node)
+        if command is not None and command[1] != "<dynamic>":
+            self._follow_child_path(scope, node, command[1])
+
+    def _follow_child_path(self, scope: _Scope, node: ast.AST, child: str) -> None:
         bases: list[Path] = []
         current = scope.source.path.parent
         while current == self._project_root or self._project_root in current.parents:
@@ -964,6 +979,15 @@ class _Visitor(ast.NodeVisitor):
         for keyword in node.keywords:
             self.visit(keyword.value)
 
+    def visit_List(self, node: ast.List) -> None:
+        # A reached command may pass through a local subprocess wrapper.
+        self.analyzer.follow_child_list(self.scope, node)
+        self.generic_visit(node)
+
+    def visit_Tuple(self, node: ast.Tuple) -> None:
+        self.analyzer.follow_child_list(self.scope, node)
+        self.generic_visit(node)
+
     def visit_Global(self, node: ast.Global) -> None:
         for name in node.names:
             self.scope.names.pop(name, None)
@@ -1050,6 +1074,8 @@ def _resolve_call_owner(scope: _Scope, node: ast.expr) -> _Binding | None:
 
 
 def _infer_binding(scope: _Scope, node: ast.expr) -> _Binding:
+    if _is_script_directory(scope, node):
+        return _ScriptDirectory(scope.source.path.parent)
     resolved = _resolve_expr(scope, node)
     if resolved is not None:
         return resolved
@@ -1104,7 +1130,15 @@ def _static_child_command(scope: _Scope, node: ast.Call) -> tuple[str, str] | No
     if not name.startswith("subprocess.") or not node.args:
         return None
     command = node.args[0]
-    if not isinstance(command, (ast.List, ast.Tuple)) or len(command.elts) < 2:
+    if not isinstance(command, (ast.List, ast.Tuple)):
+        return None
+    return _static_child_list(scope, command)
+
+
+def _static_child_list(
+    scope: _Scope, command: ast.List | ast.Tuple
+) -> tuple[str, str] | None:
+    if len(command.elts) < 2:
         return None
     executable, child = command.elts[:2]
     executable_name = _semantic_name(scope, executable)
@@ -1127,8 +1161,51 @@ def _static_child_command(scope: _Scope, node: ast.Call) -> tuple[str, str] | No
     ):
         child_path = str(scope.source.path)
     else:
-        child_path = "<dynamic>"
+        child_path = _script_relative_child(scope, child) or "<dynamic>"
     return executable_name or str(executable_value), child_path
+
+
+def _is_script_directory(scope: _Scope, node: ast.expr) -> bool:
+    if not isinstance(node, ast.Attribute) or node.attr != "parent":
+        return False
+    resolved = node.value
+    if not isinstance(resolved, ast.Call) or resolved.args or resolved.keywords:
+        return False
+    if not isinstance(resolved.func, ast.Attribute) or resolved.func.attr != "resolve":
+        return False
+    constructor = resolved.func.value
+    return (
+        isinstance(constructor, ast.Call)
+        and _semantic_name(scope, constructor.func) == "pathlib.Path"
+        and len(constructor.args) == 1
+        and not constructor.keywords
+        and isinstance(constructor.args[0], ast.Name)
+        and constructor.args[0].id == "__file__"
+        and scope.resolve("__file__") is None
+    )
+
+
+def _script_relative_child(scope: _Scope, node: ast.expr) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or _semantic_name(scope, node.func) != "str"
+        or len(node.args) != 1
+        or node.keywords
+    ):
+        return None
+    path = node.args[0]
+    if not isinstance(path, ast.BinOp) or not isinstance(path.op, ast.Div):
+        return None
+    if not isinstance(path.left, ast.Name):
+        return None
+    base = scope.resolve(path.left.id)
+    if not isinstance(base, _ScriptDirectory):
+        return None
+    if not isinstance(path.right, ast.Constant) or not isinstance(
+        path.right.value, str
+    ):
+        return None
+    return str(base.path / path.right.value)
 
 
 def _semantic_name(scope: _Scope, node: ast.expr) -> str:

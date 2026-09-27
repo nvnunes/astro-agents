@@ -82,6 +82,37 @@ class GraphLifecycleTests(unittest.TestCase):
                 )
             )
 
+    def test_reached_child_script_cannot_be_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _ = fixture(
+                root, "./pyrun --cid build -- scripts/build.py"
+            )
+            (entry / "scripts/build.py").write_text(
+                "import subprocess\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "SCRIPT_DIR = Path(__file__).resolve().parent\n"
+                "def run_command(command):\n"
+                "    subprocess.run(command, check=True)\n"
+                "run_command([sys.executable, str(SCRIPT_DIR / 'child.py')])\n",
+                encoding="utf-8",
+            )
+            (entry / "scripts/child.py").write_text("print(1)\n", encoding="utf-8")
+            checked(sync(logical))
+
+            rejected = action(
+                logical,
+                "retention",
+                "add",
+                "--id",
+                "child",
+                "--target",
+                "scripts/child.py",
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("retention.target.connected", rejected.stderr)
+
     def test_retention_add_update_errors_name_the_next_action(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(Path(directory), "./pyrun scripts/build.py")

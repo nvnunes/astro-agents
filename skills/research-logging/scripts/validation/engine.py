@@ -4896,7 +4896,7 @@ def _execution_code_inputs(
 def _current_execution_code_inputs(
     association: ExecutionAssociation, execution_state: PyrunFile, state: _ScanState
 ) -> tuple[str, ...]:
-    """Connect only code reached by a complete current Python analysis."""
+    """Connect known reached code even when a full fingerprint is unavailable."""
 
     recipe = association.execution.recipe
     if "PYTHONPATH" in dict(recipe.environment):
@@ -4929,8 +4929,6 @@ def _current_execution_code_inputs(
                     for path in analysis.reached_sources
                     if path != identity
                 )
-                if analysis.fingerprint is not None
-                else ()
             )
         return state.effective_code_inputs[key]
     except (EffectiveCodeError, ValueError, PyrunStateError):

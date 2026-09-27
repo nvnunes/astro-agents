@@ -7,6 +7,8 @@ import shlex
 from pathlib import Path
 from typing import Any, Mapping
 
+from effective_code import EffectiveCodeError, analyze_effective_code
+from python_execution import PythonExecutionContext
 from research_log_data import (
     DataFile,
     input_token_parts,
@@ -243,6 +245,7 @@ def material_consumers(
     *,
     excluded_command: str | None = None,
     data_overrides: Mapping[Path, DataFile | None] | None = None,
+    include_reached_code: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     """Find physical consumers, including different names for the same material."""
 
@@ -251,6 +254,7 @@ def material_consumers(
         (target,),
         excluded_command=excluded_command,
         data_overrides=data_overrides,
+        include_reached_code=include_reached_code,
     )[target]
 
 
@@ -260,6 +264,7 @@ def material_consumers_many(
     *,
     excluded_command: str | None = None,
     data_overrides: Mapping[Path, DataFile | None] | None = None,
+    include_reached_code: bool = False,
 ) -> dict[Path, tuple[dict[str, Any], ...]]:
     """Find consumers of multiple targets with one same-log command discovery."""
 
@@ -270,6 +275,7 @@ def material_consumers_many(
     }
     resolved_targets = {target: target.resolve() for target in consumers}
     materials = inspect_log_materials(entry.log, data_overrides=data_overrides)
+    code_cache: dict[tuple[Path, Path], tuple[Path, ...]] = {}
     for invocation in materials.invocations:
         if (
             invocation.cid == excluded_command
@@ -286,7 +292,22 @@ def material_consumers_many(
             if collection.root
         )
         if invocation.script:
-            paths.append(Path(invocation.script).resolve())
+            script = Path(invocation.script).resolve()
+            paths.append(script)
+            if include_reached_code and any(
+                target.suffix == ".py" or target.is_dir()
+                for target in resolved_targets.values()
+            ):
+                owner_root = materials.roots[invocation.material_owner]
+                cache_key = (script, owner_root)
+                if cache_key not in code_cache:
+                    code_cache[cache_key] = _reached_code_paths(
+                        script,
+                        owner_root,
+                        entry.log.root,
+                        materials.project_root,
+                    )
+                paths.extend(code_cache[cache_key])
         for target, resolved in resolved_targets.items():
             if any(_resolved_paths_overlap(resolved, path) for path in paths):
                 consumers[target].append(
@@ -300,6 +321,28 @@ def material_consumers_many(
     for target in consumers:
         consumers[target].extend(evidence_consumers[target])
     return {target: tuple(uses) for target, uses in consumers.items()}
+
+
+def _reached_code_paths(
+    script: Path, entry_root: Path, log_root: Path, project_root: Path
+) -> tuple[Path, ...]:
+    if script.suffix != ".py":
+        return ()
+    try:
+        context = PythonExecutionContext.for_research_script(
+            script,
+            entry_root=entry_root,
+            log_root=log_root,
+            project_root=project_root,
+        )
+        analysis = analyze_effective_code(
+            script,
+            project_root=project_root,
+            import_roots=context.import_roots,
+        )
+    except (EffectiveCodeError, OSError, ValueError):
+        return ()
+    return tuple(path for path in analysis.reached_sources if path != script)
 
 
 def _material_evidence_many(

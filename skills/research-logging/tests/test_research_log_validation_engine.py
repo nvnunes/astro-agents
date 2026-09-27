@@ -1356,6 +1356,41 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertIn(unused.resolve().as_posix(), changed_orphans)
 
+    def test_static_child_stays_connected_without_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            scripts = entry.parent / "scripts"
+            write(
+                scripts / "model.py",
+                "import subprocess\n"
+                "import sys\n"
+                "from pathlib import Path\n"
+                "SCRIPT_DIR = Path(__file__).resolve().parent\n"
+                "def run_command(command):\n"
+                "    subprocess.run(command, check=True)\n"
+                "def main():\n"
+                "    run_command([sys.executable, str(SCRIPT_DIR / 'child.py')])\n"
+                "main()\n",
+            )
+            child = scripts / "child.py"
+            write(child, "exec('print(1)')\n")
+            unused = scripts / "unused.py"
+            write(unused, "print(2)\n")
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+
+            result = _evaluate(summary).attempt
+            orphaned = {
+                check.subject
+                for check in result.checks
+                if check.diagnostic is not None
+                and check.diagnostic.code == "orphan.material.unused"
+            }
+            self.assertNotIn(child.resolve().as_posix(), orphaned)
+            self.assertIn(unused.resolve().as_posix(), orphaned)
+
     def test_current_code_support_enters_provenance_and_suppresses_orphan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             summary, entry = _log(Path(directory))

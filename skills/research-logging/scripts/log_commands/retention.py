@@ -176,7 +176,7 @@ def _require_disconnected(entry: EntryContext, record: RetentionRecord) -> None:
     targets = [entry.root / target for target in _targets(record)]
     connected: list[dict[str, Any]] = []
     for target in targets:
-        connected.extend(material_consumers(entry, target))
+        connected.extend(material_consumers(entry, target, include_reached_code=True))
     data_path = entry.root / "data.json"
     if data_path.exists():
         data = load_data_file(data_path, entry_root=entry.root)

@@ -35,6 +35,53 @@ def checked(result):
 
 
 class GraphLifecycleTests(unittest.TestCase):
+    def test_recorded_script_cannot_be_retained_or_reported_orphan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _ = fixture(
+                root, "./pyrun --cid build -- scripts/build.py"
+            )
+            checked(sync(logical))
+            script = (entry / "scripts/build.py").resolve().as_posix()
+            state = json.loads((entry / "pyrun.json").read_text(encoding="utf-8"))
+            execution = next(iter(state["commands"]["build"]["executions"].values()))
+            self.assertEqual(execution["recipe"]["script"], "scripts/build.py")
+
+            rejected = action(
+                logical,
+                "retention",
+                "add",
+                "--id",
+                "script",
+                "--target",
+                "scripts/build.py",
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("retention.target.connected", rejected.stderr)
+
+            validated = run_log(
+                root, "validate", "run", "--path", str(logical)
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+            listed = run_log(
+                root,
+                "validate",
+                "list",
+                "findings",
+                "--path",
+                str(logical),
+                "--format",
+                "json",
+            )
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertFalse(
+                any(
+                    item["code"] == "orphan.material.unused"
+                    and item["subject"] == script
+                    for item in json.loads(listed.stdout)["items"]
+                )
+            )
+
     def test_retention_add_update_errors_name_the_next_action(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, _ = fixture(Path(directory), "./pyrun scripts/build.py")

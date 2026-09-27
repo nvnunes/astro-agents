@@ -229,7 +229,7 @@ def _trace_authoritative_graph(
     roots: Mapping[str, tuple[Path, ...]],
     bundles: Sequence[_AtomicOutputBundle],
 ) -> tuple[ReachabilityTrace, set[str]]:
-    """Trace evidence closure using only established ResearchGraph edges."""
+    """Trace evidence closure and connect code used by active commands."""
 
     incoming: dict[str, list[ResearchEdge]] = {}
     outgoing: dict[str, list[ResearchEdge]] = {}
@@ -263,6 +263,15 @@ def _trace_authoritative_graph(
             _connect_graph_material(target, state)
             if edge.kind is EdgeKind.DECLARATION:
                 _trace_graph_material(target, None, state, depth=0)
+    for edge in graph.edges:
+        if edge.kind not in {EdgeKind.SCRIPT_USE, EdgeKind.CODE_USE}:
+            continue
+        command = state.nodes[edge.target]
+        if (
+            command.kind is NodeKind.COMMAND
+            and command.attributes.get("rejected") is not True
+        ):
+            _connect_graph_identity(state.nodes[edge.source].identity, state)
     _bound_graph(state.trace_nodes, state.trace_edges)
     return (
         ReachabilityTrace(

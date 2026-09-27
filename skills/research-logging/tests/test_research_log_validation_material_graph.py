@@ -851,15 +851,21 @@ class MaterialGraphTests(unittest.TestCase):
                     )
                 )
 
-    def test_unreached_command_connects_nothing(self) -> None:
+    def test_unreached_command_connects_code_but_not_material_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))
+            helper = entry_root / "scripts/helper.py"
+            write(helper, "VALUE = 1\n")
             result = GRAPH.classify_research_graph_materials(
-                _request(entry_root, data_file, invocations)
+                _request(
+                    entry_root,
+                    data_file,
+                    invocations,
+                    code_inputs={invocations[0].identity: (helper.as_posix(),)},
+                )
             )
 
             for relative in (
-                "scripts/build.py",
                 "data/source.csv",
                 "data/reached.csv",
                 "data/sibling.csv",
@@ -868,7 +874,14 @@ class MaterialGraphTests(unittest.TestCase):
                     (entry_root / relative).resolve().as_posix(),
                     result.orphan.orphaned,
                 )
-            self.assertFalse(result.orphan.connected)
+            self.assertEqual(
+                set(result.orphan.connected),
+                {
+                    (entry_root / "scripts/build.py").resolve().as_posix(),
+                    helper.resolve().as_posix(),
+                },
+            )
+            self.assertFalse(result.trace.nodes)
 
     def test_unused_input_is_separate_from_artifact_orphans(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

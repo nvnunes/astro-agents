@@ -3190,11 +3190,15 @@ registered as a generated input, but its location alone does not add it to the
 entry Orphans or Retention universe. Validation does not scan project-wide
 outputs for orphans or retention.
 
-Connectivity starts only at evidence sources and direct presentations and
-traces backward through unique producers and declared inputs. A command outside
-this closure connects none of its scripts, inputs, outputs, or directory
-members. Its atomic output directory remains one unreached artifact rather than
-one artifact per descendant. An origin boundary terminates a reached branch but
+Material-lineage connectivity starts at evidence sources and direct
+presentations and traces backward through unique producers and declared inputs.
+Separately, every admitted Markdown command connects its source script and any
+code reached through an established code-use edge, whether or not its output is
+in that evidence closure.
+This code connection does not extend the evidence or provenance trace. A command
+outside the closure connects none of its inputs, outputs, or directory members.
+Its atomic output directory remains one unreached artifact rather than one
+artifact per descendant. An origin boundary terminates a reached branch but
 never connects an unreached artifact or suppresses an orphan finding.
 
 Each eligible standalone file or atomic generated output directory is
@@ -3334,7 +3338,7 @@ the original authoring error without dumping the complete payload;
 | `retention.file.location_invalid` | conformance | `retention.json` is outside one entry root. |
 | `retention.declaration.invalid` | conformance | A retention file or record violates shape, path, overlap, eligibility, or redundancy. |
 | `retention.target.missing` | conformance | A retention target is absent. |
-| `orphan.material.unused` | orphan | One retained artifact lies outside the evidence closure and retention. |
+| `orphan.material.unused` | orphan | One retained artifact lies outside active command code, evidence closure, and retention. |
 | `orphan.input.unused` | orphan | One data item has no named command input, named command output, or evidence use. |
 | `orphan.output.unmatched` | orphan | An output support record has no output in the complete current graph. |
 

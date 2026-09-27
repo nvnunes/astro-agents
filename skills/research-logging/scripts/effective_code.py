@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import copy
 import hashlib
 import json
 import os
@@ -147,6 +146,7 @@ class _Source:
     path: Path
     relative: str
     identity: FileIdentity
+    content: bytes
     tree: ast.Module
     context: _ModuleContext
     definitions: dict[
@@ -301,6 +301,7 @@ class _Analyzer:
             resolved,
             resolved.relative_to(self._project_root).as_posix(),
             file_identity(after),
+            content,
             tree,
             context,
         )
@@ -770,7 +771,7 @@ class _Analyzer:
         modules = []
         for source in self._analyzed_sources():
             projection = _Projection(source.path, self._reached).visit(
-                copy.deepcopy(source.tree)
+                ast.parse(source.content, filename=str(source.path))
             )
             ast.fix_missing_locations(projection)
             modules.append(

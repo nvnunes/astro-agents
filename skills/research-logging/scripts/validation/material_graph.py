@@ -212,7 +212,7 @@ def classify_research_graph_materials(
 @dataclass
 class _TraceState:
     graph: ResearchGraph
-    roots: Mapping[str, tuple[Path, ...]]
+    owned_roots: tuple[Path, ...]
     bundles_by_material: Mapping[str, _AtomicOutputBundle]
     nodes: dict[str, ResearchNode]
     incoming: Mapping[str, tuple[ResearchEdge, ...]]
@@ -221,6 +221,8 @@ class _TraceState:
     trace_edges: set[_ReachEdge]
     connected: set[str]
     expanded_commands: set[str]
+    expanded_bundles: set[str]
+    classified_identities: set[str]
     visiting_materials: set[str]
 
 
@@ -237,17 +239,19 @@ def _trace_authoritative_graph(
         incoming.setdefault(edge.target, []).append(edge)
         outgoing.setdefault(edge.source, []).append(edge)
     state = _TraceState(
-        graph,
-        roots,
-        _bundle_material_index(bundles),
-        {node.node_id: node for node in graph.nodes},
-        {key: tuple(value) for key, value in incoming.items()},
-        {key: tuple(value) for key, value in outgoing.items()},
-        set(),
-        set(),
-        set(),
-        set(),
-        set(),
+        graph=graph,
+        owned_roots=tuple(root for group in roots.values() for root in group),
+        bundles_by_material=_bundle_material_index(bundles),
+        nodes={node.node_id: node for node in graph.nodes},
+        incoming={key: tuple(value) for key, value in incoming.items()},
+        outgoing={key: tuple(value) for key, value in outgoing.items()},
+        trace_nodes=set(),
+        trace_edges=set(),
+        connected=set(),
+        expanded_commands=set(),
+        expanded_bundles=set(),
+        classified_identities=set(),
+        visiting_materials=set(),
     )
     for record in graph.nodes:
         if record.kind is not NodeKind.EVIDENCE_RECORD:
@@ -387,7 +391,8 @@ def _trace_edge(label: str, edge: ResearchEdge, state: _TraceState) -> None:
 def _connect_graph_material(material: ResearchNode, state: _TraceState) -> None:
     identities = {material.identity}
     bundle = state.bundles_by_material.get(material.identity)
-    if bundle is not None:
+    if bundle is not None and bundle.root not in state.expanded_bundles:
+        state.expanded_bundles.add(bundle.root)
         identities.update((bundle.root, *bundle.members))
         root = _ReachNode(NodeKind.MATERIAL.value, bundle.root)
         state.trace_nodes.add(root)
@@ -402,12 +407,11 @@ def _connect_graph_material(material: ResearchNode, state: _TraceState) -> None:
 
 
 def _connect_graph_identity(identity: str, state: _TraceState) -> None:
+    if identity in state.classified_identities:
+        return
+    state.classified_identities.add(identity)
     path = Path(identity)
-    if any(
-        _within(path, root)
-        for owned_roots in state.roots.values()
-        for root in owned_roots
-    ):
+    if any(_within(path, root) for root in state.owned_roots):
         state.connected.add(path.resolve().as_posix())
 
 

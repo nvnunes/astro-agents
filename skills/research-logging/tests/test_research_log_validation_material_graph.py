@@ -773,22 +773,36 @@ class MaterialGraphTests(unittest.TestCase):
                 for index in range(20)
             )
 
-            single = GRAPH.classify_research_graph_materials(
-                _request(
-                    entry_root,
-                    data_file,
-                    invocations,
-                    evidence=single_evidence,
+            with (
+                mock.patch.object(GRAPH, "_within", wraps=GRAPH._within) as within,
+                mock.patch.object(
+                    GRAPH,
+                    "_connect_graph_identity",
+                    wraps=GRAPH._connect_graph_identity,
+                ) as connect,
+            ):
+                single = GRAPH.classify_research_graph_materials(
+                    _request(
+                        entry_root,
+                        data_file,
+                        invocations,
+                        evidence=single_evidence,
+                    )
                 )
-            )
-            repeated = GRAPH.classify_research_graph_materials(
-                _request(
-                    entry_root,
-                    data_file,
-                    invocations,
-                    evidence=repeated_evidence,
+                single_classifications = within.call_count
+                single_connections = connect.call_count
+                within.reset_mock()
+                connect.reset_mock()
+                repeated = GRAPH.classify_research_graph_materials(
+                    _request(
+                        entry_root,
+                        data_file,
+                        invocations,
+                        evidence=repeated_evidence,
+                    )
                 )
-            )
+                repeated_classifications = within.call_count
+                repeated_connections = connect.call_count
 
             self.assertEqual(repeated.metrics["graph_bundle_expansions"], 1)
             self.assertEqual(
@@ -799,6 +813,12 @@ class MaterialGraphTests(unittest.TestCase):
                 repeated.metrics["graph_local_material_classifications"],
                 single.metrics["graph_local_material_classifications"],
             )
+            self.assertEqual(repeated_classifications, single_classifications)
+            self.assertLessEqual(
+                repeated_connections - single_connections,
+                2 * (len(repeated_evidence) - len(single_evidence)),
+            )
+            self.assertEqual(repeated.orphan, single.orphan)
 
     def test_evidence_closure_connects_exact_output_not_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -972,6 +972,7 @@ def _scan(
     except MechanicalContractError as error:
         _record_log_scan_error(error, state)
     else:
+        phase = time.perf_counter()
         _evaluate_entries(
             state,
             selected_roots=(
@@ -992,12 +993,19 @@ def _scan(
                         issue_context=_log_issue_context(state),
                     )
                 )
+        state.timings["check_evaluation_seconds"] = time.perf_counter() - phase
+        phase = time.perf_counter()
         state.graph = _build_research_graph(state, request)
+        state.timings["graph_build_seconds"] = time.perf_counter() - phase
         # Graph reconciliation is a deliberately whole-log conclusion.  The
         # declaration inventory used above is not an observed graph and must
         # never make a scoped entry request perform whole-log orphan detection.
         if isinstance(request.target, FullEvaluationTarget):
+            phase = time.perf_counter()
             _compose_graph(state, request)
+            state.timings["graph_reconciliation_seconds"] = (
+                time.perf_counter() - phase
+            )
             _record_generated_residue(request.generated_residue, state)
         _verify_source_stability(state)
         _verify_provenance_stability(state)

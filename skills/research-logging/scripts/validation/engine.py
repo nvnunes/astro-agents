@@ -1207,7 +1207,7 @@ def _prepare_command_context(
             invocation, output, state
         ),
     )
-    _load_output_support(state)
+    _load_output_support(state, target)
 
 
 def _indexed_documents(
@@ -2899,8 +2899,8 @@ def _register_invocation_blockers(
     )
 
 
-def _load_output_support(state: _ScanState) -> None:
-    """Load each shared entry-root output map once through the fingerprint cache."""
+def _load_output_support(state: _ScanState, target: EvaluationTarget) -> None:
+    """Load reached output state, checking complete command inventories only."""
 
     owners: dict[str, Path] = {}
     for entry in state.entries:
@@ -2953,7 +2953,13 @@ def _load_output_support(state: _ScanState) -> None:
                     entry_root=root,
                     project_root=state.project_root,
                 )
-                _validate_execution_bindings(owner, execution_state, state)
+                # Scoped producer closure does not inventory every command in
+                # an upstream entry, so only the selected entry is complete
+                # enough for stale-execution conformance checks.
+                if isinstance(target, FullEvaluationTarget) or (
+                    root == target.entry_root.resolve()
+                ):
+                    _validate_execution_bindings(owner, execution_state, state)
                 state.execution_states[owner] = execution_state
                 state.execution_output_owners[owner] = execution_output_owners(
                     execution_state

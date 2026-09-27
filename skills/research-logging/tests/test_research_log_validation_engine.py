@@ -6247,6 +6247,124 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             self.assertEqual(scoped_check, full_check)
 
+    def test_entry_scope_omits_unreached_dependency_execution_findings(self) -> None:
+        """Stored commands outside a reached producer closure are not stale."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, producer = _log(root)
+            producer_root = producer.parent
+            parameters = (
+                "--input-catalog",
+                "<catalog>",
+                "--output-data",
+                "data/results.csv",
+            )
+            _replace_with_pyrun_state(producer, parameters)
+            state_path = producer_root / "pyrun.json"
+            stored = json.loads(state_path.read_text(encoding="utf-8"))
+            active = next(iter(stored["commands"]["model"]["executions"].values()))
+            stale_recipe = dict(active["recipe"])
+            stale_recipe["script"] = "scripts/unused.py"
+            stale_recipe["outputs"] = {"data/unused.csv": "file"}
+            stale_recipe["parameters"] = [
+                "--input-catalog",
+                "<catalog>",
+                "--output-data",
+                "data/unused.csv",
+            ]
+            stale_recipe["parameter_roles"] = dict(
+                fixture_parameter_roles(
+                    tuple(stale_recipe["parameters"]),
+                    ("catalog",),
+                    (("data/unused.csv", "file"),),
+                )
+            )
+            stale_observed = dict(active["observed"])
+            stale_observed["outputs"] = {
+                "data/unused.csv": next(iter(stale_observed["outputs"].values()))
+            }
+            stale = dict(active, recipe=stale_recipe, observed=stale_observed)
+            stale_id = PYRUN_STATE.execution_id(
+                PYRUN_STATE.ExecutionRecipe(
+                    stale_recipe["script"],
+                    tuple(stale_recipe["parameters"]),
+                    (),
+                    ("catalog",),
+                    (("data/unused.csv", "file"),),
+                    tuple(sorted(stale_recipe["parameter_roles"].items())),
+                )
+            )
+            stored["commands"]["unused"] = {"executions": {stale_id: stale}}
+            write(state_path, json.dumps(stored, indent=2) + "\n")
+
+            consumer_root = root / "docs/study/entries/2026-08-30-e002-consumer"
+            write(consumer_root / "scripts/use.py", "# consumer\n")
+            write(
+                consumer_root / "data.json",
+                json.dumps(
+                    {
+                        "schema": "research-log-data/v6",
+                        "inputs": [
+                            {
+                                "name": "shared",
+                                "kind": "file",
+                                "location": (
+                                    producer_root / "data/results.csv"
+                                ).as_posix(),
+                                "identity": {"algorithm": "sha256"},
+                                "origin": False,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+            )
+            write(
+                consumer_root / "e002.md",
+                "# Consumer\n\n## Run\n\n`Steps:`\n\n```bash\n"
+                "./pyrun scripts/use.py --input-data '<shared>' "
+                "--output-data data/local.csv\n```\n\n"
+                "`Results:`\n\nThe consumer ran.\n",
+            )
+            write(
+                summary,
+                summary.read_text(encoding="utf-8")
+                + "- [Consumer](study/entries/2026-08-30-e002-consumer/e002.md)\n",
+            )
+
+            scoped = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(
+                    summary, ENGINE.EntryEvaluationTarget("e002", consumer_root)
+                )
+            )
+            self.assertEqual(scoped.context.dependency_entries, ("e001",))
+            self.assertEqual(
+                tuple(invocation.entry for invocation in scoped.context.invocations),
+                ("e001", "e002"),
+            )
+            self.assertFalse(
+                any(
+                    finding.entry == "e001"
+                    for finding in scoped.attempt.findings
+                )
+            )
+
+            producer_scope = _evaluate_current_fixture(
+                ENGINE.EvaluationRequest(
+                    summary, ENGINE.EntryEvaluationTarget("e001", producer_root)
+                )
+            )
+            full = _evaluate_current_fixture(ENGINE.EvaluationRequest(summary))
+            for result in (producer_scope, full):
+                self.assertTrue(
+                    any(
+                        finding.code == "pyrun.command.stale"
+                        and finding.entry == "e001"
+                        for finding in result.attempt.findings
+                    )
+                )
+
     def test_reached_dependency_document_omits_unrelated_broken_command(
         self,
     ) -> None:

@@ -263,6 +263,113 @@ class ProvenanceLineageTests(unittest.TestCase):
                     [output.resolve().as_posix(), source.resolve().as_posix()],
                 )
 
+    def test_nested_directory_members_reuse_upstream_traces(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry_root = Path(directory) / "entry"
+            member_count = 8
+            invocations = []
+            previous_resource = None
+            previous_members: tuple[str, ...] = ()
+            for sequence, name in enumerate(("cases", "loops", "analysis")):
+                bundle = entry_root / "data" / name
+                members = tuple(
+                    bundle / f"{index}.csv" for index in range(member_count)
+                )
+                for member in members:
+                    write(member, "value\n1\n")
+                resource = build_local_input(
+                    name, "directory", f"data/{name}", entry_root=entry_root
+                )
+                inputs = (
+                    tuple(
+                        COMMAND.MaterialRelationship(
+                            member,
+                            "input",
+                            "directory",
+                            target=previous_resource.name,
+                            named_input=previous_resource.name,
+                            input_resource=previous_resource,
+                        )
+                        for member in previous_members
+                    )
+                    if previous_resource is not None
+                    else ()
+                )
+                invocations.append(
+                    replace(
+                        _invocation(
+                            name,
+                            sequence,
+                            outputs=tuple(
+                                member.resolve().as_posix() for member in members
+                            ),
+                            directories=(bundle.resolve().as_posix(),),
+                        ),
+                        inputs=inputs,
+                    )
+                )
+                previous_resource = resource
+                previous_members = tuple(
+                    member.resolve().as_posix() for member in members
+                )
+            target = entry_root / "data" / "plot.csv"
+            write(target, "value\n1\n")
+            assert previous_resource is not None
+            invocations.append(
+                replace(
+                    _invocation("plot", 3, outputs=(target.resolve().as_posix(),)),
+                    inputs=tuple(
+                        COMMAND.MaterialRelationship(
+                            member,
+                            "input",
+                            "directory",
+                            target=previous_resource.name,
+                            named_input=previous_resource.name,
+                            input_resource=previous_resource,
+                        )
+                        for member in previous_members
+                    ),
+                )
+            )
+            commands = tuple(invocations)
+            validate_output = mock.Mock(
+                side_effect=lambda invocation, material: {
+                    "producer": invocation.identity,
+                    "material": material,
+                }
+            )
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index(commands),
+                producer_validator=validate_output,
+            )
+            walker = PROVENANCE._walk_invocation_uncached
+            merger = PROVENANCE._merge_walk_trace
+            with (
+                mock.patch.object(
+                    PROVENANCE, "_walk_invocation_uncached", wraps=walker
+                ) as walked,
+                mock.patch.object(
+                    PROVENANCE, "_merge_walk_trace", wraps=merger
+                ) as merged,
+            ):
+                result = PROVENANCE.evaluate_complete_provenance(
+                    target, commands, context=context
+                )
+
+            calls = [call.args[0].identity for call in walked.call_args_list]
+            self.assertEqual(calls.count("cases"), 1)
+            self.assertEqual(calls.count("loops"), 1)
+            self.assertEqual(calls.count("analysis"), 1)
+            self.assertEqual(merged.call_count, 4)
+            self.assertFalse(result.findings)
+            self.assertEqual(len(result.evaluated_materials), 3 * member_count + 4)
+            self.assertEqual(len(result.producers), 4)
+            self.assertEqual(validate_output.call_count, 3 * member_count + 1)
+            root_trace = context.invocation_trace_cache[
+                (id(commands[-1]), 0, frozenset({"plot"}))
+            ]
+            self.assertEqual(len(root_trace.support), 3 * member_count)
+
     def test_producer_index_reuses_exact_directory_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -439,6 +546,57 @@ class ProvenanceLineageTests(unittest.TestCase):
                     "lineage.missing",
                     "provenance.output.reproduction_required",
                 },
+            )
+
+    def test_cached_trace_respects_ancestor_cycle_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, middle, clear, cyclic = (
+                root / f"{name}.csv"
+                for name in ("source", "middle", "clear", "cyclic")
+            )
+            for path in (source, middle, clear, cyclic):
+                write(path, "value\n1\n")
+            leaf = _invocation("shared", 0, outputs=(source.resolve().as_posix(),))
+            parent = replace(
+                _invocation("middle", 1, outputs=(middle.resolve().as_posix(),)),
+                inputs=(
+                    COMMAND.MaterialRelationship(
+                        source.resolve().as_posix(), "input", "option"
+                    ),
+                ),
+            )
+            roots = tuple(
+                replace(
+                    _invocation(
+                        identity, sequence, outputs=(target.resolve().as_posix(),)
+                    ),
+                    inputs=(
+                        COMMAND.MaterialRelationship(
+                            middle.resolve().as_posix(), "input", "option"
+                        ),
+                    ),
+                )
+                for identity, sequence, target in (
+                    ("shared", 2, cyclic),
+                    ("clear", 3, clear),
+                )
+            )
+            invocations = (leaf, parent, *roots)
+            context = PROVENANCE.CompleteProvenanceContext(
+                PROVENANCE.build_producer_index(invocations)
+            )
+
+            first = PROVENANCE.evaluate_complete_provenance(
+                clear, invocations, context=context
+            )
+            second = PROVENANCE.evaluate_complete_provenance(
+                cyclic, invocations, context=context
+            )
+
+            self.assertFalse(first.findings)
+            self.assertEqual(
+                [finding.code for finding in second.findings], ["lineage.cycle"]
             )
 
     def test_collected_findings_report_directory_conflict_after_support(self) -> None:

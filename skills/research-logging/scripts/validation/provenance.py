@@ -201,7 +201,7 @@ class ProducerIndex:
 
 @dataclass(frozen=True)
 class _WalkTrace:
-    """One reusable root producer's ordered upstream traversal effects."""
+    """One reusable producer's ordered upstream traversal effects."""
 
     producers: tuple[str, ...]
     lineage: tuple[tuple[str, str], ...]
@@ -209,6 +209,9 @@ class _WalkTrace:
     findings: tuple[tuple[str, ProvenanceFinding], ...]
     currentness: tuple[tuple[str, ProducerCurrentness], ...]
     evaluated_materials: tuple[str, ...] = ()
+
+
+_WalkCacheKey = tuple[int, int, frozenset[str]]
 
 
 @dataclass(frozen=True)
@@ -233,7 +236,7 @@ class CompleteProvenanceContext:
     output_directory_cache: MutableMapping[int, ProvenanceFinding | None] = field(
         default_factory=dict
     )
-    root_invocation_cache: MutableMapping[int, _WalkTrace] = field(
+    invocation_trace_cache: MutableMapping[_WalkCacheKey, _WalkTrace] = field(
         default_factory=dict
     )
     origin_boundary_cache: MutableMapping[
@@ -321,11 +324,13 @@ class _WalkState:
     producer_validator: Callable[[Invocation, str], Mapping[str, object]] | None
     confirmed_record: Callable[[Invocation, str], bool] | None
     output_directory_cache: MutableMapping[int, ProvenanceFinding | None] | None
-    root_invocation_cache: MutableMapping[int, _WalkTrace] | None
+    invocation_trace_cache: MutableMapping[_WalkCacheKey, _WalkTrace] | None
     origin_boundary_cache: MutableMapping[
         tuple[str, int], ProvenanceFinding | None
     ] | None
     evaluated_materials: set[str] = field(default_factory=set)
+    support_seen: set[str] = field(default_factory=set)
+    merged_traces: set[_WalkCacheKey] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -335,7 +340,7 @@ class _EvaluationConfig:
     producer_index: ProducerIndex | None
     collect_findings: bool
     output_directory_cache: MutableMapping[int, ProvenanceFinding | None] | None = None
-    root_invocation_cache: MutableMapping[int, _WalkTrace] | None = None
+    invocation_trace_cache: MutableMapping[_WalkCacheKey, _WalkTrace] | None = None
     origin_boundary_cache: MutableMapping[
         tuple[str, int], ProvenanceFinding | None
     ] | None = None
@@ -387,7 +392,7 @@ def evaluate_complete_provenance(
             context.producer_index if context is not None else None,
             True,
             context.output_directory_cache if context is not None else None,
-            context.root_invocation_cache if context is not None else None,
+            context.invocation_trace_cache if context is not None else None,
             context.origin_boundary_cache if context is not None else None,
             context.canonical_mapping_cache if context is not None else None,
         ),
@@ -424,7 +429,7 @@ def _evaluate_provenance(
         config.producer_validator,
         config.confirmed_record,
         config.output_directory_cache,
-        config.root_invocation_cache,
+        config.invocation_trace_cache,
         config.origin_boundary_cache,
     )
     _walk_material(canonical, None, state, starting=True, depth=0)
@@ -845,10 +850,10 @@ def _check_producer_ready(
         return False
     if state.producer_validator is not None and output_available:
         try:
-            state.support.append(state.producer_validator(producer, material))
+            _record_support(state, state.producer_validator(producer, material))
         except ProducerCurrentnessBlocked as error:
             _record_currentness(state, error.currentness)
-            state.support.append({"currentness": error.currentness.as_dict()})
+            _record_support(state, {"currentness": error.currentness.as_dict()})
         except MechanicalContractError as error:
             anchor = ProvenanceAnchor(
                 "material",
@@ -856,7 +861,7 @@ def _check_producer_ready(
                 producer.identity,
             )
             _record_finding(state, error, anchor)
-            state.support.append({"finding": _finding(error, anchor).as_dict()})
+            _record_support(state, {"finding": _finding(error, anchor).as_dict()})
     return True
 
 
@@ -923,16 +928,18 @@ def _record_producer_lineage(
 
 
 def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> None:
-    """Walk one producer, reusing traces only from an identical root context."""
+    """Walk one producer, reusing traces under an identical ancestor context."""
 
-    cache = state.root_invocation_cache
-    if cache is None or not state.collect_findings or len(state.visiting) != 1:
+    cache = state.invocation_trace_cache
+    if cache is None or not state.collect_findings:
         _walk_invocation_uncached(invocation, state, depth)
         return
-    identity = id(invocation)
-    cached = cache.get(identity)
+    key = (id(invocation), depth, frozenset(state.visiting))
+    cached = cache.get(key)
     if cached is not None:
-        _merge_walk_trace(cached, state)
+        if key not in state.merged_traces:
+            _merge_walk_trace(cached, state)
+            state.merged_traces.add(key)
         return
     trace_state = _WalkState(
         state.producer_index,
@@ -950,7 +957,7 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
         state.producer_validator,
         state.confirmed_record,
         state.output_directory_cache,
-        state.root_invocation_cache,
+        state.invocation_trace_cache,
         state.origin_boundary_cache,
     )
     _walk_invocation_uncached(invocation, trace_state, depth)
@@ -968,8 +975,9 @@ def _walk_invocation(invocation: Invocation, state: _WalkState, depth: int) -> N
         ),
         tuple(sorted(trace_state.evaluated_materials)),
     )
-    cache[identity] = trace
+    cache[key] = trace
     _merge_walk_trace(trace, state)
+    state.merged_traces.add(key)
 
 
 def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
@@ -985,7 +993,8 @@ def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
         if edge not in state.lineage_seen:
             state.lineage.append(edge)
             state.lineage_seen.add(edge)
-    state.support.extend(trace.support)
+    for support in trace.support:
+        _record_support(state, support)
     for identity, finding in trace.findings:
         if identity not in state.finding_seen:
             state.findings.append(finding)
@@ -994,6 +1003,15 @@ def _merge_walk_trace(trace: _WalkTrace, state: _WalkState) -> None:
         if identity not in state.currentness_seen:
             state.currentness.append(item)
             state.currentness_seen.add(identity)
+
+
+def _record_support(state: _WalkState, support: Mapping[str, object]) -> None:
+    """Retain one support conclusion regardless of graph path multiplicity."""
+
+    identity = canonical_json(support)
+    if identity not in state.support_seen:
+        state.support.append(support)
+        state.support_seen.add(identity)
 
 
 def _walk_invocation_uncached(

@@ -47,7 +47,11 @@ inside an entry.
 Before finishing, inspect only the files and material changed or consumed by
 this Record operation. Confirm that the requested research is recorded, every
 required authoring action succeeded, referenced outputs exist, and any material
-defect affecting the evidence is documented. Do not run Validate within Record,
+defect affecting the evidence is documented. Check the revised sections against
+the loaded writing guidance. Remove maintenance narration, duplicated
+explanations, and script-obvious detail introduced by the current work. Confirm
+that shortening has preserved the selected numerical evidence and reasoning
+needed to understand the result. Do not run Validate within Record,
 reopen registries, inspect unrelated entries, or recheck invariants guaranteed
 by a successful authoring transaction. If the request separately authorizes
 Validate, finish Record before returning to the core operation selector and

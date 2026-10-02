@@ -3,15 +3,17 @@
 Use this file when drafting or revising research-log prose in entries or
 summaries.
 
-Research logs are direct, technical working records rather than polished
-manuscript prose. Make retained understanding easy to find while preserving
-enough evidence and reasoning to reconstruct why it was retained.
+Research logs are scientific working records for the researcher. Present the
+question, method, selected evidence, and reasoning needed to understand the
+investigation. Describe the scientific account directly; omit maintenance
+history, implementation progress, and accounts of how the agent assembled the
+entry unless the researcher requests them.
 
 ## Style
 
-- Lead each section with the question, comparison, or decision distinction that
-  makes it relevant. Prefer scientific and operational significance over run
-  chronology.
+- Lead each section with the scientific question or comparison that makes its
+  evidence relevant. Include prior scientific work when it explains the
+  motivation or interpretation.
 - Organize repeated experiments around the question they answer. Keep the
   baseline, candidate, measured benefit, relevant cost, and tested boundary
   together; use tables or parallel bullets for shared comparison dimensions.
@@ -21,16 +23,24 @@ enough evidence and reasoning to reconstruct why it was retained.
 - Keep qualifiers beside the claims they limit. Distinguish intermediate-model
   differences from downstream or science-visible effects, and state what a
   threshold measures, why it matters, and what it does not establish.
-- Follow a comparison table with its interpretation rather than narrating every
-  cell. Include a decision only when the researcher explicitly directs you to
-  record it. Link reproduction detail that does not belong in the current
-  synthesis.
+- Prefer short declarative bullets in descriptive blocks. Use equations,
+  tables, or brief connective prose when they communicate the argument more
+  clearly. Keep structure shallow: use descriptive section headings and the
+  standard block labels, without extra subheadings inside blocks or
+  expand/collapse sections unless the researcher requests them.
+- Develop mathematical explanations sequentially. Define quantities before
+  use, reuse established notation, and show the relationships that connect
+  assumptions to the result. Use prose to explain the equations' role rather
+  than substitute for the mathematical argument.
 - Present evidence directly. Never turn an entry into an agent diary or work
   log. Omit agent workflow and routine successful checks unless they affect the
   evidence.
-- Place each figure beside the argument it supports. Prefer the most direct
-  evidence surface, and use a table only when it makes a structured comparison
-  clearer than prose or a plot.
+- Select figures and tables for the scientific comparison they establish. Place
+  each beside the argument it supports, and omit redundant presentations and
+  inventories. Use the project's established plotting API and visual
+  conventions when available. Put essential distinctions in labels, legends,
+  or other plot encodings; avoid prose that merely teaches ordinary axis or
+  colour reading.
 - Retain negative evidence only when it still explains a result, decision, or
   useful lesson. State the discriminating result, rejection reason, and boundary
   of what was ruled out.
@@ -53,9 +63,9 @@ enough evidence and reasoning to reconstruct why it was retained.
   more certain, complete, or researcher-endorsed merely to make it smoother.
 - Preserve exact numerical values, units, variable names, commands, paths,
   citation keys, and stated uncertainty unless the source changes.
-- Do not rewrite dated evidence merely to agree with a later conclusion.
-- Do not rewrite an earlier account as though later evidence was already
-  available. Add later evidence at the point it enters the record, whether
-  continuing the same section or starting a new one.
+- Preserve the meaning and timing of retained evidence. When revising an
+  explanation, remove obsolete wording within the authorized scope without
+  presenting later evidence as previously known or rewriting earlier results
+  to match a later conclusion.
 - Surface conflicting or stale current-state claims rather than silently
   resolving them outside the active operation.

@@ -16,9 +16,9 @@ Classify every descriptive `##` section as exactly one of these forms:
   validates its scientific content; mechanical validation skips the section
   and creates no evidence target from it.
 - **Prose section:** Uses no block labels. Use it for orientation, connective
-  narrative, scope, historical context, planned work, navigation, or brief
-  status information. Move substantive synthesis into a synthesis section and
-  generated evidence into an experimental section.
+  narrative, scope, scientific context, planned work, or navigation. Move
+  substantive synthesis into a synthesis section and generated evidence into
+  an experimental section.
 
 Any other label combination is structurally invalid. Validation skips the
 section, reports the entry and heading, and records an unresolved structural
@@ -50,18 +50,21 @@ Write each label on its own line in inline code, for example `Background:`.
 
 ### `Background:`
 
-State the question, motivation, prior state, hypothesis, and conditions needed
-for interpretation. In synthesis sections, identify the inspected or combined
-material at the level needed to understand the findings. Keep commands,
-generated values, and conclusions elsewhere.
+Explain why the investigation matters and why this evidence addresses the
+question. State the relevant hypothesis, comparison, assumptions, and
+conditions as declarative statements. Include scientific context needed for
+interpretation. In synthesis sections, identify the material being combined.
+Keep commands, generated results, and conclusions elsewhere.
 
 ### `Steps:`
 
-Use only in experimental sections. Record commands, scripts, inputs,
-parameters, and analytical actions needed to understand or reproduce the
-result. Keep procedure proportional to its interpretive importance. Put
-motivation and methodological rationale in `Background:` and generated outputs
-in `Results:`.
+Use only in experimental sections. Give brief orientation to the method and
+record the commands needed to reproduce the results. Treat retained scripts,
+commands, and configuration as parts of the record; do not repeat their
+parameter inventories or narrate script-obvious mechanics. Explain
+implementation choices only when they materially affect scientific
+interpretation or reconstruction. Put motivation and methodological rationale
+in `Background:` and generated outputs in `Results:`.
 
 ### `Results:`
 
@@ -82,11 +85,13 @@ evidence.
 
 ### `Observations:`
 
-Use only in experimental sections. Record patterns, contradictions, notable
-absences, and interpretations grounded in that section's `Results:`. An agent
-may draft observations when evidence and context support them; treat them as
-drafts for researcher revision, not researcher-approved interpretations. Put a
-broader cross-source conclusion in a separate synthesis section.
+Use only in experimental sections. Use concise declarative bullets to connect
+selected numerical results, patterns, contradictions, and notable absences from
+that section's `Results:` to their interpretation. Include the values, units,
+baselines, and conditions that substantiate each quantitative observation; do
+not narrate every table cell. Develop the interpretation across the bullets
+without bold mini-headings. Agent-authored interpretations remain drafts for
+researcher revision. Put broader cross-source conclusions in a synthesis section.
 
 ### `Uncertainty:`
 

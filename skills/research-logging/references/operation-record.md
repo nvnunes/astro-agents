@@ -40,8 +40,9 @@ an entry is long, contains distinct topics, or has an imperfect folder slug.
   only the matching reference below. Do not reopen every material route before
   finishing.
 - Do not infer authority to revise current understanding or summary
-  `## Follow-ups`, replace or reorganize material, alter researcher decisions,
-  or inspect unrelated work.
+  `## Follow-ups`, remove superseded experimental work through Replace,
+  reorganize sections or files, alter researcher decisions, or inspect
+  unrelated work.
 - Keep entries focused on research evidence, not agent activity or routine
   successful checks.
 
@@ -51,8 +52,11 @@ Use this map only after the selected Record path directs you to
 `references/operation-record-content.md`. Treat each newly encountered kind of
 material as a new routing event and load only its matching reference.
 
-- Substantive prose or descriptive sections: read
-  `references/file-entry-labels.md` and `references/research-log-writing.md`.
+- Before drafting or revising entry prose, including prose accompanying
+  commands, figures, or tables, read `references/file-entry-labels.md` and
+  `references/research-log-writing.md`. Apply this route even when the work
+  began through another material route. Reload these references if their
+  guidance is no longer available in the current context.
 - Ad hoc notes, scripts, or artifacts intentionally retained outside the
   recorded workflow: read `references/file-adhoc.md`. This route takes
   precedence over type-specific script, artifact, command, and evidence

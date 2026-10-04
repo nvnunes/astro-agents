@@ -13,10 +13,11 @@ unrelated entry content.
 2. Resolve the target document or section within that entry. If multiple
    entries or split-entry documents plausibly match, ask before editing.
 3. Continue the existing section when the work answers the same research
-   question. When revising its explanation, integrate the requested changes
-   and replace obsolete or redundant wording rather than appending corrections,
-   historical flags, or parallel explanations. Start a new descriptive `##`
-   section when the research question or comparison changes.
+   question. Write the revised section as a self-contained account of the
+   investigation, integrating requested changes and replacing obsolete or
+   redundant wording. Remove references to earlier wording or configurations
+   unless their history is scientifically relevant or requested. Start a new
+   descriptive `##` section when the research question or comparison changes.
 4. Apply `references/operation-record-content.md` for
    shared content guidance.
 

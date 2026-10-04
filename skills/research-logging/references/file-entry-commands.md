@@ -80,6 +80,11 @@ In this form, the effective command ID (CID) defaults to the lexical Python
 filename without `.py`, here `run_study`. A valid CID starts with an ASCII
 alphanumeric and continues only with ASCII alphanumerics, `_`, or `-`.
 
+Give new Python scripts stable, descriptive filenames. Omit `--cid` when the
+stem supplies a valid, entry-unique CID, even with other runner options. Do not
+repeat the stem, invent an alternative name, or number unrelated scripts with
+`--cid 1`, `--cid 2`, and so on.
+
 Add runner options only for captures, explicit environment values, material
 role declarations, automatic-reproduction policy, exclusive scheduling, or an
 explicit CID. When any runner option is present, place all runner options and
@@ -98,17 +103,16 @@ is numeric shorthand: `--cid 2 -- scripts/run_study.py` resolves to
 number. A nonnumeric valid value is the full CID. Zero and leading-zero numeric
 forms are invalid.
 
-For a new purpose-specific Python command, give its script a stable,
-descriptive filename and use the filename stem as the derived CID. Do not add
-an explicit `--cid` merely to compensate for a generic filename. Omit `--cid`
-when a Python filename supplies a valid, entry-unique, stable CID. Add numeric
-shorthand when the same Python stem needs another distinct owner. Use a full
-CID when:
+Use an explicit CID only when:
 
+- independent command owners share the same Python filename stem: keep one
+  derived CID and use numeric shorthand or descriptive CIDs for additional owners;
 - one bounded loop contains more than one program;
 - the program is not a `.py` file or its filename stem is not a valid CID; or
 - a program filename changes while its existing command identity must remain
   stable.
+
+Preserve existing command identities; do not renumber them for presentation.
 
 For example, changing `foo.py` to `bar.py` while preserving CID `foo` requires:
 
@@ -120,7 +124,7 @@ For example, changing `foo.py` to `bar.py` while preserving CID `foo` requires:
 A CID owns one independent command or bounded loop, is unique across the
 entry's split documents, and is reused by every loop expansion. Keep exactly
 one independent command or loop in each eligible fence. A loop that expands
-one Python program may use the derived CID:
+one Python program omits `--cid` when its derived CID is entry-unique:
 
 ```bash
 for case in baseline trial; do
@@ -141,20 +145,6 @@ for case in baseline trial; do
     --case "$case"
 done
 ```
-
-When one program owns repeated independent commands, let at most one owner use
-the derived CID and number every other owner explicitly. For example, a second
-independent use begins:
-
-```bash
-./pyrun --cid 2 -- \
-  scripts/run_study.py \
-  --case trial
-```
-
-This command's effective CID is `run_study-2`. The same shorthand can
-disambiguate different Python program paths that share the same basename. Use
-full descriptive CIDs instead when stable meaning is clearer than numbering.
 
 `pyrun` automatically gives each execution isolated temporary
 `MPLCONFIGDIR` and `XDG_CACHE_HOME` directories. Use repeatable

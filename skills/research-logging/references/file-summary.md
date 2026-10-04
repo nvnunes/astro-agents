@@ -82,8 +82,6 @@ wording unless the researcher asks to revise it.
 - Keep tables, images, saved command output, and artifact links in entries, not
   in the maintained summary.
 - Keep `Entries` complete when entries are added, renamed, split, merged, or retitled.
-- Link summary claims back to supporting entries when that helps later review.
-- Prefer entry-ID link labels, such as `[e004](benchmarking/entries/.../e004.md)`, when the surrounding text gives enough context.
 - Preserve researcher-defined topic order, emphasis, and framing. Preserve
   paragraph form only when explicitly requested or necessary for clarity.
 - If a requested summary change appears to disagree with supporting entries, check the relevant entries and report the inconsistency to the user before editing.

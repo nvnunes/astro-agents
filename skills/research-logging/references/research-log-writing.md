@@ -17,6 +17,9 @@ entry unless the researcher requests them.
 - Organize repeated experiments around the question they answer. Keep the
   baseline, candidate, measured benefit, relevant cost, and tested boundary
   together; use tables or parallel bullets for shared comparison dimensions.
+- Link prose references to other entries to their Markdown documents using paths
+  relative to the containing file. Prefer entry-ID labels such as `e003` when
+  the surrounding text supplies context.
 - State supported results plainly. State a researcher decision only when
   explicitly directed to record it. Name the quantity, baseline, and scope
   instead of relying on `better`, `faster`, `stable`, `accurate`, or `did not work`.
@@ -28,10 +31,11 @@ entry unless the researcher requests them.
   clearly. Keep structure shallow: use descriptive section headings and the
   standard block labels, without extra subheadings inside blocks or
   expand/collapse sections unless the researcher requests them.
-- Develop mathematical explanations sequentially. Define quantities before
-  use, reuse established notation, and show the relationships that connect
-  assumptions to the result. Use prose to explain the equations' role rather
-  than substitute for the mathematical argument.
+- Develop mathematical explanations sequentially. Introduce specialist
+  quantities only when needed for the scientific argument. Define quantities
+  before use, reuse established notation, and show the relationships that
+  connect assumptions to the result. Use prose to explain the equations' role
+  rather than substitute for the mathematical argument.
 - Present evidence directly. Never turn an entry into an agent diary or work
   log. Omit agent workflow and routine successful checks unless they affect the
   evidence.
@@ -61,8 +65,11 @@ entry unless the researcher requests them.
 - Preserve the meaning of retained evidence, researcher validation and
   decisions, and intentionally retained uncertainty. Do not make prose sound
   more certain, complete, or researcher-endorsed merely to make it smoother.
-- Preserve exact numerical values, units, variable names, commands, paths,
-  citation keys, and stated uncertainty unless the source changes.
+- Preserve retained source values. Display numbers at the precision needed for
+  the scientific comparison, using declared numeric rendering; retain
+  additional digits only when they affect interpretation or a boundary.
+  Preserve units, variable names, commands, paths, citation keys, and stated
+  uncertainty unless the source changes.
 - Preserve the meaning and timing of retained evidence. When revising an
   explanation, remove obsolete wording within the authorized scope without
   presenting later evidence as previously known or rewriting earlier results

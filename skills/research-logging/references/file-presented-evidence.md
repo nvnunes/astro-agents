@@ -5,8 +5,10 @@ Choose what the research should present; Markdown defines the selection and
 format, and `log evidence sync` derives the record and presentation.
 Do not create, inspect, or edit JSON during ordinary Record.
 
-Entry evidence belongs under `Results:` in an experimental section.
-A value in prose is separate evidence even when repeated in a table.
+In experimental sections, present tables, figures, and output blocks under
+`Results:`. Inline numerical evidence may also appear in `Observations:` to
+substantiate its interpretation; each occurrence requires its own evidence
+marker, even when repeated in a table.
 Give each item a stable descriptive lowercase EID, never an ID containing its
 current value.
 

@@ -23,11 +23,21 @@ When running this review:
 - inspect root `AGENTS.md`, `docs/architecture.md`, `docs/testing.md`, and `docs/development.md` when they materially define local contracts, supported public API use, or required verification behavior
 - inspect tests, examples, README snippets, and relevant docstrings only when they materially affect externally visible behavior, public API use, or code-and-doc alignment
 
+## Applying Review Profiles
+
+Use the profiles and local-instruction discovery in `skills/code-quality-review/references/code-quality-review.md`. Full current standards are the default; lower profiles require an explicit applicable `AGENTS.md` override.
+
+- Full current standards: apply the shared Python coding guide and all relevant criteria below.
+- Incremental improvement: retain checks for behavior, data contracts, lifecycle safety, and regression coverage. Prefer local validation, documentation, and ownership improvements; do not demand package reorganization, API redesign, or replacement of established frameworks without a demonstrated need.
+- Preservation-focused: check concrete correctness defects, unsafe state or resource handling, broken contracts, and inadequate verification. Follow established Python style when recommending repairs; do not turn the review into a typing, formatting, packaging, or modernization campaign.
+
+Do not treat a legacy profile as permission to accept silent scientific changes, data loss, or an unverified repair. Cross-profile interfaces still need clear contracts.
+
 ## Review Criteria
 
-Evaluate the Python code against `skills/python-code-writing/references/python.md` and the criteria below, then apply any stricter relevant project-local expectations from the target project's own source-of-truth docs.
+Evaluate the Python code against `skills/python-code-writing/references/python.md` and the criteria below under the assigned review profile. Apply relevant project-local expectations, including explicit `AGENTS.md` profile overrides. Lower profiles constrain structural recommendations, not correctness or verification requirements.
 
-Required review criteria:
+Review criteria, applied under the assigned profile:
 
 - public API boundary clarity and package-root import discipline
 - CLI-over-API discipline when a CLI exists

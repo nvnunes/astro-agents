@@ -525,6 +525,32 @@ class DataFileTests(unittest.TestCase):
                     self.assertNotEqual(before, after)
                     link.unlink()
 
+    def test_sibling_entry_material_links_accept_parent_relative_locations(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "docs" / "study"
+            source = log / "entries" / "2026-09-01-e001-source"
+            consumer = log / "entries" / "2026-09-02-e002-consumer"
+            write(log.with_suffix(".md"), "# Study\n")
+            source.mkdir(parents=True)
+            consumer.mkdir()
+            retained = root / "output" / "retained"
+            write(retained / "value.txt", "value\n")
+            for name in ("data", "images"):
+                with self.subTest(material_root=name):
+                    (source / name).symlink_to(retained, target_is_directory=True)
+                    location = f"../{source.name}/{name}/value.txt"
+                    resource = DATA.build_local_input(
+                        "shared", "file", location, entry_root=consumer
+                    )
+                    self.assertEqual(resource.location, location)
+                    self.assertEqual(
+                        resource.canonical_target,
+                        str((retained / "value.txt").resolve()),
+                    )
+
     def test_material_link_exception_requires_a_maintained_entry_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

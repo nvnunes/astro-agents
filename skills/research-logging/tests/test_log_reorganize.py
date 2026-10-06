@@ -112,6 +112,25 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def declare_linked_fixture_inputs(
+    logical: Path, entry: Path, *, relative: bool = True
+) -> dict[str, object]:
+    """Seed local material aliases backed by external artifact directories."""
+
+    entry_id = entry.name.split("-")[3]
+    material = logical.parent.parent / "output" / entry_id
+    for name in ("data", "images"):
+        target = material / name / "result.txt"
+        target.parent.mkdir(parents=True)
+        target.write_text(f"{entry_id} {name}\n", encoding="utf-8")
+        link_target = (
+            os.path.relpath(target.parent, entry) if relative else target.parent
+        )
+        (entry / name).symlink_to(link_target, target_is_directory=True)
+        declare_fixture_input(logical, entry_id, name, f"{name}/result.txt")
+    return json.loads((entry / "data.json").read_text())
+
+
 def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
     """Write one complete multi-output execution and return its stable ID."""
 
@@ -204,6 +223,154 @@ class StorageTransactionTests(unittest.TestCase):
 
 
 class ReorganizeIdentityTests(unittest.TestCase):
+    def test_update_entry_preserves_linked_material_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 1)
+            entry = entries[0]
+            before = declare_linked_fixture_inputs(logical, entry)
+            targets = {
+                name: (entry / name / "result.txt").resolve()
+                for name in ("data", "images")
+            }
+            summary = logical.with_suffix(".md")
+            summary.write_text(summary.read_text().replace("trial-1", "renamed"))
+
+            changed = run(
+                root,
+                "reorganize",
+                "update-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--slug",
+                "renamed",
+            )
+
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            destination = entry.with_name("2026-09-01-e001-renamed")
+            self.assertEqual(
+                json.loads((destination / "data.json").read_text()), before
+            )
+            for name, target in targets.items():
+                self.assertEqual((destination / name / "result.txt").resolve(), target)
+                self.assertEqual(target.read_text(), f"e001 {name}\n")
+
+    def test_update_entry_preserves_cross_entry_material_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            source, consumer = entries
+            declare_linked_fixture_inputs(logical, source)
+            location = f"../{source.name}/data/result.txt"
+            declare_fixture_input(logical, "e002", "shared", location)
+            target = (consumer / location).resolve()
+            summary = logical.with_suffix(".md")
+            summary.write_text(summary.read_text().replace("trial-1", "renamed"))
+
+            changed = run(
+                root,
+                "reorganize",
+                "update-entry",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--slug",
+                "renamed",
+            )
+
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            payload = json.loads((consumer / "data.json").read_text())
+            updated = payload["inputs"][0]["location"]
+            self.assertEqual(updated, location.replace("trial-1", "renamed"))
+            self.assertEqual((consumer / updated).resolve(), target)
+
+    def test_reorder_preserves_linked_material_in_moved_and_unchanged_entries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 3)
+            before = [
+                declare_linked_fixture_inputs(logical, entry) for entry in entries
+            ]
+            summary = logical.with_suffix(".md")
+            text = summary.read_text()
+            lines = [line for line in text.splitlines() if line.startswith("- `")]
+            reordered = [
+                lines[0],
+                lines[2].replace("e003", "e002"),
+                lines[1].replace("e002", "e003"),
+            ]
+            start = text.index(lines[0])
+            end = text.index(lines[-1]) + len(lines[-1])
+            summary.write_text(text[:start] + "\n".join(reordered) + text[end:])
+
+            changed = run(
+                root,
+                "reorganize",
+                "reorder",
+                "--path",
+                str(logical),
+                "--entries",
+                "e001,e003,e002",
+            )
+
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            for entry, payload, new_id in zip(
+                entries, before, ("e001", "e003", "e002"), strict=True
+            ):
+                destination = entry.with_name(
+                    entry.name.replace(entry.name.split("-")[3], new_id)
+                )
+                self.assertEqual(
+                    json.loads((destination / "data.json").read_text()), payload
+                )
+                old_id = entry.name.split("-")[3]
+                for name in ("data", "images"):
+                    self.assertEqual(
+                        (destination / name / "result.txt").read_text(),
+                        f"{old_id} {name}\n",
+                    )
+
+    def test_relocate_preserves_linked_material_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entries = create_log(root, 2)
+            entry = entries[0]
+            before = declare_linked_fixture_inputs(logical, entry, relative=False)
+            location = f"../{entry.name}/images/result.txt"
+            declare_fixture_input(logical, "e002", "shared", location)
+            consumer_before = json.loads((entries[1] / "data.json").read_text())
+            summary = logical.with_suffix(".md")
+            summary.write_text(summary.read_text().replace("study/", "renamed/"))
+            destination = root / "archive" / "logs" / "renamed"
+            destination.parent.mkdir(parents=True)
+
+            moved = run(
+                root,
+                "reorganize",
+                "relocate-log",
+                "--path",
+                str(logical),
+                "--to",
+                str(destination),
+            )
+
+            self.assertEqual(moved.returncode, 0, moved.stderr)
+            new_entry = destination / "entries" / entry.name
+            self.assertEqual(json.loads((new_entry / "data.json").read_text()), before)
+            new_consumer = destination / "entries" / entries[1].name
+            self.assertEqual(
+                json.loads((new_consumer / "data.json").read_text()), consumer_before
+            )
+            for name in ("data", "images"):
+                self.assertEqual(
+                    (new_entry / name / "result.txt").read_text(), f"e001 {name}\n"
+                )
+
     def test_update_entry_verifies_markdown_then_renames_the_folder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

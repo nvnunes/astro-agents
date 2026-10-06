@@ -14,6 +14,7 @@ from research_log_data import (
     InputResource,
     data_file_from_inputs,
     load_data_file,
+    normalize_input_location,
     validate_log_consistency,
 )
 from research_log_reservations import artifact_transaction
@@ -351,8 +352,7 @@ def _identity_registry_updates(
     for owner, current_data in data.items():
         new_owner = roots.get(owner, owner)
         items = tuple(
-            _mapped_input(item, new_owner, roots, entry_ids)
-            for item in current_data.inputs
+            _mapped_input(item, owner, roots, entry_ids) for item in current_data.inputs
         )
         data_candidate = data_file_from_inputs(
             new_owner / "data.json", entry_root=new_owner, inputs=items
@@ -391,7 +391,7 @@ def _relocated_data_updates(
     for owner, current in data.items():
         new_owner = roots[owner]
         items = tuple(
-            _relocated_input(item, old_log.root, new_log.root, new_owner)
+            _relocated_input(item, old_log.root, new_log.root, owner)
             for item in current.inputs
         )
         built = data_file_from_inputs(
@@ -408,7 +408,7 @@ def _relocated_data_updates(
 
 def _mapped_input(
     item: InputResource,
-    new_owner: Path,
+    owner: Path,
     roots: Mapping[Path, Path],
     entry_ids: Mapping[str, str],
 ) -> InputResource:
@@ -425,7 +425,9 @@ def _mapped_input(
             )
         return item
     target = _map_path(Path(item.canonical_target), roots)
-    location = os.path.relpath(target, start=new_owner).replace(os.sep, "/")
+    new_owner = roots.get(owner, owner)
+    authored_target = _map_path(Path(os.path.abspath(owner / item.location)), roots)
+    location = _relative_input_location(target, authored_target, new_owner)
     return replace(
         item, location=location, canonical_target=target.resolve().as_posix()
     )
@@ -435,7 +437,7 @@ def _relocated_input(
     item: InputResource,
     old_log: Path,
     new_log: Path,
-    new_owner: Path,
+    owner: Path,
 ) -> InputResource:
     if Path(item.location).is_absolute():
         return item
@@ -444,10 +446,25 @@ def _relocated_input(
         target = new_log / target.relative_to(old_log)
     except ValueError:
         pass
-    location = os.path.relpath(target, start=new_owner).replace(os.sep, "/")
+    new_owner = new_log / owner.relative_to(old_log)
+    authored_target = _map_path(
+        Path(os.path.abspath(owner / item.location)), {old_log: new_log}
+    )
+    location = _relative_input_location(target, authored_target, new_owner)
     return replace(
         item, location=location, canonical_target=target.resolve().as_posix()
     )
+
+
+def _relative_input_location(target: Path, authored_target: Path, owner: Path) -> str:
+    """Retain logical material links while rebasing relative declarations."""
+
+    if authored_target.resolve() == target.resolve():
+        target = authored_target
+    location = normalize_input_location(target.as_posix(), entry_root=owner)
+    if Path(location).is_absolute():
+        return os.path.relpath(target, start=owner).replace(os.sep, "/")
+    return location
 
 
 def _mapped_evidence(

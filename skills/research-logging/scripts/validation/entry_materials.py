@@ -89,7 +89,7 @@ def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
 def _is_maintained_entry_material_link(path: Path) -> bool:
     """Recognize the exact material root of a regular maintained entry."""
 
-    entry = path.parent
+    entry = Path(os.path.abspath(path.parent))
     entries = entry.parent
     log = entries.parent
     summary = log.parent / f"{log.name}.md"

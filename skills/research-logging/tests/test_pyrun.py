@@ -868,7 +868,8 @@ class PyrunOutputSupportTests(unittest.TestCase):
                 "import json, os, sys\n"
                 "from pathlib import Path\n"
                 "Path(sys.argv[1]).write_text(json.dumps({name: os.environ[name] "
-                "for name in ('MODE', 'MPLCONFIGDIR', 'XDG_CACHE_HOME')}))\n",
+                "for name in ('MODE', 'MPLCONFIGDIR', 'XDG_CACHE_HOME', "
+                "'PYTHONPYCACHEPREFIX')}))\n",
                 encoding="utf-8",
             )
 
@@ -898,8 +899,10 @@ class PyrunOutputSupportTests(unittest.TestCase):
             self.assertNotEqual(
                 observed["XDG_CACHE_HOME"], os.environ.get("XDG_CACHE_HOME")
             )
-            self.assertFalse(Path(observed["MPLCONFIGDIR"]).exists())
-            self.assertFalse(Path(observed["XDG_CACHE_HOME"]).exists())
+            for name in ("MPLCONFIGDIR", "XDG_CACHE_HOME", "PYTHONPYCACHEPREFIX"):
+                cache = Path(observed[name])
+                self.assertEqual(cache.parent.parent, Path("/private/tmp"))
+                self.assertFalse(cache.parent.exists())
             record = execution_for_output(entry, "data/environment.json")
             self.assertEqual(record["recipe"]["environment"], {"MODE": "exact"})
 

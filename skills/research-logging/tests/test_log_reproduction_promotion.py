@@ -15,10 +15,13 @@ from log_commands.model import ActionError
 from log_commands.reproduction_execution import _fingerprint
 from log_commands.reproduction_promotion import (
     _begin_promotion,
+    _copy_path,
+    _discard_displaced,
     _install_outputs,
     _load_staging_bundle,
     _overlapping_paths,
     _PromotedOutput,
+    _rollback_outputs,
     _safe_run_path,
 )
 from reproduction_planning_test_support import _Fixture
@@ -26,6 +29,56 @@ from validation.operation_state import operation_lock
 
 
 class ReproductionPromotionTests(unittest.TestCase):
+    def test_separate_filesystems_use_private_tmp_rollback_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            first_volume = project / "ssd"
+            second_volume = project / "external"
+            first_volume.mkdir()
+            second_volume.mkdir()
+            outputs = []
+            for index, volume in enumerate((first_volume, second_volume)):
+                destination = volume / "result"
+                staged = project / f"staged-{index}"
+                destination.mkdir()
+                staged.mkdir()
+                (destination / "value").write_text("old")
+                (staged / "value").write_text("new")
+                outputs.append(_PromotedOutput(
+                    f"result-{index}", "directory", staged, destination,
+                    _fingerprint(destination, "directory"),
+                    _fingerprint(staged, "directory"),
+                ))
+            real_replace = os.replace
+
+            def same_volume_replace(source: object, target: object) -> None:
+                source_path = Path(source)
+                target_path = Path(target)
+                for volume in (first_volume, second_volume):
+                    if source_path.is_relative_to(volume) != (
+                        target_path.is_relative_to(volume)
+                    ):
+                        raise OSError("cross-filesystem rename")
+                real_replace(source, target)
+
+            with mock.patch(
+                "log_commands.reproduction_promotion.os.replace",
+                side_effect=same_volume_replace,
+            ):
+                installed = _install_outputs(outputs)
+                roots = {item.displaced.parent for item in installed}
+                for item in installed:
+                    self.assertEqual((item.destination / "value").read_text(), "new")
+                    self.assertEqual((item.displaced / "value").read_text(), "old")
+                    self.assertEqual(item.displaced.parent.parent, Path("/private/tmp"))
+                    self.assertEqual(item.replacement.parent, item.destination.parent)
+                self.assertEqual(_rollback_outputs(installed), [])
+            for item in installed:
+                self.assertEqual((item.destination / "value").read_text(), "old")
+            _discard_displaced(installed)
+            self.assertTrue(all(not root.exists() for root in roots))
+            self.assertEqual(list(project.rglob("*.promotion-*")), [])
+
     def test_promotion_reads_run_state_before_publication_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -72,7 +125,7 @@ class ReproductionPromotionTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             marker.unlink()
 
-    def test_disconnected_backup_concern_preserves_all_outputs(self) -> None:
+    def test_promotion_staging_does_not_depend_on_backup_storage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             (project / "tmp").mkdir()
@@ -90,9 +143,11 @@ class ReproductionPromotionTests(unittest.TestCase):
                 _fingerprint(destination, "file"),
                 _fingerprint(staged, "file"),
             )
-            with self.assertRaisesRegex(OSError, "unavailable"):
-                _install_outputs(project, (output,))
-            self.assertEqual(destination.read_text(), "old")
+            installed = _install_outputs((output,))
+            self.assertEqual(destination.read_text(), "new")
+            self.assertEqual(installed[0].displaced.read_text(), "old")
+            self.assertEqual(installed[0].displaced.parent.parent, Path("/private/tmp"))
+            _discard_displaced(installed)
             self.assertEqual(staged.read_text(), "new")
             self.assertFalse(missing.parent.exists())
 
@@ -114,11 +169,48 @@ class ReproductionPromotionTests(unittest.TestCase):
             )
             destination.write_text("raced\n", encoding="utf-8")
             with self.assertRaisesRegex(ActionError, "destination.txt"):
-                _install_outputs(project, (promoted,))
+                _install_outputs((promoted,))
             self.assertEqual(destination.read_text(encoding="utf-8"), "raced\n")
             destination.unlink()
             with self.assertRaisesRegex(ActionError, "destination.txt"):
-                _install_outputs(project, (promoted,))
+                _install_outputs((promoted,))
+
+    def test_failed_original_copy_leaves_destination_and_cleans_staging(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as rollback_directory,
+        ):
+            project = Path(directory)
+            destination = project / "destination.txt"
+            staged = project / "staged.txt"
+            destination.write_text("old")
+            staged.write_text("new")
+            output = _PromotedOutput(
+                "destination.txt", "file", staged, destination,
+                _fingerprint(destination, "file"), _fingerprint(staged, "file"),
+            )
+
+            def fail_original_copy(source: Path, target: Path, kind: str) -> None:
+                if source == destination:
+                    target.write_text("partial copy")
+                    raise OSError("forced original-copy failure")
+                _copy_path(source, target, kind)
+
+            with (
+                mock.patch(
+                    "log_commands.reproduction_promotion._copy_path",
+                    side_effect=fail_original_copy,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_promotion.tempfile.mkdtemp",
+                    return_value=rollback_directory,
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "original-copy failure"):
+                    _install_outputs((output,))
+            self.assertEqual(destination.read_text(), "old")
+            self.assertFalse(Path(rollback_directory).exists())
+            self.assertEqual(list(project.glob("*.promotion-*")), [])
 
     def test_install_rolls_back_earlier_output_when_later_baseline_races(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -152,7 +244,7 @@ class ReproductionPromotionTests(unittest.TestCase):
             )
             second_destination.write_text("second raced\n", encoding="utf-8")
             with self.assertRaisesRegex(ActionError, "second.txt"):
-                _install_outputs(project, (first, second))
+                _install_outputs((first, second))
             self.assertEqual(
                 first_destination.read_text(encoding="utf-8"), "first old\n"
             )
@@ -161,7 +253,10 @@ class ReproductionPromotionTests(unittest.TestCase):
             )
 
     def test_failed_restore_keeps_displaced_original_for_recovery(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as rollback_directory,
+        ):
             project = Path(directory)
             first_destination = project / "first.txt"
             second_destination = project / "second.txt"
@@ -194,25 +289,41 @@ class ReproductionPromotionTests(unittest.TestCase):
             real_replace = os.replace
 
             def fail_restore(source: object, destination: object) -> None:
-                if Path(source).name == "displaced-0":
+                if (
+                    Path(source).name.startswith(".first.txt.promotion-")
+                    and Path(source).read_text(encoding="utf-8") == "first old\n"
+                ):
                     raise OSError("forced restore failure")
                 real_replace(source, destination)
 
-            with mock.patch(
-                "log_commands.reproduction_promotion.os.replace",
-                side_effect=fail_restore,
+            with (
+                mock.patch(
+                    "log_commands.reproduction_promotion.os.replace",
+                    side_effect=fail_restore,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_promotion.tempfile.mkdtemp",
+                    return_value=rollback_directory,
+                ),
             ):
                 with self.assertRaises(ActionError) as raised:
-                    _install_outputs(project, (first, second))
+                    _install_outputs((first, second))
             self.assertEqual(
                 raised.exception.code, "reproduction.promotion.rollback_failed"
             )
-            backups = tuple((project / "tmp/backups").glob("promotion-*/displaced-0"))
+            backups = tuple(Path(rollback_directory).glob("displaced-0"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "first old\n")
+            self.assertEqual(first_destination.read_text(), "first new\n")
+            self.assertEqual(second_destination.read_text(), "second raced\n")
+            self.assertIn(str(backups[0]), str(raised.exception))
+            self.assertEqual(list(project.glob("*.promotion-*")), [])
 
     def test_current_replacement_and_restore_failure_keeps_its_original(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory(dir="/private/tmp") as rollback_directory,
+        ):
             project = Path(directory)
             destination = project / "destination.txt"
             staged = project / "staged.txt"
@@ -232,24 +343,30 @@ class ReproductionPromotionTests(unittest.TestCase):
                 source: object, target: object
             ) -> None:
                 name = Path(source).name
-                if name == "displaced-0" or name.startswith(
-                    ".destination.txt.promotion-"
-                ):
+                if name.startswith(".destination.txt.promotion-"):
                     raise OSError("forced current-output failure")
                 real_replace(source, target)
 
-            with mock.patch(
-                "log_commands.reproduction_promotion.os.replace",
-                side_effect=fail_current_install_and_restore,
+            with (
+                mock.patch(
+                    "log_commands.reproduction_promotion.os.replace",
+                    side_effect=fail_current_install_and_restore,
+                ),
+                mock.patch(
+                    "log_commands.reproduction_promotion.tempfile.mkdtemp",
+                    return_value=rollback_directory,
+                ),
             ):
                 with self.assertRaises(ActionError) as raised:
-                    _install_outputs(project, (promoted,))
+                    _install_outputs((promoted,))
             self.assertEqual(
                 raised.exception.code, "reproduction.promotion.rollback_failed"
             )
-            backups = tuple((project / "tmp/backups").glob("promotion-*/displaced-0"))
+            backups = tuple(Path(rollback_directory).glob("displaced-0"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "original\n")
+            self.assertIn(str(backups[0]), str(raised.exception))
+            self.assertEqual(list(project.glob("*.promotion-*")), [])
 
     def test_incomplete_or_unbound_staging_cannot_reach_promotion(self) -> None:
         owner = supervision_fixture.NativeSupervisionTests()

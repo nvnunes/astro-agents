@@ -1681,9 +1681,13 @@ requires every output in the staged execution, verifies the accepted invocation
 and frozen comparison evidence, recipe equality, output membership, staged
 fingerprints, and destination-baseline
 preconditions, then copies the complete set into maintained locations. A
-partial or stale set cannot be promoted. Displaced rollback copies live under
-`<project>/tmp/backups/promotion-.../`; a missing linked backups target is
-unavailable and must not be created. The same atomic metadata update installs
+partial or stale set cannot be promoted. Originals are copied into a disposable
+`/private/tmp/promotion-.../` directory for rollback. Each replacement is briefly
+staged beside its destination so installation and restoration use same-filesystem
+renames, including when the originals, staged results, or outputs are on different
+volumes. Successful publication or rollback removes the temporary copies; failed
+rollback retains originals in `/private/tmp` and reports their locations. Promotion
+does not depend on the backups concern. The same atomic metadata update installs
 the plan's accepted raw-script and effective-code observations with the complete
 output fingerprints. The effective-code observation may be null and remains
 noncurrent for later selection; source and outputs cannot be promoted independently.

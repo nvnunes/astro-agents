@@ -93,8 +93,8 @@ from research_log_reservations import (
     MissingArtifactReservationError,
     WorkerStillActiveError,
     artifact_transaction,
-    finish_recovery,
     finish_orphan_candidate,
+    finish_recovery,
     recovery_candidate_path,
     recovery_reservation,
     require_recovery_worker_finished,
@@ -1505,7 +1505,9 @@ def main(argv: list[str]) -> int:
                     )
                 )
             with (
-                tempfile.TemporaryDirectory(prefix="pyrun-") as temporary,
+                tempfile.TemporaryDirectory(
+                    prefix="pyrun-", dir="/private/tmp"
+                ) as temporary,
                 tempfile.TemporaryDirectory(
                     prefix="pyrun-scratch-", dir="/private/tmp"
                 ) as scratch,

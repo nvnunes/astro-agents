@@ -39,7 +39,7 @@ from .reproduction_job_control import (
     recognize_run_directory,
 )
 from .reproduction_jobs import _find_run, load_accepted_plan
-from .reproduction_paths import iter_canonical_run_roots, resolve_backups_root
+from .reproduction_paths import iter_canonical_run_roots
 from .reproduction_run import ArtifactResult
 from .reproduction_work import CommandWork
 from .reproduction_work_job import open_work_job
@@ -85,6 +85,7 @@ class _InstalledOutput:
     destination: Path
     displaced: Path
     replacement: Path
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -356,11 +357,10 @@ def _publish_promotion(
     resolution: _PromotionResolution,
     outputs: Sequence[_PromotedOutput],
 ) -> None:
-    project = resolve_project_root(log.root)
     text_candidates, prior_text = _metadata_candidates(log, resolution, outputs)
     installed: tuple[_InstalledOutput, ...] = ()
     try:
-        installed = _install_outputs(project, outputs)
+        installed = _install_outputs(outputs)
         atomic_write_texts(text_candidates)
         from research_log_result_store import result_generation
 
@@ -401,6 +401,7 @@ def _publish_promotion(
                 "reproduction.promotion.rollback_failed",
                 "; ".join(rollback_errors),
             )
+        _discard_displaced(installed)
         raise
     _discard_displaced(installed)
 
@@ -514,13 +515,13 @@ def _report_candidates(
 
 
 def _install_outputs(
-    project: Path, outputs: Sequence[_PromotedOutput]
+    outputs: Sequence[_PromotedOutput],
 ) -> tuple[_InstalledOutput, ...]:
-    tmp = project / "tmp"
-    tmp.mkdir(exist_ok=True)
-    backups = resolve_backups_root(project)
-    backups.mkdir(exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="promotion-", dir=backups))
+    """Copy originals to disposable storage; install through local replacements."""
+    if not outputs:
+        return ()
+    root = Path(tempfile.mkdtemp(prefix="promotion-", dir="/private/tmp"))
+    replacements: list[Path] = []
     installed: list[_InstalledOutput] = []
     try:
         for index, item in enumerate(outputs):
@@ -540,24 +541,33 @@ def _install_outputs(
                 raise ActionError(
                     "reproduction.promotion.destination_changed", str(destination)
                 )
-            replacement = (
-                destination.parent
-                / f".{destination.name}.promotion-{secrets.token_hex(8)}"
+            replacement = destination.parent / (
+                f".{destination.name}.promotion-{secrets.token_hex(8)}"
             )
+            replacements.append(replacement)
             _copy_path(item.staged, replacement, item.kind)
             if _fingerprint(replacement, item.kind) != item.fingerprint:
                 raise ActionError(
                     "reproduction.promotion.copy_changed", str(item.staged)
                 )
             displaced = root / f"displaced-{index}"
-            os.replace(destination, displaced)
-            installed.append(_InstalledOutput(destination, displaced, replacement))
+            _copy_path(destination, displaced, item.kind)
+            if _fingerprint(displaced, item.kind) != item.baseline:
+                raise ActionError(
+                    "reproduction.promotion.copy_changed", str(destination)
+                )
+            installed.append(
+                _InstalledOutput(destination, displaced, replacement, item.kind)
+            )
+            if item.kind == "directory":
+                _remove_path(destination)
             os.replace(replacement, destination)
     except BaseException:
         rollback_errors = _rollback_outputs(tuple(installed))
+        for replacement in replacements:
+            _remove_path(replacement)
         if rollback_errors:
-            # Keep the private displaced tree intact: it is the only durable
-            # copy of an original that could not be restored.
+            # Keep the original copies available for recovery.
             raise ActionError(
                 "reproduction.promotion.rollback_failed",
                 "; ".join(rollback_errors),
@@ -571,11 +581,23 @@ def _rollback_outputs(installed: Sequence[_InstalledOutput]) -> list[str]:
     errors: list[str] = []
     for item in reversed(installed):
         try:
-            _remove_path(item.destination)
-            os.replace(item.displaced, item.destination)
             _remove_path(item.replacement)
+            _copy_path(item.displaced, item.replacement, item.kind)
+            if _fingerprint(item.replacement, item.kind) != _fingerprint(
+                item.displaced, item.kind
+            ):
+                raise ActionError(
+                    "reproduction.promotion.copy_changed", str(item.displaced)
+                )
+            if item.kind == "directory":
+                _remove_path(item.destination)
+            os.replace(item.replacement, item.destination)
         except BaseException as error:
-            errors.append(f"{item.destination}: {error}")
+            errors.append(
+                f"{item.destination}: {error}; original retained at {item.displaced}"
+            )
+        finally:
+            _remove_path(item.replacement)
     return errors
 
 

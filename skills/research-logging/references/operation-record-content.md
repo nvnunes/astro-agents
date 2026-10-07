@@ -47,9 +47,11 @@ inside an entry.
 Before finishing, inspect only the files and material changed or consumed by
 this Record operation. Confirm that the requested research is recorded, every
 required authoring action succeeded, referenced outputs exist, and any material
-defect affecting the evidence is documented. Check the revised sections against
-the loaded writing guidance. Remove maintenance narration, duplicated
-explanations, and script-obvious detail introduced by the current work. Confirm
+defect affecting the evidence is documented. Check that each revised `Background:`
+statement establishes the scientific question, motivation, or context needed to
+interpret the evidence. Remove statements whose only purpose is to report work
+performed or changes made, and duplicated explanations or script-obvious detail
+introduced by the current work. Confirm
 that shortening has preserved the selected numerical evidence and reasoning
 needed to understand the result. Do not run Validate within Record,
 reopen registries, inspect unrelated entries, or recheck invariants guaranteed

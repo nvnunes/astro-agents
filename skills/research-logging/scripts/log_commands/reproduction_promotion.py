@@ -39,7 +39,7 @@ from .reproduction_job_control import (
     recognize_run_directory,
 )
 from .reproduction_jobs import _find_run, load_accepted_plan
-from .reproduction_paths import iter_canonical_run_roots
+from .reproduction_paths import iter_canonical_run_roots, resolve_backups_root
 from .reproduction_run import ArtifactResult
 from .reproduction_work import CommandWork
 from .reproduction_work_job import open_work_job
@@ -485,9 +485,7 @@ def _metadata_candidates(
     return updates, prior
 
 
-def _matches_accepted_baseline(
-    execution: PyrunExecution, work: CommandWork
-) -> bool:
+def _matches_accepted_baseline(execution: PyrunExecution, work: CommandWork) -> bool:
     """Accept the original baseline or an already-adopted matching source."""
 
     if execution.recipe.as_dict() != work.execution.recipe.as_dict():
@@ -520,7 +518,9 @@ def _install_outputs(
 ) -> tuple[_InstalledOutput, ...]:
     tmp = project / "tmp"
     tmp.mkdir(exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="promotion-", dir=tmp))
+    backups = resolve_backups_root(project)
+    backups.mkdir(exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="promotion-", dir=backups))
     installed: list[_InstalledOutput] = []
     try:
         for index, item in enumerate(outputs):

@@ -33,6 +33,37 @@ def resolve_project_tmp(project_root: Path) -> Path:
     return resolved
 
 
+def resolve_reproduction_root(project_root: Path) -> Path:
+    """Resolve the retained reproduction concern, allowing an intentional link."""
+
+    return _resolve_concern_root(project_root, REPRODUCTION_ROOT_NAME)
+
+
+def resolve_verification_root(project_root: Path) -> Path:
+    """Resolve the retained command-verification concern before workspace creation."""
+
+    return _resolve_concern_root(project_root, "verification")
+
+
+def resolve_backups_root(project_root: Path) -> Path:
+    """Resolve the concern that retains displaced promotion outputs."""
+
+    return _resolve_concern_root(project_root, "backups")
+
+
+def _resolve_concern_root(project_root: Path, name: str) -> Path:
+    path = resolve_project_tmp(project_root) / name
+    try:
+        # A missing regular concern can be created beneath accessible tmp. A
+        # linked concern must already exist; never create a disconnected target.
+        resolved = path.resolve(strict=path.is_symlink())
+    except (OSError, RuntimeError) as error:
+        raise OSError(f"project {name} root is unavailable: {path}") from error
+    if resolved.exists() and not resolved.is_dir():
+        raise OSError(f"project {name} root is not a directory: {path}")
+    return resolved
+
+
 def project_tmp_relative(path: Path, project_root: Path) -> str:
     """Return one canonical dated reproduction-run identity."""
 
@@ -60,16 +91,24 @@ def job_state_path(run_root: Path) -> Path:
 def _canonical_run_location(
     path: Path, project_root: Path, *, require_exists: bool
 ) -> tuple[Path, str]:
-    temporary = resolve_project_tmp(project_root)
-    resolved = path.resolve(strict=require_exists)
+    root = resolve_reproduction_root(project_root)
     try:
-        relative = resolved.relative_to(temporary)
+        resolved = path.resolve(strict=require_exists)
+    except (OSError, RuntimeError) as error:
+        raise OSError(f"reproduction run is unavailable: {path}") from error
+    try:
+        relative = resolved.relative_to(root)
     except ValueError as error:
-        raise OSError(f"path is outside the project tmp directory: {path}") from error
-    logical = (PurePosixPath("tmp") / PurePosixPath(relative.as_posix())).as_posix()
+        raise OSError(f"path is outside the reproduction root: {path}") from error
+    logical = (
+        PurePosixPath("tmp", REPRODUCTION_ROOT_NAME)
+        / PurePosixPath(relative.as_posix())
+    ).as_posix()
     if (
         path.is_symlink()
+        or path.parent.is_symlink()
         or not is_canonical_run_path(logical)
+        or (root / relative.parts[0]).is_symlink()
         or (require_exists and not resolved.is_dir())
     ):
         raise OSError(f"path is not a canonical reproduction run: {path}")
@@ -127,12 +166,9 @@ def iter_canonical_run_roots(
 ) -> tuple[Path, ...]:
     """Return canonical run directories after one bounded two-level scan."""
 
-    temporary = resolve_project_tmp(project_root)
-    root = temporary / REPRODUCTION_ROOT_NAME
-    if not root.exists() and not root.is_symlink():
+    root = resolve_reproduction_root(project_root)
+    if not root.exists():
         return ()
-    if root.is_symlink() or not root.is_dir():
-        raise OSError(f"reproduction root is not a regular directory: {root}")
     runs: list[Path] = []
     inspected = 0
     for dated in sorted(root.iterdir(), key=lambda item: item.name):

@@ -50,6 +50,7 @@ from .reproduction_job_control import (
 )
 from .reproduction_paths import (
     canonical_run_path,
+    canonical_run_root,
     iter_canonical_run_roots,
     run_leaf,
 )
@@ -666,7 +667,8 @@ def _require_no_recovery_exclusion(
     """Reject overlap while a current SQLite run still needs orphan recovery."""
 
     project_root = resolve_project_root(log.root)
-    if not (project_root / "tmp").exists():
+    temporary = project_root / "tmp"
+    if not temporary.exists() and not temporary.is_symlink():
         return
     try:
         roots = iter_canonical_run_roots(project_root, max_entries=MAX_RUN_DIRECTORIES)
@@ -813,7 +815,14 @@ def _new_run_root(
     accepted_at: str,
 ) -> Path:
     leaf = run_leaf(log.root.name, entry, run_id)
-    return project / canonical_run_path(accepted_at, leaf)
+    try:
+        return canonical_run_root(
+            project / canonical_run_path(accepted_at, leaf),
+            project,
+            require_exists=False,
+        )
+    except OSError as error:
+        raise ActionError("reproduction.workspace.unavailable", str(error)) from error
 
 
 def _new_run_id() -> str:

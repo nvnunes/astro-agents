@@ -72,6 +72,30 @@ class ReproductionPromotionTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
             marker.unlink()
 
+    def test_disconnected_backup_concern_preserves_all_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "tmp").mkdir()
+            missing = project / "disconnected/backups"
+            (project / "tmp/backups").symlink_to(missing)
+            destination = project / "destination.txt"
+            staged = project / "staged.txt"
+            destination.write_text("old")
+            staged.write_text("new")
+            output = _PromotedOutput(
+                "destination.txt",
+                "file",
+                staged,
+                destination,
+                _fingerprint(destination, "file"),
+                _fingerprint(staged, "file"),
+            )
+            with self.assertRaisesRegex(OSError, "unavailable"):
+                _install_outputs(project, (output,))
+            self.assertEqual(destination.read_text(), "old")
+            self.assertEqual(staged.read_text(), "new")
+            self.assertFalse(missing.parent.exists())
+
     def test_install_rechecks_missing_and_changed_destination_baselines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -183,7 +207,7 @@ class ReproductionPromotionTests(unittest.TestCase):
             self.assertEqual(
                 raised.exception.code, "reproduction.promotion.rollback_failed"
             )
-            backups = tuple((project / "tmp").glob("promotion-*/displaced-0"))
+            backups = tuple((project / "tmp/backups").glob("promotion-*/displaced-0"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "first old\n")
 
@@ -223,7 +247,7 @@ class ReproductionPromotionTests(unittest.TestCase):
             self.assertEqual(
                 raised.exception.code, "reproduction.promotion.rollback_failed"
             )
-            backups = tuple((project / "tmp").glob("promotion-*/displaced-0"))
+            backups = tuple((project / "tmp/backups").glob("promotion-*/displaced-0"))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "original\n")
 

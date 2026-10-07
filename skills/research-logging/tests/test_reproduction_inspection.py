@@ -730,14 +730,26 @@ class SavedInspectionTests(unittest.TestCase):
     def test_stream_lookup_accepts_project_tmp_symlink_and_confines_absolute_paths(
         self,
     ):
+        self._linked_stream_lookup(external_concern=False)
+
+    def test_stream_lookup_accepts_external_reproduction_concern(self):
+        self._linked_stream_lookup(external_concern=True)
+
+    def _linked_stream_lookup(self, *, external_concern):
         producer = next(
             work for work in self.run.commands if work.identity.cid == "producer"
         )
-        scratch = self.root.parent / "scratch"
-        scratch.mkdir()
-        (self.root.parent / "tmp").symlink_to(scratch, target_is_directory=True)
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        scratch = Path(external.name).resolve()
+        if external_concern:
+            (self.root.parent / "tmp").mkdir()
+            (self.root.parent / "tmp/reproduction").symlink_to(scratch)
+            physical = scratch.joinpath(*saved_run_path(self.run).parts[2:])
+        else:
+            (self.root.parent / "tmp").symlink_to(scratch, target_is_directory=True)
+            physical = scratch.joinpath(*saved_run_path(self.run).parts[1:])
         logical = self.root.parent.joinpath(*saved_run_path(self.run).parts)
-        physical = scratch.joinpath(*saved_run_path(self.run).parts[1:])
         stream = physical / "tmp/run/stdout.log"
         stream.parent.mkdir(parents=True)
         stream.write_text("original diagnostic")

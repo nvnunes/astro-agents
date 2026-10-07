@@ -27,7 +27,7 @@ Create a skill snapshot in a new destination:
 ```bash
 ./.conda/bin/python scripts/agent_behavior_eval.py snapshot \
   --source skills/research-logging \
-  --destination tmp/agent-eval/snapshots/baseline/research-logging
+  --destination tmp/experiments/agent-eval/snapshots/baseline/research-logging
 ```
 
 Define the turns in JSON. Prompt paths are relative to the sequence file, and
@@ -48,13 +48,13 @@ reasoning effort explicitly:
 
 ```bash
 ./.conda/bin/python scripts/agent_behavior_eval.py sequence \
-  --template tmp/agent-eval/fixture-template \
-  --workspace tmp/agent-eval/trials/baseline-01/workspace \
-  --snapshot-root tmp/agent-eval/snapshots/baseline/research-logging \
+  --template tmp/experiments/agent-eval/fixture-template \
+  --workspace tmp/experiments/agent-eval/trials/baseline-01/workspace \
+  --snapshot-root tmp/experiments/agent-eval/snapshots/baseline/research-logging \
   --skill-name research-logging \
   --disable-skill "$PWD/skills/research-logging/SKILL.md" \
-  --sequence-file tmp/agent-eval/sequence.json \
-  --output-dir tmp/agent-eval/trials/baseline-01/artifacts \
+  --sequence-file tmp/experiments/agent-eval/sequence.json \
+  --output-dir tmp/experiments/agent-eval/trials/baseline-01/artifacts \
   --model gpt-5.6-terra \
   --reasoning-effort medium
 ```
@@ -82,8 +82,8 @@ Produce a generic, scorer-ready summary with:
 
 ```bash
 ./.conda/bin/python scripts/agent_behavior_eval.py inspect \
-  --artifacts tmp/agent-eval/trials/baseline-01/artifacts \
-  --output tmp/agent-eval/trials/baseline-01/inspection.json
+  --artifacts tmp/experiments/agent-eval/trials/baseline-01/artifacts \
+  --output tmp/experiments/agent-eval/trials/baseline-01/inspection.json
 ```
 
 The inspection reports actual peak input tokens, the observed model context

@@ -564,7 +564,7 @@ class CommandVerificationTests(unittest.TestCase):
                         "e001", "repair", "pyrun-exec/v2:" + "0" * 64
                     ),
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_selector_rejects_alias_and_prefix_before_log_access(self) -> None:
         identity = "pyrun-exec/v2:" + "1" * 64
@@ -586,6 +586,55 @@ class CommandVerificationTests(unittest.TestCase):
                     fixture.log,
                     CommandVerificationRequest("e001", "repair", identity, 0),
                 )
+
+    def _external_root(self, name: str) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name).resolve() / name
+
+    def test_verification_uses_real_tmp_with_external_concern(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, identity = self._fixture(Path(directory))
+            target = self._external_root("verification")
+            target.mkdir()
+            (fixture.root / "tmp/verification").symlink_to(target)
+            before = self._snapshot(fixture.root)
+            result = verify_command(
+                fixture.log, CommandVerificationRequest("e001", "repair", identity)
+            )
+            self.assertEqual(result.status, "matched")
+            workspace = self._assert_workspace(result)
+            self.assertTrue(workspace.is_relative_to(target))
+            self.assertEqual(self._snapshot(fixture.root), before)
+            self.assertFalse((fixture.root / "tmp/reproduction").exists())
+
+    def test_verification_supports_project_tmp_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, identity = self._fixture(Path(directory))
+            target = self._external_root("tmp")
+            (fixture.root / "tmp").rename(target)
+            (fixture.root / "tmp").symlink_to(target)
+            result = verify_command(
+                fixture.log, CommandVerificationRequest("e001", "repair", identity)
+            )
+            self.assertEqual(result.status, "matched")
+            self.assertTrue(
+                self._assert_workspace(result).is_relative_to(target / "verification")
+            )
+
+    def test_disconnected_verification_returns_unavailable_without_creation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, identity = self._fixture(Path(directory))
+            missing = fixture.root / "disconnected/verification"
+            (fixture.root / "tmp/verification").symlink_to(missing)
+            result = verify_command(
+                fixture.log, CommandVerificationRequest("e001", "repair", identity)
+            )
+            self.assertEqual(result.status, "unavailable")
+            self.assertIsNone(result.workspace)
+            self.assertFalse(missing.parent.exists())
 
     def test_result_contract_is_nonpublishing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -771,7 +820,7 @@ class CommandVerificationTests(unittest.TestCase):
                 verify_command(
                     fixture.log, CommandVerificationRequest("e001", "repair", identity)
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_ambiguous_selector_fails_before_workspace_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -785,7 +834,7 @@ class CommandVerificationTests(unittest.TestCase):
                 verify_command(
                     fixture.log, CommandVerificationRequest("e001", "repair", identity)
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_invalid_current_command_fails_before_workspace_creation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -800,7 +849,7 @@ class CommandVerificationTests(unittest.TestCase):
                 verify_command(
                     fixture.log, CommandVerificationRequest("e001", "repair", identity)
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_stale_current_recipe_is_not_executed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -818,7 +867,7 @@ class CommandVerificationTests(unittest.TestCase):
                 verify_command(
                     fixture.log, CommandVerificationRequest("e001", "repair", identity)
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_changed_direct_input_executes_and_reports_historical_difference(
         self,
@@ -1231,9 +1280,7 @@ class CommandVerificationTests(unittest.TestCase):
                 )
             self.assertEqual(len(scratches), 1)
             self.assertFalse(scratches[0].exists())
-            workspaces = list(
-                (fixture.root / "tmp" / "command-verification").glob("*/*")
-            )
+            workspaces = list((fixture.root / "tmp" / "verification").glob("*/*"))
             self.assertEqual(len(workspaces), 1)
             self.assertEqual(list(workspaces[0].rglob("seatbelt-*.sb")), [])
 
@@ -1665,7 +1712,7 @@ class CommandVerificationTests(unittest.TestCase):
                         fixture.log,
                         CommandVerificationRequest("e001", "repair", identity),
                     )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_output_binding_covers_equals_and_combined_capture_forms(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1899,7 +1946,7 @@ class CommandVerificationTests(unittest.TestCase):
                         fixture.log,
                         CommandVerificationRequest("e001", "repair", identity),
                     )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
     def test_signal_precedes_late_unavailable_result(self) -> None:
         workspace = Path("/private/tmp/command-verification-signal")
@@ -1953,7 +2000,7 @@ class CommandVerificationTests(unittest.TestCase):
                 verify_command(
                     fixture.log, CommandVerificationRequest("e001", "repair", identity)
                 )
-            self.assertFalse((fixture.root / "tmp" / "command-verification").exists())
+            self.assertFalse((fixture.root / "tmp" / "verification").exists())
 
 
 if __name__ == "__main__":

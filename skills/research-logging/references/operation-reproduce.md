@@ -147,6 +147,11 @@ Old jobs are unsupported and remain unchanged; start a new
 
 Run folders are
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`.
+Resolve the owning project's `tmp/reproduction` concern before accessing runs.
+Either this concern or the project tmp root may be an intentional symlink.
+Missing linked storage is unavailable: do not create its target or use fallback
+storage. Keep logical run identities and reject date/run symlinks.
+
 The immutable UTC acceptance date organizes paths; lookup uses run ID alone.
 Do not move or discard retained runs or derive a date selector.
 

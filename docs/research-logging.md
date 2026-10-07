@@ -1071,8 +1071,11 @@ unrelated log's run does not block planning merely because it needs recovery.
 
 Runs live at
 `<project>/tmp/reproduction/YYYY-MM-DD/reproduce-<log>[-<entry>]-<run-id>/`.
-The immutable UTC acceptance date organizes paths; every lookup uses run ID
-alone. Obsolete jobs are unsupported and remain unchanged, not migrated.
+Folders are grouped by the UTC date the run was accepted; use the run ID with
+the commands above to inspect or control it. If your project stores reproduction
+runs on an external drive, connect that drive before starting or accessing a run.
+When that storage is unavailable, the tool reports the problem instead of saving
+the run elsewhere. Runs from unsupported older tool versions remain unchanged.
 
 Complete production and comparison clear the existing reproduction requirement,
 even for unequal artifacts. If every artifact is canonically matched, the same
@@ -1269,12 +1272,7 @@ reusable and evaluates everything affected by current research state.
 ## Command Verification
 
 Use `log command verify --path LOG --entry ENTRY --cid CID --execution-id ID` to test one
-current repaired invocation. It is isolated and synchronous: it writes only its
-temporary command-verification workspace and lock state, never a reproduction run,
-result, report, requirement flag, or promoted artifact. Bare `log reproduce`
-plans only log or entry work; former repair reproduction and run-ID
-single-execution presentation are removed. Available current direct inputs are
-consumed and compared with their recorded observations; differences are
-reported without updating those observations. Failures before workspace
-creation return a null workspace, while every later terminal outcome retains
-the created workspace and diagnostics.
+repaired invocation and wait for its result. Verification uses the current direct
+inputs and reports differences from their recorded observations. It leaves the
+research record, retained evidence, and reproduction requirements unchanged;
+use reproduction when you need to update the log's reproduction results.

@@ -61,7 +61,7 @@ from .reproduction_invocation import (
     MAX_EXECUTION_TIMEOUT_SECONDS,
     AcceptedInvocation,
 )
-from .reproduction_paths import resolve_project_tmp
+from .reproduction_paths import resolve_verification_root
 from .storage import log_lock, reproduction_log_reservation
 
 
@@ -169,23 +169,9 @@ def _verify_command(
     with reproduction_log_reservation(log):
         with log_lock(log):
             authority = _load_authority(log, request)
-        root = (
-            resolve_project_tmp(authority.project)
-            / "command-verification"
-            / date.today().isoformat()
+        workspace = _create_verification_workspace(
+            authority, log.root.name, request.entry
         )
-        random_identity = secrets.token_hex(8)
-        name = f"command-verification-{log.root.name}-{request.entry}-{random_identity}"
-        workspace = root / name
-        # All selector, input, binding, path, and confinement failures happen
-        # before this retained workspace exists.
-        preflight_isolated_invocation(
-            authority.entry,
-            authority.invocation,
-            workspace,
-            input_observations=authority.inputs,
-        )
-        workspace.mkdir(parents=True, mode=0o700)
         cancelled = threading.Event()
         received: list[int] = []
         prior = {
@@ -684,6 +670,30 @@ def _result(  # noqa: PLR0913
     )
 
 
+def _create_verification_workspace(
+    authority: _VerificationAuthority, log_name: str, entry: str
+) -> Path:
+    """Preflight storage and invocation before creating one retained workspace."""
+
+    try:
+        root = resolve_verification_root(authority.project) / date.today().isoformat()
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise OSError(f"verification date is not a regular directory: {root}")
+        random_identity = secrets.token_hex(8)
+        name = f"command-verification-{log_name}-{entry}-{random_identity}"
+        workspace = root / name
+        preflight_isolated_invocation(
+            authority.entry,
+            authority.invocation,
+            workspace,
+            input_observations=authority.inputs,
+        )
+        workspace.mkdir(parents=True, mode=0o700)
+    except OSError as error:
+        raise ActionError("command.verify.workspace.unavailable", str(error)) from error
+    return workspace
+
+
 def _runtime_unavailable(error: ActionError) -> bool:
     """Classify non-selector runtime prerequisites and stability observations."""
 
@@ -692,6 +702,7 @@ def _runtime_unavailable(error: ActionError) -> bool:
             "command.verify.source.",
             "command.verify.input.",
             "command.verify.baseline.",
+            "command.verify.workspace.",
             "command.verify.source.changed",
             "reproduction.environment.",
             "reproduction.input.",

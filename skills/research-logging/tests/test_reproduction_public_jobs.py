@@ -178,10 +178,16 @@ class PublicNativeJobsTests(unittest.TestCase):
             shared.result_store_path(fixture.log.root).read_bytes(), before
         )
 
-    def fixture(self, *, failed=False):
+    def fixture(self, *, failed=False, external_reproduction=False):
         owner = fixture_support.NativeSupervisionTests()
         self.addCleanup(owner.doCleanups)
         fixture, workspace = owner.prepare_graph(fail_producer=failed)
+        if external_reproduction:
+            external = tempfile.TemporaryDirectory()
+            self.addCleanup(external.cleanup)
+            target = Path(external.name).resolve() / "reproduction"
+            (fixture.root / "tmp/reproduction").rename(target)
+            (fixture.root / "tmp/reproduction").symlink_to(target)
         return owner, fixture, workspace
 
     def test_public_entry_run_freezes_all_selector_and_runtime_settings(self):
@@ -296,8 +302,10 @@ class PublicNativeJobsTests(unittest.TestCase):
             json.loads(output.getvalue())["run_id"], "reproduce-native-graph"
         )
 
-    def run_public(self, *, failed=False):
-        owner, fixture, workspace = self.fixture(failed=failed)
+    def run_public(self, *, failed=False, external_reproduction=False):
+        owner, fixture, workspace = self.fixture(
+            failed=failed, external_reproduction=external_reproduction
+        )
         with open_work_job(workspace.run_root) as job:
             identities = {work.identity for work in job.accepted.plan.commands}
         # Discard only this test's seeded helper job; launch must accept its own.
@@ -367,6 +375,28 @@ class PublicNativeJobsTests(unittest.TestCase):
         for timing in public_status["execution_timings"]:
             self.assertEqual(set(timing), timing_keys)
         return fixture, accepted[0], load_inspection(fixture.log)
+
+    def test_external_reproduction_creates_executes_and_inspects_logical_run(self):
+        fixture, accepted, inspection = self.run_public(external_reproduction=True)
+        root = jobs._find_run(fixture.log, accepted.run_id)
+        self.assertTrue(
+            root.is_relative_to((fixture.root / "tmp/reproduction").resolve())
+        )
+        self.assertTrue(accepted.run_path.startswith("tmp/reproduction/"))
+        self.assertEqual(inspection.run.run_id, accepted.run_id)
+
+    def test_disconnected_reproduction_blocks_creation_and_recovery_scan(self):
+        owner, fixture, workspace = self.fixture()
+        shutil.rmtree(fixture.root / "tmp/reproduction")
+        missing = fixture.root / "disconnected/reproduction"
+        (fixture.root / "tmp/reproduction").symlink_to(missing)
+        with self.assertRaisesRegex(ActionError, "unavailable"):
+            jobs.launch_reproduction(fixture.log, RunTarget(), RunSettings())
+        with self.assertRaisesRegex(ActionError, "unavailable"):
+            jobs._require_no_recovery_exclusion(
+                fixture.log, None, ignore_recovery_run_id=None
+            )
+        self.assertFalse(missing.parent.exists())
 
     def test_ordinary_run_executes_compares_clears_and_publishes(self):
         fixture, accepted, inspection = self.run_public()
@@ -812,7 +842,15 @@ class PublicNativeJobsTests(unittest.TestCase):
         self.assertEqual(load_inspection(fixture.log).run, before.run)
 
     def test_public_prestart_stop_resumes_the_same_acceptance_without_planning(self):
-        owner, fixture, workspace = self.fixture()
+        self._prestart_stop_resume(external_reproduction=False)
+
+    def test_external_reproduction_stop_and_resume_preserve_acceptance(self):
+        self._prestart_stop_resume(external_reproduction=True)
+
+    def _prestart_stop_resume(self, *, external_reproduction):
+        owner, fixture, workspace = self.fixture(
+            external_reproduction=external_reproduction
+        )
         shutil.rmtree(workspace.run_root)
         accepted = []
 

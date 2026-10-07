@@ -539,8 +539,9 @@ excerpt truncation is explicitly disclosed and full retained paths are supplied.
 
 Recorded relative stream paths resolve beneath the accepted run's canonical
 dated directory, using saved coverage, acceptance time, run ID and project root.
-The existing project `tmp` symlink contract applies; inspection does not scan
-other runs or current registries. Absolute stream paths must lie inside that
+The resolved `tmp/reproduction` root is the containment boundary, including
+an intentional concern symlink beneath a real local `tmp` directory or the
+project-root `tmp` symlink. Inspection does not scan other runs or current registries. Absolute stream paths must lie inside that
 same logical or resolved run directory. Stream-component symlinks are rejected.
 Missing retained files affect availability only, never saved classification.
 
@@ -1639,6 +1640,14 @@ Each run is a direct child of its date directory; there are no intermediate log
 or entry directories. `<log>` and `<entry>` are stable normalized
 filesystem-safe identifiers.
 
+The project `tmp` directory must be accessible. Either `tmp` itself or its
+`reproduction` concern may be an intentional symlink. Resolve the concern before
+creation, lookup, inspection, resume, or recovery; a missing linked target is
+unavailable and must never be created or replaced by fallback storage. A missing
+regular concern beneath accessible tmp may be created by acceptance. Saved run
+identities remain logical `tmp/reproduction/...` paths. Date and run directories
+must be regular directories, and stream confinement uses the resolved run root.
+
 Acceptance creates only the shared `reproduction/` root, the applicable date
 directory, and the accepted run directory. A preview or read-only lookup
 creates none of them. Existing-run lookup takes only the immutable run ID and
@@ -1672,7 +1681,9 @@ requires every output in the staged execution, verifies the accepted invocation
 and frozen comparison evidence, recipe equality, output membership, staged
 fingerprints, and destination-baseline
 preconditions, then copies the complete set into maintained locations. A
-partial or stale set cannot be promoted. The same atomic metadata update installs
+partial or stale set cannot be promoted. Displaced rollback copies live under
+`<project>/tmp/backups/promotion-.../`; a missing linked backups target is
+unavailable and must not be created. The same atomic metadata update installs
 the plan's accepted raw-script and effective-code observations with the complete
 output fingerprints. The effective-code observation may be null and remains
 noncurrent for later selection; source and outputs cannot be promoted independently.
@@ -1777,3 +1788,11 @@ physical confinement/capture/comparison owners. It owns no reproduction job or
 saved history, does not clear reproduction requirements, promote outputs or
 replace validation snapshots. See the command-verification contract and usage
 guidance for its independent selectors and retained debugging workspace.
+
+Verification retains workspaces under
+`<project>/tmp/verification/YYYY-MM-DD/command-verification-.../`. Resolve the
+verification concern independently using the same intentional-root-symlink and
+unavailable-target contract as reproduction. Its date/workspace directories must
+be regular directories. A storage failure before creation returns an unavailable
+result with a null workspace; created workspaces and diagnostics remain retained.
+Verification workspaces are never canonical reproduction runs.

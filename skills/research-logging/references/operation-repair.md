@@ -101,6 +101,11 @@ bypass a precondition.
 
 ## Check The Correction
 
+Retain isolated workspaces in `tmp/verification/YYYY-MM-DD/command-verification-.../`.
+The verification concern or project tmp root may be an intentional symlink;
+resolve it before creation. Missing linked storage is unavailable, without
+fallback or creation of its target.
+
 The isolated command-verification operation is synchronous. It never creates a
 reproduction run, changes metadata, clears a requirement, publishes a result,
 or promotes outputs. It compares current declared-input fingerprints with their

@@ -30,6 +30,12 @@ class ArtifactReservationError(OSError):
 
     code = "artifact.reservation.conflict"
 
+    def __init__(
+        self, message: str, *, records: tuple[dict[str, object], ...] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.records = records
+
 
 class WorkerStillActiveError(ArtifactReservationError):
     """A zero-exit worker still has live process-group descendants."""
@@ -180,6 +186,7 @@ def _overlap(first: str, second: str) -> bool:
 
 
 def _require_access(
+    root: Path,
     records: tuple[ArtifactReservation, ...],
     reads: tuple[str, ...],
     writes: tuple[str, ...],
@@ -202,10 +209,14 @@ def _require_access(
             path for path in writes if Path(record.entry).is_relative_to(Path(path))
         )
         if conflicts:
+            status = _reservation_status(root, record)
             raise ArtifactReservationError(
                 f"{record.entry}/{record.cid}: artifacts in use: {sorted(conflicts)}; "
                 f"owner PID {record.parent_pid}, worker {record.worker_pid}; "
-                "wait for the run or use log command release for an abandoned run"
+                f"reservation {record.identity} ({status['status']}, "
+                f"completion candidate: {status['completion_candidate']}); "
+                "inspect with log command reservations before recovery or release",
+                records=({**status, "conflicting_paths": sorted(conflicts)},),
             )
 
 
@@ -222,7 +233,7 @@ def artifact_transaction(
     read_paths = tuple(path.resolve().as_posix() for path in reads)
     write_paths = tuple(path.resolve().as_posix() for path in writes)
     with operation_lock(root, "artifact-reservations.lock", timeout_seconds=10):
-        _require_access(_records(root), read_paths, write_paths, exclude)
+        _require_access(root, _records(root), read_paths, write_paths, exclude)
         yield
 
 
@@ -232,6 +243,7 @@ def require_artifact_access(
     """Read-only conflict check; publication must check again under its guard."""
 
     _require_access(
+        root,
         _records(root),
         tuple(path.resolve().as_posix() for path in reads),
         tuple(path.resolve().as_posix() for path in writes),
@@ -247,6 +259,42 @@ def _alive(pid: int, *, group: bool = False) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _reservation_status(root: Path, record: ArtifactReservation) -> dict[str, object]:
+    parent_alive = _alive(record.parent_pid)
+    worker_alive = record.worker_pid is not None and _alive(
+        record.worker_pid, group=True
+    )
+    candidate = recovery_candidate_path(root, record.identity)
+    return {
+        "reservation": record.identity,
+        "entry": record.entry,
+        "cid": record.cid,
+        "reads": list(record.reads),
+        "writes": list(record.writes),
+        "parent_pid": record.parent_pid,
+        "worker_pid": record.worker_pid,
+        "parent_alive": parent_alive,
+        "worker_alive": worker_alive,
+        "status": "live" if parent_alive or worker_alive else "abandoned",
+        "completion_candidate": candidate.exists() or candidate.is_symlink(),
+    }
+
+
+def inspect_reservations(
+    root: Path, entry: Path, cid: str, *, reservation: str | None = None
+) -> tuple[dict[str, object], ...]:
+    """Observe selected entry/CID owners without changing generated state.
+
+    An optional UUID must belong to that entry/CID. Liveness and candidate
+    presence are observations, not certification of output completeness.
+    """
+
+    return tuple(
+        _reservation_status(root, record)
+        for record in _selected(root, entry, cid, reservation)
+    )
 
 
 def require_worker_finished(root: Path, identity: str) -> None:
@@ -308,13 +356,25 @@ def register_worker(root: Path, identity: str) -> None:
         _publish(root, replace(current, worker_pid=os.getpid()))
 
 
-def release_abandoned(root: Path, entry: Path, cid: str, *, dry_run: bool) -> int:
-    """Clear only this entry/CID's reservations, refusing every live owner."""
+def release_abandoned(
+    root: Path,
+    entry: Path,
+    cid: str,
+    *,
+    dry_run: bool,
+    reservation: str | None = None,
+) -> int:
+    """Clear selected entry/CID reservations, refusing every live owner.
+
+    An optional UUID narrows cleanup to one invocation. Apply rechecks owners
+    under the reservation guard; preview writes nothing. Neither changes
+    retained artifacts or execution observations.
+    """
 
     if dry_run:
-        return len(_abandoned(root, entry, cid))
+        return len(_abandoned(root, entry, cid, reservation))
     with operation_lock(root, "artifact-reservations.lock", timeout_seconds=10):
-        selected = _abandoned(root, entry, cid)
+        selected = _abandoned(root, entry, cid, reservation)
         for record in selected:
             recovery_candidate_path(root, record.identity).unlink(missing_ok=True)
             _path(root, record.identity).unlink()
@@ -343,12 +403,29 @@ def finish_orphan_candidate(root: Path, identity: str) -> None:
         recovery_candidate_path(root, identity).unlink()
 
 
-def _abandoned(root: Path, entry: Path, cid: str) -> tuple[ArtifactReservation, ...]:
+def _selected(
+    root: Path, entry: Path, cid: str, reservation: str | None
+) -> tuple[ArtifactReservation, ...]:
+    if reservation is not None:
+        _path(root, reservation)
     selected = tuple(
         record
         for record in _records(root)
-        if record.entry == entry.resolve().as_posix() and record.cid == cid
+        if record.entry == entry.resolve().as_posix()
+        and record.cid == cid
+        and (reservation is None or record.identity == reservation)
     )
+    if reservation is not None and not selected:
+        raise MissingArtifactReservationError(
+            f"reservation {reservation} was not found for {entry}/{cid}"
+        )
+    return selected
+
+
+def _abandoned(
+    root: Path, entry: Path, cid: str, reservation: str | None
+) -> tuple[ArtifactReservation, ...]:
+    selected = _selected(root, entry, cid, reservation)
     for record in selected:
         if _alive(record.parent_pid) or (
             record.worker_pid is not None and _alive(record.worker_pid, group=True)

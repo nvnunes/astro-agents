@@ -16,10 +16,12 @@ from unittest import mock
 from log_commands import command_sync, evidence_sync, storage
 from log_commands.context import resolve_entry, resolve_log
 from log_commands.model import ActionError, EvidenceSyncArguments
-from research_log_cli_test_support import run_log_process, run_pyrun_process
+from research_log_cli_test_support import run_log, run_log_process, run_pyrun_process
 from research_log_reservations import (
     ArtifactReservationError,
     artifact_transaction,
+    inspect_reservations,
+    recovery_candidate_path,
     release_abandoned,
     require_artifact_access,
     reserve_execution,
@@ -28,6 +30,7 @@ from test_log_command_sync import fixture, sync
 from test_log_evidence_sync import evidence, retained_files, set_results
 from test_log_reorganize import create_log, declare_fixture_input
 from test_pyrun import (
+    PYRUN_MODULE,
     install_entry_runner,
     install_project_python,
     make_entry,
@@ -534,6 +537,55 @@ class OrdinarySyncConcurrencyTests(unittest.TestCase):
 
 
 class OrdinaryExecutionConcurrencyTests(unittest.TestCase):
+    def test_pyrun_waits_for_a_short_entry_or_log_transaction(self):
+        for name in ("log.lock", "entry-e001.lock"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = make_repo(Path(directory))
+                entry = make_entry(root)
+                install_project_python(root)
+                held, attempted = threading.Event(), threading.Event()
+                acquire = storage.operation_lock
+                log = resolve_log(root / "log")
+
+                def holder():
+                    with acquire(log.root, name):
+                        held.set()
+                        if not attempted.wait(10):
+                            raise AssertionError(
+                                "pyrun did not attempt its transaction"
+                            )
+                        time.sleep(0.15)
+
+                def observe_attempt(*args, **kwargs):
+                    if args[1] == name:
+                        attempted.set()
+                    return acquire(*args, **kwargs)
+
+                previous = Path.cwd()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(holder)
+                    self.assertTrue(held.wait(10))
+                    try:
+                        os.chdir(entry)
+                        with mock.patch.object(
+                            storage, "operation_lock", side_effect=observe_attempt
+                        ):
+                            result = PYRUN_MODULE.main(
+                                [
+                                    "pyrun",
+                                    "--cid",
+                                    "wait",
+                                    "--",
+                                    "scripts/print_args.py",
+                                ]
+                            )
+                        self.assertEqual(result, 0)
+                        self.assertTrue((entry / "pyrun.json").exists())
+                    finally:
+                        os.chdir(previous)
+                        attempted.set()
+                        future.result(timeout=10)
+
     def test_comparison_policy_can_change_without_relocating_a_reserved_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -690,6 +742,147 @@ class ReservedReorganizationTests(unittest.TestCase):
 
 
 class ReservationRecordTests(unittest.TestCase):
+    def test_exact_release_preserves_other_invocations_and_retained_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            logical, entry, _ = fixture(root, "./pyrun scripts/build.py")
+            operations = root / ".cache/research-log-operations"
+            operations.mkdir(parents=True)
+            product = entry / "data/partial.txt"
+            product.write_text("partial output")
+            for identity in ("a" * 32, "b" * 32):
+                record = {
+                    "schema": "research-log-artifact-reservation/1",
+                    "identity": identity,
+                    "entry": str(entry),
+                    "cid": "build",
+                    "reads": [],
+                    "writes": [str(product)],
+                    "parent_pid": 99999999 if identity == "a" * 32 else os.getpid(),
+                    "worker_pid": None,
+                }
+                (operations / f"ordinary-execution-{identity}.json").write_text(
+                    json.dumps(record)
+                )
+                recovery_candidate_path(root, identity).write_text("candidate")
+            arguments = (
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "build",
+                "--reservation",
+                "a" * 32,
+            )
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            status = run_log(root, "command", "reservations", *arguments)
+            self.assertEqual(status.returncode, 0, status.stderr)
+            observed = json.loads(status.stdout)["records"]
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0]["status"], "abandoned")
+            self.assertTrue(observed[0]["completion_candidate"])
+            preview = run_log(root, "command", "release", *arguments, "--dry-run")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            released = run_log(root, "command", "release", *arguments)
+            self.assertEqual(released.returncode, 0, released.stderr)
+            self.assertFalse(
+                (operations / f"ordinary-execution-{'a' * 32}.json").exists()
+            )
+            self.assertFalse(recovery_candidate_path(root, "a" * 32).exists())
+            self.assertTrue(
+                (operations / f"ordinary-execution-{'b' * 32}.json").exists()
+            )
+            self.assertTrue(recovery_candidate_path(root, "b" * 32).exists())
+            self.assertEqual(product.read_text(), "partial output")
+            self.assertFalse((entry / "pyrun.json").exists())
+
+    def test_exact_selection_rejects_wrong_scope_missing_and_invalid_uuid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            logical, entry, _ = fixture(root, "./pyrun scripts/build.py")
+            with reserve_execution(root, entry, "build", (), ()) as record:
+                for cid, identity in (
+                    ("other", record.identity),
+                    ("build", "c" * 32),
+                    ("build", "invalid"),
+                ):
+                    for action in ("reservations", "release"):
+                        result = run_log(
+                            root,
+                            "command",
+                            action,
+                            "--path",
+                            str(logical),
+                            "--entry",
+                            "e001",
+                            "--cid",
+                            cid,
+                            "--reservation",
+                            identity,
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                with self.assertRaises(ArtifactReservationError):
+                    release_abandoned(
+                        root,
+                        root / "another-entry",
+                        "build",
+                        dry_run=False,
+                        reservation=record.identity,
+                    )
+                status = inspect_reservations(root, entry, "build")
+                self.assertEqual(status[0]["status"], "live")
+                self.assertFalse(status[0]["completion_candidate"])
+                for dry_run in (True, False):
+                    with self.assertRaisesRegex(ArtifactReservationError, "live"):
+                        release_abandoned(
+                            root,
+                            entry,
+                            "build",
+                            dry_run=dry_run,
+                            reservation=record.identity,
+                        )
+
+    def test_artifact_conflict_reports_exact_ownership_in_cli_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            logical, entry, _ = fixture(
+                root, "./pyrun scripts/build.py --output '<product>'"
+            )
+            self.assertEqual(
+                sync(logical, "--add-generated", "product=data/out").returncode, 0
+            )
+            with reserve_execution(
+                root, entry, "build", (), (entry / "data/out",)
+            ) as record:
+                result = run_log(
+                    root,
+                    "data",
+                    "update",
+                    "product",
+                    "--target",
+                    "data/moved",
+                    "--acknowledge-shared",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(record.identity, result.stderr)
+                observed = json.loads(result.stdout)["records"][0]
+                self.assertEqual(observed["reservation"], record.identity)
+                self.assertEqual(observed["status"], "live")
+                self.assertTrue(observed["parent_alive"])
+                self.assertFalse(observed["worker_alive"])
+                self.assertIn(str(entry / "data/out"), observed["conflicting_paths"])
+
     def test_malformed_and_oversize_records_fail_closed(self):
         for defect in ("schema", "relative-entry", "negative-owner", "oversize"):
             with (
@@ -774,12 +967,22 @@ class OrdinaryExecutionInterruptionTests(unittest.TestCase):
                 wait_for(ready)
                 paths = list(root.rglob("ordinary-execution-*.json"))
                 self.assertEqual(len(paths), 1)
-                worker_pid = json.loads(paths[0].read_text())["worker_pid"]
+                reservation = json.loads(paths[0].read_text())
+                worker_pid = reservation["worker_pid"]
+                identity = reservation["identity"]
                 self.assertIsInstance(worker_pid, int)
                 process.kill()
                 process.wait(timeout=10)
+                status = inspect_reservations(
+                    root, entry, "orphan", reservation=identity
+                )[0]
+                self.assertFalse(status["parent_alive"])
+                self.assertTrue(status["worker_alive"])
+                self.assertEqual(status["status"], "live")
                 with self.assertRaises(ArtifactReservationError):
-                    release_abandoned(root, entry, "orphan", dry_run=False)
+                    release_abandoned(
+                        root, entry, "orphan", dry_run=False, reservation=identity
+                    )
                 with self.assertRaises(ArtifactReservationError):
                     with artifact_transaction(root, writes=(ready,)):
                         self.fail("orphaned writer became unprotected")
@@ -795,13 +998,24 @@ class OrdinaryExecutionInterruptionTests(unittest.TestCase):
                         self.fail("controlled orphan worker did not finish")
                     time.sleep(0.02)
                 self.assertTrue(paths[0].exists())
+                status = inspect_reservations(
+                    root, entry, "orphan", reservation=identity
+                )[0]
+                self.assertEqual(status["status"], "abandoned")
+                self.assertFalse(status["completion_candidate"])
                 before = paths[0].read_bytes()
                 self.assertEqual(
-                    release_abandoned(root, entry, "orphan", dry_run=True), 1
+                    release_abandoned(
+                        root, entry, "orphan", dry_run=True, reservation=identity
+                    ),
+                    1,
                 )
                 self.assertEqual(paths[0].read_bytes(), before)
                 self.assertEqual(
-                    release_abandoned(root, entry, "orphan", dry_run=False), 1
+                    release_abandoned(
+                        root, entry, "orphan", dry_run=False, reservation=identity
+                    ),
+                    1,
                 )
                 self.assertFalse(paths[0].exists())
             finally:

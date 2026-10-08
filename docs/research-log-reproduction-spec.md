@@ -1088,9 +1088,13 @@ under a brief project-local `artifact-reservations.lock`. Readers may share an
 input; a writer excludes overlapping readers/writers, including directory
 ancestors/descendants and capture files. The worker registers its process group
 before executing user code. No OS lock spans execution. A conflict reports
-`artifact.reservation.conflict`, entry/CID, paths, and process owners. Authoring
-must not relocate or change the identity of a boundary in use. Reservations do
-not stage outputs or roll back bytes written by a failed script.
+`artifact.reservation.conflict`, entry/CID, conflicting paths, reservation UUID,
+process owners, observed live/abandoned status, and completion-candidate presence.
+Authoring artifact-access conflicts include these observations in structured
+result records. Liveness is observational; release and recovery recheck it under
+their guards.
+Authoring must not relocate or change the identity of a boundary in use.
+Reservations do not stage outputs or roll back bytes written by a failed script.
 
 Generated reservation records live in the owning project's
 `.cache/research-log-operations/ordinary-execution-UUID.json`. Their schema is
@@ -1149,18 +1153,28 @@ observations, and the recovery publication time in `last_run_at`. Ordinary
 future runs use `research-log-pyrun-runner/1` as before. The marker records
 agent confirmation, not a distinct reproduction policy or scientific proof.
 
-Abandoned reservations never expire automatically. Explicit cleanup is:
+Abandoned reservations never expire automatically. Read-only inspection is:
 
 ```text
-log command release [--path LOG] --entry ENTRY --cid CID [--dry-run]
+log command reservations [--path LOG] --entry ENTRY --cid CID [--reservation UUID]
 ```
 
-It selects only that entry/full CID, refuses any live parent or worker group,
-and removes only abandoned generated reservation and matching candidate
-records. Dry-run writes no content. It does not edit execution state or retained
-artifacts, certify partial outputs, or grant permission to rerun the research.
-PID reuse is treated
-conservatively as a live owner. Validation/reproduction locking and scheduling
+It reports reservation UUID, entry/CID, read/write boundaries, parent/worker PIDs,
+parent and worker-group liveness, live/abandoned status, and candidate presence.
+It writes no content and does not certify output completeness. Explicit cleanup
+is:
+
+```text
+log command release [--path LOG] --entry ENTRY --cid CID [--reservation UUID] [--dry-run]
+```
+
+Both actions select only that entry/full CID. An optional UUID selects one exact
+invocation and rejects an invalid, missing, or differently scoped reservation.
+Release refuses any live parent or worker group and removes only abandoned
+generated reservation and matching candidate records. Dry-run writes no content.
+It does not edit execution state or retained artifacts, certify partial outputs,
+or expand the authorized research scope. PID reuse is treated conservatively
+as a live owner. Validation/reproduction locking and scheduling
 contracts remain unchanged.
 
 ### Ordinary Publication Metadata

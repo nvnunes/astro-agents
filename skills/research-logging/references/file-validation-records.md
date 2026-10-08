@@ -75,8 +75,8 @@ leaves the new snapshot queryable and marks the materialization stale for
 Localized failed checks belong to a completed `failed` snapshot and are
 published. Whole-operation failure—including capacity exhaustion or a source
 change across the operation boundary—publishes nothing and preserves the prior
-snapshot. Dry runs publish nothing. Conflicting lock ownership is reported once
-without retry or polling.
+snapshot. Dry runs publish nothing. For conflicting lock ownership, follow the
+skill's `operation.lock.conflict` guidance.
 
 Store version 19 is a replacement schema. Versions 17 and 18 validation state are never
 migrated or translated; the first successful writable validation replaces only

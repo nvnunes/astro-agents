@@ -138,18 +138,14 @@ state does not start Repair without an explicit correction request.
   reproduction report. Clearing result state never authorizes changes to a
   durable run's `state.sqlite`, staged output, diagnostics, evidence baselines,
   or `pyrun.json` observations.
-- If concurrently started actions in the current task report
-  `operation.lock.conflict`, let one finish and retry the other serially.
-  Otherwise report the supplied owner metadata once and stop. Do not poll,
-  inspect process tables, or bypass the lock during the current operation.
-- If a failed `pyrun` invocation reports a zero-exit completion candidate,
-  follow Record's focused command guidance before treating it as an ordinary
-  reservation conflict.
-- For other `authoring.state.changed` or `artifact.reservation.conflict`
-  errors, report the CLI-selected item, paths, and owners once and stop the
-  affected operation. Do not retry, poll, inspect process tables, delete cache
-  files, bypass the guard, or infer permission to rerun; use focused guidance
-  for any authorized cleanup.
+- On `operation.lock.conflict` from this task's concurrent actions, let the
+  holder finish and retry once. For unrelated or unknown holders, report
+  ownership and stop the affected action; never bypass or delete a held lock.
+- For `artifact.reservation.conflict` or a zero-exit completion candidate,
+  follow `references/file-entry-commands.md`; recovering this task's interrupted
+  work within existing authority needs no new permission.
+- On `authoring.state.changed`, reconcile the selected change before rerunning;
+  ask when ownership or intended research state is unclear.
 - If validation reports `research-owned state changed during validation`,
   retry the identical command once; do not infer concurrent activity unless it
   fails again.

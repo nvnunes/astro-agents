@@ -48,6 +48,7 @@ class AuthoringSurfaceTests(unittest.TestCase):
             "command": {
                 "sync",
                 "release",
+                "reservations",
                 "list",
                 "verify",
                 "show",

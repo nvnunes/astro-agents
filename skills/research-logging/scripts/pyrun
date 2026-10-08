@@ -955,7 +955,7 @@ def _recover_orphan_candidate(
         raise RecoveryCandidateError(
             "orphan candidate is malformed or belongs elsewhere"
         )
-    with entry_lock(context):
+    with entry_lock(context, timeout_seconds=10):
         path = entry / "pyrun.json"
         state = (
             load_pyrun_state(path, entry_root=entry, project_root=root)
@@ -1149,7 +1149,7 @@ def _recover(argv: list[str], root: Path, entry: Path, context: EntryContext) ->
             "completion candidate script differs from reservation"
         )
     require_recovery_worker_finished(record)
-    with entry_lock(context):
+    with entry_lock(context, timeout_seconds=10):
         state_path = entry / "pyrun.json"
         data = _load_data(entry)
         if (
@@ -1246,7 +1246,7 @@ def _recover(argv: list[str], root: Path, entry: Path, context: EntryContext) ->
         tuple(sorted(observed_outputs.items())),
     )
     execution_key = execution_id(recipe)
-    with entry_lock(context):
+    with entry_lock(context, timeout_seconds=10):
         current = (
             load_pyrun_state(state_path, entry_root=entry, project_root=root)
             if state_path.exists()
@@ -1290,7 +1290,10 @@ def _recover(argv: list[str], root: Path, entry: Path, context: EntryContext) ->
         .isoformat()
         .replace("+00:00", "Z")
     )
-    with entry_lock(context), artifact_transaction(root, exclude=identity):
+    with (
+        entry_lock(context, timeout_seconds=10),
+        artifact_transaction(root, exclude=identity),
+    ):
         current = (
             load_pyrun_state(state_path, entry_root=entry, project_root=root)
             if state_path.exists()
@@ -1374,7 +1377,7 @@ def main(argv: list[str]) -> int:
             FingerprintCache(root, writable=True) as fingerprint_cache,
             ExitStack() as reservations,
         ):
-            with entry_lock(operation_entry):
+            with entry_lock(operation_entry, timeout_seconds=10):
                 initial_state = quarantine_invalid_pyrun_state(entry, project_root=root)
                 data = _load_data(entry)
                 authority = _ExecutionAuthority(
@@ -1483,7 +1486,7 @@ def main(argv: list[str]) -> int:
                 if input_token_parts(value) is not None
                 and material_roles[value] != "output"
             )
-            with entry_lock(operation_entry):
+            with entry_lock(operation_entry, timeout_seconds=10):
                 authority.require_current(cid, (*script_args, *captures.values()))
                 original_authority_digest = _authority_digest(
                     operation_entry,
@@ -1681,7 +1684,7 @@ def main(argv: list[str]) -> int:
                 .replace("+00:00", "Z")
             )
             with (
-                entry_lock(operation_entry),
+                entry_lock(operation_entry, timeout_seconds=10),
                 artifact_transaction(root, exclude=reservation.identity),
             ):
                 current_state = authority.require_current(
@@ -1718,7 +1721,7 @@ def main(argv: list[str]) -> int:
     except PyrunStateError as error:
         raise SystemExit(f"pyrun: {error}") from error
     except OperationLockError as error:
-        raise SystemExit(f"pyrun: operation conflict: {error}") from error
+        raise SystemExit(f"pyrun: {error.code}: {error}") from error
     except ArtifactReservationError as error:
         raise SystemExit(f"pyrun: {error.code}: {error}") from error
     except RecoveryCandidateError as error:

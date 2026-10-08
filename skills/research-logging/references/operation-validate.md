@@ -64,8 +64,8 @@ whole-operation failures publish no new snapshot and preserve the prior one.
 A one-log run exits 0 for `clear` or `findings`, 3 for `failed`, including a
 nonpublishing dry run, and 2 for an operation failure. A nondry completed run
 saves its snapshot. A root run uses precedence 2, then 3, then 0. If another
-operation owns the log lock, report its supplied metadata
-once and stop; do not retry, poll, or alter generated state.
+operation owns the log lock, follow the skill's `operation.lock.conflict`
+guidance; never alter generated state to bypass it.
 
 ## Saved Views And Report
 

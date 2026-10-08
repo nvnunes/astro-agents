@@ -419,58 +419,58 @@ execution observation.
 ## Ordinary Concurrent Work
 
 Command sync and `pyrun` take entry/log locks only for short state reads and
-publication, not while hashing or running the script. Unrelated work may proceed
-in the same entry. Do not change the selected command or its input/output
-declarations while it runs; a relevant concurrent change rejects publication
-rather than overwriting it. Unrelated edits are preserved.
+publication. Unrelated work may proceed in the same entry; keep the selected
+command and input/output declarations unchanged until it finishes. Relevant
+changes reject publication; unrelated edits are preserved.
 
-`pyrun` reserves actual artifact access for the invocation. Readers can share
-inputs; overlapping writes or read/write access, including directory members
-and captures, fail with `artifact.reservation.conflict`. This is distinct from
-`--exclusive`, which controls managed reproduction scheduling, not ordinary
-artifact access. Scripts must finish their children and all output consumers
-before returning. Failed execution does not roll back output bytes or record
-successful execution state.
+`pyrun` permits shared reads; overlapping writes or read/write access, including
+directory members and captures, fail with `artifact.reservation.conflict`.
+Run independent commands in parallel with disjoint writes; consumers wait for
+their producer. Declare actual output boundaries without unnecessarily reserving
+a shared enclosing directory. `--exclusive` controls reproduction scheduling,
+not ordinary artifact access. Scripts must finish all children and output
+consumers before returning.
+Failed execution leaves output bytes without recording successful execution.
 
-If `pyrun` reports a zero-exit completion candidate after its worker-finish
-check failed, do not rerun or release it automatically. If a descendant is
-still running, first check whether it is making expected progress. Do not stop
-ongoing work merely to make recovery eligible. If it is hung, verify the exact
-live process belongs to this invocation and decide to interrupt it; terminate
-it gracefully, using force only if necessary. Wait until the worker group is
-gone, then inspect every declared retained output and capture. Stopping a
-process does not establish that its outputs finished. Recover only if the
-retained results are scientifically complete; otherwise preserve the failed
-work and seek direction before release or rerun. Killing a still-running
-launcher cannot create a zero-exit completion candidate.
+For a reservation conflict or zero-exit completion candidate, inspect the exact
+UUID reported by the CLI:
 
-For complete results, explicitly confirm from the entry root:
+```text
+<skill>/scripts/log command reservations --path LOG --entry ENTRY --cid FULL_CID --reservation UUID
+```
+
+The read-only snapshot reports owner liveness and candidate presence. Wait for
+this task's live work making expected progress. If interruption is necessary,
+verify the exact process belongs to the invocation, terminate gracefully, and
+use force only if needed. Never kill the launcher as a cleanup shortcut.
+Once the launcher and worker group are gone, inspect every declared retained
+output and capture. Candidate presence or process exit does not certify
+complete outputs.
+
+Prefer recovery to release or rerun for scientifically complete results with a
+zero-exit candidate. Confirm from the entry root:
 
 ```text
 ./pyrun recover --reservation UUID --dry-run
 ./pyrun recover --reservation UUID
 ```
 
-Use the exact UUID printed by the failed invocation. The CLI independently
-checks that no launcher or worker remains, the selected command and input
-authority is unchanged, and all declared outputs are present and stable. It
-then records a distinct agent-confirmed completion in `pyrun.json` and clears
-the reservation in the same call. It never runs the script or edits evidence.
-If inspection or the checks fail, resolve that condition deliberately; an old
-reservation without a zero-exit candidate cannot be recovered this way.
-If recovery reports that the execution was published but cleanup failed, retry
-the exact `./pyrun recover --reservation UUID` call it prints. The retry only
-finishes cleanup; it does not rerun the script or republish the execution.
+Recovery rechecks liveness, unchanged command/input authority, and present,
+stable outputs. It records agent-confirmed completion in `pyrun.json` and clears
+the reservation without running the script or editing evidence. If publication
+succeeds but cleanup fails, retry the exact printed recovery call to finish
+cleanup without republishing.
 
-For an abandoned reservation after a known interrupted invocation, separately
-authorized cleanup uses:
+For this task's known abandoned invocation that cannot be recovered, release
+its exact UUID:
 
 ```text
-<skill>/scripts/log command release --path LOG --entry ENTRY --cid FULL_CID
+<skill>/scripts/log command release --path LOG --entry ENTRY --cid FULL_CID --reservation UUID [--dry-run]
 ```
 
-The CLI refuses live launcher/worker owners and removes only abandoned
-reservation and matching candidate state. `--dry-run` previews cleanup.
-Release does not record completion or authorize rerunning the command; inspect
-affected saved outputs within the authorized investigation before deciding
-what to do next.
+`--dry-run` previews cleanup; apply rechecks liveness and removes only generated
+reservation/candidate state. Resume authorized work without asking again,
+retaining completed runs. Ask before clearing unrelated or unknown work, or when
+partial outputs or the next step require a research decision. Never delete
+reservation files by hand. Omitting `--reservation` selects all reservations
+for the entry/CID.

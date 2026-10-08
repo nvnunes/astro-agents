@@ -56,12 +56,14 @@ class PublicationError(OSError):
 
 
 @contextmanager
-def entry_lock(entry: EntryContext) -> Iterator[None]:
+def entry_lock(entry: EntryContext, *, timeout_seconds: float = 0) -> Iterator[None]:
     """Hold the shared log lock, then one stable entry lock exclusively."""
 
-    with operation_lock(entry.log.root, "log.lock", mode="shared"):
+    with operation_lock(
+        entry.log.root, "log.lock", mode="shared", timeout_seconds=timeout_seconds
+    ):
         require_mutation_ready(entry.log.root, entry_id=entry.id)
-        with entry_lock_under_log(entry):
+        with entry_lock_under_log(entry, timeout_seconds=timeout_seconds):
             yield
 
 
@@ -77,7 +79,11 @@ def entry_locks(
     ):
         raise ValueError("operation locks require unique entries from one log")
     with ExitStack() as stack:
-        stack.enter_context(operation_lock(log.root, "log.lock", mode="shared"))
+        stack.enter_context(
+            operation_lock(
+                log.root, "log.lock", mode="shared", timeout_seconds=timeout_seconds
+            )
+        )
         for entry in selected:
             require_mutation_ready(log.root, entry_id=entry.id)
             stack.enter_context(

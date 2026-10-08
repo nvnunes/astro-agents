@@ -81,9 +81,9 @@ Extraction runs without holding entry/log locks. Publication rechecks the
 selected definition, sources, and record, then preserves unrelated concurrent
 edits and refreshes only selected summary references under a short summary
 guard. Do not edit the selected evidence while sync is preparing it.
-`authoring.state.changed` directs you to review a relevant concurrent change;
-an active artifact writer causes `artifact.reservation.conflict`. Report either
-and stop the affected operation. Compare/sync after the producing invocation
+`authoring.state.changed` requires reviewing a relevant concurrent change;
+`artifact.reservation.conflict` requires the skill's invocation recovery guidance.
+Compare/sync after the producing invocation
 has finished, never against its partially written outputs.
 
 ## Supported Presentations

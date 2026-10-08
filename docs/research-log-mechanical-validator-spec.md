@@ -3961,6 +3961,8 @@ action.
 
 ```text
 log command list [--path LOG] --entry ENTRY
+log command reservations [--path LOG] --entry ENTRY --cid CID [--reservation UUID]
+log command release [--path LOG] --entry ENTRY --cid CID [--reservation UUID] [--dry-run]
 
 log evidence list [--path LOG] --entry ENTRY
 ```
@@ -3969,6 +3971,8 @@ Command rename and delete belong to entry-scoped `log command sync`. The agent
 edits Markdown first, then supplies explicit `--rename OLD=NEW` and/or
 `--delete CID` selectors in one dry-run/apply pair. Evidence rename and delete
 belong to entry-scoped `log evidence sync` as specified above.
+Reservation inspection and cleanup follow the ordinary
+[artifact reservation contract](research-log-reproduction-spec.md#ordinary-artifact-reservations).
 
 Evidence sync validates only markers and summary references for its selected
 IDs. Unrelated invalid markers, definitions, and references do not block a
@@ -4149,8 +4153,10 @@ lock as `<lock>.owner.json`. It identifies the operation, scope, process,
 request and source fingerprints, and start time needed to report one precise
 `operation.lock.conflict`. Metadata publication and removal are atomic with the
 owner lifecycle. A stale or malformed metadata file never owns a lock and is
-replaced by the next successful owner. Callers report the observed owner once;
-they do not poll, retry, or inspect process tables.
+replaced by the next successful owner. A timeout reports the observed owner
+without publication. Callers may retry after their own competing operation
+finishes, acquiring the same guards afresh; metadata never authorizes bypassing
+a held lock. The skill owns task-scope and recovery guidance.
 
 Single-path durable file publication has one shared low-level owner beneath the
 validation and command modules. It owns sibling temporary creation, file flush

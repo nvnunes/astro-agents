@@ -41,3 +41,22 @@ def list_commands(entry: EntryContext) -> ActionResult:
     return ActionResult(
         "command.list", "unchanged", "command.listed", False, records=records
     )
+
+
+def list_reservations(
+    entry: EntryContext, cid: str, reservation: str | None
+) -> ActionResult:
+    """Expose a read-only snapshot of selected invocation ownership."""
+
+    from research_log_reservations import inspect_reservations
+
+    records = inspect_reservations(
+        resolve_project_root(entry.root), entry.root, cid, reservation=reservation
+    )
+    return ActionResult(
+        "command.reservations",
+        "unchanged",
+        "command.reservations.listed",
+        False,
+        records=records,
+    )

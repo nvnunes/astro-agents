@@ -24,7 +24,12 @@ already chosen a path, ask whether the script should use it, bypass it for
 independent evidence, or test it directly. Record the choice when it changes
 what the evidence establishes.
 
-Place reusable code by its actual use:
+Use disposable tests while developing research-log scripts; do not retain them.
+Tests of code outside the log belong with that code. Maintained tests outside
+the log must not depend on any log assets, including scripts or data; use
+fixtures owned outside the log.
+
+Place reusable research code by its actual use:
 
 - one entry, including split documents: the parent entry's `scripts/`
 - multiple entries in one log: `<log>/scripts/`

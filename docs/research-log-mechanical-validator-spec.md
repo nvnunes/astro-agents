@@ -2765,7 +2765,10 @@ Mechanical validation and Repair read execution state directly without
 execution or mutation. They associate each current invocation with its exact
 `(CID, execution ID)` identity, compare the complete recipe and policies
 independently, then use an output-to-execution-owner index for output and
-directory-member resolution. An invocation or output that has no exact current
+directory-member resolution. Recipe-change diagnostics identify differing recipe
+fields: validation includes their names in `changed_fields`, and command
+verification includes them in its error message. An invocation or output that
+has no exact current
 association fails as `provenance.output.execution_unassociated`; validation
 does not fabricate a legacy parameter vector. There is no projection from
 current execution state to a legacy output model.

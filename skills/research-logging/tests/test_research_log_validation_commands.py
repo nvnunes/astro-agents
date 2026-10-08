@@ -78,6 +78,75 @@ def _discover_exact(body: str, context: object) -> object:
 
 
 class CommandRoleTests(unittest.TestCase):
+    def test_overlapping_named_inputs_match_declaration_recipe(self) -> None:
+        """Directory expansion preserves separately declared member inputs."""
+
+        for arguments in (
+            '--input-dir "<source>" --input-file "<metadata>"',
+            '--input-file "<metadata>" --input-dir "<source>"',
+            '--input-dir "<source>" --input-file "<metadata>" '
+            '--input-again "<metadata>"',
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                context = _context(root)
+                write(context.entry_root / "data/source/metadata.txt", "fixture\n")
+                resources = (
+                    build_local_input(
+                        "source",
+                        "directory",
+                        "data/source",
+                        entry_root=context.entry_root,
+                        origin=True,
+                    ),
+                    build_local_input(
+                        "metadata",
+                        "file",
+                        "data/source/metadata.txt",
+                        entry_root=context.entry_root,
+                        origin=True,
+                    ),
+                )
+                context = replace(
+                    context,
+                    data_file=data_file_from_inputs(
+                        context.entry_root / "data.json",
+                        entry_root=context.entry_root,
+                        inputs=resources,
+                    ),
+                )
+                declaration_context = COMMAND.CommandDeclarationContext(
+                    context.log_id,
+                    context.entry,
+                    context.document,
+                    context.entry_root,
+                    context.log_root,
+                    context.project_root,
+                    context.data_file,
+                    context.require_experimental_context,
+                )
+                text = f"```bash\n./pyrun scripts/run.py {arguments}\n```\n"
+                indexed = COMMAND.index_commands(text, declaration_context)
+                declared = COMMAND.materialize_declared_commands(
+                    indexed, declaration_context
+                )
+                observed = COMMAND.observe_commands(indexed, text, context)
+                self.assertFalse(declared.failures)
+                self.assertFalse(observed.failures)
+                recipes = [
+                    recipe_from_invocation(
+                        discovery.invocations[0],
+                        entry_root=context.entry_root,
+                        project_root=root,
+                    )
+                    for discovery in (declared, observed)
+                ]
+                self.assertEqual(recipes[0].inputs, ("metadata", "source"))
+                self.assertEqual(recipes[1], recipes[0])
+
     def test_index_commands_does_not_observe_current_material(self) -> None:
         """Declaration indexing remains usable before any current observation."""
 

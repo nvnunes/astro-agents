@@ -55,7 +55,7 @@ class ValidationCliTests(unittest.TestCase):
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertIn("{findings,batches,blocked,failed}", listing.stdout)
         self.assertEqual(command.returncode, 0, command.stderr)
-        self.assertIn("{sync,release,list,verify,show}", command.stdout)
+        self.assertIn("{sync,release,reservations,list,verify,show}", command.stdout)
         self.assertNotIn("repair-check", command.stdout)
         self.assertEqual(verify.returncode, 0, verify.stderr)
         self.assertIn("--path PATH", verify.stdout)

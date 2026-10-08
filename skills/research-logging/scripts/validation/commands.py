@@ -2131,13 +2131,16 @@ def _within(path: Path, root: Path) -> bool:
 def _deduplicate_relationships(
     values: Sequence[MaterialRelationship], subject: str
 ) -> list[MaterialRelationship]:
-    by_path: dict[str, MaterialRelationship] = {}
+    directions: dict[str, str] = {}
+    relationships: dict[tuple[str, str | None], MaterialRelationship] = {}
     for value in values:
-        previous = by_path.get(value.path)
-        if previous is not None and previous.direction != value.direction:
+        previous = directions.setdefault(value.path, value.direction)
+        if previous != value.direction:
             _fail("material.direction.conflict", subject, {"path": value.path})
-        by_path.setdefault(value.path, value)
-    return list(by_path.values())
+        # Distinct input declarations may share a directory member's path.
+        name = value.named_input if value.direction == "input" else None
+        relationships.setdefault((value.path, name), value)
+    return list(relationships.values())
 
 
 def _fail(code: str, subject: str, observed: object) -> NoReturn:

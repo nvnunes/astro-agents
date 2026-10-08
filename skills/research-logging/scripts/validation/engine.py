@@ -171,6 +171,7 @@ from .pyrun_state import (
     compare_command,
     execution_output_owners,
     load_pyrun_state,
+    recipe_changed_fields,
     resolve_execution_output,
     script_target_path,
 )
@@ -3041,8 +3042,7 @@ def _record_command_comparison(
         invocation = missing_member.invocation
         _record_command_state_mismatch(
             context,
-            cid,
-            missing_member.identity,
+            {"cid": cid, "execution_id": missing_member.identity},
             "missing",
             _command_issue_context(
                 invocation.entry,
@@ -3055,8 +3055,7 @@ def _record_command_comparison(
     for stale_member in comparison.stale:
         _record_command_state_mismatch(
             context,
-            cid,
-            stale_member.identity,
+            {"cid": cid, "execution_id": stale_member.identity},
             "stale",
             _execution_issue_context(
                 context.entry_id,
@@ -3068,8 +3067,13 @@ def _record_command_comparison(
     for change in comparison.recipe_changed:
         _record_command_state_mismatch(
             context,
-            cid,
-            change.current.identity,
+            {
+                "cid": cid,
+                "execution_id": change.current.identity,
+                "changed_fields": list(
+                    recipe_changed_fields(change.stored.recipe, change.current.recipe)
+                ),
+            },
             "recipe_changed",
             _execution_issue_context(
                 context.entry_id,
@@ -3084,11 +3088,12 @@ def _record_command_comparison(
 
 def _record_command_state_mismatch(
     context: _ExecutionBindingContext,
-    cid: str,
-    identity: str,
+    observed: Mapping[str, object],
     label: str,
     issue_context: IssueContext,
 ) -> None:
+    cid = observed["cid"]
+    identity = observed["execution_id"]
     context.state.checks.append(
         _error_check(
             f"conformance:{context.entry_id}:pyrun:{cid}:{identity}",
@@ -3096,7 +3101,7 @@ def _record_command_state_mismatch(
             EngineV2Error(
                 f"pyrun.command.{label}",
                 str(context.execution_state.path),
-                {"cid": cid, "entry": context.entry_id, "execution_id": identity},
+                {"entry": context.entry_id, **observed},
                 "Pyrun Command State",
             ),
             dependencies=(context.dependency,),

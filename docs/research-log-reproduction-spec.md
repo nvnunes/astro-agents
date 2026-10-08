@@ -867,6 +867,8 @@ supported sets.
 - `environment` maps each explicit normalized `--env NAME=value` variable name
   to its exact value. It contains no inherited or runner-supplied variable.
 - `inputs` is the sorted unique list of directly consumed `data.json` names.
+  Preserve each declared name even when a file input is also a member of a
+  declared directory input; shared physical paths do not merge declarations.
 - `outputs` maps every declared output identity to `file` or `directory`.
   Entry-owned outputs use their normalized entry-relative path. Outputs
   elsewhere in the current Git project use the inherited normalized

@@ -35,6 +35,7 @@ from validation.pyrun_state import (
     PyrunStateError,
     execution_id,
     load_pyrun_state,
+    recipe_changed_fields,
     recipe_from_invocation,
 )
 
@@ -301,15 +302,15 @@ def _load_authority(
             "command.verify.execution.unresolved",
             "current command selection is absent or ambiguous",
         )
-    if (
-        recipe_from_invocation(
-            candidates[0], entry_root=entry.root, project_root=project
-        )
-        != execution.recipe
-    ):
+    current_recipe = recipe_from_invocation(
+        candidates[0], entry_root=entry.root, project_root=project
+    )
+    changed_fields = recipe_changed_fields(execution.recipe, current_recipe)
+    if changed_fields:
         raise ActionError(
             "command.verify.recipe.changed",
-            "current Markdown recipe differs from recorded execution",
+            "current Markdown recipe differs from recorded execution: "
+            + ", ".join(changed_fields),
         )
     evidence_path = entry.root / "evidence.json"
     evidence = (

@@ -5,8 +5,16 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from log_commands.command_verification import CommandVerificationRequest, verify_command
+from log_commands.context import resolve_log
+from log_commands.model import ActionError
 from research_log_cli_test_support import run_log, run_pyrun_process
+from test_log_command_sync import fixture, sync
+from test_log_command_verify import _TestConfinement
+from test_pyrun import install_entry_runner, install_project_python
+from validation.engine import EvaluationRequest, evaluate_mechanical
 from validation.pyrun_state import load_pyrun_state
 
 
@@ -15,6 +23,150 @@ def payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
 
 
 class ResearchLogIntegratedWorkflowTests(unittest.TestCase):
+    def test_overlapping_inputs_agree_across_sync_validation_and_verification(
+        self,
+    ) -> None:
+        """Successful execution remains associated when input declarations overlap."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            arguments = (
+                "scripts/build.py",
+                "--input-dir",
+                "<source>",
+                "--input-file",
+                "<metadata>",
+                "--output",
+                "<result>",
+            )
+            logical, entry, document = fixture(
+                project,
+                "./pyrun --cid build -- "
+                + " ".join(f"'{argument}'" for argument in arguments),
+            )
+            install_entry_runner(entry)
+            install_project_python(project)
+            (project / "tmp").mkdir()
+            (entry / "data/source").mkdir()
+            (entry / "data/source/metadata.txt").write_text("value\n", encoding="utf-8")
+            (entry / "scripts/build.py").write_text(
+                "import argparse\nfrom pathlib import Path\n"
+                "p = argparse.ArgumentParser()\n"
+                "p.add_argument('--input-dir')\n"
+                "p.add_argument('--input-file')\n"
+                "p.add_argument('--output')\n"
+                "a = p.parse_args()\n"
+                "assert Path(a.input_file).parent == Path(a.input_dir)\n"
+                "Path(a.output).write_bytes(Path(a.input_file).read_bytes())\n",
+                encoding="utf-8",
+            )
+            registered = sync(
+                logical,
+                "--add-origin-directory",
+                "source=data/source",
+                "--add-origin",
+                "metadata=data/source/metadata.txt",
+                "--add-generated",
+                "result=data/result.txt",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            executed = run_pyrun_process(entry, "--cid", "build", "--", *arguments)
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "Pending.",
+                    "[Result](data/result.txt)<!-- eid:result source=result -->",
+                ),
+                encoding="utf-8",
+            )
+            evidence = run_log(
+                entry,
+                "evidence",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--producer",
+                "build",
+            )
+            self.assertEqual(evidence.returncode, 0, evidence.stderr)
+            state_path = entry / "pyrun.json"
+            before = state_path.read_bytes()
+            state = load_pyrun_state(state_path, entry_root=entry, project_root=project)
+            identity, execution = next(iter(state.commands["build"].executions.items()))
+            self.assertEqual(execution.recipe.inputs, ("metadata", "source"))
+            self.assertEqual(
+                dict(execution.observed.inputs).keys(), {"metadata", "source"}
+            )
+            synchronized = sync(logical)
+            self.assertEqual(synchronized.returncode, 0, synchronized.stderr)
+            self.assertEqual(state_path.read_bytes(), before)
+            evaluation = evaluate_mechanical(
+                EvaluationRequest(logical.with_suffix(".md"))
+            )
+            self.assertFalse(
+                [
+                    finding
+                    for finding in evaluation.attempt.findings
+                    if finding.code == "pyrun.command.recipe_changed"
+                ]
+            )
+            with mock.patch(
+                "log_commands.reproduction_execution.DarwinSeatbelt", _TestConfinement
+            ):
+                verified = verify_command(
+                    resolve_log(logical),
+                    CommandVerificationRequest("e001", "build", identity),
+                )
+            self.assertEqual(verified.status, "matched", verified)
+            self.assertEqual(state_path.read_bytes(), before)
+
+            document.write_text(
+                document.read_text(encoding="utf-8").replace(
+                    "--cid build --", "--cid build --env MODE=changed --"
+                ),
+                encoding="utf-8",
+            )
+            evaluation = evaluate_mechanical(
+                EvaluationRequest(logical.with_suffix(".md"))
+            )
+            changes = [
+                finding
+                for finding in evaluation.attempt.findings
+                if finding.code == "pyrun.command.recipe_changed"
+            ]
+            self.assertEqual(len(changes), 1)
+            self.assertEqual(
+                tuple(changes[0].observed["changed_fields"]), ("environment",)
+            )
+            with self.assertRaises(ActionError) as raised:
+                verify_command(
+                    resolve_log(logical),
+                    CommandVerificationRequest("e001", "build", identity),
+                )
+            self.assertEqual(raised.exception.code, "command.verify.recipe.changed")
+            self.assertIn("environment", str(raised.exception))
+            rejected = run_log(
+                entry,
+                "command",
+                "verify",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--cid",
+                "build",
+                "--execution-id",
+                identity,
+                "--format",
+                "json",
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertEqual(payload(rejected)["code"], "command.verify.recipe.changed")
+            self.assertIn("environment", rejected.stderr)
+            self.assertEqual(state_path.read_bytes(), before)
+
     def test_current_authoring_execution_and_validation_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)

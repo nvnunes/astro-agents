@@ -83,6 +83,17 @@ class ExecutionRecipe:
         }
 
 
+def recipe_changed_fields(
+    recorded: ExecutionRecipe, current: ExecutionRecipe
+) -> tuple[str, ...]:
+    """Return differing persisted recipe field names in canonical order."""
+
+    prior = recorded.as_dict()
+    return tuple(
+        name for name, value in current.as_dict().items() if prior[name] != value
+    )
+
+
 @dataclass(frozen=True)
 class ObservedExecution:
     """Available observations for one script, input, code tree, and output set."""

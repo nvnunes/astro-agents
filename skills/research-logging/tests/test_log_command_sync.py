@@ -16,7 +16,7 @@ from research_log_cli_test_support import (
     run_log,
     run_pyrun_process,
 )
-from research_log_data import load_data_file
+from research_log_data import DATA_SCHEMA, load_data_file
 from research_log_reservations import reserve_execution
 from validation.fingerprint_cache import FingerprintCache
 from validation.pyrun_state import load_pyrun_state
@@ -741,6 +741,274 @@ class LogCommandSyncTests(unittest.TestCase):
                 },
                 before,
             )
+
+    def test_retained_origin_output_allows_obsolete_producer_deletion(self) -> None:
+        for kind, member in (
+            ("file", ""),
+            ("directory", "/sample.json"),
+            ("directory", ""),
+        ):
+            with (
+                self.subTest(kind=kind, member=member),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                logical, entry, document = fixture(
+                    root,
+                    './pyrun --cid build -- scripts/build.py --output "<built>"',
+                )
+                consumer = (
+                    "\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                    "./pyrun --cid consume -- scripts/build.py "
+                    f'--input "<built>{member}"\n'
+                    "```\n\n`Results:`\n\nPending.\n"
+                )
+                document.write_text(document.read_text() + consumer)
+                location = "data/built" if kind == "directory" else "data/built.json"
+                output = entry / location
+                if kind == "directory":
+                    output.mkdir()
+                artifact = output / "sample.json" if kind == "directory" else output
+                artifact.write_text('{"value": 3}\n')
+                generated_flag = (
+                    "--add-generated-directory"
+                    if kind == "directory"
+                    else "--add-generated"
+                )
+                first = sync(
+                    logical, "--cid", "consume", generated_flag, f"built={location}"
+                )
+                self.assertEqual(first.returncode, 0, first.stderr)
+                changed = run_log(
+                    root,
+                    "data",
+                    "update",
+                    "built",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--boundary",
+                    "origin",
+                    "--acknowledge-shared",
+                )
+                self.assertEqual(changed.returncode, 0, changed.stderr)
+                source = "built/sample.json" if kind == "directory" else "built"
+                document.write_text(
+                    "# Test\n"
+                    + consumer.replace(
+                        "Pending.",
+                        f"Value ``<!-- eid:value source={source} "
+                        "select=/value render=integer -->.",
+                    )
+                )
+                evidence = run_log(
+                    root,
+                    "evidence",
+                    "sync",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--id",
+                    "value",
+                )
+                self.assertEqual(evidence.returncode, 0, evidence.stderr)
+                before = {
+                    path: path.read_bytes()
+                    for path in (
+                        entry / "data.json",
+                        entry / "pyrun.json",
+                        entry / "evidence.json",
+                        artifact,
+                        document,
+                    )
+                }
+                original_state = load_pyrun_state(
+                    entry / "pyrun.json", entry_root=entry, project_root=root
+                )
+                args = (
+                    "command",
+                    "sync",
+                    "--path",
+                    str(logical),
+                    "--entry",
+                    "e001",
+                    "--delete",
+                    "build",
+                )
+                preview = run_log(root, *args, "--dry-run")
+                self.assertEqual(preview.returncode, 0, preview.stderr)
+                self.assertEqual({p: p.read_bytes() for p in before}, before)
+                applied = run_log(root, *args)
+                self.assertEqual(applied.returncode, 0, applied.stderr)
+                data = load_data_file(entry / "data.json", entry_root=entry)
+                self.assertTrue(data.by_name["built"].origin)
+                self.assertEqual(
+                    (entry / "data.json").read_bytes(), before[entry / "data.json"]
+                )
+                self.assertEqual(artifact.read_bytes(), before[artifact])
+                self.assertEqual(
+                    (entry / "evidence.json").read_bytes(),
+                    before[entry / "evidence.json"],
+                )
+                self.assertEqual(document.read_bytes(), before[document])
+                state = load_pyrun_state(
+                    entry / "pyrun.json", entry_root=entry, project_root=root
+                )
+                self.assertEqual(set(state.commands), {"consume"})
+                self.assertEqual(
+                    state.commands["consume"], original_state.commands["consume"]
+                )
+
+    def test_generated_alias_still_blocks_retained_origin_producer_deletion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root, './pyrun --cid build -- scripts/build.py --output "<built>"'
+            )
+            artifact = entry / "data/built.json"
+            artifact.write_text('{"value": 3}\n')
+            first = sync(logical, "--add-generated", "built=data/built.json")
+            self.assertEqual(first.returncode, 0, first.stderr)
+            changed = run_log(
+                root,
+                "data",
+                "update",
+                "built",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--boundary",
+                "origin",
+                "--acknowledge-shared",
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            document.write_text("# Test\n\nNo commands.\n")
+            consumer = logical / "entries/2030-01-02-e002-consumer"
+            summary = logical.with_suffix(".md")
+            summary.write_text(
+                summary.read_text() + "- `2030-01-02` [Consumer]"
+                "(study/entries/2030-01-02-e002-consumer/e002.md)\n"
+            )
+            (consumer / "scripts").mkdir(parents=True)
+            (consumer / "scripts/consume.py").write_text(
+                "raise RuntimeError('never run')\n"
+            )
+            (consumer / "e002.md").write_text(
+                "# Consumer\n\n## Execution\n\n`Steps:`\n\n```bash\n"
+                './pyrun scripts/consume.py --input "<alias>"\n'
+                "```\n\n`Results:`\n\nPending.\n"
+            )
+            alias = (
+                load_data_file(entry / "data.json", entry_root=entry)
+                .by_name["built"]
+                .as_dict()
+            )
+            alias.update(
+                name="alias",
+                origin=False,
+                location="../2030-01-01-e001-test/data/built.json",
+            )
+            registry = consumer / "data.json"
+            registry.write_text(json.dumps({"schema": DATA_SCHEMA, "inputs": [alias]}))
+            before = {
+                path: path.read_bytes()
+                for path in (
+                    entry / "data.json",
+                    entry / "pyrun.json",
+                    artifact,
+                    registry,
+                )
+            }
+            args = (
+                "command",
+                "sync",
+                "--path",
+                str(logical),
+                "--entry",
+                "e001",
+                "--delete",
+                "build",
+            )
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    rejected = run_log(
+                        root, *args, *(("--dry-run",) if dry_run else ())
+                    )
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertIn("command.sync.outputs_in_use", rejected.stderr)
+                    self.assertIn("e002: consume", rejected.stderr)
+                    self.assertEqual({p: p.read_bytes() for p in before}, before)
+            consumer_document = consumer / "e002.md"
+            consumer_document.write_text(
+                "# Consumer\n\n## Result\n\n`Steps:`\n\nRead the artifact.\n\n"
+                "`Results:`\n\n"
+                "Value ``<!-- eid:alias-artifact source=alias "
+                "select=/value render=integer -->.\n"
+            )
+            evidence = run_log(
+                root, "evidence", "sync", "--path", str(logical),
+                "--entry", "e002", "--id", "alias-artifact",
+            )
+            self.assertEqual(evidence.returncode, 0, evidence.stderr)
+            rejected = run_log(root, *args, "--dry-run")
+            self.assertEqual(rejected.returncode, 2, rejected.stderr)
+            self.assertIn("command.sync.outputs_in_use", rejected.stderr)
+            self.assertIn("alias-artifact", rejected.stderr)
+            evidence_bytes = (consumer / "evidence.json").read_bytes()
+            alias["origin"] = True
+            registry.write_text(json.dumps({"schema": DATA_SCHEMA, "inputs": [alias]}))
+            applied = run_log(root, *args)
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(artifact.read_bytes(), before[artifact])
+            self.assertEqual((consumer / "evidence.json").read_bytes(), evidence_bytes)
+
+    def test_origin_member_does_not_release_generated_output_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document = fixture(
+                root, './pyrun --cid build -- scripts/build.py --output "<built>"'
+            )
+            output = entry / "data/built"
+            output.mkdir()
+            artifact = output / "sample.json"
+            artifact.write_text('{"value": 3}\n')
+            first = sync(logical, "--add-generated-directory", "built=data/built")
+            self.assertEqual(first.returncode, 0, first.stderr)
+            document.write_text(
+                "# Test\n\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                './pyrun --cid consume -- scripts/build.py --input "<sample>"\n'
+                "```\n\n`Results:`\n\nPending.\n"
+            )
+            before = {
+                path: path.read_bytes()
+                for path in (entry / "data.json", entry / "pyrun.json", artifact)
+            }
+            for dry_run in (True, False):
+                with self.subTest(dry_run=dry_run):
+                    rejected = run_log(
+                        root,
+                        "command",
+                        "sync",
+                        "--path",
+                        str(logical),
+                        "--entry",
+                        "e001",
+                        "--cid",
+                        "consume",
+                        "--delete",
+                        "build",
+                        "--add-origin",
+                        "sample=data/built/sample.json",
+                        *(("--dry-run",) if dry_run else ()),
+                    )
+                    self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                    self.assertIn("command.sync.outputs_in_use", rejected.stderr)
+                    self.assertEqual({p: p.read_bytes() for p in before}, before)
 
     def test_rename_only_does_not_rewrite_unchanged_data_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

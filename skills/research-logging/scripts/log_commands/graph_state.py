@@ -15,7 +15,7 @@ from research_log_data import (
     load_data_file,
     resolve_input_token,
 )
-from validation.commands import CommandDeclarationContext, index_commands
+from validation.commands import CommandDeclarationContext, Invocation, index_commands
 from validation.evidence import authored_eid_comments, load_evidence_file
 from validation.operation_state import (
     begin_registry_transaction,
@@ -249,39 +249,46 @@ def material_consumers(
 ) -> tuple[dict[str, Any], ...]:
     """Find physical consumers, including different names for the same material."""
 
-    return material_consumers_many(
+    uses = material_consumers_many(
         entry,
         (target,),
-        excluded_command=excluded_command,
         data_overrides=data_overrides,
         include_reached_code=include_reached_code,
     )[target]
+    return tuple(
+        use
+        for use in uses
+        if not (
+            excluded_command is not None
+            and use.get("entry") == entry.id
+            and use.get("command") == excluded_command
+        )
+    )
 
 
 def material_consumers_many(
     entry: EntryContext,
     targets: tuple[Path, ...],
     *,
-    excluded_command: str | None = None,
     data_overrides: Mapping[Path, DataFile | None] | None = None,
     include_reached_code: bool = False,
+    retained_origins: frozenset[Path] = frozenset(),
 ) -> dict[Path, tuple[dict[str, Any], ...]]:
-    """Find consumers of multiple targets with one same-log command discovery."""
+    """Find consumers with one discovery, optionally exempting retained origins.
+
+    For targets explicitly retained as origins, only file/directory origin-input
+    uses are exempt. Generated inputs, outputs and reached code remain consumers.
+    """
 
     if not targets:
         return {}
-    consumers: dict[Path, list[dict[str, Any]]] = {
-        target: [] for target in targets
-    }
+    consumers: dict[Path, list[dict[str, Any]]] = {target: [] for target in targets}
     resolved_targets = {target: target.resolve() for target in consumers}
+    retained_origins = frozenset(target.resolve() for target in retained_origins)
     materials = inspect_log_materials(entry.log, data_overrides=data_overrides)
     code_cache: dict[tuple[Path, Path], tuple[Path, ...]] = {}
     for invocation in materials.invocations:
-        if (
-            invocation.cid == excluded_command
-            and materials.roots[invocation.material_owner] == entry.root
-        ):
-            continue
+        origin_paths = _origin_input_paths(invocation)
         paths = [
             Path(relationship.path).resolve()
             for relationship in (*invocation.inputs, *invocation.outputs)
@@ -308,8 +315,13 @@ def material_consumers_many(
                         materials.project_root,
                     )
                 paths.extend(code_cache[cache_key])
+                origin_paths.difference_update(code_cache[cache_key])
         for target, resolved in resolved_targets.items():
-            if any(_resolved_paths_overlap(resolved, path) for path in paths):
+            if any(
+                _resolved_paths_overlap(resolved, path)
+                and (resolved not in retained_origins or path not in origin_paths)
+                for path in paths
+            ):
                 consumers[target].append(
                     {
                         "entry": invocation.entry,
@@ -317,10 +329,48 @@ def material_consumers_many(
                         "document": invocation.document,
                     }
                 )
-    evidence_consumers = _material_evidence_many(entry, tuple(consumers))
+    evidence_consumers = _material_evidence_many(
+        entry,
+        tuple(consumers),
+        data_overrides=data_overrides,
+        retained_origins=retained_origins,
+    )
     for target in consumers:
         consumers[target].extend(evidence_consumers[target])
     return {target: tuple(uses) for target, uses in consumers.items()}
+
+
+def _origin_input_paths(invocation: Invocation) -> set[Path]:
+    origins = {
+        Path(relationship.path).resolve()
+        for relationship in invocation.inputs
+        if relationship.origin
+        and relationship.input_resource is not None
+        and relationship.input_resource.kind in {"file", "directory"}
+    }
+    origins.update(
+        Path(relationship.input_resource.canonical_target).resolve()
+        for relationship in invocation.inputs
+        if relationship.origin
+        and relationship.input_resource is not None
+        and relationship.input_resource.kind == "directory"
+    )
+    dependencies = {
+        Path(relationship.path).resolve() for relationship in invocation.outputs
+    }
+    dependencies.update(
+        Path(relationship.path).resolve()
+        for relationship in invocation.inputs
+        if not relationship.origin
+    )
+    dependencies.update(
+        Path(collection.root).resolve()
+        for collection in invocation.collections
+        if collection.direction == "output" and collection.root
+    )
+    if invocation.script:
+        dependencies.add(Path(invocation.script).resolve())
+    return origins - dependencies
 
 
 def _reached_code_paths(
@@ -346,17 +396,25 @@ def _reached_code_paths(
 
 
 def _material_evidence_many(
-    entry: EntryContext, targets: tuple[Path, ...]
+    entry: EntryContext,
+    targets: tuple[Path, ...],
+    *,
+    data_overrides: Mapping[Path, DataFile | None] | None = None,
+    retained_origins: frozenset[Path] = frozenset(),
 ) -> dict[Path, tuple[dict[str, Any], ...]]:
-    consumers: dict[Path, list[dict[str, Any]]] = {
-        target: [] for target in targets
-    }
+    consumers: dict[Path, list[dict[str, Any]]] = {target: [] for target in targets}
     for observed in observe_physical_entries(entry.log):
         data_path = observed.root / "data.json"
         evidence_path = observed.root / "evidence.json"
         if not data_path.exists() or not evidence_path.exists():
             continue
-        data = load_data_file(data_path, entry_root=observed.root)
+        data = (
+            data_overrides[observed.root]
+            if data_overrides is not None and observed.root in data_overrides
+            else load_data_file(data_path, entry_root=observed.root)
+        )
+        if data is None:
+            continue
         evidence = load_evidence_file(
             evidence_path, log_root=entry.log.root, entry_root=observed.root
         )
@@ -368,6 +426,11 @@ def _material_evidence_many(
                     if (resource := data.by_name.get(token_name(source.source) or ""))
                     is not None
                     and paths_overlap(target, Path(resource.canonical_target))
+                    and not (
+                        target.resolve() in retained_origins
+                        and resource.origin
+                        and resource.kind in {"file", "directory"}
+                    )
                 ]
                 if any(
                     paths_overlap(

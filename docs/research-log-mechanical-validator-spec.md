@@ -3978,9 +3978,12 @@ should also be removed, `log data delete` checks for remaining consumers and
 refuses the removal while any use remains.
 
 For command deletion, the agent removes the command block first. Sync
-fails while downstream consumers use its outputs, removes its execution
-records and command-exclusive generated declarations together, and reports
-output material left disconnected. It never deletes output files.
+fails while downstream consumers depend on its generated outputs. A former
+output explicitly retained at the same target as a file or directory origin
+keeps its declaration and does not block deletion through origin-input uses;
+generated-input uses still block. Sync removes the command's execution records
+and command-exclusive generated declarations together, and reports output
+material left disconnected. It never deletes output files.
 
 The list actions expose the maintained semantic state needed to choose a normal
 Record or Repair action. Preserve existing `command verify` and `command show`

@@ -389,6 +389,11 @@ def _remove_deleted_declarations(
     if not selection.deleted:
         return candidate
     outputs = _deleted_outputs(entry, state, selection)
+    retained_origins = {
+        item.canonical_target
+        for item in (candidate.inputs if candidate is not None else ())
+        if item.origin and item.kind in {"file", "directory"}
+    }
     owned = tuple(
         item
         for item in (candidate.inputs if candidate is not None else ())
@@ -413,6 +418,7 @@ def _remove_deleted_declarations(
         entry,
         tuple(Path(output) for output in sorted(outputs)),
         data_overrides={entry.root: candidate},
+        retained_origins=frozenset(Path(output) for output in retained_origins),
     )
     for output in sorted(consumers):
         blocked.extend(

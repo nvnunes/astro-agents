@@ -393,9 +393,11 @@ evidence or cross-entry consumer uses that declaration.
 Material-name rename and deletion use `log data rename/delete`; shared targets,
 specialized identities, boundaries and reproduction policies use `log data update`.
 Command deletion removes its execution bucket and exclusively owned generated
-declarations only after downstream use is gone. It never deletes retained
-output bytes; inspect any reported disconnected paths for a separate retention
-decision.
+declarations only after downstream dependence is gone. An output explicitly
+retained at the same target as a file or directory origin keeps its declaration;
+origin-input consumers do not block command retirement, but generated-input
+consumers still do. It never deletes retained output bytes; inspect any reported
+disconnected paths for a separate retention decision.
 
 When parameters disappear, sync reports the exact stale members. Add one
 `--delete-stale-executions CID` for each affected selected CID to authorize

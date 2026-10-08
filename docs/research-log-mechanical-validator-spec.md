@@ -3949,8 +3949,11 @@ log retention list [--path LOG] --entry ENTRY
 
 Retention remains separate from data. Add is an idempotent ensure. Update is
 additive and preserves omitted coverage and reason. Retention rejects targets
-currently connected to command or evidence state and overlap with another
-retention decision. Removing coverage or a retention record never deletes its
+connected through evidence-rooted material or active command code, and overlap
+with another retention decision. A recorded producer or an unreached command's
+input/output declaration alone does not prohibit retention. Authoring protects
+both current Markdown and normalized evidence sources until their owning sync
+completes. Removing coverage or a retention record never deletes its
 targets; existing material left disconnected is reported for the agent's next
 action.
 

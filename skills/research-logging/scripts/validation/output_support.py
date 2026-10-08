@@ -16,7 +16,14 @@ from .pyrun_outputs import (
     code_target_path,
     portable_output_path,
 )
-from .pyrun_state import PyrunExecution, ResolvedExecutionOutput
+from .pyrun_state import (
+    OutputOwnerIndex,
+    PyrunExecution,
+    PyrunFile,
+    ResolvedExecutionOutput,
+    associate_exact_execution,
+    resolve_execution_output,
+)
 
 
 class OutputSupportValidationError(MechanicalContractError):
@@ -40,6 +47,81 @@ class ResolvedCodeSupport:
     key: str
     path: Path
     resolved: Path
+
+
+def supported_execution_output_directories(
+    invocation: Invocation,
+    state: PyrunFile,
+    project_root: Path,
+    owners: OutputOwnerIndex,
+) -> tuple[str, ...]:
+    """Return directory roots structurally owned by the exact execution.
+
+    A matching directory observation establishes atomic ownership even when
+    reproduction currentness cannot be established. No files are hashed here.
+    """
+
+    association = associate_exact_execution(
+        state, invocation, project_root=project_root
+    )
+    if association is None:
+        return ()
+    observations = dict(association.execution.observed.outputs)
+    supported = []
+    for collection in invocation.collections:
+        if (collection.direction, collection.mechanism) != ("output", "directory"):
+            continue
+        if collection.root is None:
+            continue
+        resolved = resolve_execution_output(
+            invocation,
+            collection.root,
+            project_root=project_root,
+            association=association,
+            owners=owners,
+        )
+        observation = observations.get(resolved.key)
+        if (
+            resolved.association is not None
+            and observation is not None
+            and observation.algorithm == "directory-sha256-v1"
+        ):
+            supported.append(collection.root)
+    return tuple(supported)
+
+
+def supported_legacy_output_directories(
+    invocation: Invocation,
+    support: PyrunOutputsFile,
+    project_root: Path,
+    current_inputs: Mapping[str, Fingerprint],
+) -> tuple[str, ...]:
+    """Return directory roots backed by matching legacy producer records."""
+
+    supported = []
+    for collection in invocation.collections:
+        if (collection.direction, collection.mechanism) != ("output", "directory"):
+            continue
+        if collection.root is None:
+            continue
+        key = portable_output_path(
+            collection.root,
+            entry_root=support.entry_root,
+            project_root=project_root,
+        )
+        record = support.outputs.get(key)
+        if (
+            record is not None
+            and record.fingerprint.algorithm == "directory-sha256-v1"
+            and not output_producer_mismatches(
+                invocation,
+                record,
+                current_inputs=current_inputs,
+                material=collection.root,
+            )
+        ):
+            supported.append(collection.root)
+    return tuple(supported)
 
 
 def declared_output_resource(

@@ -35,6 +35,8 @@ from validation.output_support import (
     require_current_execution_output,
     require_current_output_support,
     resolve_output_support,
+    supported_execution_output_directories,
+    supported_legacy_output_directories,
 )
 from validation.provenance import (
     ProducerIndex,
@@ -81,6 +83,39 @@ class LogMaterials:
     _rejected_index: RejectedProducerIndex | None = field(
         default=None, init=False, repr=False
     )
+
+    def supported_output_directories(self) -> frozenset[str]:
+        """Observe atomic directory ownership without checking currentness."""
+
+        supported: set[str] = set()
+        with FingerprintCache(self.project_root, writable=False) as cache:
+            for invocation in self.invocations:
+                root = self._root(invocation)
+                state = self._execution_state(invocation.material_owner, root)
+                if not any(
+                    (item.direction, item.mechanism) == ("output", "directory")
+                    for item in invocation.collections
+                ):
+                    continue
+                if state is not None:
+                    supported.update(
+                        supported_execution_output_directories(
+                            invocation,
+                            state,
+                            self.project_root,
+                            self._owners[invocation.material_owner],
+                        )
+                    )
+                else:
+                    supported.update(
+                        supported_legacy_output_directories(
+                            invocation,
+                            self._output_support(invocation.material_owner, root),
+                            self.project_root,
+                            self._current_input_observations(invocation, cache),
+                        )
+                    )
+        return frozenset(supported)
 
     def _explain_producer_failure(self, error: ProvenanceV2Error) -> None:
         """Attach relevant discovery failures without changing producer admission."""
@@ -482,9 +517,7 @@ def inspect_log_materials(
     observations: dict[tuple[str, str, ResourceIdentity], FingerprintObservation] = {}
     with ExitStack() as stack:
         try:
-            cache = stack.enter_context(
-                FingerprintCache(project_root, writable=False)
-            )
+            cache = stack.enter_context(FingerprintCache(project_root, writable=False))
         except FingerprintCacheError:
             cache = None
 

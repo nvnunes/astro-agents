@@ -144,6 +144,21 @@ class MaterialClassificationRequest:
     bounds: ResearchGraphBounds = ResearchGraphBounds()
 
 
+def trace_research_graph_materials(
+    graph: ResearchGraph, entry_roots: Mapping[str, Path]
+) -> tuple[ReachabilityTrace, set[str]]:
+    """Return evidence-rooted connectivity without inventory or publication.
+
+    Recorded command code is connected independently of evidence. Material
+    inputs and outputs connect only through evidence's producer chain; reached
+    supported output directories expand their atomic membership.
+    """
+
+    return _trace_authoritative_graph(
+        graph, _connection_roots(entry_roots), _graph_atomic_output_bundles(graph)
+    )
+
+
 def classify_research_graph_materials(
     request: MaterialClassificationRequest,
 ) -> MaterialClassification:
@@ -154,9 +169,7 @@ def classify_research_graph_materials(
     bundles = _graph_atomic_output_bundles(request.graph)
     graph_started = time.perf_counter()
     trace, connected = _trace_authoritative_graph(
-        request.graph,
-        connection_roots,
-        bundles,
+        request.graph, connection_roots, bundles
     )
     graph_seconds = time.perf_counter() - graph_started
 
@@ -174,9 +187,7 @@ def classify_research_graph_materials(
         connected,
     )
     unused_names = _graph_unused_input_names(graph)
-    orphan = _orphan_result(
-        inventory, connected, retained, unused_names, bundles
-    )
+    orphan = _orphan_result(inventory, connected, retained, unused_names, bundles)
     orphan_seconds = time.perf_counter() - orphan_started
 
     currentness_started = time.perf_counter()
@@ -364,10 +375,7 @@ def _graph_producer_candidates(
                 ):
                     paths.append((command, (producer_edge, edge)))
         for command, path_edges in paths:
-            if (
-                consumer_sequence is None
-                or _node_sequence(command) < consumer_sequence
-            ):
+            if consumer_sequence is None or _node_sequence(command) < consumer_sequence:
                 candidates[command.node_id] = (command, path_edges)
     return tuple(candidates[key] for key in sorted(candidates))
 
@@ -557,9 +565,7 @@ def _require_valid_retention_coverage(  # noqa: PLR0913 -- explicit set contract
             {"reason": "unknown_entry"},
         )
     invalid = (
-        set()
-        if record.attributes.get("directory") is True
-        else targets - inventory
+        set() if record.attributes.get("directory") is True else targets - inventory
     )
     if not covered:
         invalid.update(targets)
@@ -661,8 +667,7 @@ def _orphan_result(
     )
     orphan_projection = {
         "atomic_output_bundles": [
-            {"members": list(bundle.members), "root": bundle.root}
-            for bundle in bundles
+            {"members": list(bundle.members), "root": bundle.root} for bundle in bundles
         ],
         "connected": sorted(inventory & connected),
         "declared_retained": sorted(retained),

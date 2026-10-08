@@ -1,7 +1,7 @@
 # Disconnected Retention Instructions
 
 Use retention when the researcher intentionally keeps entry-owned material
-outside the active command and evidence graph. It records intent, not a missing
+outside evidence-rooted material and active command code. It records intent, not a missing
 producer, consumer, evidence relationship, or reproduction exception.
 Do not inspect or edit its JSON; use the owning CLI.
 
@@ -25,12 +25,16 @@ Update is additive and preserves omitted coverage and reason. To remove all
 coverage use `log retention delete --id ID`. Rename uses
 `log retention rename OLD NEW`; list returns semantic coverage and reason.
 
-Connected targets fail with their command/evidence owners, including other
-entries that use the same physical file under another name. Remove those uses
-and sync or delete their owners before retention. Conversely, remove retention
-coverage before either sync makes the target active. This explicit transfer
-keeps ownership clear. Removing coverage reports disconnected material but
-never deletes retained files.
+Recorded inputs and outputs outside the evidence chain may be retained without
+removing their commands or producer records. An unused directory sibling may
+be retained unless it belongs to a reached atomic output bundle.
+
+Evidence-rooted targets and active command code fail with their owners,
+including other entries using the same physical file under another name.
+Remove those uses and sync their owners before retention. Current Markdown and
+normalized evidence both remain protected until sync completes. Remove
+retention coverage before syncing new or changed command/evidence ownership.
+Removing coverage never deletes retained files.
 
 Malformed state stops the operation and requires explicitly authorized Repair;
 an authoring failure alone does not authorize direct JSON editing.

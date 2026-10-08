@@ -6,7 +6,6 @@ from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-from research_log_data import load_data_file
 from validation.retention import (
     RetentionFile,
     RetentionRecord,
@@ -16,14 +15,11 @@ from validation.retention import (
 
 from .context import EntryContext
 from .graph_state import (
-    authored_uses,
     describe_uses,
-    material_consumers,
-    normalized_uses,
     publish_updates,
-    related_entries,
 )
 from .model import ActionError, ActionResult, RetentionArguments
+from .retention_graph import retention_connections
 from .scaffold import observe_physical_entries
 from .storage import entry_lock_under_log, log_lock
 
@@ -174,25 +170,14 @@ def _candidate_record(
 
 def _require_disconnected(entry: EntryContext, record: RetentionRecord) -> None:
     targets = [entry.root / target for target in _targets(record)]
-    connected: list[dict[str, Any]] = []
-    for target in targets:
-        connected.extend(material_consumers(entry, target, include_reached_code=True))
-    data_path = entry.root / "data.json"
-    if data_path.exists():
-        data = load_data_file(data_path, entry_root=entry.root)
-        for item in data.inputs:
-            if any(
-                _overlaps(target, Path(item.canonical_target)) for target in targets
-            ):
-                for affected, _ in related_entries(entry, item.name):
-                    connected.extend(authored_uses(affected, item.name))
-                    connected.extend(normalized_uses(affected, item.name))
+    connected = retention_connections(entry, targets)
     if connected:
         raise ActionError(
             "retention.target.connected",
-            "targets still belong to commands or evidence; remove their uses "
-            "and sync their owners first: " + describe_uses(tuple(connected)),
-            records=tuple(connected),
+            "targets remain in evidence-rooted material or active command code; "
+            "remove their evidence/code uses and sync their owners first: "
+            + describe_uses(connected),
+            records=connected,
         )
 
 

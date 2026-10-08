@@ -123,12 +123,13 @@ from .output_support import (
     ResolvedCodeSupport,
     declared_output_resource,
     execution_output_support_dict,
-    output_producer_mismatches,
     output_support_matches_invocation,
     require_current_execution_output,
     require_current_output_support,
     resolve_code_support,
     resolve_output_support,
+    supported_execution_output_directories,
+    supported_legacy_output_directories,
 )
 from .presentation import (
     artifact_evidence_dependencies,
@@ -5445,36 +5446,10 @@ def _execution_output_directories(
 ) -> tuple[str, ...]:
     """Return directory roots owned by the invocation's exact v7 execution."""
 
-    association = associate_exact_execution(
-        execution_state, invocation, project_root=state.project_root
+    return supported_execution_output_directories(
+        invocation, execution_state, state.project_root,
+        state.execution_output_owners[invocation.material_owner],
     )
-    if association is None:
-        return ()
-    owners = state.execution_output_owners[invocation.material_owner]
-    observations = dict(association.execution.observed.outputs)
-    supported: list[str] = []
-    for collection in invocation.collections:
-        if (
-            collection.direction != "output"
-            or collection.mechanism != "directory"
-            or collection.root is None
-        ):
-            continue
-        resolved = resolve_execution_output(
-            invocation,
-            collection.root,
-            project_root=state.project_root,
-            association=association,
-            owners=owners,
-        )
-        observation = observations.get(resolved.key)
-        if (
-            resolved.association is not None
-            and observation is not None
-            and observation.algorithm == "directory-sha256-v1"
-        ):
-            supported.append(collection.root)
-    return tuple(supported)
 
 
 def _legacy_output_directories(
@@ -5482,34 +5457,10 @@ def _legacy_output_directories(
 ) -> tuple[str, ...]:
     """Return directory roots backed by matching legacy output records."""
 
-    entry_root = _entry_root_for_owner(invocation.material_owner, state)
-    supported: list[str] = []
-    for collection in invocation.collections:
-        if (
-            collection.direction != "output"
-            or collection.mechanism != "directory"
-            or collection.root is None
-        ):
-            continue
-        key = portable_output_path(
-            collection.root,
-            entry_root=entry_root,
-            project_root=state.project_root,
-        )
-        record = output_file.outputs.get(key)
-        if (
-            record is None
-            or record.fingerprint.algorithm != "directory-sha256-v1"
-            or output_producer_mismatches(
-                invocation,
-                record,
-                current_inputs=_current_invocation_inputs(invocation, state),
-                material=collection.root,
-            )
-        ):
-            continue
-        supported.append(collection.root)
-    return tuple(supported)
+    return supported_legacy_output_directories(
+        invocation, output_file, state.project_root,
+        _current_invocation_inputs(invocation, state),
+    )
 
 
 def _evidence_input_names(

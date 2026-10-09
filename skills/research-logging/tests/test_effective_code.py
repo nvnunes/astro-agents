@@ -222,6 +222,96 @@ class EffectiveCodeTests(unittest.TestCase):
             helper.write_text("def answer():\n    return 2\n", encoding="utf-8")
             self.assertNotEqual(_fingerprint(script, project), baseline)
 
+    def test_module_lookup_is_cached_per_root_within_one_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            first = project / "first"
+            second = project / "second"
+            first.mkdir()
+            helper = _write(second / "helper.py", "VALUE = 1\n")
+            script = _write(
+                project / "script.py",
+                "from helper import VALUE\nfrom helper import VALUE as OTHER\n"
+                "import external_missing\nimport external_missing as other_missing\n"
+                "print(VALUE, OTHER)\n",
+            )
+            original = effective_code._Analyzer._module_sources
+            with mock.patch.object(
+                effective_code._Analyzer,
+                "_module_sources",
+                autospec=True,
+                side_effect=original,
+            ) as lookup:
+                analysis = effective_code.analyze_effective_code(
+                    script, project_root=project, import_roots=(first, second, project)
+                )
+            self.assertIsNotNone(analysis.fingerprint, analysis.unsupported)
+            self.assertIn(helper, analysis.reached_sources)
+            keys = [(call.args[1], call.args[2]) for call in lookup.call_args_list]
+            self.assertEqual(len(keys), len(set(keys)))
+            self.assertIn((first, ("helper",)), keys)
+            self.assertIn((second, ("helper",)), keys)
+            self.assertIn((first, ("external_missing",)), keys)
+
+    def test_repeated_source_load_uses_cache_and_final_identity_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            script = _write(project / "script.py", "VALUE = 1\n")
+            analyzer = effective_code._Analyzer(
+                script=script, project_root=project, import_roots=None
+            )
+            context = effective_code._ModuleContext(project, (), ())
+            original = Path.stat
+            with mock.patch.object(
+                Path, "stat", autospec=True, side_effect=original
+            ) as observation:
+                source = analyzer._load_source(script, context)
+                after_read = observation.call_count
+                for _ in range(10):
+                    self.assertIs(analyzer._load_source(script, context), source)
+                self.assertEqual(observation.call_count, after_read)
+                analyzer._verify_sources()
+                self.assertGreater(observation.call_count, after_read)
+
+    def test_final_source_verification_detects_changes_and_symlink_retargeting(
+        self,
+    ) -> None:
+        for change in ("edit", "delete", "retarget"):
+            with (
+                self.subTest(change=change),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                project = Path(directory).resolve()
+                source = _write(project / "source.py", "VALUE = 1\n")
+                replacement = _write(project / "replacement.py", "VALUE = 2\n")
+                script = project / "script.py"
+                script.symlink_to(source)
+                original = effective_code._Analyzer._activate
+
+                def change_after_activation(analyzer, loaded):
+                    original(analyzer, loaded)
+                    if change == "edit":
+                        source.write_text("VALUE = 12345\n")
+                    elif change == "delete":
+                        source.unlink()
+                    else:
+                        script.unlink()
+                        script.symlink_to(replacement)
+
+                with mock.patch.object(
+                    effective_code._Analyzer, "_activate", change_after_activation
+                ):
+                    with self.assertRaises(
+                        effective_code.EffectiveCodeError
+                    ) as failure:
+                        effective_code.analyze_effective_code(
+                            script, project_root=project
+                        )
+                expected = (
+                    "source_unavailable" if change == "delete" else "source_changed"
+                )
+                self.assertEqual(failure.exception.code, f"effective_code.{expected}")
+
     def test_package_reexport_resolves_during_type_checking_import_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -264,6 +354,33 @@ class EffectiveCodeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertNotEqual(_fingerprint(script, project), baseline)
+
+    def test_multi_name_import_cycle_has_bounded_resolution_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            names = ", ".join(f"item{index}" for index in range(8))
+            script = _write(project / "script.py", "from package import item0\n")
+            _write(project / "package/__init__.py", f"from .bridge import {names}\n")
+            _write(project / "package/bridge.py", f"from . import {names}\n")
+            original = effective_code._Analyzer._pending_import_member
+            calls = 0
+
+            def bounded(analyzer, source, name):
+                nonlocal calls
+                calls += 1
+                if calls > 2000:
+                    raise AssertionError("cyclic re-exports expanded sibling imports")
+                return original(analyzer, source, name)
+
+            with mock.patch.object(
+                effective_code._Analyzer, "_pending_import_member", bounded
+            ):
+                result = effective_code.analyze_effective_code(
+                    script, project_root=project
+                )
+            self.assertIsNone(result.fingerprint)
+            self.assertTrue(result.unsupported)
+            self.assertLess(calls, 2000)
 
     def test_unresolved_and_dynamic_package_exports_remain_unsupported(self) -> None:
         initializers = {

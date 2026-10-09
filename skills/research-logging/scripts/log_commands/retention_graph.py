@@ -41,18 +41,23 @@ def retention_connections(
     if failures:
         raise ActionError("retention.graph.unavailable", str(failures[0].error))
     code_inputs = {}
+    code_cache: dict[tuple[str, Path], tuple[str, ...]] = {}
     if any(target.suffix == ".py" or target.is_dir() for target in targets):
         for invocation in materials.invocations:
             if invocation.script:
-                code_inputs[invocation.identity] = tuple(
-                    path.as_posix()
-                    for path in _reached_code_paths(
-                        Path(invocation.script),
-                        materials.roots[invocation.material_owner],
-                        entry.log.root,
-                        materials.project_root,
+                root = materials.roots[invocation.material_owner]
+                key = (invocation.script, root)
+                if key not in code_cache:
+                    code_cache[key] = tuple(
+                        path.as_posix()
+                        for path in _reached_code_paths(
+                            Path(invocation.script),
+                            root,
+                            entry.log.root,
+                            materials.project_root,
+                        )
                     )
-                )
+                code_inputs[invocation.identity] = code_cache[key]
     graph = build_evaluation_graph(
         EvaluationGraphInputs(
             entries=(),

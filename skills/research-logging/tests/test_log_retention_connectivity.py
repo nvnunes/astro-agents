@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from log_commands import retention_graph
+from log_commands.context import resolve_entry, resolve_log
 from research_log_cli_test_support import SCRIPTS, run_log, run_pyrun_process
 from test_log_command_sync import fixture, sync
 from test_log_evidence_sync import evidence, retained_files, set_results
@@ -25,6 +26,35 @@ from validation.research_graph import (
 
 
 class RetentionConnectivityTests(unittest.TestCase):
+    def test_repeated_script_invocations_share_one_analysis_per_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = fixture(
+                Path(directory), "./pyrun scripts/build.py --value first"
+            )
+            document.write_text(
+                document.read_text()
+                + "\n## Second\n\n`Steps:`\n\n```bash\n"
+                + "./pyrun --cid other -- scripts/build.py --value second\n"
+                + "```\n\n`Results:`\n\nPending.\n"
+            )
+            checked(sync(logical, "--cid", "other"))
+            target = entry / "scripts/unused.py"
+            target.write_text("# Disconnected test\n")
+            context = resolve_entry(resolve_log(logical), "e001")
+            with mock.patch.object(
+                retention_graph,
+                "_reached_code_paths",
+                wraps=retention_graph._reached_code_paths,
+            ) as reached:
+                self.assertEqual(
+                    retention_graph.retention_connections(context, [target]), ()
+                )
+                self.assertEqual(reached.call_count, 1)
+                self.assertEqual(
+                    retention_graph.retention_connections(context, [target]), ()
+                )
+                self.assertEqual(reached.call_count, 2)
+
     def conflicting_graph(
         self,
         entry: Path,

@@ -200,6 +200,11 @@ class _Analyzer:
         self._script = Path(os.path.abspath(script))
         self._import_roots = self._validated_import_roots(import_roots)
         self._sources: dict[Path, _Source] = {}
+        self._source_locations: dict[Path, _Source] = {}
+        self._module_resolutions: dict[
+            tuple[Path, tuple[str, ...]],
+            tuple[_ModuleTarget | _NamespaceTarget, ...] | None,
+        ] = {}
         self._module_targets: dict[
             tuple[Path, tuple[str, ...]], _ModuleTarget | _NamespaceTarget
         ] = {}
@@ -215,6 +220,7 @@ class _Analyzer:
             _ModuleContext(self._script.parent, (), ()),
         )
         self._activate(script)
+        self._verify_sources()
         unsupported = tuple(sorted(self._unsupported))
         truncated = len(unsupported) > MAX_UNSUPPORTED_LOCATIONS
         if unsupported:
@@ -236,6 +242,15 @@ class _Analyzer:
 
     def _load_source(self, path: Path, context: _ModuleContext) -> _Source:
         logical = Path(os.path.abspath(path))
+        known = self._source_locations.get(logical)
+        if known is None:
+            known = self._read_source(logical, context)
+            self._source_locations[logical] = known
+        self._remember_module(known, context)
+        return known
+
+    def _read_source(self, logical: Path, context: _ModuleContext) -> _Source:
+        """Read and index a new logical location, reusing canonical source content."""
         display = self._display(logical)
         try:
             before = logical.stat()
@@ -260,7 +275,6 @@ class _Analyzer:
             )
         known = self._sources.get(resolved)
         if known is not None:
-            self._remember_module(known, context)
             return known
         if len(self._sources) >= MAX_SOURCE_FILES:
             raise EffectiveCodeError(
@@ -308,8 +322,26 @@ class _Analyzer:
         )
         self._sources[resolved] = source
         self._index_scope(source, tree.body, ())
-        self._remember_module(source, context)
         return source
+
+    def _verify_sources(self) -> None:
+        """Recheck cached observations and symlink targets before returning a result."""
+        for logical, source in self._source_locations.items():
+            try:
+                current = logical.stat()
+                resolved = logical.resolve(strict=True)
+            except OSError as error:
+                raise EffectiveCodeError(
+                    "effective_code.source_unavailable",
+                    str(error),
+                    path=source.relative,
+                ) from error
+            if resolved != source.path or file_identity(current) != source.identity:
+                raise EffectiveCodeError(
+                    "effective_code.source_changed",
+                    "source changed during analysis",
+                    path=source.relative,
+                )
 
     def _remember_module(self, source: _Source, context: _ModuleContext) -> None:
         if context.module:
@@ -489,7 +521,11 @@ class _Analyzer:
         if not module or any(not part.isidentifier() for part in module):
             return None
         for root in roots:
-            targets = self._module_sources(Path(os.path.abspath(root)), module)
+            root = Path(os.path.abspath(root))
+            key = (root, module)
+            if key not in self._module_resolutions:
+                self._module_resolutions[key] = self._module_sources(root, module)
+            targets = self._module_resolutions[key]
             if targets is not None:
                 return targets
         return None
@@ -581,10 +617,19 @@ class _Analyzer:
         self._resolving_members.add(key)
         try:
             for node in source.tree.body:
-                if isinstance(node, ast.ImportFrom) and any(
-                    (alias.asname or alias.name) == name for alias in node.names
-                ):
-                    return dict(self._resolve_from_import(source, node)).get(name)
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                for alias in node.names:
+                    if (alias.asname or alias.name) == name:
+                        selected = ast.copy_location(
+                            ast.ImportFrom(
+                                module=node.module, names=[alias], level=node.level
+                            ),
+                            node,
+                        )
+                        return dict(self._resolve_from_import(source, selected)).get(
+                            name
+                        )
             return None
         finally:
             self._resolving_members.remove(key)

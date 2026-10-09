@@ -3908,6 +3908,14 @@ consumers requires `--acknowledge-shared`; the first rejection lists those
 consumers. The acknowledgment accepts the wider scope but does not bypass
 validation.
 
+A target-only update may change the authored location of an existing local
+declaration while its material is offline, provided normal path resolution
+proves the canonical target unchanged. It preserves kind, boundary, identity,
+comparison policy, evidence and execution observations, including reproduction
+requirements. An alias canonicalizing to the stored location is an unchanged
+result. Other target or policy changes retain their normal availability checks;
+execution still requires the input to exist.
+
 `data repair-locations` is a bounded recovery action for a well-formed registry
 whose selected locations fail the symlink rule. It accepts all affected names
 in one call, requires each replacement to resolve to the same existing

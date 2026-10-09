@@ -65,6 +65,157 @@ def execution(state: dict, cid: str) -> dict:
 
 
 class OfflineAuthoringTests(unittest.TestCase):
+    def test_data_update_accepts_equivalent_offline_absolute_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _, _ = offline_fixture(root)
+            alias = root / "logical-source"
+            alias.symlink_to(entry / "data/source", target_is_directory=True)
+            before = {
+                name: (entry / name).read_bytes()
+                for name in ("data.json", "pyrun.json")
+            }
+            for extra in (("--dry-run",), ()):
+                updated = checked(
+                    action(
+                        logical,
+                        "data",
+                        "update",
+                        "source",
+                        "--target",
+                        str(alias),
+                        *extra,
+                    )
+                )
+                self.assertFalse(updated["changed"])
+                self.assertEqual(
+                    {name: (entry / name).read_bytes() for name in before}, before
+                )
+            self.assertTrue(alias.is_symlink())
+            self.assertFalse(alias.exists())
+
+    def test_offline_location_update_preserves_identity_evidence_and_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document, _ = offline_fixture(root, with_output=True)
+            document.write_text(
+                document.read_text().replace("<source>", "<renamed>"),
+                encoding="utf-8",
+            )
+            checked(action(logical, "data", "rename", "source", "renamed"))
+            document.write_text(
+                document.read_text().replace("<renamed>", "<source>"),
+                encoding="utf-8",
+            )
+            checked(action(logical, "data", "rename", "renamed", "source"))
+            registry = entry / "data.json"
+            declared = json.loads(registry.read_text())
+            source = next(
+                item for item in declared["inputs"] if item["name"] == "source"
+            )
+            source["location"] = str(entry / "data/source")
+            registry.write_text(json.dumps(declared), encoding="utf-8")
+            before = {
+                name: (entry / name).read_bytes()
+                for name in (
+                    "data.json",
+                    "pyrun.json",
+                    "evidence.json",
+                )
+            }
+            self.assertTrue(
+                execution(json.loads(before["pyrun.json"]), "build")[
+                    "requires_reproduction"
+                ]
+            )
+            arguments = ("--target", "data/source")
+            checked(
+                action(logical, "data", "update", "source", *arguments, "--dry-run")
+            )
+            self.assertEqual(
+                {name: (entry / name).read_bytes() for name in before}, before
+            )
+            checked(action(logical, "data", "update", "source", *arguments))
+            after = json.loads(registry.read_text())
+            expected = {
+                **declared,
+                "inputs": [
+                    {**item, "location": "data/source"}
+                    if item["name"] == "source"
+                    else item
+                    for item in declared["inputs"]
+                ],
+            }
+            self.assertEqual(after, expected)
+            for name in ("pyrun.json", "evidence.json"):
+                self.assertEqual((entry / name).read_bytes(), before[name])
+            refused = run_pyrun_process(
+                entry,
+                "--cid",
+                "build",
+                "--",
+                "scripts/build.py",
+                "--input",
+                "<source>/manifest.json",
+                "--output",
+                "<result>",
+            )
+            self.assertIn("data.target.missing", refused.stderr)
+            self.assertFalse((entry / "executed.txt").exists())
+            self.assertEqual((entry / "pyrun.json").read_bytes(), before["pyrun.json"])
+
+    def test_offline_location_update_keeps_shared_acknowledgment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, document, _ = offline_fixture(root)
+            registry = entry / "data.json"
+            declared = json.loads(registry.read_text())
+            declared["inputs"][0]["location"] = str(entry / "data/source")
+            registry.write_text(json.dumps(declared), encoding="utf-8")
+            document.write_text(
+                document.read_text() + "\n## Peer\n\n`Steps:`\n\n```bash\n"
+                "./pyrun --cid peer -- scripts/build.py "
+                '--input "<source>/manifest.json"\n```\n\n`Results:`\n\nPending.\n',
+                encoding="utf-8",
+            )
+            before = registry.read_bytes()
+            arguments = ("--target", "data/source")
+            refused = action(logical, "data", "update", "source", *arguments)
+            self.assertEqual(refused.returncode, 2, refused.stderr)
+            self.assertIn("data.update.shared", refused.stderr)
+            self.assertEqual(registry.read_bytes(), before)
+            checked(
+                action(
+                    logical,
+                    "data",
+                    "update",
+                    "source",
+                    *arguments,
+                    "--acknowledge-shared",
+                )
+            )
+            self.assertEqual(
+                json.loads(registry.read_text())["inputs"][0]["location"], "data/source"
+            )
+
+    def test_offline_location_update_rejects_new_targets_and_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            logical, entry, _, _ = offline_fixture(root)
+            alias = root / "logical-source"
+            alias.symlink_to(entry / "data/source", target_is_directory=True)
+            before = (entry / "data.json").read_bytes()
+            for arguments in (
+                ("--target", str(root / "different-source")),
+                ("--target", str(alias), "--kind", "file"),
+                ("--target", str(alias), "--identity", "file:manifest.json"),
+            ):
+                with self.subTest(arguments=arguments):
+                    refused = action(logical, "data", "update", "source", *arguments)
+                    self.assertEqual(refused.returncode, 2, refused.stderr)
+                    self.assertIn("data.target.missing", refused.stderr)
+                    self.assertEqual((entry / "data.json").read_bytes(), before)
+
     def test_command_rename_preserves_history_without_input_observation(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document, before = offline_fixture(Path(directory))

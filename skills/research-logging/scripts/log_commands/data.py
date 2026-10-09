@@ -162,7 +162,7 @@ def repair_locations(
 
 
 def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
-    """Apply explicit target, boundary, or directory-identity changes."""
+    """Update a declaration; proven same-target location edits need no content reads."""
 
     if (
         arguments.target is None
@@ -190,7 +190,8 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         )
         identity = _updated_identity(existing, arguments)
         target, commit = _update_target(existing, arguments)
-        candidate = _build_item(
+        location_candidate = _same_target_location_candidate(entry, existing, arguments)
+        candidate = location_candidate or _build_item(
             entry,
             _InputDefinition(
                 existing.name,
@@ -215,34 +216,18 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
         candidate = replace(candidate, comparison=comparison)
         if candidate == existing:
             return _result("update", "unchanged", False)
-        if (
-            len(
-                {
-                    (
-                        use["entry"],
-                        use.get("command"),
-                        use.get("evidence"),
-                        use.get("from_entry"),
-                    )
-                    for use in consumers
-                }
-            )
-            > 1
-            and not arguments.acknowledge_shared
-        ):
-            raise ActionError(
-                "data.update.shared",
-                "this declaration has several consumers; review them and use "
-                "--acknowledge-shared" + describe_uses(consumers),
-                records=consumers,
-            )
+        _require_shared_update(consumers, arguments)
         built = _build(entry, _replace(current, existing.name, candidate))
-        if consumers:
-            require_unretained_paths(entry, (candidate.canonical_target,))
-        _require_consumer_tokens(entry, candidate, built)
-        _require_boundary(entry, built, candidate)
+        if location_candidate is None:
+            if consumers:
+                require_unretained_paths(entry, (candidate.canonical_target,))
+            _require_consumer_tokens(entry, candidate, built)
+            _require_boundary(entry, built, candidate)
         if not arguments.dry_run:
-            publish_updates((entry,), {built.path: built.canonical_json()})
+            if location_candidate is not None:
+                publish_same_target_location_repair(entry, built.canonical_json())
+            else:
+                publish_updates((entry,), {built.path: built.canonical_json()})
         return _result("update", "dry-run" if arguments.dry_run else "changed", True)
 
 
@@ -679,6 +664,57 @@ def _update_target(
                 )
             return path, revision
     return arguments.target or existing.location, _updated_commit(existing, arguments)
+
+
+def _same_target_location_candidate(
+    entry: EntryContext, existing: InputResource, arguments: DataUpdateArguments
+) -> InputResource | None:
+    """Admit only a local locator edit with unchanged canonical material and policy."""
+
+    if arguments.target is None or existing.kind == "git-repository":
+        return None
+    if any(
+        value is not None
+        for value in (
+            arguments.boundary,
+            arguments.kind,
+            arguments.identity,
+            arguments.reproduction_comparison,
+        )
+    ):
+        return None
+    location = normalize_input_location(arguments.target, entry_root=entry.root)
+    if (entry.root / location).resolve().as_posix() != existing.canonical_target:
+        return None
+    return replace(existing, location=location)
+
+
+def _require_shared_update(
+    consumers: tuple[dict[str, object], ...], arguments: DataUpdateArguments
+) -> None:
+    """Require acknowledgment before changing a declaration with several consumers."""
+
+    if (
+        len(
+            {
+                (
+                    use["entry"],
+                    use.get("command"),
+                    use.get("evidence"),
+                    use.get("from_entry"),
+                )
+                for use in consumers
+            }
+        )
+        > 1
+        and not arguments.acknowledge_shared
+    ):
+        raise ActionError(
+            "data.update.shared",
+            "this declaration has several consumers; review them and use "
+            "--acknowledge-shared" + describe_uses(consumers),
+            records=consumers,
+        )
 
 
 def _require_boundary(

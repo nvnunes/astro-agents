@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -21,13 +21,20 @@ from validation.command_diagnostics import (
     rejected_producer_message,
 )
 from validation.commands import (
+    MAX_COLLECTION_MEMBERS,
     CommandContext,
+    CommandDeclarationContext,
     CommandDiscoveryFailure,
+    DiscoveryResult,
     Invocation,
+    MaterialCollection,
     command_input_names,
     discover_commands,
+    index_commands,
+    materialize_declared_commands,
     order_invocations,
 )
+from validation.filesystem import BoundedTraversalError, bounded_descendants
 from validation.fingerprint_cache import FingerprintCache, FingerprintCacheError
 from validation.output_support import (
     confirmed_output_record,
@@ -58,7 +65,9 @@ from validation.pyrun_state import (
     associate_execution,
     execution_output_owners,
     load_pyrun_state,
+    portable_script_path,
     resolve_execution_output,
+    script_target_path,
 )
 
 from .context import LogContext, resolve_project_root
@@ -503,8 +512,14 @@ def inspect_log_materials(
     log: LogContext,
     *,
     data_overrides: Mapping[Path, DataFile | None] | None = None,
+    declarations_only: bool = False,
 ) -> LogMaterials:
-    """Discover same-log commands against exact current or candidate registries."""
+    """Discover same-log commands against current or candidate registries.
+
+    Declaration-only discovery serves metadata authoring and connectivity when
+    unchanged inputs are offline. It observes no input content and establishes
+    no currentness; generated-source admission still uses strict observations.
+    """
 
     project_root = resolve_project_root(log.root)
     documents: list[tuple[Invocation, ...]] = []
@@ -551,7 +566,7 @@ def inspect_log_materials(
                         "association.document_unavailable", f"{document}: {error}"
                     ) from error
                 names.setdefault(root, set()).update(command_input_names(text))
-                discovery = discover_commands(
+                discovery = _discover_material_commands(
                     text,
                     CommandContext(
                         log_id=log.root.as_posix(),
@@ -563,6 +578,7 @@ def inspect_log_materials(
                         data_file=data_file,
                         input_fingerprint_verifier=observe_input,
                     ),
+                    declarations_only=declarations_only,
                 )
                 documents.append(discovery.invocations)
                 failures.setdefault(root, []).extend(discovery.failures)
@@ -573,6 +589,79 @@ def inspect_log_materials(
         roots,
         {root: frozenset(values) for root, values in names.items()},
         {root: tuple(values) for root, values in failures.items()},
+    )
+
+
+def _discover_material_commands(
+    text: str, context: CommandContext, *, declarations_only: bool
+) -> DiscoveryResult:
+    if not declarations_only:
+        return discover_commands(text, context)
+    declaration = CommandDeclarationContext(
+        context.log_id,
+        context.entry,
+        context.document,
+        context.entry_root,
+        context.log_root,
+        context.project_root,
+        context.data_file,
+        context.require_experimental_context,
+    )
+    discovery = materialize_declared_commands(
+        index_commands(text, declaration), declaration
+    )
+    return DiscoveryResult(
+        tuple(
+            _declared_graph_invocation(invocation, context)
+            for invocation in discovery.invocations
+        ),
+        discovery.failures,
+    )
+
+
+def _declared_graph_invocation(
+    invocation: Invocation, context: CommandContext
+) -> Invocation:
+    """Project authored script spelling and local output membership for graphs."""
+
+    script = None
+    if invocation.script_argument is not None:
+        key = portable_script_path(
+            invocation.script_argument,
+            entry_root=context.entry_root,
+            project_root=context.project_root,
+            authored=True,
+        )
+        script = script_target_path(
+            key, entry_root=context.entry_root, project_root=context.project_root
+        ).as_posix()
+    return replace(
+        invocation,
+        script=script,
+        collections=tuple(
+            _declared_graph_collection(collection)
+            for collection in invocation.collections
+        ),
+    )
+
+
+def _declared_graph_collection(collection: MaterialCollection) -> MaterialCollection:
+    """List local output members for atomic ownership, never offline inputs."""
+
+    if collection.direction != "output" or collection.root is None:
+        return collection
+    root = Path(collection.root)
+    if not root.is_dir():
+        return collection
+    try:
+        paths = bounded_descendants(root, maximum_entries=MAX_COLLECTION_MEMBERS)
+    except BoundedTraversalError as error:
+        raise ActionError("collection.membership.invalid", str(error)) from error
+    if any(path.is_symlink() for path in paths):
+        raise ActionError("collection.membership.invalid", f"nested symlink: {root}")
+    return replace(
+        collection,
+        members=tuple(path.resolve().as_posix() for path in paths if path.is_file()),
     )
 
 

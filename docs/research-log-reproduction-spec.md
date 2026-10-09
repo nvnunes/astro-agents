@@ -1273,6 +1273,13 @@ publishes both atomically under short entry and log locks. It never samples scri
 or output bytes. `--dry-run` performs the same semantic checks and returns both
 complete unified diffs without writing registries, diagnostics, or caches.
 
+Declaration resolution does not require unchanged inputs or directory members
+to be accessible. Offline inputs do not prevent metadata-only command sync or
+rename. These operations preserve applicable historical observations and run
+timestamps; changed recipes retain the ordinary reproduction requirement. They
+never invent fingerprints or establish currentness. Execution, reproduction,
+and evidence evaluation still require accessible, safely resolved inputs.
+
 ### Execution-Metadata Schema
 
 Entry-local execution state accepts only strict `research-log-pyrun/v7`.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from research_log_data import DataFile, load_data_file, resolve_input_token
+from research_log_data import DataFile, load_data_file, resolve_declared_input_token
 from validation.evidence import authored_eid_comments, load_evidence_file
 from validation.evidence_markdown import read_markdown_evidence
 from validation.material_graph import EvidenceConnection, trace_research_graph_materials
@@ -33,7 +33,7 @@ def retention_connections(
     do not prohibit retention. This does not weaken mutation/deletion guards.
     """
 
-    materials = inspect_log_materials(entry.log)
+    materials = inspect_log_materials(entry.log, declarations_only=True)
     failures = [failure for group in materials.failures.values() for failure in group]
     if failures:
         raise ActionError("retention.graph.unavailable", str(failures[0].error))
@@ -159,7 +159,7 @@ def _connection(
         raise ActionError(
             "retention.graph.unavailable", f"{document}: evidence has no data registry"
         )
-    resolved = tuple(resolve_input_token(token, data) for token in tokens)
+    resolved = tuple(resolve_declared_input_token(token, data) for token in tokens)
     return EvidenceConnection(
         entry=entry_id,
         record=record_id,

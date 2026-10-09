@@ -836,6 +836,26 @@ def data_file_from_fields(
 def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInputToken:
     """Resolve one complete locator, commit, or directory-member input token."""
 
+    return _resolve_input_token(value, data_file, require_available=True)
+
+
+def resolve_declared_input_token(
+    value: str, data_file: DataFile | None
+) -> ResolvedInputToken:
+    """Resolve a registry binding without requiring an accessible member.
+
+    For metadata authoring and connectivity only. Member syntax and declaration
+    kind remain strict; this lexical result establishes neither filesystem
+    safety nor content currentness. Execution and evidence evaluation must use
+    :func:`resolve_input_token` and their ordinary observation checks.
+    """
+
+    return _resolve_input_token(value, data_file, require_available=False)
+
+
+def _resolve_input_token(
+    value: str, data_file: DataFile | None, *, require_available: bool
+) -> ResolvedInputToken:
     parts = input_token_parts(value)
     if parts is None:
         _fail(
@@ -872,7 +892,7 @@ def resolve_input_token(value: str, data_file: DataFile | None) -> ResolvedInput
             resource.material_identity,
             resource.canonical_target,
         )
-    path = _resolve_member(resource, member, value)
+    path = _resolve_member(resource, member, value, require_available=require_available)
     return ResolvedInputToken(resource, path, path, member=member)
 
 
@@ -1512,12 +1532,16 @@ def _validate_local_symlink_surface(path: Path, entry_root: Path, subject: str) 
         _invalid(subject, {"location": str(path), "reason": error.reason})
 
 
-def _resolve_member(resource: InputResource, member: str, subject: str) -> str:
+def _resolve_member(
+    resource: InputResource, member: str, subject: str, *, require_available: bool
+) -> str:
     pure = PurePosixPath(member)
     if resource.kind != "directory" or not _valid_input_member(member):
         _invalid(subject, {"member": member, "resource": resource.name})
     root = Path(resource.canonical_target)
     target = root.joinpath(*pure.parts)
+    if not require_available:
+        return target.as_posix()
     if target.is_symlink() or not target.is_file():
         _fail(
             "data.target.missing",

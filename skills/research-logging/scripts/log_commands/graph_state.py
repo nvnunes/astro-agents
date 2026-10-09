@@ -13,7 +13,7 @@ from research_log_data import (
     DataFile,
     input_token_parts,
     load_data_file,
-    resolve_input_token,
+    resolve_declared_input_token,
 )
 from validation.commands import CommandDeclarationContext, Invocation, index_commands
 from validation.evidence import authored_eid_comments, load_evidence_file
@@ -285,7 +285,9 @@ def material_consumers_many(
     consumers: dict[Path, list[dict[str, Any]]] = {target: [] for target in targets}
     resolved_targets = {target: target.resolve() for target in consumers}
     retained_origins = frozenset(target.resolve() for target in retained_origins)
-    materials = inspect_log_materials(entry.log, data_overrides=data_overrides)
+    materials = inspect_log_materials(
+        entry.log, data_overrides=data_overrides, declarations_only=True
+    )
     code_cache: dict[tuple[Path, Path], tuple[Path, ...]] = {}
     for invocation in materials.invocations:
         origin_paths = _origin_input_paths(invocation)
@@ -434,7 +436,8 @@ def _material_evidence_many(
                 ]
                 if any(
                     paths_overlap(
-                        target, Path(resolve_input_token(source.source, data).path)
+                        target,
+                        Path(resolve_declared_input_token(source.source, data).path),
                     )
                     for source in relevant
                 ):

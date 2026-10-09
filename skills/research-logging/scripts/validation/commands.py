@@ -19,6 +19,7 @@ from research_log_data import (
     input_token_parts,
     observe_fingerprint,
     require_git_repository_token_pairs,
+    resolve_declared_input_token,
     resolve_input_token,
 )
 
@@ -459,7 +460,7 @@ def _declared_relationship(
 
     if input_token_parts(value) is not None:
         try:
-            resolved = resolve_input_token(value, context.data_file)
+            resolved = resolve_declared_input_token(value, context.data_file)
         except DataContractError as error:
             _fail(error.code, context.document, error.observed)
         resource = resolved.resource

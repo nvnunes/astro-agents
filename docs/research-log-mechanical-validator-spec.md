@@ -3927,6 +3927,11 @@ filesystem decision.
 
 Data rename validates Markdown evidence definitions only for records using the
 renamed declaration. Unrelated invalid evidence does not block the rename.
+Input-name renames and retention connectivity use declared paths, including
+directory-member bindings, without observing input content. Offline unchanged
+inputs do not block these metadata operations or remove graph connections.
+Malformed bindings and ambiguous ownership still fail. Historical observations
+remain historical; execution and validation retain their availability checks.
 
 `data list` exposes maintained semantic declaration properties needed for
 Record and Repair: name, direct or cross-entry form, target or source entry,

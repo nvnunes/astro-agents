@@ -325,7 +325,9 @@ def rename(
             pyrun = _renamed_pyrun(affected, old_name, new_name)
             if pyrun is not None:
                 updates[affected.root / "pyrun.json"] = pyrun
-        materials = inspect_log_materials(entry.log, data_overrides=overrides)
+        materials = inspect_log_materials(
+            entry.log, data_overrides=overrides, declarations_only=True
+        )
         if old_name in materials.input_names.get(entry.root, frozenset()):
             raise ActionError(
                 "data.rename.command_incomplete",

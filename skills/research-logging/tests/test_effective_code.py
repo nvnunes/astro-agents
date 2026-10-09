@@ -222,6 +222,73 @@ class EffectiveCodeTests(unittest.TestCase):
             helper.write_text("def answer():\n    return 2\n", encoding="utf-8")
             self.assertNotEqual(_fingerprint(script, project), baseline)
 
+    def test_package_reexport_resolves_during_type_checking_import_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            script = _write(
+                project / "script.py",
+                "from package import Response\nprint(Response().run())\n",
+            )
+            initializer = _write(
+                project / "package/__init__.py",
+                "from .system import Worker as Response\n",
+            )
+            system = _write(
+                project / "package/system.py",
+                "from sibling import VALUE\n"
+                "class Worker:\n"
+                "    def run(self):\n        return VALUE\n"
+                "    def unused(self):\n        return 99\n",
+            )
+            _write(
+                project / "sibling/__init__.py",
+                "from typing import TYPE_CHECKING\n"
+                "if TYPE_CHECKING:\n    from .consumer import Response\n"
+                "VALUE = 1\n",
+            )
+            _write(project / "sibling/consumer.py", "from package import Response\n")
+            analysis = effective_code.analyze_effective_code(
+                script, project_root=project
+            )
+            self.assertIsNotNone(analysis.fingerprint, analysis.unsupported)
+            self.assertIn(initializer.resolve(), analysis.reached_sources)
+            self.assertIn(system.resolve(), analysis.reached_sources)
+            baseline = analysis.fingerprint
+            system.write_text(
+                system.read_text().replace("return 99", "return 100"),
+                encoding="utf-8",
+            )
+            self.assertEqual(_fingerprint(script, project), baseline)
+            system.write_text(
+                system.read_text().replace("return VALUE", "return VALUE + 1"),
+                encoding="utf-8",
+            )
+            self.assertNotEqual(_fingerprint(script, project), baseline)
+
+    def test_unresolved_and_dynamic_package_exports_remain_unsupported(self) -> None:
+        initializers = {
+            "missing": "",
+            "cycle": "from .bridge import Response\n",
+            "dynamic": "def __getattr__(name):\n    return object\n",
+        }
+        for label, initializer in initializers.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                project = Path(directory)
+                script = _write(
+                    project / "script.py",
+                    "from package import Response\nprint(Response())\n",
+                )
+                _write(project / "package/__init__.py", initializer)
+                _write(project / "package/bridge.py", "from . import Response\n")
+                analysis = effective_code.analyze_effective_code(
+                    script, project_root=project
+                )
+                self.assertIsNone(analysis.fingerprint)
+                self.assertIn(
+                    "local_attribute_unresolved",
+                    {reason.construct for reason in analysis.unsupported},
+                )
+
     def test_unrelated_module_and_external_implementation_do_not_participate(
         self,
     ) -> None:

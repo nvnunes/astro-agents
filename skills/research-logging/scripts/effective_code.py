@@ -206,6 +206,7 @@ class _Analyzer:
         self._class_bases: dict[_DefinitionTarget, tuple[_Binding | None, ...]] = {}
         self._reached: set[_DefinitionTarget] = set()
         self._analyzing: set[_DefinitionTarget] = set()
+        self._resolving_members: set[tuple[Path, str]] = set()
         self._unsupported: set[UnsupportedLocation] = set()
 
     def analyze(self) -> EffectiveCodeAnalysis:
@@ -563,7 +564,30 @@ class _Analyzer:
         if isinstance(module, _NamespaceTarget):
             return None
         source = self._sources[module.path]
-        return source.module_names.get(name)
+        binding = source.module_names.get(name)
+        if binding is not None or not source.active:
+            return binding
+        return self._pending_import_member(source, name)
+
+    def _pending_import_member(self, source: _Source, name: str) -> _Binding | None:
+        """Resolve an explicit re-export interrupted by an import cycle.
+
+        Only direct module-level imports qualify. Guard each member so cycles
+        without a defining binding remain unresolved rather than recursing.
+        """
+        key = (source.path, name)
+        if key in self._resolving_members:
+            return None
+        self._resolving_members.add(key)
+        try:
+            for node in source.tree.body:
+                if isinstance(node, ast.ImportFrom) and any(
+                    (alias.asname or alias.name) == name for alias in node.names
+                ):
+                    return dict(self._resolve_from_import(source, node)).get(name)
+            return None
+        finally:
+            self._resolving_members.remove(key)
 
     def resolve_attribute(self, scope: _Scope, node: ast.Attribute) -> _Binding | None:
         owner = _infer_binding(scope, node.value)

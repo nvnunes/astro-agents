@@ -3965,6 +3965,10 @@ completes. Removing coverage or a retention record never deletes its
 targets; existing material left disconnected is reported for the agent's next
 action.
 
+Retention authoring rejects ambiguities affecting a selected target or a
+possible evidence dependency path to it, and reports the blocking subjects.
+Unrelated graph findings do not block an otherwise disconnected target update.
+
 ### Command And Evidence Lifecycles
 
 ```text

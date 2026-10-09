@@ -2,17 +2,222 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from log_commands import retention_graph
 from research_log_cli_test_support import SCRIPTS, run_log, run_pyrun_process
 from test_log_command_sync import fixture, sync
 from test_log_evidence_sync import evidence, retained_files, set_results
 from test_log_graph_lifecycle import action, checked
+from validation.research_graph import (
+    AmbiguityKind,
+    AmbiguityObservation,
+    EdgeKind,
+    NodeKind,
+    ResearchEdge,
+    ResearchGraph,
+    ResearchNode,
+)
 
 
 class RetentionConnectivityTests(unittest.TestCase):
+    def conflicting_graph(
+        self,
+        entry: Path,
+        *,
+        evidence_rooted: bool = False,
+        directory: bool = False,
+    ) -> ResearchGraph:
+        entry = entry.resolve()
+        source = ResearchNode(NodeKind.MATERIAL, str(entry / "data/source.csv"))
+        output = ResearchNode(NodeKind.MATERIAL, str(entry / "data/output.csv"))
+        producers = tuple(
+            ResearchNode(
+                NodeKind.COMMAND,
+                str(index),
+                "e001",
+                {"cid": f"producer-{index}", "sequence": index},
+            )
+            for index in (1, 2)
+        )
+        nodes = [source, output, *producers]
+        edges = [
+            ResearchEdge(EdgeKind.ORIGIN, source.node_id, producer.node_id)
+            for producer in producers
+        ]
+        edges.extend(
+            ResearchEdge(EdgeKind.PRODUCTION, producer.node_id, output.node_id)
+            for producer in producers
+        )
+        subject = output
+        if directory:
+            subject = ResearchNode(
+                NodeKind.COLLECTION,
+                "bundle",
+                "e001",
+                {"root": str(entry / "data"), "mechanism": "directory"},
+            )
+            nodes.append(subject)
+        if evidence_rooted:
+            evidence_record = ResearchNode(NodeKind.EVIDENCE_RECORD, "value", "e001")
+            nodes.append(evidence_record)
+            edges.append(
+                ResearchEdge(
+                    EdgeKind.DECLARATION,
+                    evidence_record.node_id,
+                    output.node_id,
+                )
+            )
+        ambiguity = AmbiguityObservation(
+            AmbiguityKind.MULTIPLE_PRODUCERS,
+            subject.node_id,
+            tuple(producer.node_id for producer in producers),
+        )
+        return ResearchGraph(tuple(nodes), tuple(edges), (ambiguity,))
+
+    def test_unrelated_conflicting_producers_do_not_block_retention(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(Path(directory), "./pyrun scripts/build.py")
+            checked(sync(logical))
+            (entry / "data/unused.txt").write_text("retained")
+            with mock.patch.object(
+                retention_graph,
+                "build_evaluation_graph",
+                return_value=self.conflicting_graph(entry),
+            ):
+                checked(
+                    action(
+                        logical,
+                        "retention",
+                        "add",
+                        "--id",
+                        "kept",
+                        "--target",
+                        "data/unused.txt",
+                    )
+                )
+
+    def test_relevant_producer_conflicts_are_rejected_without_writes(self):
+        cases = (
+            ("data/output.csv", False, False),
+            ("data/source.csv", True, False),
+            ("data/member.txt", False, True),
+        )
+        for target, evidence_rooted, directory_conflict in cases:
+            with (
+                self.subTest(target=target),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                logical, entry, _ = fixture(Path(directory), "./pyrun scripts/build.py")
+                checked(sync(logical))
+                (entry / target).write_text("retained")
+                before = retained_files(logical)
+                graph = self.conflicting_graph(
+                    entry,
+                    evidence_rooted=evidence_rooted,
+                    directory=directory_conflict,
+                )
+                for dry_run in (False, True):
+                    with mock.patch.object(
+                        retention_graph,
+                        "build_evaluation_graph",
+                        return_value=graph,
+                    ):
+                        rejected = action(
+                            logical,
+                            "retention",
+                            "add",
+                            "--id",
+                            "kept",
+                            "--target",
+                            target,
+                            *(("--dry-run",) if dry_run else ()),
+                        )
+                    self.assertIn("retention.graph.unavailable", rejected.stderr)
+                    self.assertIn("multiple_producers", rejected.stderr)
+                    self.assertEqual(retained_files(logical), before)
+
+    def missing_producer_fixture(self, root: Path) -> tuple[Path, Path, Path]:
+        logical, entry, document = fixture(
+            root, './pyrun scripts/build.py --input "<missing-producer>"'
+        )
+        (entry / "data/unproduced.csv").write_text("value\n7\n")
+        checked(sync(logical, "--add-origin", "missing-producer=data/unproduced.csv"))
+        # Model an existing generated-input declaration whose producer is absent.
+        data_path = entry / "data.json"
+        data = json.loads(data_path.read_text())
+        data["inputs"][0]["origin"] = False
+        data_path.write_text(json.dumps(data))
+        return logical, entry, document
+
+    def test_unrelated_missing_producer_does_not_block_retention_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = self.missing_producer_fixture(Path(directory))
+            for name in ("old.py", "new.py"):
+                (entry / "scripts" / name).write_text("# Unused verification script\n")
+            checked(
+                action(
+                    logical,
+                    "retention",
+                    "add",
+                    "--id",
+                    "kept",
+                    "--target",
+                    "scripts/old.py",
+                )
+            )
+            before = retained_files(logical)
+            arguments = (
+                "--id",
+                "kept",
+                "--remove-target",
+                "scripts/old.py",
+                "--add-target",
+                "scripts/new.py",
+            )
+            checked(action(logical, "retention", "update", *arguments, "--dry-run"))
+            self.assertEqual(retained_files(logical), before)
+            checked(action(logical, "retention", "update", *arguments))
+            records = checked(action(logical, "retention", "list"))["records"]
+            self.assertEqual(records[0]["targets"], ["scripts/new.py"])
+            for path, content in before.items():
+                if path.name != "retention.json":
+                    self.assertEqual(path.read_bytes(), content)
+
+    def test_connected_script_is_rejected_despite_unrelated_missing_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _ = self.missing_producer_fixture(Path(directory))
+            rejected = action(
+                logical,
+                "retention",
+                "add",
+                "--id",
+                "kept",
+                "--target",
+                "scripts/build.py",
+            )
+            self.assertIn("retention.target.connected", rejected.stderr)
+
+    def test_missing_producer_for_selected_target_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, _, _ = self.missing_producer_fixture(Path(directory))
+            rejected = action(
+                logical,
+                "retention",
+                "add",
+                "--id",
+                "kept",
+                "--target",
+                "data/unproduced.csv",
+            )
+            self.assertIn("retention.graph.unavailable", rejected.stderr)
+            self.assertIn("no_producer", rejected.stderr)
+            self.assertIn("unproduced.csv", rejected.stderr)
+
     def bundle_fixture(self, root: Path) -> tuple[Path, Path, Path]:
         logical, entry, document = fixture(
             root,

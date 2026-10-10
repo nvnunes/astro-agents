@@ -669,6 +669,11 @@ def _add_invocation_collections(
                 "mechanism": str(getattr(value, "mechanism")),
                 "root": None if root is None else str(root),
                 "supported": root in state.supported_output_directories,
+                **(
+                    {"membership_observed": False}
+                    if getattr(value, "membership_observed", True) is False
+                    else {}
+                ),
             },
         )
         state.builder.add_node(collection)

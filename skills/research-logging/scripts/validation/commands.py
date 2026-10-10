@@ -13,6 +13,7 @@ from research_log_data import (
     DataFile,
     FingerprintObservation,
     InputResource,
+    ResolvedInputToken,
     identity_file_paths,
     identity_pattern_paths,
     input_token_candidate,
@@ -239,6 +240,7 @@ def observe_commands(
         context.input_fingerprint_verifier,
         context.script_identity_cache,
         context.script_identity_observer,
+        context.unavailable_inputs,
     )
     invocations: list[Invocation] = []
     failures = list(declarations.failures)
@@ -599,13 +601,14 @@ class MaterialRelationship:
 
 @dataclass(frozen=True)
 class MaterialCollection:
-    """One completely enumerated finite command collection."""
+    """One finite command collection, with explicit unobserved membership offline."""
 
     direction: str
     mechanism: str
     target: str
     members: tuple[str, ...]
     root: str | None = None
+    membership_observed: bool = True
 
 
 @dataclass(frozen=True)
@@ -694,6 +697,13 @@ class _ParsedCommand:
 
 @dataclass(frozen=True)
 class CommandContext:
+    """Observation context; only validation may defer unavailable input bytes.
+
+    ``unavailable_inputs`` names declarations whose external volume has already
+    failed observation. Their syntax and root relationships remain resolvable,
+    but directory membership and byte safety are not established.
+    """
+
     log_id: str
     entry: str
     document: str
@@ -707,6 +717,7 @@ class CommandContext:
     ) = None
     script_identity_cache: MutableMapping[str, ScriptObservation] | None = None
     script_identity_observer: Callable[[Path], ScriptObservation] | None = None
+    unavailable_inputs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -830,6 +841,7 @@ def _legacy_discover_commands(
         context.input_fingerprint_verifier,
         context.script_identity_cache,
         context.script_identity_observer,
+        context.unavailable_inputs,
     )
     invocations: list[Invocation] = []
     command_failures: list[CommandDiscoveryFailure] = []
@@ -1588,7 +1600,7 @@ def _inferred_runner_role(
 
     if direction == "input":
         try:
-            resolved = resolve_input_token(value, context.data_file)
+            resolved = _resolve_command_input(value, context)
         except DataContractError as error:
             _fail(error.code, context.document, error.observed)
         if resolved.resource.kind == "directory" and resolved.member is None:
@@ -1749,7 +1761,7 @@ def _named_input(
     if input_token_parts(value) is None:
         return None
     try:
-        resolved = resolve_input_token(value, context.data_file)
+        resolved = _resolve_command_input(value, context)
     except DataContractError as error:
         _fail(error.code, context.document, error.observed)
     resource = resolved.resource
@@ -1762,6 +1774,18 @@ def _named_input(
         resource.origin,
         resource,
     )
+
+
+def _resolve_command_input(value: str, context: CommandContext) -> ResolvedInputToken:
+    """Resolve syntax for an offline declaration without claiming byte safety."""
+
+    parts = input_token_parts(value)
+    resolver = (
+        resolve_declared_input_token
+        if parts is not None and parts[0] in context.unavailable_inputs
+        else resolve_input_token
+    )
+    return resolver(value, context.data_file)
 
 
 def _named_output(
@@ -1964,12 +1988,34 @@ def _named_directory_collection(
     value: str, target: str, context: CommandContext
 ) -> tuple[MaterialCollection, tuple[MaterialRelationship, ...]]:
     try:
-        resolved = resolve_input_token(value, context.data_file)
+        resolved = _resolve_command_input(value, context)
         if resolved.member is not None or resolved.resource.kind != "directory":
             _fail(
                 "directory.membership.invalid",
                 context.document,
                 {"value": value, "reason": "not_whole_directory"},
+            )
+        if resolved.resource.name in context.unavailable_inputs:
+            # The root relationship is known; membership has not been observed.
+            relationship = MaterialRelationship(
+                resolved.path,
+                "input",
+                "named-input",
+                target,
+                resolved.resource.name,
+                resolved.resource.origin,
+                resolved.resource,
+            )
+            return (
+                MaterialCollection(
+                    "input",
+                    "directory",
+                    target,
+                    (),
+                    resolved.path,
+                    membership_observed=False,
+                ),
+                (relationship,),
             )
         observation = (
             context.input_fingerprint_verifier(resolved.resource)

@@ -97,7 +97,11 @@ from .evidence_comparison import (
     validate_reproduction_tolerances,
     validate_tolerant_selection,
 )
-from .filesystem import BoundedTraversalError, bounded_descendants
+from .filesystem import (
+    BoundedTraversalError,
+    bounded_descendants,
+    unavailable_external_volume,
+)
 from .fingerprint_cache import FingerprintCache, FingerprintCacheError, project_root
 from .json_codec import canonical_json
 from .locator import (
@@ -194,7 +198,7 @@ from .transformation import (
 )
 from .validation_cache import ValidationCache
 
-RULES_VERSION = "research-log-mechanical/markdown-evidence-11"
+RULES_VERSION = "research-log-mechanical/markdown-evidence-12"
 ENTRY_ID_RE = re.compile(r"e[0-9]+[a-z]?\Z", re.IGNORECASE)
 MAX_ENTRY_SURFACE_PATHS = 1_000_000
 
@@ -2242,6 +2246,19 @@ def _record_entry_surface_error(
 def _verify_input(
     resource: InputResource, state: _ScanState
 ) -> FingerprintObservation | None:
+    volume = unavailable_external_volume(Path(resource.canonical_target))
+    if volume is not None:
+        raise EngineV2Error(
+            "provenance.observation.unavailable",
+            resource.name,
+            {
+                "location": resource.location,
+                "volume": volume.as_posix(),
+                "reason": "external_storage_unavailable",
+            },
+            "Fingerprints",
+            outcome="unavailable",
+        )
     key = resource.observation_identity
     observation = state.input_observations.get(key)
     if observation is not None:
@@ -2436,6 +2453,19 @@ def _command_context(state: _ScanState, entry: _Entry, relative: str) -> Command
             if state.fingerprint_cache is not None
             else None
         ),
+        unavailable_inputs=frozenset(
+            resource.name
+            for resource in entry.data_file.inputs
+            if any(
+                _external_storage_prerequisite(check)
+                for check in state.input_prerequisite_checks.get(
+                    _input_declaration_key(_material_owner(entry, state), resource),
+                    (),
+                )
+            )
+        )
+        if entry.data_file is not None
+        else frozenset(),
     )
 
 
@@ -2659,7 +2689,10 @@ def _eligible_discovered_invocations(
                 rule="Recorded-Command Provenance And Material Graph",
             )
         )
-        state.rejected_invocations.append(invocation)
+        if all(_external_storage_prerequisite(check) for check in prerequisites):
+            valid.append(invocation)
+        else:
+            state.rejected_invocations.append(invocation)
         _register_invocation_blockers(invocation, identity, state)
     return tuple(valid)
 
@@ -2836,6 +2869,27 @@ def _invocation_input_prerequisites(
         )
     ]
     return _unique_checks(checks)
+
+
+def _external_storage_prerequisite(check: RuleCheck) -> bool:
+    """Keep known command topology when only external byte access failed."""
+
+    return (
+        check.outcome is CheckOutcome.FAILED
+        and check.diagnostic is not None
+        and check.diagnostic.code == "provenance.observation.unavailable"
+        and check.diagnostic.observed.get("reason") == "external_storage_unavailable"
+    )
+
+
+def _unavailable_invocation_inputs(
+    invocation: Invocation, state: _ScanState
+) -> tuple[RuleCheck, ...]:
+    return tuple(
+        check
+        for check in _invocation_input_prerequisites(invocation, state)
+        if _external_storage_prerequisite(check)
+    )
 
 
 def _current_invocation_inputs(
@@ -3333,6 +3387,11 @@ def _validate_output_support(
 ) -> Mapping[str, object]:
     """Require one confirmed observation per declared output binding."""
 
+    unavailable = _unavailable_invocation_inputs(invocation, state)
+    if unavailable:
+        return {
+            "dependencies": [{"dependency": check.check_id} for check in unavailable]
+        }
     subject = producer_output_subject(invocation, material)
     cache_key = (invocation.identity, subject)
     cached = state.output_support_conclusions.get(cache_key)
@@ -4316,19 +4375,17 @@ def _record_provenance(
 def _output_record_error_checks(
     producers: Sequence[str], state: _ScanState
 ) -> tuple[RuleCheck, ...]:
-    """Return source-record failures that made producer support unavailable."""
+    """Return already-known prerequisites that make producer support unavailable."""
 
     assert state.producer_index is not None
-    checks = {
-        check.check_id: check
-        for producer in producers
-        if (
-            check := state.output_record_error_checks.get(
-                state.producer_index.by_identity[producer].material_owner
-            )
-        )
-        is not None
-    }
+    checks: dict[str, RuleCheck] = {}
+    for identity in producers:
+        producer = state.producer_index.by_identity[identity]
+        record_error = state.output_record_error_checks.get(producer.material_owner)
+        if record_error is not None:
+            checks[record_error.check_id] = record_error
+        for check in _unavailable_invocation_inputs(producer, state):
+            checks[check.check_id] = check
     return tuple(checks[identity] for identity in sorted(checks))
 
 
@@ -4954,6 +5011,8 @@ def _legacy_code_inputs(
 ) -> tuple[str, ...] | None:
     """Return code edges for one invocation using read-only legacy support."""
 
+    if _unavailable_invocation_inputs(invocation, state):
+        return None
     support = state.output_files.get(invocation.material_owner)
     if support is None:
         return None
@@ -5462,6 +5521,8 @@ def _legacy_output_directories(
 ) -> tuple[str, ...]:
     """Return directory roots backed by matching legacy output records."""
 
+    if _unavailable_invocation_inputs(invocation, state):
+        return ()
     return supported_legacy_output_directories(
         invocation, output_file, state.project_root,
         _current_invocation_inputs(invocation, state),

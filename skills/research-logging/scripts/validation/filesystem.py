@@ -10,6 +10,25 @@ from pathlib import Path
 FileIdentity = tuple[int, int, int, int, int]
 
 
+def unavailable_external_volume(path: Path) -> Path | None:
+    """Identify an absent macOS volume root, not a missing file on that volume.
+
+    Only the explicit ``/Volumes/<name>`` boundary is recognized. An existing
+    root does not excuse missing descendants, and no historical fingerprint is
+    substituted for an unavailable observation.
+    """
+
+    parts = path.parts
+    if len(parts) < 3 or parts[:2] != ("/", "Volumes"):
+        return None
+    volume = Path(*parts[:3])
+    try:
+        volume.stat()
+    except FileNotFoundError:
+        return volume
+    return None
+
+
 @dataclass(frozen=True)
 class BoundedTraversalError(RuntimeError):
     """One unavailable or resource-bounded descendant traversal."""

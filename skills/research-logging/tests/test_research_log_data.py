@@ -1103,6 +1103,22 @@ class RetentionFileTests(unittest.TestCase):
 
 
 class BoundedFilesystemTests(unittest.TestCase):
+    def test_unavailable_external_volume_is_distinct_from_missing_descendants(
+        self,
+    ) -> None:
+        volume = Path("/Volumes/Offline")
+        with mock.patch.object(Path, "stat", side_effect=FileNotFoundError):
+            self.assertEqual(
+                FILESYSTEM.unavailable_external_volume(volume / "inputs/a.csv"), volume
+            )
+            self.assertIsNone(
+                FILESYSTEM.unavailable_external_volume(Path("/tmp/missing.csv"))
+            )
+        with mock.patch.object(Path, "stat", return_value=object()):
+            self.assertIsNone(
+                FILESYSTEM.unavailable_external_volume(volume / "missing.csv")
+            )
+
     def test_descendant_enumeration_prunes_an_excluded_top_level_directory(
         self,
     ) -> None:

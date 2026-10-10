@@ -55,6 +55,13 @@ Each applicable validation check has exactly one outcome:
 Rules excluded by applicability create no check and no count. Reproduction
 currentness also creates no validation check.
 
+An unavailable external volume is a localized failed observation, not an
+authored missing-input finding. Valid command and producer relationships remain
+in the graph; byte-dependent checks are blocked and independent checks continue.
+Unknown directory membership is not treated as empty, and saved fingerprints
+do not verify unavailable bytes. The result remains incomplete until storage
+is available; do not repair research records merely to clear this condition.
+
 A completed snapshot is `clear`, `findings`, or `failed`. Blocked checks do not
 choose the snapshot outcome independently. Localized failed checks are saved,
 independent checks continue, and their dependents are blocked. Capacity or

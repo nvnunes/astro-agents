@@ -757,6 +757,189 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_unmounted_input_preserves_command_and_execution_relationships(
+        self,
+    ) -> None:
+        """Unavailable storage must not look like an authored recipe defect."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            parameters = (
+                "--input-catalog",
+                "<catalog>",
+                "--output-data",
+                "data/results.csv",
+            )
+            _replace_with_pyrun_state(entry, parameters)
+            catalog = (entry.parent / "data/catalog.csv").resolve()
+            catalog.unlink()
+            with mock.patch.object(
+                ENGINE,
+                "unavailable_external_volume",
+                side_effect=lambda path: (
+                    Path("/Volumes/Offline") if path == catalog else None
+                ),
+            ):
+                evaluation = _evaluate(summary)
+
+            self.assertFalse(evaluation.attempt.findings)
+            failures = [
+                check
+                for check in evaluation.attempt.checks
+                if check.outcome is DOMAIN.CheckOutcome.FAILED
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(
+                failures[0].diagnostic.code, "provenance.observation.unavailable"
+            )
+            graph = evaluation.context.graph
+            self.assertTrue(
+                any(
+                    edge.kind is RESEARCH_GRAPH.EdgeKind.COMMAND_EXECUTION
+                    for edge in graph.edges
+                )
+            )
+            self.assertTrue(
+                any(
+                    edge.kind is RESEARCH_GRAPH.EdgeKind.PRODUCTION
+                    for edge in graph.edges
+                )
+            )
+            self.assertFalse(
+                any(
+                    item.kind is RESEARCH_GRAPH.AmbiguityKind.UNRESOLVED_BINDING
+                    for item in graph.ambiguities
+                )
+            )
+
+    def test_external_directory_inputs_defer_membership_not_recipe_matching(
+        self,
+    ) -> None:
+        for identity in (
+            {"algorithm": "directory-sha256-v1"},
+            {"algorithm": "identity-files-sha256-v1", "files": ["manifest.json"]},
+            {"algorithm": "identity-patterns-sha256-v1", "patterns": ["*.csv"]},
+        ):
+            for token in ("<catalog>", "<catalog>/manifest.json"):
+                with (
+                    self.subTest(identity=identity, token=token),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    summary, entry = _log(Path(directory))
+                    parameters = (
+                        "--input-catalog",
+                        token,
+                        "--output-data",
+                        "data/results.csv",
+                    )
+                    _replace_with_pyrun_state(entry, parameters)
+                    write(entry, entry.read_text().replace("'<catalog>'", repr(token)))
+                    registry = entry.parent / "data.json"
+                    data = json.loads(registry.read_text())
+                    data["inputs"][0].update(
+                        location="/Volumes/ResearchLogUnavailableTest/catalog",
+                        kind="directory",
+                        identity=identity,
+                    )
+                    write(registry, json.dumps(data))
+                    (entry.parent / "data/catalog.csv").unlink()
+                    with mock.patch.object(
+                        ENGINE,
+                        "unavailable_external_volume",
+                        side_effect=lambda path: (
+                            Path("/Volumes/ResearchLogUnavailableTest")
+                            if path.as_posix().startswith(
+                                "/Volumes/ResearchLogUnavailableTest/"
+                            )
+                            else None
+                        ),
+                    ):
+                        evaluation = _evaluate(summary)
+                    self.assertFalse(evaluation.attempt.findings)
+                    failed = [
+                        check
+                        for check in evaluation.attempt.checks
+                        if check.outcome is DOMAIN.CheckOutcome.FAILED
+                    ]
+                    self.assertEqual(len(failed), 1)
+                    self.assertEqual(len(evaluation.context.invocations), 1)
+                    if token == "<catalog>":
+                        collection = evaluation.context.invocations[0].collections[0]
+                        self.assertFalse(collection.membership_observed)
+                        self.assertEqual(collection.members, ())
+
+    def test_missing_available_input_remains_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            (entry.parent / "data/catalog.csv").unlink()
+            evaluation = _evaluate(summary)
+            self.assertIn(
+                "data.target.missing",
+                {finding.code for finding in evaluation.attempt.findings},
+            )
+            self.assertFalse(
+                any(
+                    check.outcome is DOMAIN.CheckOutcome.FAILED
+                    for check in evaluation.attempt.checks
+                )
+            )
+
+    def test_legacy_output_support_does_not_reobserve_unavailable_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            catalog = (entry.parent / "data/catalog.csv").resolve()
+            catalog.unlink()
+            with mock.patch.object(
+                ENGINE,
+                "unavailable_external_volume",
+                side_effect=lambda path: (
+                    Path("/Volumes/Offline") if path == catalog else None
+                ),
+            ):
+                evaluation = _evaluate(summary)
+            self.assertFalse(evaluation.attempt.findings)
+            self.assertEqual(
+                sum(
+                    check.outcome is DOMAIN.CheckOutcome.FAILED
+                    for check in evaluation.attempt.checks
+                ),
+                1,
+            )
+            self.assertTrue(
+                any(
+                    check.area is DOMAIN.RuleArea.EVIDENCE
+                    and check.outcome is DOMAIN.CheckOutcome.PASS
+                    for check in evaluation.attempt.checks
+                )
+            )
+
+    def test_offline_input_does_not_hide_a_changed_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            summary, entry = _log(Path(directory))
+            _replace_with_pyrun_state(
+                entry,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            write(entry, entry.read_text().replace("--input-catalog", "--input-other"))
+            catalog = (entry.parent / "data/catalog.csv").resolve()
+            catalog.unlink()
+            with mock.patch.object(
+                ENGINE,
+                "unavailable_external_volume",
+                side_effect=lambda path: (
+                    Path("/Volumes/Offline") if path == catalog else None
+                ),
+            ):
+                evaluation = _evaluate(summary)
+            self.assertIn(
+                "pyrun.command.stale",
+                {finding.code for finding in evaluation.attempt.findings},
+            )
+            self.assertIn(
+                "pyrun.command.missing",
+                {finding.code for finding in evaluation.attempt.findings},
+            )
+
     def test_entry_declaration_index_selects_exact_overlap_and_rejected_competitors(
         self,
     ) -> None:
@@ -2324,7 +2507,9 @@ class EngineV2EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state = ENGINE._ScanState(root / "study.md", root, root)
-            invocation = mock.Mock(identity="entry:e001:execution:one", collections=())
+            invocation = mock.Mock(
+                identity="entry:e001:execution:one", collections=(), inputs=()
+            )
             support = {"output": "data/result.csv"}
 
             with mock.patch.object(
@@ -2361,6 +2546,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             second_root = root / "second/shared"
             first = SimpleNamespace(
                 identity="producer:first",
+                inputs=(),
                 collections=(
                     COMMANDS.MaterialCollection(
                         "output",
@@ -2373,6 +2559,7 @@ class EngineV2EndToEndTests(unittest.TestCase):
             )
             second = SimpleNamespace(
                 identity="producer:second",
+                inputs=(),
                 collections=(
                     COMMANDS.MaterialCollection(
                         "output",

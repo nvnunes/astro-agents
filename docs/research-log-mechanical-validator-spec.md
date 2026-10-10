@@ -3337,7 +3337,7 @@ the original authoring error without dumping the complete payload;
 | `provenance.output.code_invalid` | provenance | A recorded code path is unavailable, is not a regular file, or duplicates another resolved code identity. |
 | `provenance.output.signature_unsupported` | provenance | A reached producer input cannot be represented in the exact record signature. |
 | `provenance.output.missing` | provenance | The current graph declares an output whose artifact is absent. |
-| `provenance.observation.unavailable` | failed check | Execution-linked bytes changed during one localized check or could not be re-observed. |
+| `provenance.observation.unavailable` | failed check | Required bytes could not be observed, including an unavailable external volume, or changed during one localized check. |
 | `retention.file.location_invalid` | conformance | `retention.json` is outside one entry root. |
 | `retention.declaration.invalid` | conformance | A retention file or record violates shape, path, overlap, eligibility, or redundancy. |
 | `retention.target.missing` | conformance | A retention target is absent. |
@@ -3531,6 +3531,22 @@ stable contract bounds are Conformance findings. Localized operational variants 
 `provenance.observation.unavailable` are failed checks. A declared source absent
 at initial observation is a finding; a source change across the controller's
 operation boundary fails the operation without publication.
+
+An absent macOS external-volume root (`/Volumes/<name>`) is unavailable storage,
+not proof that its declared input was deleted. Validation reports a localized
+`provenance.observation.unavailable` failed check with the volume and
+`reason = external_storage_unavailable`. Missing descendants on an available
+volume remain `data.target.missing` findings. Other filesystem failures retain
+their ordinary classification.
+
+When external storage is the only failed input prerequisite, retain the
+command's structurally resolved inputs, outputs, and exact execution binding.
+Directory roots remain relationships with explicitly unobserved membership;
+do not infer an empty collection or reuse a historical digest as a current
+observation. Byte-dependent provenance checks depend on the original storage
+failure, while independent evidence and structural checks continue. This
+condition must not manufacture stale-command or missing-producer findings and
+does not establish a clear validation result or reproduction readiness.
 
 ### Composed Dependency Projection And Currentness
 

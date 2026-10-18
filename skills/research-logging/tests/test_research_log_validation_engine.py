@@ -389,6 +389,25 @@ def _log(root: Path, *, output_option: str = "output-data") -> tuple[Path, Path]
     return summary, entry
 
 
+def _split_log(root: Path) -> tuple[Path, tuple[Path, Path]]:
+    (root / ".git").mkdir()
+    summary = root / "docs/study.md"
+    entry_root = root / "docs/study/entries/2026-08-29-e001-study"
+    documents = (entry_root / "e001a.md", entry_root / "e001b.md")
+    write(
+        summary,
+        "# Study\n\n## Entries\n\n"
+        + "".join(
+            f"- [{document.stem}]"
+            f"(study/entries/2026-08-29-e001-study/{document.name})\n"
+            for document in documents
+        ),
+    )
+    for document in documents:
+        write(document, "# Trial\n")
+    return summary, documents
+
+
 def _replace_with_pyrun_state(
     entry_document: Path,
     parameters: tuple[str, ...],
@@ -3913,6 +3932,147 @@ class EngineV2EndToEndTests(unittest.TestCase):
                 ).node_id,
                 {node.node_id for node in evaluation.context.graph.nodes},
             )
+
+    def test_split_entry_association_failures_have_document_identities(self) -> None:
+        for scoped in (False, True):
+            with (
+                self.subTest(scoped=scoped),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                summary, entry = _log(Path(directory))
+                first = entry.with_name("e001a.md")
+                second = entry.with_name("e001b.md")
+                entry.rename(first)
+                content, results = first.read_text().split("`Results:`", 1)
+                write(first, content + "`Results:`\n\nNo result retained here.\n")
+                write(
+                    second,
+                    "# Second\n\n## Trial\n\n`Steps:`\n\nNo command.\n\n`Results:`"
+                    + results,
+                )
+                write(
+                    summary,
+                    summary.read_text()
+                    .replace("e001.md", "e001a.md")
+                    .replace("ref entry = e001;", "ref entry = e001a;")
+                    + "\n- [Second](study/entries/2026-08-29-e001-study/e001b.md)\n",
+                )
+                evidence_path = first.parent / "evidence.json"
+                write(
+                    evidence_path,
+                    evidence_path.read_text().replace("e001.md", "e001a.md"),
+                )
+                target = (
+                    ENGINE.EntryEvaluationTarget("e001", first.parent)
+                    if scoped
+                    else ENGINE.FullEvaluationTarget()
+                )
+
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary, target)
+                )
+
+                findings = {
+                    item.finding_id: item for item in evaluation.attempt.findings
+                }
+                self.assertEqual(
+                    findings["entry:e001a:association"].code,
+                    "association.presentation_missing",
+                )
+                self.assertEqual(
+                    findings["entry:e001b:association"].code,
+                    "association.declaration_missing",
+                )
+                for document in (first, second):
+                    finding = findings[f"entry:{document.stem}:association"]
+                    self.assertEqual(finding.entry, "e001")
+                    self.assertEqual(
+                        finding.source_locations[0].path,
+                        document.resolve().as_posix(),
+                    )
+
+    def test_split_entry_section_failures_have_document_identities(self) -> None:
+        for scoped in (False, True):
+            with (
+                self.subTest(scoped=scoped),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                summary, documents = _split_log(Path(directory))
+                for document in documents:
+                    write(
+                        document,
+                        "# Trial\n\n## Incomplete appendix\n\n`Steps:`\n\n"
+                        "No result retained.\n",
+                    )
+                target = (
+                    ENGINE.EntryEvaluationTarget("e001", documents[0].parent)
+                    if scoped
+                    else ENGINE.FullEvaluationTarget()
+                )
+
+                evaluation = _evaluate_current_fixture(
+                    ENGINE.EvaluationRequest(summary, target)
+                )
+
+                findings = [
+                    item
+                    for item in evaluation.attempt.findings
+                    if item.code == "association.context_invalid"
+                ]
+                self.assertEqual(len(findings), 2)
+                self.assertEqual(
+                    {item.finding_id for item in findings},
+                    {"entry:e001a:section:3", "entry:e001b:section:3"},
+                )
+                self.assertEqual({item.entry for item in findings}, {"e001"})
+                self.assertEqual(
+                    {item.subject for item in findings},
+                    {
+                        f"{document.relative_to(summary.with_suffix(''))}:3"
+                        for document in documents
+                    },
+                )
+
+    def test_split_entry_command_failures_have_document_identities(self) -> None:
+        for scoped in (False, True):
+            with (
+                self.subTest(scoped=scoped),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                summary, documents = _split_log(Path(directory))
+                target = (
+                    ENGINE.EntryEvaluationTarget("e001", documents[0].parent)
+                    if scoped
+                    else ENGINE.FullEvaluationTarget()
+                )
+                error = ENGINE.EngineV2Error(
+                    "invocation.command.unsupported",
+                    "fixture",
+                    {"reason": "test_failure"},
+                    "Recorded-Command Provenance And Material Graph",
+                )
+                with mock.patch.object(
+                    ENGINE, "_discover_entry_invocations", side_effect=error
+                ):
+                    evaluation = _evaluate_current_fixture(
+                        ENGINE.EvaluationRequest(summary, target)
+                    )
+
+                findings = [
+                    item
+                    for item in evaluation.attempt.findings
+                    if item.code == "invocation.command.unsupported"
+                ]
+                self.assertEqual(len(findings), 2)
+                self.assertEqual(
+                    {item.finding_id for item in findings},
+                    {"entry:e001a:command", "entry:e001b:command"},
+                )
+                self.assertEqual({item.entry for item in findings}, {"e001"})
+                self.assertEqual(
+                    {item.source_locations[0].path for item in findings},
+                    {document.resolve().as_posix() for document in documents},
+                )
 
     def test_split_document_summary_reference_uses_authored_document_identity(
         self,

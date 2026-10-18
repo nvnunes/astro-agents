@@ -2365,7 +2365,7 @@ def _discover_invocations(
             )
         except MechanicalContractError as error:
             root_failure = _document_failure_check(entry.document, state)
-            identity = f"entry:{entry.id}:command"
+            identity = f"entry:{entry.document.stem}:command"
             check = (
                 _dependent_check(
                     identity,
@@ -3678,7 +3678,7 @@ def _evaluate_entries(
                 state.records.append(outcome)
                 state.checks.extend((outcome.evidence_check, outcome.provenance_check))
         except MechanicalContractError as error:
-            identity = f"entry:{entry.id}:association"
+            identity = f"entry:{entry.document.stem}:association"
             root_failure = _document_failure_check(entry.document, state)
             state.checks.append(
                 _dependent_check(
@@ -3769,7 +3769,7 @@ def _entry_presentations(entry: _Entry, state: _ScanState) -> tuple[PresentedIte
     for issue in index_entry_section_issues(text):
         state.checks.append(
             _failure_check(
-                f"entry:{entry.id}:section:{issue.line}",
+                f"entry:{document.stem}:section:{issue.line}",
                 RuleArea.CONFORMANCE,
                 _FailureSpec(
                     "association.context_invalid",

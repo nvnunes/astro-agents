@@ -109,6 +109,64 @@ def _state(entry: Path, *executions: PyrunExecution) -> PyrunFile:
 
 
 class PyrunStateContractTests(unittest.TestCase):
+    def test_large_entry_load_avoids_pairwise_ownership_comparisons(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            executions = tuple(
+                _execution(_recipe(output=f"data/result-{index}.csv"))
+                for index in range(96)
+            )
+            path = entry / PYRUN_FILENAME
+            path.write_text(_state(entry, *executions).serialized())
+            with mock.patch.object(
+                pyrun_state_module,
+                "_target_sets_overlap",
+                wraps=pyrun_state_module._target_sets_overlap,
+            ) as overlaps:
+                loaded = load_pyrun_state(path, entry_root=entry, project_root=root)
+            self.assertEqual(len(loaded.execution_items()), len(executions))
+            self.assertLessEqual(overlaps.call_count, len(executions))
+
+    def test_entry_can_retain_more_than_256_executions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            executions = tuple(
+                _execution(_recipe(output=f"data/result-{index}.csv"))
+                for index in range(384)
+            )
+            path = entry / PYRUN_FILENAME
+            grouped = _state(entry, *executions)
+            separate = replace(
+                grouped,
+                commands={
+                    f"build-{index}": PyrunCommand({execution_id(item.recipe): item})
+                    for index, item in enumerate(executions)
+                },
+            )
+            for state in (grouped, separate):
+                with self.subTest(commands=len(state.commands)):
+                    path.write_text(state.serialized())
+                    loaded = load_pyrun_state(path, entry_root=entry, project_root=root)
+                    self.assertEqual(len(loaded.execution_items()), 384)
+
+    def test_ownership_index_distinguishes_path_components(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry = _entry(root)
+            path = entry / PYRUN_FILENAME
+            for sibling in ("data/bundle-other/member.csv", "data/bundle.csv"):
+                with self.subTest(sibling=sibling):
+                    state = _state(
+                        entry,
+                        _execution(_recipe(output="data/bundle")),
+                        _execution(_recipe(output=sibling)),
+                    )
+                    path.write_text(state.serialized())
+                    loaded = load_pyrun_state(path, entry_root=entry, project_root=root)
+                    self.assertEqual(len(loaded.execution_items()), 2)
+
     def test_pythonpath_recipe_change_discards_effective_code(self) -> None:
         stored = _execution()
         for old_environment, new_environment in (
@@ -744,7 +802,10 @@ class PyrunStateLifecycleTests(unittest.TestCase):
             before = path.read_bytes()
             overflow = _execution(_recipe(output="data/result-overflow.csv"))
 
-            with self.assertRaisesRegex(PyrunStateError, "'executions': 257"):
+            with self.assertRaisesRegex(
+                PyrunStateError,
+                f"'executions': {pyrun_state_module.MAX_EXECUTIONS + 1}",
+            ):
                 publish_execution_locked(
                     current, "build", overflow, project_root=root
                 )

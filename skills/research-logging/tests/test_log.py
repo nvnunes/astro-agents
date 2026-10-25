@@ -431,7 +431,7 @@ class LogLockTests(unittest.TestCase):
                 )
                 self.assertEqual(result.stderr, "")
             self.assertEqual(runner.returncode, 1, runner.stderr)
-            self.assertIn("operation conflict", runner.stderr)
+            self.assertIn("operation.lock.conflict", runner.stderr)
             self.assertEqual(
                 {path: path.read_bytes() for path in tracked},
                 before,

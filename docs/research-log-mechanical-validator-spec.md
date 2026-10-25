@@ -3831,6 +3831,11 @@ It fails when the command has no matching direct generated declaration or a
 declared output has another current producer. A producer with valid generated
 declarations but no related evidence selects nothing and succeeds unchanged.
 
+Registry resolution is shared only within one read phase: each source registry
+is decoded once, and all selected source names share one log inventory scan.
+Publication rechecks start a fresh phase; reuse never crosses that boundary or
+separate operations. Cycles, invalid declarations, and path checks remain strict.
+
 Compare reports only each selected EID and its exact before and after
 presentation. For a new marker, `before` is its literal current Markdown
 presentation, such as an empty code span or fence. Compare performs

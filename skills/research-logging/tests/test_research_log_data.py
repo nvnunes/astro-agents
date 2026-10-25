@@ -76,6 +76,76 @@ def git_repository(root: Path) -> tuple[Path, str, str]:
 
 
 class DataFileTests(unittest.TestCase):
+    def test_registry_reuse_ends_at_fresh_phase_and_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            entry, _ = data_fixture(Path(directory))
+            path = entry / "data.json"
+            with DATA.data_file_read_scope():
+                initial = DATA.load_data_file(path, entry_root=entry)
+                payload = json.loads(path.read_text())
+                payload["inputs"][0]["origin"] = False
+                path.write_text(json.dumps(payload))
+                self.assertIs(DATA.load_data_file(path, entry_root=entry), initial)
+                with DATA.data_file_read_scope():
+                    fresh = DATA.load_data_file(path, entry_root=entry)
+                    self.assertFalse(fresh.inputs[0].origin)
+            with self.assertRaisesRegex(RuntimeError, "aborted"):
+                with DATA.data_file_read_scope():
+                    DATA.load_data_file(path, entry_root=entry)
+                    raise RuntimeError("aborted")
+            payload["inputs"][0]["origin"] = True
+            path.write_text(json.dumps(payload))
+            self.assertTrue(
+                DATA.load_data_file(path, entry_root=entry).inputs[0].origin
+            )
+
+    def test_reuse_still_rejects_reference_cycles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            producer, _ = data_fixture(Path(directory))
+            consumer = producer.parent / "2026-09-02-e002-consumer"
+            consumer.mkdir()
+            (consumer / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": DATA.DATA_SCHEMA,
+                        "inputs": [{"from_entry": "e001", "name": "source"}],
+                    }
+                )
+            )
+            payload = json.loads((producer / "data.json").read_text())
+            payload["inputs"].append({"from_entry": "e002", "name": "source"})
+            (producer / "data.json").write_text(json.dumps(payload))
+            with self.assertRaisesRegex(DATA.DataContractError, "reference_cycle"):
+                DATA.load_data_file(consumer / "data.json", entry_root=consumer)
+
+    def test_references_read_each_source_registry_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source, _ = data_fixture(Path(directory))
+            payload = json.loads((source / "data.json").read_text())
+            first = {**payload["inputs"][0], "origin": False}
+            second = {**first, "name": "other", "location": "data/other.csv"}
+            payload["inputs"] = [first, second]
+            (source / "data.json").write_text(json.dumps(payload))
+            consumer = source.parent / "2026-09-02-e002-consumer"
+            consumer.mkdir()
+            (consumer / "data.json").write_text(
+                json.dumps(
+                    {
+                        "schema": DATA.DATA_SCHEMA,
+                        "inputs": [
+                            {"from_entry": "e001", "name": name}
+                            for name in ("source", "other")
+                        ],
+                    }
+                )
+            )
+            with mock.patch.object(DATA, "_read_json", wraps=DATA._read_json) as read:
+                loaded = DATA.load_data_file(
+                    consumer / "data.json", entry_root=consumer
+                )
+            self.assertEqual(set(loaded.by_name), {"source", "other"})
+            self.assertEqual(read.call_count, 2)
+
     def test_generated_file_accepts_explicit_evidence_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry, _ = data_fixture(Path(directory))

@@ -46,7 +46,7 @@ ENVIRONMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 
 MAX_FILE_BYTES = 16 * 1024 * 1024
-MAX_EXECUTIONS = 256
+MAX_EXECUTIONS = 2_048
 MAX_PARAMETERS = 4_096
 MAX_INPUTS = 128
 MAX_OUTPUTS = 256
@@ -1434,23 +1434,27 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
 
 
 def _validate_ownership(value: PyrunFile, *, project_root: Path | None) -> None:
-    owners: list[tuple[str, str, tuple[Path, ...]]] = []
+    owners: list[tuple[tuple[str, ...], str, str]] = []
     for cid, key, execution in value.execution_items():
         targets = _output_targets(
             execution.recipe,
             entry_root=value.entry_root,
             project_root=project_root,
         )
-        for prior_cid, prior_key, prior_targets in owners:
-            if _target_sets_overlap(targets, prior_targets):
-                _invalid(
-                    value.path,
-                    {
-                        "executions": sorted(((prior_cid, prior_key), (cid, key))),
-                        "reason": "output_ownership_overlap",
-                    },
-                )
-        owners.append((cid, key, targets))
+        owners.extend((target.parts, cid, key) for target in targets)
+    owners.sort()
+    # Component ordering places an ancestor immediately before its first child.
+    for left, right in zip(owners, owners[1:]):
+        path, cid, key = left
+        other, other_cid, other_key = right
+        if (cid, key) != (other_cid, other_key) and other[: len(path)] == path:
+            _invalid(
+                value.path,
+                {
+                    "executions": sorted(((cid, key), (other_cid, other_key))),
+                    "reason": "output_ownership_overlap",
+                },
+            )
 
 
 def _require_nonoverlapping_outputs(

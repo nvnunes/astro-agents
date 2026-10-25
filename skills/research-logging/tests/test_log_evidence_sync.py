@@ -45,6 +45,33 @@ def retained_files(logical: Path) -> dict[Path, bytes]:
 
 
 class EvidenceSyncTests(unittest.TestCase):
+    def test_multiple_sources_share_one_entry_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, _ = fixture(
+                Path(directory),
+                './pyrun scripts/build.py --output "<alpha>" --output "<beta>"',
+            )
+            registered = sync(
+                logical,
+                "--add-generated",
+                "alpha=data/alpha.json",
+                "--add-generated",
+                "beta=data/beta.json",
+            )
+            self.assertEqual(registered.returncode, 0, registered.stderr)
+            context = resolve_entry(resolve_log(logical), "e001")
+            with mock.patch.object(
+                evidence_sync,
+                "observe_physical_entries",
+                wraps=evidence_sync.observe_physical_entries,
+            ) as scan:
+                selected = evidence_sync._source_targets(context, ("alpha", "beta"))
+            self.assertEqual(
+                [(e.id, names) for e, _, names in selected],
+                [("e001", frozenset({"alpha", "beta"}))],
+            )
+            self.assertEqual(scan.call_count, 1)
+
     def test_redundant_origin_and_target_assertions_skip_log_material_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = fixture(

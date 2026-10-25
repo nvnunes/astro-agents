@@ -36,6 +36,7 @@ class RecordSurfaceTests(unittest.TestCase):
             references,
             expected_operations
             | {
+                "file-entry-commands.md",
                 "file-reproduction-records.md",
                 "file-script.md",
                 "file-validation-records.md",

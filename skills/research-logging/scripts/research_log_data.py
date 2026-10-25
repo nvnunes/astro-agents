@@ -9,12 +9,14 @@ import re
 import stat
 import subprocess
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import date
 from fnmatch import fnmatchcase
 from glob import has_magic
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, NoReturn, cast
+from typing import Any, Iterator, Mapping, NoReturn, cast
 
 from validation.entry_materials import (
     EntryMaterialPathError,
@@ -49,6 +51,9 @@ MAX_IDENTITY_FILES = 64
 MAX_IDENTITY_PATTERNS = 64
 MAX_IDENTITY_PATTERN_CANDIDATES = 100_000
 HASH_CHUNK_BYTES = 1024 * 1024
+_DATA_FILE_READS: ContextVar[dict[Path, DataFile] | None] = ContextVar(
+    "research_log_data_reads", default=None
+)
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 ENTRY_REFERENCE_NAME_RE = re.compile(r"e[0-9]+\Z", re.IGNORECASE)
@@ -342,12 +347,34 @@ class DataDeclarationConflict:
         )
 
 
+@contextmanager
+def data_file_read_scope(*, fresh: bool = True) -> Iterator[None]:
+    """Share decoded registries within one read phase, never across fresh phases.
+
+    A fresh scope discards previous observations, including in nested calls.
+    Public single-registry operations use ``fresh=False`` to join a caller's
+    phase or create their own. Publication rechecks must start a fresh phase.
+    Scope state is context-local and is discarded on success or failure.
+    """
+
+    if not fresh and _DATA_FILE_READS.get() is not None:
+        yield
+        return
+    token = _DATA_FILE_READS.set({})
+    try:
+        yield
+    finally:
+        _DATA_FILE_READS.reset(token)
+
+
+@data_file_read_scope(fresh=False)
 def load_data_file(path: Path, *, entry_root: Path) -> DataFile:
     """Read one strict entry-root ``data.json`` declaration."""
 
     return _load_data_file(path, entry_root=entry_root, loading=frozenset())
 
 
+@data_file_read_scope(fresh=False)
 def load_data_file_with_location_repairs(
     path: Path, *, entry_root: Path, locations: Mapping[str, str]
 ) -> DataFile:
@@ -387,6 +414,28 @@ def _load_data_file(
             {"expected": str(expected)},
             "Ownership And Completeness",
         )
+    canonical = expected.resolve()
+    if canonical in loading:
+        _invalid(path, {"reason": "reference_cycle"})
+    reads = _DATA_FILE_READS.get()
+    if location_repairs is None and reads is not None and canonical in reads:
+        return reads[canonical]
+    result = _decode_data_file(
+        path, entry_root, loading | {canonical}, location_repairs
+    )
+    if location_repairs is None and reads is not None:
+        reads[canonical] = result
+    return result
+
+
+def _decode_data_file(
+    path: Path,
+    entry_root: Path,
+    loading: frozenset[Path],
+    location_repairs: Mapping[str, str] | None,
+) -> DataFile:
+    """Decode all declarations with cycle detection along the active read path."""
+
     value = _read_json(path)
     if not isinstance(value, Mapping) or set(value) != {"schema", "inputs"}:
         _invalid(path, {"fields": _fields(value)})
@@ -397,10 +446,6 @@ def _load_data_file(
         _invalid(path, {"schema": value.get("schema")})
     if not raw_inputs or len(raw_inputs) > MAX_INPUTS:
         _invalid(path, {"inputs": len(raw_inputs)})
-    canonical = expected.resolve()
-    if canonical in loading:
-        _invalid(path, {"reason": "reference_cycle"})
-    nested = loading | {canonical}
     if location_repairs is not None:
         present = {
             name
@@ -426,7 +471,7 @@ def _load_data_file(
                     subject,
                     entry_root,
                     location_repairs[name],
-                    loading=nested,
+                    loading=loading,
                 )
             )
         else:
@@ -435,12 +480,12 @@ def _load_data_file(
                     raw,
                     subject,
                     entry_root,
-                    loading=nested,
+                    loading=loading,
                 )
             )
     inputs = tuple(inputs_list)
     _require_unique_inputs(inputs, path)
-    return DataFile(path=expected, entry_root=entry_root, inputs=inputs)
+    return DataFile(path=entry_root / "data.json", entry_root=entry_root, inputs=inputs)
 
 
 def _repair_input_location(
@@ -748,6 +793,7 @@ def build_identity_pattern_directory(
     return provisional
 
 
+@data_file_read_scope(fresh=False)
 def data_file_from_inputs(
     path: Path,
     *,

@@ -15,6 +15,7 @@ from research_log_data import (
     InputResource,
     build_local_input,
     data_file_from_inputs,
+    data_file_read_scope,
     input_token_parts,
     load_data_file,
     normalize_input_location,
@@ -1040,33 +1041,41 @@ def _render(marker: MarkdownEvidence, result: TransformationResult) -> str:
     )
 
 
-def _source_entries(
-    entry: EntryContext, raw_source: str
-) -> tuple[tuple[EntryContext, DataFile], ...]:
-    token = source_token(raw_source)
-    parts = input_token_parts(token)
-    if parts is None or parts[1] is not None or parts[2] is not None:
-        raise ActionError(
-            "evidence.source.invalid",
-            "--source selects a direct generated declaration name",
-        )
-    name = parts[0]
+def _owned_sources(
+    entry: EntryContext, sources: tuple[str, ...]
+) -> tuple[DataFile | None, dict[str, InputResource]]:
     data = _load_data(entry)
-    resource = data.by_name.get(name) if data else None
-    if resource is None or resource.origin or resource.reference_entry:
-        raise ActionError(
-            "evidence.source.not_owned",
-            f"{entry.id}: {name} must be directly declared generated data",
-        )
-    selected: list[tuple[EntryContext, DataFile]] = []
-    for observed in observe_physical_entries(entry.log):
-        candidate_entry = EntryContext(entry.log, observed.id, observed.root)
-        candidate_data = (
-            data if candidate_entry.id == entry.id else _load_data(candidate_entry)
-        )
-        candidate = candidate_data.by_name.get(name) if candidate_data else None
+    resources: dict[str, InputResource] = {}
+    for raw_source in sources:
+        parts = input_token_parts(source_token(raw_source))
+        if parts is None or parts[1] is not None or parts[2] is not None:
+            raise ActionError(
+                "evidence.source.invalid",
+                "--source selects a direct generated declaration name",
+            )
+        name = parts[0]
+        resource = data.by_name.get(name) if data else None
+        if resource is None or resource.origin or resource.reference_entry:
+            raise ActionError(
+                "evidence.source.not_owned",
+                f"{entry.id}: {name} must be directly declared generated data",
+            )
+        resources[name] = resource
+    return data, resources
+
+
+def _matching_sources(
+    entry: EntryContext,
+    owner: str,
+    data: DataFile,
+    resources: dict[str, InputResource],
+) -> frozenset[str]:
+    names: set[str] = set()
+    declared = data.by_name
+    for name, resource in resources.items():
+        candidate = declared.get(name)
         if candidate and (
-            candidate_entry.id == entry.id or candidate.reference_entry == entry.id
+            entry.id == owner or candidate.reference_entry == owner
         ):
             if (
                 candidate.canonical_target != resource.canonical_target
@@ -1074,11 +1083,10 @@ def _source_entries(
             ):
                 raise ActionError(
                     "data.reference.inconsistent",
-                    f"{candidate_entry.id}: {name}: use log data update to repair",
+                    f"{entry.id}: {name}: use log data update to repair",
                 )
-            assert candidate_data is not None
-            selected.append((candidate_entry, candidate_data))
-    return tuple(selected)
+            names.add(name)
+    return frozenset(names)
 
 
 def _producer_sources(entry: EntryContext, cid: str) -> tuple[str, ...]:
@@ -1144,22 +1152,23 @@ def _producer_sources(entry: EntryContext, cid: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+@data_file_read_scope()
 def _source_targets(
     entry: EntryContext, sources: tuple[str, ...]
 ) -> tuple[tuple[EntryContext, DataFile, frozenset[str]], ...]:
     """Resolve selected direct names and their existing cross-entry references."""
 
-    targets: dict[str, tuple[EntryContext, DataFile, set[str]]] = {}
-    for raw_source in sources:
-        name = _source_name(raw_source)
-        for target, data in _source_entries(entry, raw_source):
-            if target.id not in targets:
-                targets[target.id] = target, data, set()
-            targets[target.id][2].add(name)
-    return tuple(
-        (target, data, frozenset(names))
-        for _, (target, data, names) in sorted(targets.items())
-    )
+    current, resources = _owned_sources(entry, sources)
+    targets = []
+    for observed in observe_physical_entries(entry.log):
+        target = EntryContext(entry.log, observed.id, observed.root)
+        data = current if target.id == entry.id else _load_data(target)
+        if data is None:
+            continue
+        names = _matching_sources(target, entry.id, data, resources)
+        if names:
+            targets.append((target, data, names))
+    return tuple(sorted(targets, key=lambda item: item[0].id))
 
 
 def _partial_fields(definition: str) -> tuple[str, ...]:

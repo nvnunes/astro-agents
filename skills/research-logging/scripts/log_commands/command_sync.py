@@ -23,6 +23,7 @@ from research_log_data import (
     build_git_repository_input,
     build_local_input,
     data_file_from_inputs,
+    data_file_read_scope,
     input_token_parts,
     load_data_file,
     normalize_input_location,
@@ -225,6 +226,7 @@ def _selection(arguments: CommandSyncArguments) -> _Selection:
     )
 
 
+@data_file_read_scope()
 def _prepare_command(
     entry: EntryContext,
     project: Path,
@@ -524,6 +526,7 @@ def _failed_fence_mentions_cid(body: str, cid: str) -> bool:
     return False
 
 
+@data_file_read_scope()
 def _finish_command(
     entry: EntryContext,
     project: Path,

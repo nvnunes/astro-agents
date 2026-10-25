@@ -13,6 +13,7 @@ from research_log_data import (
     FingerprintObservation,
     InputResource,
     ResourceIdentity,
+    data_file_read_scope,
     load_data_file,
     observe_fingerprint,
 )
@@ -508,6 +509,7 @@ class LogMaterials:
         return self._producer_index
 
 
+@data_file_read_scope()
 def inspect_log_materials(
     log: LogContext,
     *,

@@ -608,7 +608,7 @@ Limits are fixed contracts, not dynamically chosen from the current corpus.
 | Resource | Limit |
 | --- | ---: |
 | `pyrun.json` encoded bytes | 16 MiB |
-| Executions per entry | 256 |
+| Executions per entry | 2,048 |
 | Parameters per execution | 4,096 |
 | Direct inputs per execution | 128 |
 | Outputs per execution | 256 |

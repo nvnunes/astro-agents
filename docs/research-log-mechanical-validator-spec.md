@@ -2684,6 +2684,14 @@ record for a declared output that is absent.
 
 ### `pyrun.json` Output Bindings
 
+Saved recipe output keys are decoded against their canonical lexical identity,
+without rechecking current symlinks. A relocated entry or worktree may read and
+preserve its earlier observations even when shared storage now resolves outside
+the checkout. This does not authorize a new write or establish currentness:
+selected command preparation and execution retain the live output-boundary
+checks above. An invalid output in an unselected command is a bounded discovery
+failure, not a failure to synchronize unrelated selected commands.
+
 For every decoded `pyrun.json` execution, validation derives one closed output
 binding projection from `recipe.parameters` and `recipe.outputs`. It does not
 read Python source or add a persisted binding field. Every declared output must

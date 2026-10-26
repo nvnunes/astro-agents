@@ -1315,11 +1315,14 @@ def _canonical_recipe_output_parameters(
         resource = relationship.input_resource
         if resource is None or resource.origin:
             continue
-        aliases[f"<{resource.name}>"] = portable_output_path(
-            resource.canonical_target,
-            entry_root=context.entry_root,
-            project_root=context.project_root,
-        )
+        try:
+            aliases[f"<{resource.name}>"] = portable_output_path(
+                resource.canonical_target,
+                entry_root=context.entry_root,
+                project_root=context.project_root,
+            )
+        except MechanicalContractError as error:
+            _fail("pyrun.output.identity_invalid", context.document, error.observed)
     normalized: list[str] = []
     for parameter in parameters:
         if parameter in aliases:

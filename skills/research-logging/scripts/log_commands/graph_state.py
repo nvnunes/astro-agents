@@ -187,6 +187,7 @@ def normalized_uses(
                         target,
                         entry_root=entry.root,
                         project_root=resolve_project_root(entry.root),
+                        accepted=True,
                     )
                     .resolve()
                     .as_posix()

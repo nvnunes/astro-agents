@@ -10,6 +10,7 @@ from unittest import mock
 from research_log_cli_test_support import fixture_parameter_roles
 from research_log_data import Fingerprint
 from validation import pyrun_state as pyrun_state_module
+from validation.pyrun_outputs import PyrunOutputsError
 from validation.pyrun_state import (
     PYRUN_ENVIRONMENT_PROFILE,
     PYRUN_EXECUTION_CONTRACT,
@@ -109,6 +110,40 @@ def _state(entry: Path, *executions: PyrunExecution) -> PyrunFile:
 
 
 class PyrunStateContractTests(unittest.TestCase):
+    def test_saved_project_outputs_survive_shared_storage_in_a_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            project = root / "worktree"
+            shared = root / "main/output"
+            shared.mkdir(parents=True)
+            entry = _entry(project)
+            recipe = _recipe(output="<project>/output/banks/result.csv")
+            execution = _execution(recipe)
+            path = entry / PYRUN_FILENAME
+            before = _state(entry, execution).serialized()
+            path.write_text(before)
+            (project / "output").symlink_to(shared, target_is_directory=True)
+
+            loaded = load_pyrun_state(path, entry_root=entry, project_root=project)
+            self.assertEqual(loaded.serialized(), before)
+            self.assertEqual(loaded.execution_items()[0][2], execution)
+
+            # Readable history never authorizes a new write through that link.
+            with self.assertRaisesRegex(PyrunOutputsError, "outside_project"):
+                validate_output_paths(
+                    ("<project>/output/new.csv",),
+                    entry_root=entry,
+                    project_root=project,
+                )
+
+            current = _execution(_recipe(output="data/new.csv"))
+            publish_execution_locked(
+                loaded, "new", current, project_root=project
+            )
+            saved = load_pyrun_state(path, entry_root=entry, project_root=project)
+            self.assertEqual(saved.commands["build"], loaded.commands["build"])
+            self.assertIn("new", saved.commands)
+
     def test_large_entry_load_avoids_pairwise_ownership_comparisons(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

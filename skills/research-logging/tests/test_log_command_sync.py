@@ -72,6 +72,61 @@ def preserved_material(entry: Path) -> dict[Path, bytes]:
 
 
 class LogCommandSyncTests(unittest.TestCase):
+    def test_sync_preserves_unselected_shared_output_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            project = root / "worktree"
+            project.mkdir()
+            logical, entry, document = fixture(
+                project, './pyrun --cid build -- scripts/build.py --output "<bank>"'
+            )
+            result = sync(
+                logical, "--add-generated", f"bank={project / 'output/bank.csv'}"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            original = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=project
+            )
+            shared = root / "shared-output"
+            shared.mkdir()
+            (project / "output").symlink_to(shared, target_is_directory=True)
+            # A migrated declaration retains the original storage location.
+            data_path = entry / "data.json"
+            data = json.loads(data_path.read_text())
+            data["inputs"][0]["location"] = str(shared / "bank.csv")
+            data_path.write_text(json.dumps(data))
+            document.write_text(
+                document.read_text()
+                + "\n## New\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid new -- scripts/build.py --output "<result>"\n```\n'
+                + "\n`Results:`\n\nPending.\n"
+            )
+
+            result = run_log(
+                logical.parent, "command", "sync", "--path", str(logical),
+                "--entry", "e001", "--cid", "new",
+                "--add-generated", "result=data/new.csv"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            current = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=project
+            )
+            self.assertEqual(current.commands["build"], original.commands["build"])
+            self.assertIn("new", current.commands)
+            # Selecting the old write still enforces today's output boundary.
+            self.assertNotEqual(sync(logical).returncode, 0)
+            document.write_text(document.read_text().split("\n## New\n")[0])
+            result = run_log(
+                logical.parent, "command", "sync", "--path", str(logical),
+                "--entry", "e001", "--delete", "new"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            current = load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=project
+            )
+            self.assertEqual(current.commands["build"], original.commands["build"])
+            self.assertNotIn("new", current.commands)
+
     def test_deleted_outputs_share_one_consumer_scan_per_phase(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

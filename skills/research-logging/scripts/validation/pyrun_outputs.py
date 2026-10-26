@@ -345,16 +345,31 @@ def output_target_path(
     entry_root: Path,
     project_root: Path | None = None,
     authored: bool = False,
+    accepted: bool = False,
 ) -> Path:
-    """Resolve one canonical portable output identity to its lexical target."""
+    """Resolve one portable output identity to its lexical target.
 
-    root = entry_root.resolve()
-    project = (project_root or root).resolve()
-    key = portable_output_path(
-        value,
-        entry_root=root,
-        project_root=project,
-        authored=authored,
+    Accepted keys support read-only historical lookup after relocation. They
+    are checked lexically; ordinary preparation and new writes retain the live
+    filesystem-boundary checks.
+    """
+
+    root = Path(os.path.abspath(entry_root)) if accepted else entry_root.resolve()
+    project = (
+        Path(os.path.abspath(project_root or root))
+        if accepted
+        else (project_root or root).resolve()
+    )
+    key = (
+        canonical_output_path(
+            value.as_posix() if isinstance(value, Path) else value,
+            entry_root=root,
+            project_root=project,
+        )
+        if accepted
+        else portable_output_path(
+            value, entry_root=root, project_root=project, authored=authored
+        )
     )
     if key.startswith(PROJECT_OUTPUT_PREFIX):
         suffix = key.removeprefix(PROJECT_OUTPUT_PREFIX)

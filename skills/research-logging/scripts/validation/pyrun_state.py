@@ -710,7 +710,12 @@ def validated_pyrun_serialization(
 def load_pyrun_state(
     path: Path, *, entry_root: Path, project_root: Path | None = None
 ) -> PyrunFile:
-    """Read one strict canonical entry-root ``pyrun.json`` file."""
+    """Read canonical saved recipes without reauthorizing their output paths.
+
+    Relocation or shared worktree storage can change live symlink resolution.
+    Saved portable keys remain historical identities; new recipes and actual
+    execution still enforce the current filesystem boundary.
+    """
 
     root = entry_root.resolve()
     expected = root / PYRUN_FILENAME
@@ -763,7 +768,7 @@ def parse_pyrun_state_text(
         project_root=project_root,
     )
     result = PyrunFile(expected, root, commands)
-    _validate_ownership(result, project_root=project_root)
+    _validate_ownership(result, project_root=project_root, accepted=True)
     if raw != result.serialized():
         _invalid(subject, {"reason": "noncanonical_serialization"})
     return result
@@ -828,6 +833,7 @@ def _decode_command(
             f"{subject}:commands[{cid!r}]:executions[{identity!r}]",
             entry_root=entry_root,
             project_root=project_root,
+            accepted=True,
         )
         if execution_id(execution.recipe) != identity:
             _invalid(
@@ -905,7 +911,7 @@ def publish_execution_locked(
             if (prior_cid, prior_identity) == (cid, identity):
                 continue
             prior_targets = _output_targets(
-                prior.recipe, entry_root=root, project_root=project_root
+                prior.recipe, entry_root=root, project_root=project_root, accepted=True
             )
             if _target_sets_overlap(targets, prior_targets):
                 _invalid(
@@ -1412,7 +1418,7 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
     items = value.execution_items()
     if not items or len(items) > MAX_EXECUTIONS:
         _invalid(value.path, {"executions": len(items)})
-    _validate_ownership(value, project_root=project_root)
+    _validate_ownership(value, project_root=project_root, accepted=True)
     for cid, key, execution in items:
         if key != execution_id(execution.recipe):
             _invalid(value.path, {"execution_id": key, "reason": "identity_mismatch"})
@@ -1421,6 +1427,7 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
             f"{value.path}:commands[{cid!r}]:executions[{key!r}]",
             entry_root=value.entry_root,
             project_root=project_root,
+            accepted=True,
         )
         if decoded != execution:
             _invalid(
@@ -1433,13 +1440,16 @@ def _validated_serialization(value: PyrunFile, *, project_root: Path | None) -> 
     return serialized
 
 
-def _validate_ownership(value: PyrunFile, *, project_root: Path | None) -> None:
+def _validate_ownership(
+    value: PyrunFile, *, project_root: Path | None, accepted: bool = False
+) -> None:
     owners: list[tuple[tuple[str, ...], str, str]] = []
     for cid, key, execution in value.execution_items():
         targets = _output_targets(
             execution.recipe,
             entry_root=value.entry_root,
             project_root=project_root,
+            accepted=accepted,
         )
         owners.extend((target.parts, cid, key) for target in targets)
     owners.sort()

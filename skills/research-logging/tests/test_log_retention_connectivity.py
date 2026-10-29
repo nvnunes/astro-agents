@@ -26,6 +26,96 @@ from validation.research_graph import (
 
 
 class RetentionConnectivityTests(unittest.TestCase):
+    def test_directory_member_dependency_preserves_retention_and_evidence_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            logical, entry, document = self.bundle_fixture(Path(directory))
+            (entry / "scripts/use.py").write_text(
+                "import argparse, shutil\n"
+                "p = argparse.ArgumentParser()\n"
+                "p.add_argument('--input-data')\np.add_argument('--output-data')\n"
+                "a = p.parse_args()\nshutil.copyfile(a.input_data, a.output_data)\n"
+            )
+            document.write_text(
+                document.read_text()
+                + "\n## Consumer\n\n`Steps:`\n\n```bash\n"
+                + './pyrun --cid use -- scripts/use.py '
+                '--input-data "<bundle>/value.csv" '
+                + '--output-data "<result>"\n```\n\n`Results:`\n\nPending consumer.\n'
+            )
+            checked(
+                action(
+                    logical,
+                    "command",
+                    "sync",
+                    "--cid",
+                    "use",
+                    "--add-generated",
+                    "result=data/result.csv",
+                )
+            )
+            ran = run_pyrun_process(
+                entry,
+                "--cid",
+                "use",
+                "--",
+                "scripts/use.py",
+                "--input-data",
+                "<bundle>/value.csv",
+                "--output-data",
+                "<result>",
+            )
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            state_before = (entry / "pyrun.json").read_bytes()
+            checked(
+                action(
+                    logical,
+                    "retention",
+                    "add",
+                    "--id",
+                    "kept",
+                    "--target",
+                    "data/bundle",
+                )
+            )
+            self.assert_not_orphan(logical, entry / "data/bundle")
+            checked(action(logical, "retention", "delete", "--id", "kept"))
+            marker = "[Result](data/result.csv)<!-- eid:result source=result -->"
+            document.write_text(
+                document.read_text().replace("Pending consumer.", marker)
+            )
+            checked(evidence(logical, "sync", "--id", "result"))
+            for authored in (True, False):
+                with self.subTest(authored=authored):
+                    if not authored:
+                        document.write_text(
+                            document.read_text().replace(marker, "Pending consumer.")
+                        )
+                    before = retained_files(logical)
+                    rejected = action(
+                        logical,
+                        "retention",
+                        "add",
+                        "--id",
+                        "kept",
+                        "--target",
+                        "data/bundle/side.txt",
+                    )
+                    self.assertIn("retention.target.connected", rejected.stderr)
+                    self.assertEqual(retained_files(logical), before)
+            checked(evidence(logical, "sync", "--delete", "result"))
+            checked(
+                action(
+                    logical,
+                    "retention",
+                    "add",
+                    "--id",
+                    "kept",
+                    "--target",
+                    "data/bundle",
+                )
+            )
+            self.assertEqual((entry / "pyrun.json").read_bytes(), state_before)
+
     def test_repeated_script_invocations_share_one_analysis_per_operation(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = fixture(

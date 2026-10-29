@@ -726,6 +726,8 @@ def _add_invocation_collections(
             state.builder.add_edge(
                 ResearchEdge(EdgeKind.MEMBERSHIP, collection.node_id, material.node_id)
             )
+            if direction == "output" and outputs_established:
+                state.outputs.setdefault(material.identity, []).append(command)
 
 
 def _add_invocation_materials(

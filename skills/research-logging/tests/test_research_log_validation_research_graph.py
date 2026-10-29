@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,138 @@ from research_log_validation_test_support import unittest
 GRAPH = importlib.import_module("validation.research_graph")
 
 
+def directory_dependency_inputs():
+    """Build a directory-only producer and a consumer of an observed nested member."""
+    member = "data/bundle/nested/value.csv"
+    execution = SimpleNamespace(auto_reproduce=True, requires_reproduction=False)
+    entry = SimpleNamespace(
+        entry_id="e001",
+        document="entries/e001/e001.md",
+        data=None,
+        retention=None,
+        pyrun=SimpleNamespace(
+            execution_items=lambda: (
+                ("build", "build-1", execution),
+                ("use", "use-1", execution),
+            )
+        ),
+    )
+    collection = SimpleNamespace(
+        direction="output",
+        mechanism="directory",
+        target="bundle",
+        root="data/bundle",
+        members=(member,),
+    )
+    producer = SimpleNamespace(
+        entry="e001",
+        identity="producer",
+        cid="build",
+        document="entries/e001/e001.md",
+        fence=1,
+        ordinal=1,
+        sequence=1,
+        inputs=(),
+        outputs=(SimpleNamespace(path="data/bundle", origin=False),),
+        collections=(collection,),
+        script=None,
+    )
+    consumer = SimpleNamespace(
+        entry="e001",
+        identity="consumer",
+        cid="use",
+        document="entries/e001/e001.md",
+        fence=2,
+        ordinal=1,
+        sequence=2,
+        inputs=(SimpleNamespace(path=member, origin=False),),
+        outputs=(),
+        collections=(),
+        script=None,
+    )
+    return GRAPH.EvaluationGraphInputs(
+        entries=(entry,),
+        invocations=(producer, consumer),
+        execution_bindings={
+            "producer": ("e001", "build:build-1"),
+            "consumer": ("e001", "use:use-1"),
+        },
+    )
+
+
 class ResearchGraphTests(unittest.TestCase):
+    def test_collection_members_resolve_producers_without_inventing_dependencies(self):
+        for case in ("member", "missing", "input", "rejected", "competing", "late"):
+            with self.subTest(case=case):
+                inputs = directory_dependency_inputs()
+                producer, consumer = inputs.invocations
+                collection = producer.collections[0]
+                if case == "missing":
+                    collection.members = ()
+                elif case == "input":
+                    collection.direction = "input"
+                    producer.outputs = ()
+                elif case == "rejected":
+                    inputs = replace(
+                        inputs,
+                        invocations=(consumer,),
+                        rejected_invocations=(producer,),
+                    )
+                elif case == "competing":
+                    other = SimpleNamespace(
+                        **{
+                            **vars(producer),
+                            "identity": "other",
+                            "cid": "other",
+                            "outputs": (
+                                SimpleNamespace(
+                                    path="data/bundle/nested", origin=False
+                                ),
+                            ),
+                            "collections": (
+                                SimpleNamespace(
+                                    **{**vars(collection), "root": "data/bundle/nested"}
+                                ),
+                            ),
+                        }
+                    )
+                    inputs = replace(inputs, invocations=(producer, other, consumer))
+                elif case == "late":
+                    producer.sequence = 3
+                graph = GRAPH.build_evaluation_graph(inputs)
+                member = next(
+                    node
+                    for node in graph.nodes
+                    if node.kind is GRAPH.NodeKind.MATERIAL
+                    and node.identity == "data/bundle/nested/value.csv"
+                )
+                ambiguities = {
+                    item.kind
+                    for item in graph.ambiguities
+                    if item.subject == member.node_id
+                }
+                self.assertEqual(
+                    GRAPH.AmbiguityKind.NO_PRODUCER in ambiguities,
+                    case in {"missing", "input", "rejected"},
+                )
+                self.assertEqual(
+                    GRAPH.AmbiguityKind.MULTIPLE_PRODUCERS in ambiguities,
+                    case == "competing",
+                )
+                dependencies = [
+                    edge
+                    for edge in graph.edges
+                    if edge.kind is GRAPH.EdgeKind.EXECUTION_DEPENDENCY
+                ]
+                self.assertEqual(len(dependencies), 1 if case == "member" else 0)
+                if dependencies:
+                    self.assertEqual(
+                        graph.node(dependencies[0].source).identity, "build:build-1"
+                    )
+                    self.assertEqual(
+                        graph.node(dependencies[0].target).identity, "use:use-1"
+                    )
+
     def test_retention_edges_use_entry_root_canonical_materials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             entry_root = Path(directory) / "entries/e001"

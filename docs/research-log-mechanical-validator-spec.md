@@ -3503,6 +3503,8 @@ presentation, command-to-execution binding, production, consumption, origin,
 retention, membership, script use, code use, and execution dependency. Zero or
 multiple producer candidates, rejected command candidates, and unresolved
 bindings are typed ambiguity observations, never successful edges.
+Producer ambiguity checks and execution dependencies include explicit
+output-collection membership; a shared path prefix alone establishes no producer.
 
 The graph builder owns canonicalization, bounded inventory, candidate indexing,
 and established topology only. Validation owns rule conclusions and Orphans

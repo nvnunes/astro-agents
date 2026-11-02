@@ -73,6 +73,7 @@ from validation.transformation import (
 
 from .authoring_transactions import (
     artifact_locations,
+    data_addition_paths,
     data_change_paths,
     merge_data,
     require_unchanged,
@@ -412,7 +413,10 @@ def _merge_entry_data(
         )
     require_artifact_access(
         resolve_project_root(entry.root),
-        reads=artifact_locations(fresh, names),
+        reads=(
+            *artifact_locations(fresh, names),
+            *data_addition_paths(before_data, fresh),
+        ),
         writes=data_change_paths(before_data, fresh),
     )
     return tuple(replace(edit, data=fresh) for edit in edits), fresh
@@ -521,6 +525,10 @@ def _prepare_operation(
                     edit.data,
                     {_source_name(source.source) for source in edit.record.sources},
                 )
+            ) + tuple(
+                path
+                for edit in edits
+                for path in data_addition_paths(before_data[edit.entry.id], edit.data)
             )
             writes = tuple(
                 path

@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from log_commands import command_sync, evidence_sync, storage
+from log_commands import command_sync, evidence_sync, graph_state, storage
 from log_commands.context import resolve_entry, resolve_log
 from log_commands.model import ActionError, EvidenceSyncArguments
 from research_log_cli_test_support import run_log, run_log_process, run_pyrun_process
@@ -60,6 +60,185 @@ def concurrent_sync(logical: Path, family: str, *arguments: str):
 
 
 class OrdinarySyncConcurrencyTests(unittest.TestCase):
+    def test_new_declarations_share_readers_but_refuse_overlapping_writers(self):
+        for route in ("command", "evidence", "registry"):
+            for kind in ("file", "directory"):
+                for access in ("read", "write"):
+                    with (
+                        self.subTest(route=route, kind=kind, access=access),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory).resolve()
+                        logical, entry, document = fixture(
+                            root,
+                            "./pyrun scripts/build.py"
+                            + (" --input '<source>'" if route == "command" else ""),
+                        )
+                        shared = root / "shared"
+                        shared.mkdir()
+                        value = shared / "value.json"
+                        value.write_text('{"value":7}')
+                        target = value if kind == "file" else shared
+                        owner = root / "docs/benchmark/entries/2030-01-01-e001-test"
+                        owner.mkdir(parents=True)
+                        source = "source" if kind == "file" else "source/value.json"
+                        if route == "evidence":
+                            set_results(
+                                document,
+                                f"``<!-- eid:value source={source} select=/value -->",
+                            )
+                        declaration = {
+                            "name": "source",
+                            "kind": kind,
+                            "location": str(target),
+                            "identity": {
+                                "algorithm": "sha256"
+                                if kind == "file"
+                                else "directory-sha256-v1"
+                            },
+                            "origin": True,
+                        }
+                        option = "--add-origin" + (
+                            "-directory" if kind == "directory" else ""
+                        )
+                        with reserve_execution(
+                            root,
+                            owner,
+                            "benchmark",
+                            (value,) if access == "read" else (),
+                            (value,) if access == "write" else (),
+                        ):
+                            records = tuple(root.rglob("ordinary-execution-*.json"))
+                            reserved = {path: path.read_bytes() for path in records}
+                            before = retained_files(logical)
+                            for dry_run in (True, False):
+                                if route == "registry":
+                                    if dry_run:
+                                        continue
+                                    context = resolve_entry(
+                                        resolve_log(logical), "e001"
+                                    )
+                                    updates = {
+                                        entry / "data.json": json.dumps(
+                                            {
+                                                "schema": "research-log-data/v6",
+                                                "inputs": [declaration],
+                                            }
+                                        )
+                                    }
+                                    if access == "write":
+                                        with self.assertRaises(
+                                            ArtifactReservationError
+                                        ):
+                                            graph_state.publish_updates(
+                                                (context,), updates
+                                            )
+                                    else:
+                                        graph_state.publish_updates((context,), updates)
+                                else:
+                                    extra = ("--dry-run",) if dry_run else ()
+                                    if route == "command":
+                                        result = sync(
+                                            logical, option, f"source={target}", *extra
+                                        )
+                                    else:
+                                        result = evidence(
+                                            logical,
+                                            "sync",
+                                            "--id",
+                                            "value",
+                                            option,
+                                            f"source={target}",
+                                            *extra,
+                                        )
+                                    self.assertEqual(
+                                        result.returncode,
+                                        2 if access == "write" else 0,
+                                        result.stderr,
+                                    )
+                                    if access == "write":
+                                        self.assertIn(
+                                            "artifact.reservation.conflict",
+                                            result.stderr,
+                                        )
+                                if dry_run or access == "write":
+                                    self.assertEqual(retained_files(logical), before)
+                            self.assertEqual(value.read_text(), '{"value":7}')
+                            self.assertEqual(
+                                {path: path.read_bytes() for path in records}, reserved
+                            )
+                            if access == "read":
+                                self.assertTrue((entry / "data.json").exists())
+                                if route == "evidence":
+                                    self.assertIn("`7`", document.read_text())
+
+    def test_existing_boundary_changes_still_refuse_shared_readers(self):
+        for operation in (
+            "command-target-old",
+            "command-target-new",
+            "data-target-old",
+            "data-target-new",
+            "data-identity",
+            "data-delete",
+        ):
+            with (
+                self.subTest(operation=operation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                logical, entry, document = fixture(
+                    root, "./pyrun scripts/build.py --input '<source>'"
+                )
+                for name in ("old", "new"):
+                    target = entry / f"data/{name}"
+                    target.mkdir()
+                    (target / "value.json").write_text('{"value":7}')
+                registered = sync(logical, "--add-origin-directory", "source=data/old")
+                self.assertEqual(registered.returncode, 0, registered.stderr)
+                if operation.startswith("data"):
+                    document.write_text(
+                        document.read_text().replace(" --input '<source>'", "")
+                    )
+                    disconnected = sync(logical, "--delete-stale-executions", "build")
+                    self.assertEqual(disconnected.returncode, 0, disconnected.stderr)
+                protected = entry / (
+                    "data/new/value.json"
+                    if operation.endswith("new")
+                    else "data/old/value.json"
+                )
+                with reserve_execution(
+                    root, root / "other-entry", "reader", (protected,), ()
+                ):
+                    before = retained_files(logical)
+                    if operation.startswith("command"):
+                        result = sync(logical, "--change-target", "source=data/new")
+                    else:
+                        arguments = (
+                            ("delete", "source")
+                            if operation == "data-delete"
+                            else (
+                                "update",
+                                "source",
+                                *(
+                                    ("--identity", "file:value.json")
+                                    if operation == "data-identity"
+                                    else ("--target", "data/new")
+                                ),
+                            )
+                        )
+                        result = run_log_process(
+                            root,
+                            "data",
+                            *arguments,
+                            "--path",
+                            str(logical),
+                            "--entry",
+                            "e001",
+                        )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("artifact.reservation.conflict", result.stderr)
+                    self.assertEqual(retained_files(logical), before)
+
     def test_cross_entry_evidence_reference_rechecks_source_after_interleaved_update(
         self,
     ):

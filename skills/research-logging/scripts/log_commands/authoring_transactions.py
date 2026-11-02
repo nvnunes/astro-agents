@@ -93,18 +93,16 @@ def artifact_locations(data: DataFile | None, names: set[str]) -> tuple[Path, ..
 def data_change_paths(
     before: DataFile | None, after: DataFile | None
 ) -> tuple[Path, ...]:
-    """Protect changed declaration identities/locations, not comparison policy."""
+    """Protect edits/removals of existing boundaries, not new declarations."""
 
     old = before.by_name if before else {}
     new = after.by_name if after else {}
     names = {
         name
-        for name in old.keys() | new.keys()
-        if (old[name].as_dict() if name in old else None)
-        != (new[name].as_dict() if name in new else None)
+        for name in old
+        if old[name].as_dict() != (new[name].as_dict() if name in new else None)
         and not (
-            name in old
-            and name in new
+            name in new
             and old[name].kind == new[name].kind
             and old[name].identity == new[name].identity
             and old[name].canonical_target == new[name].canonical_target
@@ -115,25 +113,39 @@ def data_change_paths(
     return (*artifact_locations(before, names), *artifact_locations(after, names))
 
 
+def data_addition_paths(
+    before: DataFile | None, after: DataFile | None
+) -> tuple[Path, ...]:
+    """New declarations share readers but cannot observe an active writer."""
+
+    old = before.by_name if before else {}
+    new = after.by_name if after else {}
+    return artifact_locations(after, new.keys() - old.keys())
+
+
 @contextmanager
 def data_publication_transaction(
     entries: tuple[EntryContext, ...], updates: Mapping[Path, str | None]
 ) -> Iterator[None]:
     """Refuse registry identity/locator changes affecting reserved artifacts."""
 
-    paths = tuple(
-        path for entry in entries for path in _registry_change_paths(entry, updates)
-    )
-    with artifact_transaction(resolve_project_root(entries[0].root), writes=paths):
+    access = tuple(_registry_change_access(entry, updates) for entry in entries)
+    with artifact_transaction(
+        resolve_project_root(entries[0].root),
+        reads=tuple(path for reads, _ in access for path in reads),
+        writes=tuple(path for _, writes in access for path in writes),
+    ):
         yield
 
 
-def _registry_change_paths(
+def _registry_change_access(
     entry: EntryContext, updates: Mapping[Path, str | None]
-) -> tuple[Path, ...]:
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Classify additions as reads and existing boundary changes as writes."""
+
     path = entry.root / "data.json"
     if path not in updates:
-        return ()
+        return (), ()
     before = load_data_file(path, entry_root=entry.root) if path.exists() else None
     text = updates[path]
     after = (
@@ -142,12 +154,14 @@ def _registry_change_paths(
         else {}
     )
     old = before.by_name if before else {}
-    paths = []
+    reads: list[Path] = []
+    writes: list[Path] = []
     for name in old.keys() | after.keys():
         prior = old[name].as_dict() if name in old else {}
         candidate = after.get(name, {})
         if _physical_fields(prior) == _physical_fields(candidate):
             continue
+        paths = writes if name in old else reads
         if name in old and old[name].kind != "git-repository":
             paths.append(Path(old[name].canonical_target))
         if "location" in candidate and candidate.get("kind") != "git-repository":
@@ -155,7 +169,7 @@ def _registry_change_paths(
         elif "from_entry" in candidate:
             source = resolve_entry(entry.log, candidate["from_entry"])
             paths.append(_reference_target(source, name, updates))
-    return tuple(paths)
+    return tuple(reads), tuple(writes)
 
 
 def _physical_fields(fields: Mapping[str, object]) -> dict[str, object]:

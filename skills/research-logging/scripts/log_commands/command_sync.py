@@ -29,7 +29,11 @@ from research_log_data import (
     normalize_input_location,
     observe_fingerprint,
 )
-from research_log_reservations import artifact_transaction, require_artifact_access
+from research_log_reservations import (
+    ArtifactReservationError,
+    artifact_transaction,
+    require_artifact_access,
+)
 from validation.commands import (
     CommandDeclaration,
     CommandDeclarationContext,
@@ -65,6 +69,7 @@ from validation.pyrun_state import (
 )
 
 from .authoring_transactions import (
+    data_addition_paths,
     data_change_paths,
     merge_data,
     require_unchanged,
@@ -166,7 +171,7 @@ def sync_command(
             artifact_transaction(project),
         ):
             return _finish_command(entry, project, arguments, prepared)
-    except ActionError:
+    except (ActionError, ArtifactReservationError):
         raise
     except DataContractError as error:
         raise ActionError(
@@ -617,6 +622,7 @@ def _finish_command(
     data_text = data.canonical_json() if data is not None else None
     require_artifact_access(
         project,
+        reads=data_addition_paths(prepared.before, data),
         writes=(
             *data_change_paths(prepared.before, data),
             *(

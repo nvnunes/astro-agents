@@ -1096,6 +1096,9 @@ Authoring artifact-access conflicts include these observations in structured
 result records. Liveness is observational; release and recovery recheck it under
 their guards.
 Authoring must not relocate or change the identity of a boundary in use.
+Adding an independent material declaration is read access to its target, so it
+may share readers but conflicts with an overlapping writer. Edits or removals of
+existing boundaries retain write protection on their old and new targets.
 Reservations do not stage outputs or roll back bytes written by a failed script.
 
 Generated reservation records live in the owning project's

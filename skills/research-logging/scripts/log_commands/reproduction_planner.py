@@ -863,6 +863,7 @@ def _trace_execution(
     if key in state.visited:
         return
     state.visiting.append(key)
+    observed_inputs = dict(owner.execution.observed.inputs)
     for name in owner.execution.recipe.inputs:
         resource = (
             owner.entry.data.by_name.get(name) if owner.entry.data is not None else None
@@ -881,11 +882,26 @@ def _trace_execution(
             )
             state.blocked.add(key)
             continue
+        fingerprint = observed_inputs.get(name)
+        if fingerprint is None:
+            _retain_preparation_problem(
+                state,
+                key,
+                ReproductionProblem(
+                    SourceRef(resource.canonical_target),
+                    "direct_input_unavailable",
+                    ProblemStage.PREPARE,
+                    f"No saved execution fingerprint for input {name}.",
+                    {"input": name, "path": resource.canonical_target},
+                ),
+            )
+            state.blocked.add(key)
+            continue
         material = _material(
             resource.canonical_target,
             "input",
             resource.kind,
-            dict(owner.execution.observed.inputs)[name],
+            fingerprint,
         )
         material["selection"] = resource.identity.as_dict()
         _retain_material(
@@ -911,7 +927,7 @@ def _retain_output_work(state: _PlanningState, owner: _Owner, output: str) -> No
         identity,
         ExecutionRef(*owner.key),
         _output_target(owner, output, state.project_root),
-        dict(owner.execution.observed.outputs)[output],
+        dict(owner.execution.observed.outputs).get(output),
         output=output,
         definition_identity=definition.identity if definition is not None else None,
         evidence_records=(
@@ -933,24 +949,14 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         project_root=state.project_root,
     )
     failures: list[tuple[str, str]] = []
-    source_failure = _record_effective_code(state, owner, script)
-    if source_failure is not None:
-        failures.append((source_failure.code, source_failure.explanation))
+    observed_outputs = dict(execution.observed.outputs)
     for output, kind in execution.recipe.outputs:
-        fingerprint = dict(execution.observed.outputs)[output]
-        target = (
-            output_target_path(
-                output,
-                entry_root=owner.entry.context.root,
-                project_root=state.project_root,
-            )
-            .resolve()
-            .as_posix()
-        )
-        baseline_problem = _baseline_problem(
-            Path(target), kind, fingerprint, ArtifactRef(owner.entry.context.id, output)
-        )
+        fingerprint = observed_outputs.get(output)
+        target = _output_target(owner, output, state.project_root)
+        artifact = ArtifactRef(owner.entry.context.id, output)
+        baseline_problem = _baseline_problem(Path(target), kind, fingerprint, artifact)
         if baseline_problem is None:
+            assert fingerprint is not None
             _retain_material(
                 state,
                 ("baseline", target),
@@ -960,6 +966,9 @@ def _record_execution_materials(owner: _Owner, state: _PlanningState) -> None:
         else:
             _retain_preparation_problem(state, owner.key, baseline_problem)
             failures.append((baseline_problem.code, baseline_problem.explanation))
+    source_failure = _record_effective_code(state, owner, script)
+    if source_failure is not None:
+        failures.append((source_failure.code, source_failure.explanation))
     if failures:
         state.blocked.add(owner.key)
 
@@ -2197,10 +2206,18 @@ def _observation_resource(
 def _baseline_problem(
     path: Path,
     kind: str,
-    expected: Fingerprint,
+    expected: Fingerprint | None,
     artifact: ArtifactRef,
 ) -> ReproductionProblem | None:
     identity = path.resolve().as_posix()
+    if expected is None:
+        return ReproductionProblem(
+            artifact,
+            "baseline_unavailable",
+            ProblemStage.PREPARE,
+            f"No saved execution fingerprint for output {artifact.artifact}.",
+            {"path": identity},
+        )
     resource = _observation_resource("planning-material", kind, identity, expected)
     try:
         observed = observe_fingerprint(resource).fingerprint

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -94,6 +95,43 @@ class NativePlanningTests(unittest.TestCase):
         self.assertEqual((native.target.kind, native.target.entry), ("log", None))
         self.assertEqual(len(native.commands), 4)
         self.assertFalse(shared.result_store_path(self.fixture.log_root).exists())
+
+    def test_pending_execution_without_saved_fingerprints_blocks_only_its_branch(self):
+        path = self.entry.root / "pyrun.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        producer = state["commands"]["producer"]["executions"][
+            self.identities["producer"]
+        ]
+        self.assertTrue(producer["requires_reproduction"])
+        producer["observed"]["inputs"] = {}
+        producer["observed"]["outputs"] = {}
+        path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        plan = self.prepare()
+
+        self.assertEqual(
+            {item["identity"]["cid"] for item in plan.scheduling}, {"independent"}
+        )
+        self.assertEqual(
+            {problem.code for problem in plan.problems},
+            {"baseline_unavailable", "direct_input_unavailable"},
+        )
+        producer_work = next(w for w in plan.commands if w.identity.cid == "producer")
+        problems = {problem.problem_id: problem for problem in plan.problems}
+        self.assertEqual(
+            problems[producer_work.problem_ids[0]].code, "baseline_unavailable"
+        )
+        self.assertEqual(
+            {
+                item.identity.artifact
+                for item in plan.artifacts
+                if item.baseline is None and item.problem_ids
+            },
+            {"data/output-0.txt", "data/output-1.txt"},
+        )
 
     def test_unsupported_history_is_readonly_and_explicit_recheck_never_reads_old_rows(
         self,

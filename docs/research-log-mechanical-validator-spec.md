@@ -4145,6 +4145,14 @@ validation. A locator change resolving to the same selected content remains
 content-equivalent for execution currentness but does not assert that a
 historical execution used the new locator.
 
+After explicit name/path mappings, transfer coalesces same-name declarations
+only when kind, identity, origin, and comparison policy agree and the destination
+target matches the selected material's old or new target. A destination forwarder
+to the selected direct producer becomes the incoming local declaration; other
+forwarding ownership must agree. Existing equivalent destination locators are
+preserved. Incompatible collisions or forwarding uses left without their direct
+producer reject the complete transaction without publication.
+
 Empty authored registries are removed. Legacy `pyrun-outputs.json` is never
 relocated or rewritten to describe a new execution. The `pyrun`-owned service
 may retire only exact source support made stale by the selected transfer, and

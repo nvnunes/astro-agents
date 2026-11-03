@@ -281,7 +281,7 @@ def _build_candidates(
     source_data_file = _build_data(source, remaining_data)
     destination_data_file = _build_data(
         destination,
-        (*(destination_data.inputs if destination_data else ()), *moved_data),
+        _merge_destination_inputs(source, destination_data, source_data, moved_data),
     )
     _require_evidence_inputs(moved_evidence, destination_data_file)
     _verify_evidence_values(
@@ -308,6 +308,47 @@ def _build_candidates(
         ),
         moved_evidence,
     )
+
+
+def _merge_destination_inputs(
+    source: EntryContext,
+    destination: DataFile | None,
+    originals: tuple[InputResource, ...],
+    moved: tuple[InputResource, ...],
+) -> tuple[InputResource, ...]:
+    """Coalesce mapped equivalents, including forwarding to the moved producer."""
+
+    inputs = dict(destination.by_name) if destination is not None else {}
+    for original, candidate in zip(originals, moved, strict=True):
+        existing = inputs.get(candidate.name)
+        if existing is None:
+            inputs[candidate.name] = candidate
+            continue
+        localize = (
+            existing.reference_entry == source.id
+            and original.reference_entry is None
+            and not original.origin
+            and original.name == existing.name
+        )
+        equivalent = (
+            existing.canonical_target
+            in {original.canonical_target, candidate.canonical_target}
+            and existing.kind == candidate.kind
+            and existing.identity == candidate.identity
+            and existing.origin == candidate.origin
+            and existing.comparison == candidate.comparison
+            and (existing.reference_entry == candidate.reference_entry or localize)
+        )
+        if not equivalent:
+            raise ActionError(
+                "reorganize.transfer.data_conflict",
+                f"{candidate.name}: destination declaration is incompatible with "
+                "the selected source material; use a distinct name or resolve "
+                "the declaration conflict before transfer",
+            )
+        if localize or existing.canonical_target != candidate.canonical_target:
+            inputs[candidate.name] = candidate
+    return tuple(inputs.values())
 
 
 def _build_data(
@@ -577,7 +618,7 @@ def _validate_log_data(
     source_data: DataFile | None,
     destination_data: DataFile | None,
 ) -> None:
-    candidates: list[DataFile] = []
+    candidates: dict[str, DataFile] = {}
     for entry in observe_physical_entries(source.log):
         if entry.root == source.root:
             candidate = source_data
@@ -589,8 +630,30 @@ def _validate_log_data(
                 load_data_file(path, entry_root=entry.root) if path.exists() else None
             )
         if candidate is not None:
-            candidates.append(candidate)
-    validate_log_consistency(tuple(candidates))
+            candidates[entry.id] = candidate
+    _require_candidate_producers(candidates)
+    validate_log_consistency(tuple(candidates.values()))
+
+
+def _require_candidate_producers(candidates: Mapping[str, DataFile]) -> None:
+    """Refuse publication that strands or silently retargets a forwarding use."""
+
+    for entry_id, data in candidates.items():
+        for item in data.inputs:
+            if item.reference_entry is None:
+                continue
+            owner = candidates.get(item.reference_entry)
+            producer = owner.by_name.get(item.name) if owner is not None else None
+            if (
+                producer is None
+                or replace(item, reference_entry=None, location=producer.location)
+                != producer
+            ):
+                raise ActionError(
+                    "reorganize.transfer.dependency_present",
+                    f"{entry_id}/{item.name} still forwards to "
+                    f"{item.reference_entry}; resolve this consumer before transfer",
+                )
 
 
 def _retired_support(

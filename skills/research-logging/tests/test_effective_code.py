@@ -28,6 +28,33 @@ def _fingerprint(
 
 
 class EffectiveCodeTests(unittest.TestCase):
+    def test_relocation_rebases_only_path_labels_of_matching_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            source = _write(
+                project / "old/scripts/main.py",
+                "from helper import value\nprint(value())\n",
+            )
+            helper = _write(
+                project / "old/scripts/helper.py", "def value():\n    return 7\n"
+            )
+            previous = _fingerprint(source, project)
+            target = _write(project / "new/scripts/main.py", source.read_text())
+            moved_helper = _write(project / "new/scripts/helper.py", helper.read_text())
+            arguments = dict(
+                project_root=project,
+                import_roots=(target.parent, project),
+                previous=previous,
+                path_aliases={"new": "old"},
+            )
+            rebased = effective_code.relocate_effective_code(target, **arguments)
+            self.assertEqual(rebased, _fingerprint(target, project))
+            self.assertNotEqual(rebased, previous)
+            moved_helper.write_text("def value():\n    return 99\n")
+            self.assertEqual(
+                effective_code.relocate_effective_code(target, **arguments), previous
+            )
+
     def test_comment_format_and_unreachable_body_changes_are_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)

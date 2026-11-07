@@ -20,12 +20,15 @@ These cases exercise the selected CLI-driven Reorganize references.
   and retention inventories, names every selected record and mapping, moves
   Markdown and support files first, and uses one transfer.
 - A stable-entry split creates the destination with `log add`, then transfers
-  the selected records and completes required reruns.
-- A stable-entry merge transfers all records, completes reruns, removes the
+  the selected records and their executions without rerunning research.
+- A stable-entry merge transfers all records and executions, removes the
   source summary item, and separately removes the empty scaffold.
 - Ambiguous selection, unresolved dependencies, stale source use, and failed
   transfer stop without direct registry edits.
 - A moved artifact retains its exact evidence baseline, selected generated data
-  matches its recorded source output observation, and unrelated declarations are
-  not observed merely to permit a transfer.
+  matches its recorded source output observation or, when pending and unobserved,
+  its retained source copy. Missing observations stay missing; unrelated
+  declarations are not observed merely to permit a transfer.
+- Transferred executions preserve timestamps, nonautomatic policies and existing
+  reproduction requirements; partial output bundles and collisions fail atomically.
 - A nonempty source after merge stops before empty-entry removal.

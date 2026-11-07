@@ -9,7 +9,7 @@ import os
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Union
+from typing import Iterable, Mapping, Union
 
 from validation.filesystem import file_identity
 
@@ -186,6 +186,33 @@ def analyze_effective_code(
         project_root=project_root,
         import_roots=import_roots,
     ).analyze()
+
+
+def relocate_effective_code(
+    script: Path,
+    *,
+    project_root: Path,
+    import_roots: tuple[Path, ...],
+    previous: EffectiveCodeFingerprint,
+    path_aliases: Mapping[str, str],
+) -> EffectiveCodeFingerprint:
+    """Rebase only a verified path-label change; otherwise preserve the old baseline.
+
+    Aliases map current project-relative file/directory names to their previous
+    names. No project code executes, and changed code is never made current.
+    """
+
+    analyzer = _Analyzer(
+        script=script, project_root=project_root, import_roots=import_roots
+    )
+    current = analyzer.analyze()
+    if current.fingerprint is not None:
+        prior_digest = hashlib.sha256(
+            analyzer._fingerprint_payload(path_aliases)
+        ).hexdigest()
+        if prior_digest == previous.digest:
+            return current.fingerprint
+    return previous
 
 
 class _Analyzer:
@@ -836,16 +863,26 @@ class _Analyzer:
             f"Python child entrypoint {child!r} is not a resolvable project-local file",
         )
 
-    def _fingerprint_payload(self) -> bytes:
+    def _fingerprint_payload(
+        self, path_aliases: Mapping[str, str] | None = None
+    ) -> bytes:
+        aliases = path_aliases or {}
         modules = []
         for source in self._analyzed_sources():
             projection = _Projection(source.path, self._reached).visit(
                 ast.parse(source.content, filename=str(source.path))
             )
             ast.fix_missing_locations(projection)
+            relative = source.relative
+            for current in sorted(aliases, key=len, reverse=True):
+                if relative == current or relative.startswith(
+                    current.rstrip("/") + "/"
+                ):
+                    relative = aliases[current].rstrip("/") + relative[len(current) :]
+                    break
             modules.append(
                 {
-                    "path": source.relative,
+                    "path": relative,
                     "syntax": ast.dump(
                         projection,
                         annotate_fields=True,
@@ -853,6 +890,7 @@ class _Analyzer:
                     ),
                 }
             )
+        modules.sort(key=lambda item: item["path"])
         value = {"algorithm": FINGERPRINT_ALGORITHM, "modules": modules}
         return json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")

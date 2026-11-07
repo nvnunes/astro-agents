@@ -15,6 +15,7 @@ from test_log_reorganize import (
     declare_fixture_input,
     result,
     run,
+    sha256,
     write_execution_state,
 )
 from validation.pyrun_state import (
@@ -56,7 +57,7 @@ def record_output(entry: Path) -> str:
         PYRUN_EXECUTION_CONTRACT,
         recipe,
         ObservedExecution(
-            Fingerprint("sha256", digest="a" * 64),
+            Fingerprint("sha256", digest=sha256(entry / "scripts/make.py")),
             (),
             Fingerprint("python-effective-code-sha256-v1", digest="b" * 64),
             (("data/reference-analysis", observation),),
@@ -233,10 +234,10 @@ class EntryMergeTests(unittest.TestCase):
             self.assertTrue(moved["document"].endswith("/e002b.md"))
             for name in ("data.json", "evidence.json", "pyrun.json"):
                 self.assertFalse((source / name).exists())
-            self.assertEqual(
-                (destination / "pyrun.json").read_bytes(),
-                before[destination / "pyrun.json"],
-            )
+            prior = json.loads(before[destination / "pyrun.json"])["commands"]
+            current = json.loads((destination / "pyrun.json").read_bytes())["commands"]
+            self.assertEqual(current["transfer-fixture"], prior["transfer-fixture"])
+            self.assertIn("reference-producer", current)
             self.assertEqual(
                 result(transferred)["records"][0]["execution_id"], identity
             )

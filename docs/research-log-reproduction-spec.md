@@ -952,6 +952,10 @@ evidence or a match. Every fingerprint uses the closed
 forms owned by the mechanical validator specification. `data.json` remains the
 sole owner of input paths, classifications, and identity selection;
 `pyrun.json` owns the historical observations that reproduction compares.
+Tool-managed entry transfers preserve execution state under the
+[Reorganize contract](research-log-mechanical-validator-spec.md), including
+nonautomatic policies and existing reproduction requirements; relocation alone
+does not require another execution.
 
 The fixed file, execution, parameter, string, input, output, environment, and
 effective-code analysis limits are defined in

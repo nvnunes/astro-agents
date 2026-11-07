@@ -42,7 +42,8 @@ class ReorganizeSurfaceTests(unittest.TestCase):
         self.assertIn("## Split One Stable Entry Into Two", transfer)
         self.assertIn("## Merge Two Stable Entries", transfer)
         self.assertIn("transfer --all", transfer)
-        self.assertIn("reported rerun", transfer)
+        self.assertIn("requires no rerun solely for reorganization", transfer)
+        self.assertIn("--auto-reproduce=false", transfer)
         for family in ("evidence", "data", "retention"):
             self.assertIn(f"log {family} list", transfer)
         self.assertLess(

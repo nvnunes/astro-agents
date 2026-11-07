@@ -146,7 +146,10 @@ def write_execution_state(entry: Path, outputs: tuple[str, ...]) -> str:
             tuple((output, "file") for output in outputs),
         ),
     )
-    fingerprint = Fingerprint("sha256", digest="a" * 64)
+    script = entry / "scripts/make.py"
+    fingerprint = Fingerprint(
+        "sha256", digest=sha256(script) if script.exists() else "a" * 64
+    )
     execution = PyrunExecution(
         False,
         True,
@@ -1012,6 +1015,8 @@ class ReorganizeTransferTests(unittest.TestCase):
             moved = destination / "data" / "result.txt"
             moved.parent.mkdir()
             output.rename(moved)
+            (destination / "scripts").mkdir()
+            (destination / "scripts/make.py").write_bytes(script.read_bytes())
             arguments = TransferArguments(
                 "e001",
                 "e002",
@@ -1146,7 +1151,7 @@ class ReorganizeTransferTests(unittest.TestCase):
             remaining = json.loads((source / "data.json").read_text())
             self.assertEqual(remaining["inputs"][0]["name"], "unrelated")
 
-    def test_transfer_retires_only_one_complete_execution(self) -> None:
+    def test_transfer_preserves_one_complete_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logical, entries = create_log(root, 2)
@@ -1166,6 +1171,8 @@ class ReorganizeTransferTests(unittest.TestCase):
 
             destination_data = destination / "data"
             destination_data.mkdir()
+            (destination / "scripts").mkdir()
+            (destination / "scripts/make.py").write_bytes(script.read_bytes())
             (source / outputs[0]).rename(destination_data / "first.txt")
             partial = run(
                 root,
@@ -1361,6 +1368,8 @@ class ReorganizeTransferTests(unittest.TestCase):
             destination_data = destination / "data" / "result.txt"
             destination_data.parent.mkdir()
             source_data.rename(destination_data)
+            (destination / "scripts").mkdir()
+            (destination / "scripts/make.py").write_bytes(script.read_bytes())
             source_document_field = source.relative_to(logical).as_posix() + "/e001.md"
             destination_document_field = (
                 destination.relative_to(logical).as_posix() + "/e002.md"

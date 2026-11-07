@@ -25,9 +25,10 @@ Never inspect or edit those registries directly.
 3. Decide every changed document, support path, data name, evidence ID, or
    retention ID before editing. Preserve identifiers unless the authorized move
    requires an explicit mapping.
-4. Move the Markdown and selected support files, then update markers, summary
-   references, recorded-command tokens, and local links. The old associations
-   must be absent and destination files and markers present.
+4. Move the Markdown and selected support files, but retain source copies of
+   scripts and outputs without recorded fingerprints for transfer comparison.
+   Update markers, summary references, recorded-command tokens, and local links.
+   Remove old associations; destination files and markers must be present.
 5. Read only `log reorganize transfer --help`. Supply the three selector lists
    and only their required mapping pairs. Use `--all` only when every authored
    registry record moves to another stable entry. Dry-run, then apply once.
@@ -37,13 +38,11 @@ Never inspect or edit those registries directly.
    validation failure. Do not fix it by editing JSON. The command does not hash
    unrelated declarations; use separately requested Validate work for unrelated
    material health.
-7. Run every destination command in the returned rerun list through that
-   entry's `pyrun`. The workflow is incomplete until those reruns succeed.
-
-A selected resource whose new locator resolves to the same recorded content can
-remain current, but that equivalence does not claim the historical execution
-used the destination locator. Transfer never rewrites source observations into
-destination execution history.
+7. Confirm the reported executions moved with their complete output bundles.
+   Transfer remaps locators and names while preserving observations, timestamps,
+   reproduction requirements and policies, including `--auto-reproduce=false`.
+   It runs no research commands and requires no rerun solely for reorganization.
+   Remove source copies only after success and when no remaining work uses them.
 
 ## Move A Section Between Stable Entries
 
@@ -56,8 +55,7 @@ Use one coordinated transfer for the complete selected set.
 1. Create the destination stable entry with `log add`.
 2. Move the authorized Markdown and support files and update all affected
    references.
-3. Invoke one selected cross-entry transfer with every required mapping, then
-   complete its reported reruns.
+3. Invoke one selected cross-entry transfer with every required mapping.
 4. Confirm both stable entries retain their intended content. This is distinct
    from splitting documents inside one entry.
 
@@ -65,8 +63,8 @@ Use one coordinated transfer for the complete selected set.
 
 1. Combine the authorized Markdown and support files into the surviving entry
    and update references.
-2. Invoke `transfer --all` from the source to the survivor and complete every
-   reported rerun. `transfer` does not delete the source entry.
+2. Invoke `transfer --all` from the source to the survivor. It preserves execution
+   records and does not delete the source entry.
 3. Confirm the source is its canonical empty scaffold, remove its summary item,
    then invoke `log reorganize remove-empty-entry` separately.
 4. Stop if the source remains nonempty or referenced. Do not treat the merge as

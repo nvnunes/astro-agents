@@ -11,6 +11,7 @@ from research_log_data import (
     Fingerprint,
     FingerprintObservation,
     InputResource,
+    build_local_input,
     data_file_from_inputs,
     input_token_parts,
     load_data_file,
@@ -19,6 +20,7 @@ from research_log_data import (
     resolve_input_token,
     validate_log_consistency,
 )
+from research_log_reservations import require_artifact_access
 from validation.commands import command_input_names
 from validation.evidence import (
     EvidenceFile,
@@ -42,8 +44,6 @@ from validation.presentation import (
 from validation.pyrun_outputs import output_target_path
 from validation.pyrun_state import (
     PYRUN_FILENAME,
-    PyrunCommand,
-    PyrunFile,
     load_pyrun_state,
 )
 from validation.retention import (
@@ -59,6 +59,11 @@ from validation.transformation import compare_presentation, evaluate_transformat
 from .authoring_transactions import data_publication_transaction
 from .context import EntryContext, resolve_project_root
 from .model import ActionError, ActionResult, TransferArguments
+from .reorganize_executions import (
+    ExecutionRelocation,
+    ExecutionTransfer,
+    transfer_execution_records,
+)
 from .scaffold import observe_physical_entries
 from .storage import PublicationError, atomic_write_texts
 
@@ -74,14 +79,6 @@ class _SourceState:
 class _TransferPlan:
     selections: Mapping[str, frozenset[str]]
     maps: Mapping[str, Mapping[str, str]]
-
-
-@dataclass(frozen=True)
-class _SupportUpdate:
-    """One execution-state replacement within the registry transaction."""
-
-    path: Path
-    text: str | None
 
 
 @dataclass
@@ -125,7 +122,7 @@ def transfer_registries(
     selections = _selections(arguments, state.data, state.evidence, state.retention)
     _validate_unselected_source_context(source, state, selections)
     _require_mapping_sources(
-        maps, selections, state.data, state.evidence, state.retention
+        maps, selections, state.data, state.evidence, state.retention, source
     )
     plan = _TransferPlan(selections, maps)
     observations = _MaterialObservations({}, {})
@@ -135,7 +132,10 @@ def transfer_registries(
     _validate_log_data(
         source, destination, candidates.source_data, candidates.destination_data
     )
-    support_update, reruns = _retired_support(source, destination, state, plan)
+    support = _transferred_support(
+        source, destination, state, plan, candidates, observations
+    )
+    records = support.records
     updates = candidates.updates(source, destination)
     for name, family in (
         ("data.json", "data"),
@@ -145,19 +145,24 @@ def transfer_registries(
         if not selections[family]:
             updates.pop(source.root / name, None)
             updates.pop(destination.root / name, None)
-    if support_update is not None:
-        updates[support_update.path] = support_update.text
+    updates.update(support.updates)
     changed = any(
         value is None or not path.exists() or path.read_text(encoding="utf-8") != value
         for path, value in updates.items()
     )
     if not changed:
-        return _result("unchanged", False, (), reruns)
+        return _result("unchanged", False, (), records)
     if arguments.dry_run:
-        return _result("dry-run", True, tuple(updates), reruns)
+        require_artifact_access(
+            resolve_project_root(source.root), writes=support.boundaries
+        )
+        return _result("dry-run", True, tuple(updates), records)
     with data_publication_transaction(
         (source, destination) if source != destination else (source,), updates
     ):
+        require_artifact_access(
+            resolve_project_root(source.root), writes=support.boundaries
+        )
         residue = begin_reorganization(source.log.root)
         try:
             atomic_write_texts(updates)
@@ -166,7 +171,7 @@ def transfer_registries(
                 finish_guarded_publication(residue)
             raise ActionError("reorganize.transfer.failed", str(error)) from error
         finish_guarded_publication(residue)
-    return _result("changed", True, tuple(updates), reruns)
+    return _result("changed", True, tuple(updates), records)
 
 
 @dataclass(frozen=True)
@@ -577,7 +582,7 @@ def _require_selected_generated_observations(
     candidates: tuple[InputResource, ...],
     observations: _MaterialObservations,
 ) -> None:
-    """Match selected generated material to its direct source observation."""
+    """Verify generated material against its observation or pending source copy."""
 
     selected = tuple(
         (original, candidate)
@@ -594,7 +599,7 @@ def _require_selected_generated_observations(
     for original, candidate in selected:
         target = Path(original.canonical_target).resolve()
         matches = [
-            dict(execution.observed.outputs).get(output)
+            (execution, output)
             for _, _, execution in state.execution_items()
             for output, _ in execution.recipe.outputs
             if output_target_path(
@@ -605,10 +610,14 @@ def _require_selected_generated_observations(
             ).resolve()
             == target
         ]
-        if len(matches) != 1 or matches[0] is None:
+        if len(matches) != 1:
             raise ActionError("data.fingerprint.unobserved", original.name)
+        execution, output = matches[0]
+        expected = dict(execution.observed.outputs).get(output)
+        if expected is None:
+            expected = observations.observe_resource(original).fingerprint
         current = observations.observe_resource(candidate).fingerprint
-        if current != matches[0]:
+        if current != expected:
             raise ActionError("data.fingerprint.mismatch", original.name)
 
 
@@ -656,25 +665,50 @@ def _require_candidate_producers(candidates: Mapping[str, DataFile]) -> None:
                 )
 
 
-def _retired_support(
+def _transferred_support(  # noqa: PLR0913 -- coupled transfer and observation state
     source: EntryContext,
     destination: EntryContext,
     state: _SourceState,
     plan: _TransferPlan,
-) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
+    candidates: _Candidates,
+    observations: _MaterialObservations,
+) -> ExecutionTransfer:
     if source == destination:
-        return None, ()
+        return ExecutionTransfer({}, (), ())
     current = source.root / PYRUN_FILENAME
     if not current.exists() and not current.is_symlink():
-        return None, ()
-    project_root = resolve_project_root(source.log.root)
+        return ExecutionTransfer({}, (), ())
     selected_paths = _selected_transfer_paths(state, plan)
-    return _retired_execution_state(
-        source,
-        destination,
-        current,
-        selected_paths=selected_paths,
-        project_root=project_root,
+    data = candidates.destination_data
+    resources = {
+        item.canonical_target: item
+        for registry in (state.data, data)
+        if registry is not None
+        for item in registry.inputs
+    }
+
+    def observe_output(path: Path, kind: str) -> Fingerprint:
+        resource = resources.get(path.resolve().as_posix()) or build_local_input(
+            "transfer-output", kind, path.as_posix(), entry_root=destination.root
+        )
+        return observations.observe_resource(resource).fingerprint
+
+    physical_paths = {source.root.as_posix(): destination.root.as_posix()}
+    for original in state.data.inputs if state.data else ():
+        if original.name in plan.selections["data"] and data is not None:
+            physical_paths[original.canonical_target] = data.by_name[
+                plan.maps["data"].get(original.name, original.name)
+            ].canonical_target
+    return transfer_execution_records(
+        ExecutionRelocation(
+            source,
+            destination,
+            plan.maps["path"],
+            plan.maps["data"],
+            physical_paths,
+            observe_output,
+        ),
+        selected_paths,
     )
 
 
@@ -694,67 +728,6 @@ def _selected_transfer_paths(state: _SourceState, plan: _TransferPlan) -> set[st
         for path in (*record.paths, *((record.directory,) if record.directory else ()))
     )
     return selected
-
-
-def _retired_execution_state(
-    source: EntryContext,
-    destination: EntryContext,
-    path: Path,
-    *,
-    selected_paths: set[str],
-    project_root: Path,
-) -> tuple[_SupportUpdate | None, tuple[dict[str, object], ...]]:
-    """Retire only complete executions whose full output set was transferred."""
-
-    state = load_pyrun_state(path, entry_root=source.root, project_root=project_root)
-    selected: dict[str, list[str]] = {}
-    reruns: list[dict[str, object]] = []
-    for cid, identity, execution in state.execution_items():
-        outputs = set(dict(execution.recipe.outputs))
-        if not outputs & selected_paths:
-            continue
-        if not outputs <= selected_paths:
-            raise ActionError(
-                "reorganize.transfer.support_ambiguous",
-                f"transfer selects only part of execution {identity}",
-            )
-        for output in outputs:
-            if output_target_path(
-                output,
-                entry_root=source.root,
-                project_root=project_root,
-                authored=True,
-            ).exists():
-                raise ActionError("reorganize.transfer.support_still_current", output)
-        selected.setdefault(cid, []).append(identity)
-        reruns.append(
-            {
-                "entry": destination.id,
-                "cid": cid,
-                "execution_id": identity,
-                "parameters": list(execution.recipe.parameters),
-                "script": execution.recipe.script,
-            }
-        )
-    if not selected:
-        return None, ()
-    result = state
-    for cid, identities in selected.items():
-        executions = {
-            key: value
-            for key, value in result.commands[cid].executions.items()
-            if key not in identities
-        }
-        commands = dict(result.commands)
-        if executions:
-            commands[cid] = PyrunCommand(executions)
-        else:
-            del commands[cid]
-        result = PyrunFile(result.path, result.entry_root, commands)
-    return (
-        _SupportUpdate(result.path, result.serialized() if result.commands else None),
-        tuple(reruns),
-    )
 
 
 def _require_selection(arguments: TransferArguments, same_entry: bool) -> None:
@@ -835,12 +808,13 @@ def _selections(
     return selected
 
 
-def _require_mapping_sources(
+def _require_mapping_sources(  # noqa: PLR0913 -- record families and their owning entry
     maps: Mapping[str, Mapping[str, str]],
     selections: Mapping[str, frozenset[str]],
     data: DataFile | None,
     evidence: tuple[EvidenceRecord, ...],
     retention: tuple[RetentionRecord, ...],
+    source: EntryContext,
 ) -> None:
     for name in ("data", "evidence", "retention"):
         extra = set(maps[name]) - selections[name]
@@ -862,6 +836,22 @@ def _require_mapping_sources(
         for item in (data.inputs if data is not None else ())
         if item.name in selections["data"]
     )
+    if set(maps["path"]) - paths and (source.root / PYRUN_FILENAME).exists():
+        executions = load_pyrun_state(
+            source.root / PYRUN_FILENAME,
+            entry_root=source.root,
+            project_root=resolve_project_root(source.root),
+        )
+        selected_outputs = tuple(paths)
+        paths.update(
+            execution.recipe.script
+            for _, _, execution in executions.execution_items()
+            if any(
+                output == selected or output.startswith(selected.rstrip("/") + "/")
+                for output, _ in execution.recipe.outputs
+                for selected in selected_outputs
+            )
+        )
     if set(maps["document"]) - documents:
         raise ActionError("reorganize.mapping.unselected", "document")
     if set(maps["path"]) - paths:
@@ -940,7 +930,7 @@ def _result(
     status: str,
     changed: bool,
     paths: tuple[Path, ...],
-    reruns: tuple[dict[str, object], ...],
+    records: tuple[dict[str, object], ...],
 ) -> ActionResult:
     return ActionResult(
         "reorganize.transfer",
@@ -948,5 +938,5 @@ def _result(
         f"reorganize.{status}",
         changed,
         paths=tuple(path.as_posix() for path in sorted(paths)),
-        records=reruns,
+        records=records,
     )

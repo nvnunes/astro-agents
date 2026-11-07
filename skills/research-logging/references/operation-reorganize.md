@@ -40,5 +40,5 @@ ownership is ambiguous.
 - Do not revise current understanding or summary follow-ups without separately
   authorized Update Summary work.
 
-Report the structural outcome, any required producer reruns, and any ambiguity
+Report the structural outcome, transferred execution records, and any ambiguity
 or separately authorized operation still outstanding.

@@ -4154,12 +4154,15 @@ Transfer observes only selected data material and sources reached by moved
 evidence. It reuses an affected resource observation within the operation,
 compares non-artifact selections with their destination presentation, and
 compares path-based artifacts with the preserved evidence-owned exact-file
-baseline. Selected generated data must match its exact recorded source execution
-output observation. Same-log consistency compares declarations rather than
+baseline. Selected generated data must have an exact source execution owner and
+match its recorded output observation. When a pending execution lacks that
+observation, current source and destination copies must match under the declared
+identity; transfer preserves the missing observation and reproduction requirement.
+The same check applies to unobserved outputs throughout the complete execution
+bundle, including captures. Same-log consistency compares declarations rather than
 current hashes, so an unrelated external byte change is left for explicit
-validation. A locator change resolving to the same selected content remains
-content-equivalent for execution currentness but does not assert that a
-historical execution used the new locator.
+validation. A locator change resolving to the same selected content is a
+structural reorganization, not a new execution.
 
 After explicit name/path mappings, transfer coalesces same-name declarations
 only when kind, identity, origin, and comparison policy agree and the destination
@@ -4169,12 +4172,21 @@ forwarding ownership must agree. Existing equivalent destination locators are
 preserved. Incompatible collisions or forwarding uses left without their direct
 producer reject the complete transaction without publication.
 
-Empty authored registries are removed. Legacy `pyrun-outputs.json` is never
-relocated or rewritten to describe a new execution. The `pyrun`-owned service
-may retire only exact source support made stale by the selected transfer, and
-the result reports the destination reruns needed to create new support. It never
-rewrites a retained observation as if it ran under a destination entry, name, or
-locator.
+Transfer moves complete `pyrun.json` executions into the destination registry in
+the same atomic transaction. Explicit path and data-name mappings apply to
+scripts, material arguments, observation keys and output bundles; scalar values
+and environment settings remain unchanged. Timestamps, fingerprints, scheduling
+policies and existing reproduction requirements are preserved. A verified
+effective-code path-label change is rebased to the destination; changed or
+unavailable effective code retains its historical baseline. A move never promotes
+stale observations. Current source and destination script bytes must match;
+historical script fingerprints remain unchanged even when already stale. Retain
+source script copies until transfer succeeds. Empty source registries are removed.
+Conflicting destination records, source/destination script mismatches, changed
+retained outputs and partial output bundles fail without publication.
+Transfer runs no research command and imposes no reproduction
+requirement solely for relocation. Result records identify the source and
+destination execution IDs. Legacy `pyrun-outputs.json` is not migrated by transfer.
 
 All Reorganize mutations take the log lock before affected entry locks, publish
 authored registry changes atomically, and leave generated validation artifacts

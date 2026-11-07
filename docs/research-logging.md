@@ -231,16 +231,16 @@ Identity changes inspect only declarations and references whose coordinates may
 change; they do not make unrelated research bytes a mutation prerequisite and
 they preserve recorded execution observations. Cross-entry transfer verifies
 selected material and moved presentations, including exact artifact baselines
-and recorded producer observations for selected generated data. It does not
-reinterpret an unchanged-content locator move as proof of the locator used by a
-historical run.
+and recorded producer observations for selected generated data. It moves complete
+execution records with their observations, timestamps and policies, applying only
+the selected locator/name changes.
 
 Approve renames, splits, and merges before they change document boundaries.
 Keep shared entry material in the parent entry folder and update affected
 summary links, citations, commands, evidence records, and presentation markers
-together. Cross-entry moves name every affected record explicitly and report
-any destination producer reruns that must finish before the reorganization is
-complete. The tools do not edit Markdown or infer what should move.
+together. Cross-entry moves name every affected record explicitly and report the
+transferred executions. Reorganization requires no producer rerun. The tools do
+not edit Markdown or infer what should move.
 
 If removal would replace experimental content, request Replace explicitly
 instead.

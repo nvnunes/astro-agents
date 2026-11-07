@@ -27,6 +27,14 @@ from research_log_data import (
     observe_fingerprint,
     resolve_input_token,
 )
+from validation.commands import (
+    CommandContext,
+    CommandDeclarationContext,
+    CommandDeclarationResult,
+    Invocation,
+    index_commands,
+    observe_commands,
+)
 from validation.evidence import (
     EvidenceFile,
     EvidenceRecord,
@@ -222,7 +230,7 @@ def update(entry: EntryContext, arguments: DataUpdateArguments) -> ActionResult:
             if consumers:
                 require_unretained_paths(entry, (candidate.canonical_target,))
             _require_consumer_tokens(entry, candidate, built)
-            _require_boundary(entry, built, candidate)
+            _require_boundary(entry, built, candidate, existing)
         if not arguments.dry_run:
             if location_candidate is not None:
                 publish_same_target_location_repair(entry, built.canonical_json())
@@ -717,11 +725,109 @@ def _require_shared_update(
         )
 
 
+def _origin_identity_change(existing: InputResource, candidate: InputResource) -> bool:
+    """Select identity edits that preserve the resolved origin-directory boundary."""
+
+    return (
+        existing.origin
+        and existing.kind == "directory"
+        and existing.identity != candidate.identity
+        and replace(existing, identity=candidate.identity, location=candidate.location)
+        == candidate
+    )
+
+
+def _require_origin_identity_boundary(
+    entry: EntryContext, data: DataFile, candidate: InputResource
+) -> None:
+    """Observe the selected identity and only overlapping producer invocations."""
+
+    observe_fingerprint(candidate)
+    materials = inspect_log_materials(
+        entry.log, data_overrides={entry.root: data}, declarations_only=True
+    )
+    observed: dict[str, Invocation] = {}
+
+    def confirmed(invocation: Invocation, material: str) -> bool:
+        if invocation.identity not in observed:
+            observed[invocation.identity] = _observe_identity_producer(
+                entry, data, materials, invocation
+            )
+        return materials.confirmed(observed[invocation.identity], material)
+
+    require_origin_boundary(
+        candidate.canonical_target,
+        candidate,
+        materials.invocations,
+        confirmed_record=confirmed,
+    )
+
+
+def _observe_identity_producer(
+    entry: EntryContext, data: DataFile, materials: LogMaterials, invocation: Invocation
+) -> Invocation:
+    """Strictly observe one declared match, excluding its document's other commands."""
+
+    root = materials.roots[invocation.material_owner]
+    path = root / "data.json"
+    producer_data = (
+        data
+        if root == entry.root
+        else load_data_file(path, entry_root=root)
+        if path.exists()
+        else None
+    )
+    text = (entry.log.root / invocation.document).read_text(encoding="utf-8")
+    declarations = index_commands(
+        text,
+        CommandDeclarationContext(
+            entry.log.root.as_posix(),
+            invocation.entry,
+            invocation.document,
+            root,
+            entry.log.root,
+            materials.project_root,
+            producer_data,
+        ),
+    )
+    selected = tuple(
+        item
+        for item in declarations.declarations
+        if (item.fence, item.ordinal, item.tokens)
+        == (invocation.fence, invocation.ordinal, invocation.tokens)
+    )
+    if len(selected) != 1:
+        raise ActionError(
+            "authoring.state.changed",
+            "matching producer changed during identity update",
+        )
+    discovery = observe_commands(
+        CommandDeclarationResult(selected, ()),
+        text,
+        CommandContext(
+            entry.log.root.as_posix(),
+            invocation.entry,
+            invocation.document,
+            root,
+            entry.log.root,
+            materials.project_root,
+            producer_data,
+        ),
+    )
+    if discovery.failures:
+        raise discovery.failures[0].error
+    return discovery.invocations[0]
+
+
 def _require_boundary(
     entry: EntryContext,
     data: DataFile,
     candidate: InputResource,
+    existing: InputResource,
 ) -> dict[str, object] | None:
+    if _origin_identity_change(existing, candidate):
+        _require_origin_identity_boundary(entry, data, candidate)
+        return None
     if candidate.kind == "git-repository":
         observe_fingerprint(candidate)
         return None

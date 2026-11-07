@@ -3950,6 +3950,13 @@ requirements. An alias canonicalizing to the stored location is an unchanged
 result. Other target or policy changes retain their normal availability checks;
 execution still requires the input to exist.
 
+An identity-only edit of an existing origin directory preserves its resolved
+target, kind, and ownership. Preview and apply observe the selected identity
+files and use declaration-only producer discovery, strictly observing only
+overlapping producer commands before confirming their saved support. Unrelated
+input contents remain unread; declaration discovery may enumerate output members.
+Other boundary changes retain their ordinary checks.
+
 `data repair-locations` is a bounded recovery action for a well-formed registry
 whose selected locations fail the symlink rule. It accepts all affected names
 in one call, requires each replacement to resolve to the same existing

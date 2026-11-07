@@ -68,6 +68,9 @@ the relevant consumed bytes. A shared update identifies its other consumers.
 
 Locations may cross another maintained entry's exact `data` or `images`
 directory link. Do not replace such a location with its physical storage path.
+An origin location may also use a symlink within the owning Git project.
+Keep the project-relative locator even when the link points outside the project.
+The tool fingerprints the resolved material.
 If a well-formed `data.json` cannot load because an existing location crosses
 an unsupported symlink, repair the locations in one call:
 

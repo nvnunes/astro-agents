@@ -2370,8 +2370,11 @@ A canonical target is the safely resolved filesystem locator. A declaration
 may cross the exact `data` or `images` directory symlink of its owning entry or
 another maintained entry, including an entry in another maintained log. The
 other entry must have a regular canonical entry directory beneath a regular
-`entries/` root and a regular maintained-log summary. Nested and arbitrary
-symlinks remain invalid. Retargeting an allowed link changes the resolved
+`entries/` root and a regular maintained-log summary. Origin locations may
+also cross symlinks located within the owning Git project, including links to
+external storage. The declaration preserves the logical path. The directory
+membership and generated-output symlink rules apply independently.
+Retargeting an allowed link changes the resolved
 canonical target and requires normal material-currentness checks. Names are
 unique within one file. File and directory canonical targets are also unique.
 Git repository declarations use their selected commit as material identity, so

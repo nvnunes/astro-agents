@@ -21,6 +21,7 @@ from typing import Any, Iterator, Mapping, NoReturn, cast
 from validation.entry_materials import (
     EntryMaterialPathError,
     is_entry_material_root,
+    owning_git_project,
     uses_maintained_entry_material_link,
     validate_local_path_symlinks,
 )
@@ -673,8 +674,8 @@ def normalize_input_location(value: str, *, entry_root: Path) -> str:
     Relative inputs remain relative to the entry. Absolute paths beneath the
     entry, including its first-class ``data`` and ``images`` links, become
     entry-relative. An absolute path through another entry's first-class
-    material link retains that link; other absolute inputs use their safely
-    resolved path.
+    material link retains that link. Absolute inputs through a project alias
+    become entry-relative, preserving the alias.
     """
 
     if (
@@ -699,6 +700,15 @@ def normalize_input_location(value: str, *, entry_root: Path) -> str:
     if relative is not None:
         return relative
     canonical = lexical.resolve()
+    project_root = owning_git_project(root)
+    if (
+        lexical != canonical
+        and project_root is not None
+        and lexical.is_relative_to(project_root)
+    ):
+        relative_alias = Path(os.path.relpath(lexical, root)).as_posix()
+        _location(relative_alias, "input location", root)
+        return relative_alias
     relative = _entry_relative_location(canonical, root)
     if relative is not None:
         return relative
@@ -1405,12 +1415,16 @@ def _decode_input(
     kind = value.get("kind")
     if kind not in {"file", "directory", "git-repository"}:
         _invalid(subject, {"kind": kind})
-    location, target = _location(
-        value.get("location"), subject, entry_root, accepted_target=accepted_target
-    )
     origin = value.get("origin")
     if not isinstance(origin, bool):
         _invalid(subject, {"origin": origin})
+    location, target = _location(
+        value.get("location"),
+        subject,
+        entry_root,
+        accepted_target=accepted_target,
+        allow_project_symlinks=origin,
+    )
     if kind == "git-repository" and not origin:
         _invalid(subject, {"kind": kind, "origin": origin})
     identity = parse_resource_identity(
@@ -1534,7 +1548,12 @@ def _name(value: object, subject: str) -> str:
 
 
 def _location(
-    value: object, subject: str, entry_root: Path, *, accepted_target: str | None = None
+    value: object,
+    subject: str,
+    entry_root: Path,
+    *,
+    accepted_target: str | None = None,
+    allow_project_symlinks: bool = True,
 ) -> tuple[str, str]:
     if (
         not isinstance(value, str)
@@ -1553,8 +1572,14 @@ def _location(
     lexical = Path(value) if Path(value).is_absolute() else entry_root / value
     if is_entry_material_root(lexical, entry_root):
         _invalid(subject, {"location": value, "reason": "artifact_root"})
-    _validate_local_symlink_surface(lexical, entry_root, subject)
-    return value, lexical.resolve().as_posix()
+    project_root = owning_git_project(entry_root) if allow_project_symlinks else None
+    try:
+        canonical = validate_local_path_symlinks(
+            lexical, entry_root, project_root=project_root
+        )
+    except EntryMaterialPathError as error:
+        _invalid(subject, {"location": str(lexical), "reason": error.reason})
+    return value, canonical.as_posix()
 
 
 def _validate_posix_location(value: str, subject: str) -> None:
@@ -1569,13 +1594,6 @@ def _validate_posix_location(value: str, subject: str) -> None:
         _invalid(subject, {"location": value})
     if PurePosixPath(value).as_posix() != value:
         _invalid(subject, {"location": value})
-
-
-def _validate_local_symlink_surface(path: Path, entry_root: Path, subject: str) -> None:
-    try:
-        validate_local_path_symlinks(path, entry_root)
-    except EntryMaterialPathError as error:
-        _invalid(subject, {"location": str(path), "reason": error.reason})
 
 
 def _resolve_member(

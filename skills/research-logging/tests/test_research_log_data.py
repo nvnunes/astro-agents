@@ -550,6 +550,44 @@ class DataFileTests(unittest.TestCase):
                     "aliased-source", "file", location, entry_root=entry
                 )
 
+    def test_project_origin_alias_observes_retargeting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            project = workspace / "project"
+            entry, _ = data_fixture(project)
+            (project / ".git").mkdir(exist_ok=True)
+            first = workspace / "external" / "first"
+            second = workspace / "external" / "second"
+            write(first / "source.csv", "value\n1\n")
+            write(second / "source.csv", "value\n2\n")
+            alias = project / "material-alias"
+            alias.symlink_to(first, target_is_directory=True)
+
+            location = DATA.normalize_input_location(
+                str(alias / "source.csv"), entry_root=entry
+            )
+            self.assertEqual(location, os.path.relpath(alias / "source.csv", entry))
+            original = DATA.build_local_input(
+                "aliased-source", "file", location, entry_root=entry, origin=True
+            )
+            self.assertEqual(original.canonical_target, str(first / "source.csv"))
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+            updated = DATA.build_local_input(
+                "aliased-source", "file", location, entry_root=entry, origin=True
+            )
+            self.assertEqual(updated.canonical_target, str(second / "source.csv"))
+            self.assertNotEqual(
+                DATA.observe_fingerprint(original).fingerprint,
+                DATA.observe_fingerprint(updated).fingerprint,
+            )
+            with self.assertRaisesRegex(
+                DATA.DataContractError, "data.declaration.invalid"
+            ):
+                DATA.build_local_input(
+                    "aliased-output", "file", location, entry_root=entry, origin=False
+                )
+
     def test_other_maintained_entry_material_links_are_valid_and_retargeted(
         self,
     ) -> None:

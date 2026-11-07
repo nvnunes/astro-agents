@@ -115,7 +115,10 @@ def source_repository(root: Path) -> tuple[Path, str, str]:
 
 class LogDataTests(unittest.TestCase):
     def test_repair_locations_replaces_symlink_aliases_in_one_validated_edit(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as external,
+        ):
             root = Path(directory)
             logical, entry = scaffold(root)
             retained = root / "output" / "source-data"
@@ -125,7 +128,7 @@ class LogDataTests(unittest.TestCase):
                 target = retained / name
                 target.mkdir()
                 (target / "value.txt").write_text(name, encoding="utf-8")
-            alias = root / "material-alias"
+            alias = Path(external) / "material-alias"
             alias.symlink_to(retained, target_is_directory=True)
             registry = entry / "data.json"
             original = {
@@ -187,7 +190,10 @@ class LogDataTests(unittest.TestCase):
             self.assertEqual(listed.returncode, 0, listed.stderr)
 
     def test_repair_locations_refuses_material_change_and_valid_declaration(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as external,
+        ):
             root = Path(directory)
             logical, entry = scaffold(root)
             retained = root / "output" / "source-data"
@@ -196,7 +202,7 @@ class LogDataTests(unittest.TestCase):
             second = retained / "second"
             first.mkdir()
             second.mkdir()
-            alias = root / "material-alias"
+            alias = Path(external) / "material-alias"
             alias.symlink_to(retained, target_is_directory=True)
             registry = entry / "data.json"
             declaration = {

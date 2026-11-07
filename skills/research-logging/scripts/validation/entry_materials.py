@@ -47,13 +47,26 @@ def validate_entry_path_symlinks(path: Path, entry_root: Path) -> Path:
     return target.resolve()
 
 
-def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
+def owning_git_project(path: Path) -> Path | None:
+    """Find the nearest Git checkout or worktree containing a resolved path."""
+
+    for candidate in (path, *path.parents):
+        marker = candidate / ".git"
+        if not marker.is_symlink() and (marker.is_file() or marker.is_dir()):
+            return candidate
+    return None
+
+
+def validate_local_path_symlinks(
+    path: Path, entry_root: Path, *, project_root: Path | None = None
+) -> Path:
     """Resolve one local path after rejecting unsupported lexical symlinks.
 
     Exact ``data`` and ``images`` roots of maintained entries may be directory
     symlinks, including when another entry consumes their material. A shared
     ancestor alias is allowed only when its canonical target contains both the
-    entry root and the requested target. Other aliases are rejected.
+    entry root and the requested target. When given the owning project root,
+    also allow links whose parent directory is inside that project.
     """
 
     root = entry_root.resolve()
@@ -76,6 +89,10 @@ def validate_local_path_symlinks(path: Path, entry_root: Path) -> Path:
         ):
             continue
         if _is_maintained_entry_material_link(current):
+            continue
+        if project_root is not None and current.parent.resolve().is_relative_to(
+            project_root
+        ):
             continue
         canonical_component = current.resolve()
         if _within(root, canonical_component) and _within(

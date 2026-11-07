@@ -1083,8 +1083,8 @@ class CommandVerificationTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertEqual(before, self._retained_identity(fixture.root))
 
-    def test_unsafe_current_input_does_not_launch_the_child(self) -> None:
-        """A symlink input is rejected while authority is still read-only."""
+    def test_dangling_current_input_alias_does_not_launch_the_child(self) -> None:
+        """A dangling project input link cannot launch a child."""
 
         with tempfile.TemporaryDirectory() as directory:
             fixture, identity = self._fixture(Path(directory))
@@ -1095,7 +1095,6 @@ class CommandVerificationTests(unittest.TestCase):
             )
             source = next((fixture.log_root / "entries").glob("*/data/source.txt"))
             replacement = source.with_name("replacement.txt")
-            replacement.write_text("source\n", encoding="utf-8")
             source.unlink()
             source.symlink_to(replacement)
             result = verify_command(

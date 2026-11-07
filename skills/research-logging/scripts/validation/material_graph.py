@@ -159,6 +159,39 @@ def trace_research_graph_materials(
     )
 
 
+def reached_managed_directory_inputs(
+    graph: ResearchGraph, trace: ReachabilityTrace
+) -> tuple[str, ...]:
+    """Return whole managed inputs reached by evidence, for artifact coverage only.
+
+    These roots cover orphan/retention inventory without adding per-file
+    consumption or producer edges and without expanding fingerprint scope.
+    """
+
+    reached = {
+        node.identity for node in trace.nodes if node.kind == NodeKind.COMMAND.value
+    }
+    nodes = {node.node_id: node for node in graph.nodes}
+    roots: set[str] = set()
+    for edge in graph.edges:
+        if edge.kind is not EdgeKind.CONSUMPTION:
+            continue
+        collection, command = nodes[edge.source], nodes[edge.target]
+        if (
+            collection.kind is not NodeKind.COLLECTION
+            or command.kind is not NodeKind.COMMAND
+            or command.identity not in reached
+            or collection.attributes.get("mechanism")
+            not in {"identity-files", "identity-patterns"}
+            or collection.attributes.get("membership_observed") is False
+        ):
+            continue
+        root = collection.attributes.get("root")
+        if isinstance(root, str):
+            roots.add(root)
+    return tuple(sorted(roots))
+
+
 def classify_research_graph_materials(
     request: MaterialClassificationRequest,
 ) -> MaterialClassification:
@@ -175,6 +208,11 @@ def classify_research_graph_materials(
 
     orphan_started = time.perf_counter()
     inventory = _inventory(roots)
+    connected.update(
+        _directory_inventory_members(
+            inventory, reached_managed_directory_inputs(request.graph, trace)
+        )
+    )
     graph = extend_graph_materials(
         request.graph,
         tuple(inventory),
@@ -651,6 +689,24 @@ def _bundle_material_index(
         for material in (bundle.root, *bundle.members):
             result[material] = bundle
     return result
+
+
+def _directory_inventory_members(
+    inventory: set[str], directories: Sequence[str]
+) -> set[str]:
+    """Cover existing inventory descendants without opening their contents."""
+
+    if not directories:
+        return set()
+    index = tuple(sorted(inventory))
+    members: set[str] = set()
+    for root in directories:
+        prefix = root.rstrip("/") + "/"
+        start = bisect_left(index, prefix)
+        # '0' succeeds the final '/', including children with non-BMP names.
+        stop = bisect_left(index, root.rstrip("/") + "0")
+        members.update(index[start:stop])
+    return members
 
 
 def _orphan_result(

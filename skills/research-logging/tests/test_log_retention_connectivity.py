@@ -26,6 +26,63 @@ from validation.research_graph import (
 
 
 class RetentionConnectivityTests(unittest.TestCase):
+    def test_managed_directory_retention_respects_whole_member_and_unreached_uses(self):
+        for mode in ("whole", "member", "unreached"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                token = "<raw>/results.json" if mode == "member" else "<raw>"
+                logical, entry, document = fixture(
+                    Path(directory),
+                    f"./pyrun scripts/build.py --input-data '{token}' "
+                    "--output-data '<result>'",
+                )
+                (entry / "data/raw").mkdir()
+                (entry / "data/raw/results.json").write_text('{"value":7}')
+                (entry / "data/raw/settings.json").write_text("{}")
+                (entry / "data/raw/payload.bin").write_bytes(b"unselected payload")
+                (entry / "data/result.json").write_text('{"value":7}')
+                checked(
+                    sync(
+                        logical,
+                        "--add-origin-directory",
+                        "raw=data/raw",
+                        "--add-generated",
+                        "result=data/result.json",
+                    )
+                )
+                checked(
+                    action(
+                        logical,
+                        "data",
+                        "update",
+                        "raw",
+                        "--identity",
+                        "file:results.json",
+                        "--identity",
+                        "file:settings.json",
+                    )
+                )
+                if mode != "unreached":
+                    set_results(
+                        document,
+                        "[Result](data/result.json)<!-- eid:result source=result -->",
+                    )
+                before = retained_files(logical)
+                result = action(
+                    logical,
+                    "retention",
+                    "add",
+                    "--id",
+                    "support",
+                    "--target",
+                    "data/raw/payload.bin",
+                )
+                if mode == "whole":
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("retention.target.connected", result.stderr)
+                    self.assertEqual(retained_files(logical), before)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_directory_member_dependency_preserves_retention_and_evidence_rules(self):
         with tempfile.TemporaryDirectory() as directory:
             logical, entry, document = self.bundle_fixture(Path(directory))
@@ -38,7 +95,7 @@ class RetentionConnectivityTests(unittest.TestCase):
             document.write_text(
                 document.read_text()
                 + "\n## Consumer\n\n`Steps:`\n\n```bash\n"
-                + './pyrun --cid use -- scripts/use.py '
+                + "./pyrun --cid use -- scripts/use.py "
                 '--input-data "<bundle>/value.csv" '
                 + '--output-data "<result>"\n```\n\n`Results:`\n\nPending consumer.\n'
             )

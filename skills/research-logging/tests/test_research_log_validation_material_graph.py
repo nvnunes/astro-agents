@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from research_log_data import (  # noqa: E402
+    build_identity_directory,
+    build_identity_pattern_directory,
     build_local_input,
     data_file_from_inputs,
+    observe_fingerprint,
 )
 from research_log_validation_test_support import unittest, write
 
@@ -179,6 +182,136 @@ def _request(
 
 
 class MaterialGraphTests(unittest.TestCase):
+    def test_managed_directory_orphan_coverage_is_distinct_from_identity_and_members(
+        self,
+    ):
+        for pattern in (False, True):
+            for mode in ("whole", "member", "unreached"):
+                with (
+                    self.subTest(pattern=pattern, mode=mode),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    log_root, entry_root, _, _ = _surface(root)
+                    directory_root = entry_root / "data/acquisition"
+                    selected = directory_root / "results.json"
+                    settings = directory_root / "settings.json"
+                    payload = directory_root / "nested/payload.bin"
+                    unicode_payload = directory_root / "🚀.bin"
+                    neighbor = entry_root / "data/acquisition-copy/results.json"
+                    for path, content in (
+                        (selected, '{"value":7}'),
+                        (settings, "{}"),
+                        (payload, "unselected payload"),
+                        (unicode_payload, "unselected Unicode filename"),
+                        (neighbor, "{}"),
+                    ):
+                        write(path, content)
+                    builder = (
+                        build_identity_pattern_directory
+                        if pattern
+                        else build_identity_directory
+                    )
+                    selectors = (
+                        ("*.json",) if pattern else ("results.json", "settings.json")
+                    )
+                    resource = builder(
+                        "acquisition",
+                        "data/acquisition",
+                        selectors,
+                        entry_root=entry_root,
+                        origin=True,
+                    )
+                    data = data_file_from_inputs(
+                        entry_root / "data.json",
+                        entry_root=entry_root,
+                        inputs=(resource,),
+                    )
+                    context = COMMAND.CommandContext(
+                        "docs/log",
+                        "e001",
+                        "entries/entry/e001.md",
+                        entry_root,
+                        log_root,
+                        root,
+                        data,
+                        require_experimental_context=False,
+                    )
+                    token = (
+                        "<acquisition>/results.json"
+                        if mode == "member"
+                        else "<acquisition>"
+                    )
+                    output = (entry_root / "data/reached.csv").resolve().as_posix()
+                    evidence = (
+                        ()
+                        if mode == "unreached"
+                        else (
+                            GRAPH.EvidenceConnection(
+                                "e001", "result", "e001.md:eid:result", (output,)
+                            ),
+                        )
+                    )
+                    original_open = Path.open
+
+                    def checked_open(path, *args, **kwargs):
+                        if path.suffix == ".bin":
+                            raise AssertionError(f"unselected contents read: {path}")
+                        return original_open(path, *args, **kwargs)
+
+                    with mock.patch.object(Path, "open", checked_open):
+                        fingerprint = observe_fingerprint(resource).fingerprint
+                        discovery = COMMAND.discover_commands(
+                            "```bash\n./pyrun --cid build -- scripts/build.py "
+                            f"--input-data '{token}' "
+                            "--output-data data/reached.csv\n```\n",
+                            context,
+                        )
+                        self.assertFalse(discovery.failures)
+                        result = GRAPH.classify_research_graph_materials(
+                            _request(
+                                entry_root,
+                                data,
+                                discovery.invocations,
+                                evidence=evidence,
+                            )
+                        )
+                    for path in (selected, settings, payload, unicode_payload):
+                        identity = path.resolve().as_posix()
+                        expected = (
+                            mode == "whole" or mode == "member" and path == selected
+                        )
+                        self.assertEqual(identity in result.orphan.connected, expected)
+                        self.assertEqual(
+                            identity in result.orphan.orphaned, not expected
+                        )
+                    self.assertIn(neighbor.resolve().as_posix(), result.orphan.orphaned)
+                    # Orphan coverage must not invent per-file scientific input edges.
+                    nodes = {node.node_id: node for node in result.graph.nodes}
+                    inputs = {
+                        nodes[edge.source].identity
+                        for edge in result.graph.edges
+                        if edge.kind
+                        in {
+                            RESEARCH_GRAPH.EdgeKind.CONSUMPTION,
+                            RESEARCH_GRAPH.EdgeKind.ORIGIN,
+                        }
+                        and nodes[edge.source].kind is RESEARCH_GRAPH.NodeKind.MATERIAL
+                        and nodes[edge.target].kind is RESEARCH_GRAPH.NodeKind.COMMAND
+                    }
+                    self.assertEqual(
+                        inputs,
+                        {
+                            str(selected.resolve())
+                            if mode == "member"
+                            else str(directory_root.resolve())
+                        },
+                    )
+                    write(payload, "different unselected payload")
+                    self.assertEqual(
+                        observe_fingerprint(resource).fingerprint, fingerprint
+                    )
+
     def test_adhoc_directory_is_outside_the_material_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             _, entry_root, data_file, invocations = _surface(Path(directory))

@@ -3215,6 +3215,12 @@ Its atomic output directory remains one unreached artifact rather than one
 artifact per descendant. An origin boundary terminates a reached branch but
 never connects an unreached artifact or suppresses an orphan finding.
 
+A whole managed-directory input of an evidence-reached command covers its
+inventoried descendants for Orphans and Retention, independently of which files
+define its fingerprint. This coverage adds no per-file consumption or producer
+edges and performs no extra content reads. An exact member input remains
+member-specific; an unreached command covers none of its input directory.
+
 Each eligible standalone file or atomic generated output directory is
 connected, declared-retained, or orphaned. An exact bundle-member edge remains
 member-specific in the evidence and command graph, but it connects the complete

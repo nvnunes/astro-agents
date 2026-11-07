@@ -776,6 +776,63 @@ def _convert_result_to_bundle(entry: Path) -> tuple[Path, Path, Path]:
 
 
 class EngineV2EndToEndTests(unittest.TestCase):
+    def test_managed_directory_inputs_cover_orphans_without_hashing_unselected_files(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary, document = _log(root)
+            identity = _replace_with_pyrun_state(
+                document,
+                ("--input-catalog", "<catalog>", "--output-data", "data/results.csv"),
+            )
+            entry = document.parent
+            (entry / "data/catalog.csv").unlink()
+            catalog = entry / "data/catalog"
+            write(catalog / "results.json", '{"count":1}')
+            write(catalog / "settings.json", "{}")
+            write(catalog / "payload.bin", "opaque unselected data")
+            resource = DATA.build_identity_directory(
+                "catalog",
+                "data/catalog",
+                ("results.json", "settings.json"),
+                entry_root=entry,
+                origin=True,
+            )
+            registry = entry / "data.json"
+            fields = json.loads(registry.read_text())
+            fields["inputs"][0] = resource.as_dict()
+            write(registry, json.dumps(fields))
+            state = PYRUN_STATE.load_pyrun_state(
+                entry / "pyrun.json", entry_root=entry, project_root=root
+            )
+            execution = state.commands["model"].executions[identity]
+            execution = replace(
+                execution,
+                observed=replace(
+                    execution.observed,
+                    inputs=(
+                        ("catalog", DATA.observe_fingerprint(resource).fingerprint),
+                    ),
+                ),
+            )
+            state = PYRUN_STATE.PyrunFile(
+                state.path,
+                entry,
+                {"model": PYRUN_STATE.PyrunCommand({identity: execution})},
+            )
+            write(state.path, state.serialized())
+            original_open = Path.open
+
+            def checked_open(path, *args, **kwargs):
+                if path.name == "payload.bin":
+                    raise AssertionError("validation hashed an unselected input file")
+                return original_open(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "open", checked_open):
+                evaluation = _evaluate(summary)
+            self.assertFalse(evaluation.attempt.findings)
+
     def test_unmounted_input_preserves_command_and_execution_relationships(
         self,
     ) -> None:

@@ -441,10 +441,18 @@ def _collect_declared_argument(
     )
     state.relationships.append(relationship)
     if directory:
+        mechanism = (
+            {
+                "identity-files-sha256-v1": "identity-files",
+                "identity-patterns-sha256-v1": "identity-patterns",
+            }.get(relationship.input_resource.identity.algorithm, "directory")
+            if direction == "input" and relationship.input_resource is not None
+            else "directory"
+        )
         state.collections.append(
             MaterialCollection(
                 direction,
-                "directory",
+                mechanism,
                 target,
                 (),
                 relationship.path,

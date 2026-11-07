@@ -8,7 +8,11 @@ from typing import Any, Sequence
 from research_log_data import DataFile, load_data_file, resolve_declared_input_token
 from validation.evidence import authored_eid_comments, load_evidence_file
 from validation.evidence_markdown import read_markdown_evidence
-from validation.material_graph import EvidenceConnection, trace_research_graph_materials
+from validation.material_graph import (
+    EvidenceConnection,
+    reached_managed_directory_inputs,
+    trace_research_graph_materials,
+)
 from validation.research_graph import (
     AmbiguityObservation,
     EdgeKind,
@@ -80,6 +84,14 @@ def retention_connections(
         or target.is_dir()
         and Path(path).is_relative_to(target.resolve())
     }
+    directory_inputs = tuple(
+        Path(root) for root in reached_managed_directory_inputs(graph, trace)
+    )
+    matched.update(
+        path.as_posix()
+        for path in (target.resolve() for target in targets)
+        if any(path.is_relative_to(root) for root in directory_inputs)
+    )
     if not matched:
         ambiguities = _target_ambiguities(graph, targets)
         if ambiguities:

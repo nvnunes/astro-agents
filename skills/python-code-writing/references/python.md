@@ -22,6 +22,10 @@ This guide is intended for codebases that value stable contracts, explicit owner
 - Favor incremental refactors that preserve contracts and make ownership or lifecycle clearer.
 
 ## Structure
+- Write for readability at multiple levels of abstraction. A reader should be
+  able to skim a function, module, or package and understand its purpose and
+  how its parts fit together. Reading more closely should reveal how each
+  part works.
 - Prefer a consistent module order:
   - constants first
   - data structures next (`dataclass`, types, enums)

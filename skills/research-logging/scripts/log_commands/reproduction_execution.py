@@ -1429,6 +1429,9 @@ def _seatbelt_profile(
         "(allow sysctl-read)",
         "(allow signal (target same-sandbox))",
         "(allow ipc-posix*)",
+        # Metal requires device access and a lookup of its shader compiler.
+        '(allow iokit-open (iokit-user-client-class "AGXDeviceUserClient"))',
+        '(allow mach-lookup (global-name "com.apple.MTLCompilerService"))',
     ]
     for root in sorted({path.resolve() for path in writable_roots}):
         rules.append(f'(allow file-write* (subpath "{_sandbox_quote(root)}"))')

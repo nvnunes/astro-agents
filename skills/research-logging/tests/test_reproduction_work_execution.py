@@ -22,6 +22,7 @@ from log_commands.model import ActionError
 from log_commands.reproduction_domain import CommandOutcome, ProblemStage
 from log_commands.reproduction_execution import (
     ReproductionControlPlaneError,
+    _seatbelt_profile,
     observe_output_fingerprint,
     populate_current_output_workspace,
 )
@@ -71,6 +72,20 @@ class TestConfinement:
 
     def command(self, command, **_options):
         return list(command)
+
+
+class SeatbeltProfileTests(unittest.TestCase):
+    def test_profile_allows_the_metal_device_and_compiler(self):
+        profile = _seatbelt_profile((), ())
+
+        self.assertIn(
+            '(allow iokit-open (iokit-user-client-class "AGXDeviceUserClient"))',
+            profile,
+        )
+        self.assertIn(
+            '(allow mach-lookup (global-name "com.apple.MTLCompilerService"))',
+            profile,
+        )
 
 
 class NativeExecutionTests(unittest.TestCase):
